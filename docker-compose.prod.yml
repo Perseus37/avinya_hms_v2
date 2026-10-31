@@ -7,6 +7,8 @@ services:
     cap_drop:
       - ALL
     read_only: true
+    tmpfs:
+      - /run
     environment:
       - CONTAINERS=1
     volumes:
@@ -139,6 +141,7 @@ services:
     restart: unless-stopped
     security_opt:
       - "no-new-privileges:true"
+    user: "999:1000"
     cap_drop:
       - ALL
     environment:
@@ -176,6 +179,9 @@ services:
       - "no-new-privileges:true"
     cap_drop:
       - ALL
+    cap_add:
+      - SETUID
+      - SETGID
     volumes:
       - hms_clamav_db:/var/lib/clamav
     healthcheck:

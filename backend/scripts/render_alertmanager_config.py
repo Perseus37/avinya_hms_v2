@@ -10,8 +10,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "deployments" / "alertmanager.template.yml"
 DEFAULT_OUTPUT_PATH = REPO_ROOT / "deployments" / "alertmanager.yml"
 
+DUMMY_WEBHOOK_DEFAULT = "http://api:8000/api/v1/alerts/ingress"
 
-def render_alertmanager_config(env_file: Path | None = None, output_file: Path | None = None) -> Path:
+
+def render_alertmanager_config(
+    env_file: Path | None = None,
+    output_file: Path | None = None,
+    strict_production: bool = False,
+) -> Path:
     target_output = output_file or DEFAULT_OUTPUT_PATH
     template_content = TEMPLATE_PATH.read_text(encoding="utf-8")
 
@@ -23,6 +29,9 @@ def render_alertmanager_config(env_file: Path | None = None, output_file: Path |
         val = env_values.get(key) or os.getenv(key)
         return val.strip() if val and val.strip() else default
 
+    environment = get_val("ENVIRONMENT", "development").lower()
+    is_prod = strict_production or environment in ("production", "prod")
+
     # 1. Resolve SMTP host and port
     smtp_host = get_val("SMTP_HOST", "smtp.example.com")
     smtp_port = get_val("SMTP_PORT", "587")
@@ -33,8 +42,19 @@ def render_alertmanager_config(env_file: Path | None = None, output_file: Path |
     if "@" not in smtp_from:
         smtp_from = "alerts@avinya-hms.local"
 
-    # 3. Resolve webhook URLs
-    default_webhook = get_val("ALERT_DEFAULT_WEBHOOK_URL", "http://api:8000/api/v1/alerts/ingress")
+    # 3. Resolve SMTP recipient email for on-call alerting (N-90)
+    email_to = get_val("ALERT_EMAIL_TO", "") or get_val("SMTP_TO", "oncall@avinya-hms.local")
+    if "@" not in email_to:
+        email_to = "oncall@avinya-hms.local"
+
+    # 4. Resolve webhook URLs
+    default_webhook = get_val("ALERT_DEFAULT_WEBHOOK_URL", DUMMY_WEBHOOK_DEFAULT)
+    if is_prod and default_webhook == DUMMY_WEBHOOK_DEFAULT:
+        raise ValueError(
+            "Production Alertmanager cannot use circular dummy webhook 'http://api:8000/api/v1/alerts/ingress'. "
+            "Configure a real paging or chat webhook via ALERT_DEFAULT_WEBHOOK_URL (or set a valid HTTPS endpoint)."
+        )
+
     critical_webhook = get_val(
         "ALERT_CRITICAL_WEBHOOK_URL",
         f"{default_webhook}?severity=critical" if "?" not in default_webhook else default_webhook,
@@ -58,6 +78,7 @@ def render_alertmanager_config(env_file: Path | None = None, output_file: Path |
     substitutions = {
         "${ALERT_SMTP_SMARTHOST}": smtp_smarthost,
         "${ALERT_SMTP_FROM}": smtp_from,
+        "${ALERT_EMAIL_TO}": email_to,
         "${ALERT_DEFAULT_WEBHOOK_URL}": default_webhook,
         "${ALERT_CRITICAL_WEBHOOK_URL}": critical_webhook,
         "${ALERT_WARNING_WEBHOOK_URL}": warning_webhook,
@@ -80,9 +101,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Render production Alertmanager configuration from template and env.")
     parser.add_argument("--env-file", type=Path, default=Path(".env.production"), help="Environment file.")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Output alertmanager.yml path.")
+    parser.add_argument("--strict-production", action="store_true", help="Fail if dummy webhooks are used.")
     args = parser.parse_args(argv)
 
-    out = render_alertmanager_config(args.env_file, args.output)
+    out = render_alertmanager_config(args.env_file, args.output, strict_production=args.strict_production)
     print(f"Rendered valid Alertmanager configuration to: {out}")
     return 0
 
@@ -90,4 +112,3 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     import sys
     sys.exit(main())
-

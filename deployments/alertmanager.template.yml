@@ -26,16 +26,25 @@ route:
 
 receivers:
   - name: "default-receiver"
+    email_configs:
+      - to: "${ALERT_EMAIL_TO}"
+        send_resolved: true
     webhook_configs:
       - url: "${ALERT_DEFAULT_WEBHOOK_URL}"
         send_resolved: true
 
   - name: "critical-receiver"
+    email_configs:
+      - to: "${ALERT_EMAIL_TO}"
+        send_resolved: true
     webhook_configs:
       - url: "${ALERT_CRITICAL_WEBHOOK_URL}"
         send_resolved: true
 
   - name: "warning-receiver"
+    email_configs:
+      - to: "${ALERT_EMAIL_TO}"
+        send_resolved: true
     webhook_configs:
       - url: "${ALERT_WARNING_WEBHOOK_URL}"
         send_resolved: true
@@ -46,4 +55,3 @@ inhibit_rules:
     target_match:
       severity: "warning"
     equal: ["alertname", "service"]
-

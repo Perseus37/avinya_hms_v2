@@ -1,9 +1,17 @@
 """
-Zero-downtime index migration utility for PostgreSQL production deployments (N-84).
+Zero-downtime index migration utility for PostgreSQL production deployments (N-84, N-94).
 
 Applies foreign key and metadata indexes using PostgreSQL's `CREATE INDEX CONCURRENTLY`
 mechanism, avoiding ACCESS EXCLUSIVE locks and preventing write stalls on high-volume
 live patient and billing tables.
+
+Upgrade Order on Live Production Databases:
+    1. Run: python backend/scripts/build_indexes_concurrently.py --all-tenants
+       This detects any invalid/interrupted indexes, drops them cleanly, and builds all
+       foreign key indexes concurrently in the background without locking tables.
+    2. Run: alembic upgrade head
+       The migration (e1a3c7b5d902) uses `if_not_exists=True`, safely stamping the
+       migration revision without duplicate index errors.
 
 Usage:
     python backend/scripts/build_indexes_concurrently.py --database-url <postgres_url> [--dry-run]
@@ -54,12 +62,41 @@ def generate_concurrent_index_sqls(
 
 
 def get_existing_postgres_indexes(engine: Engine) -> set[str]:
-    """Queries pg_indexes for all existing index names in the public schema."""
+    """Queries pg_index for all existing VALID index names in the public schema."""
+    if engine.dialect.name != "postgresql":
+        return set()
+
+    query = text(
+        """
+        SELECT c.relname
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indexrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND i.indisvalid;
+        """
+    )
     with engine.connect() as conn:
-        result = conn.execute(
-            text("SELECT indexname FROM pg_indexes WHERE schemaname = 'public';")
-        )
+        result = conn.execute(query)
         return {row[0].lower() for row in result.fetchall()}
+
+
+def get_invalid_postgres_indexes(engine: Engine) -> list[str]:
+    """Queries pg_index for indexes in the public schema where indisvalid is false (N-94)."""
+    if engine.dialect.name != "postgresql":
+        return []
+
+    query = text(
+        """
+        SELECT c.relname
+        FROM pg_index i
+        JOIN pg_class c ON c.oid = i.indexrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND NOT i.indisvalid;
+        """
+    )
+    with engine.connect() as conn:
+        result = conn.execute(query)
+        return [row[0] for row in result.fetchall()]
 
 
 def build_indexes_for_engine(
@@ -70,6 +107,7 @@ def build_indexes_for_engine(
 ) -> int:
     """
     Builds missing indexes concurrently against a single PostgreSQL engine.
+    Detects and drops invalid indexes, then creates missing indexes without locking tables.
     Returns the number of indexes created (or planned if dry-run).
     """
     if engine.dialect.name != "postgresql":
@@ -80,14 +118,22 @@ def build_indexes_for_engine(
         )
         return 0
 
+    # N-94: Repair invalid indexes from previously interrupted or failed builds
+    invalid_indexes = get_invalid_postgres_indexes(engine)
+    if invalid_indexes:
+        print(
+            f"[{target_name}] Found {len(invalid_indexes)} invalid/broken index(es) "
+            f"from interrupted builds: {invalid_indexes}"
+        )
+
     existing = get_existing_postgres_indexes(engine)
     statements = generate_concurrent_index_sqls(metadata, existing)
 
-    if not statements:
-        print(f"[{target_name}] All {len(existing)} indexes already present. Nothing to build.")
+    if not statements and not invalid_indexes:
+        print(f"[{target_name}] All {len(existing)} indexes already present and valid. Nothing to build.")
         return 0
 
-    print(f"[{target_name}] Found {len(statements)} missing indexes to build concurrently.")
+    print(f"[{target_name}] Found {len(statements)} missing/rebuilding indexes to build concurrently.")
 
     created = 0
     raw_connection = engine.raw_connection()
@@ -95,6 +141,18 @@ def build_indexes_for_engine(
         # PostgreSQL CREATE INDEX CONCURRENTLY cannot run inside a transaction block
         raw_connection.connection.autocommit = True
         cursor = raw_connection.cursor()
+
+        # Drop invalid indexes first so concurrent recreation can proceed cleanly
+        for inv_idx in invalid_indexes:
+            if dry_run:
+                print(f"[DRY-RUN] DROP INDEX CONCURRENTLY IF EXISTS \"{inv_idx}\";")
+            else:
+                try:
+                    print(f"[{target_name}] Dropping invalid index '{inv_idx}'...", end=" ", flush=True)
+                    cursor.execute(f'DROP INDEX CONCURRENTLY IF EXISTS "{inv_idx}";')
+                    print("OK")
+                except Exception as drop_err:
+                    print(f"FAILED to drop invalid index '{inv_idx}': {drop_err}", file=sys.stderr)
 
         for idx_name, table_name, sql in statements:
             if dry_run:
@@ -104,10 +162,13 @@ def build_indexes_for_engine(
 
             t0 = time.monotonic()
             print(f"[{target_name}] Building '{idx_name}' on '{table_name}'...", end=" ", flush=True)
-            cursor.execute(sql)
-            duration = time.monotonic() - t0
-            print(f"OK ({duration:.2f}s)")
-            created += 1
+            try:
+                cursor.execute(sql)
+                duration = time.monotonic() - t0
+                print(f"OK ({duration:.2f}s)")
+                created += 1
+            except Exception as build_err:
+                print(f"FAILED: {build_err}", file=sys.stderr)
 
     finally:
         raw_connection.close()

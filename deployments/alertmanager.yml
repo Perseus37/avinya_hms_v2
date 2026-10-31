@@ -26,16 +26,25 @@ route:
 
 receivers:
   - name: "default-receiver"
+    email_configs:
+      - to: "oncall@avinya-hms.local"
+        send_resolved: true
     webhook_configs:
       - url: "http://api:8000/api/v1/alerts/ingress"
         send_resolved: true
 
   - name: "critical-receiver"
+    email_configs:
+      - to: "oncall@avinya-hms.local"
+        send_resolved: true
     webhook_configs:
       - url: "http://api:8000/api/v1/alerts/ingress?severity=critical"
         send_resolved: true
 
   - name: "warning-receiver"
+    email_configs:
+      - to: "oncall@avinya-hms.local"
+        send_resolved: true
     webhook_configs:
       - url: "http://api:8000/api/v1/alerts/ingress?severity=warning"
         send_resolved: true

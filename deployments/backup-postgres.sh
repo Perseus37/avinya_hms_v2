@@ -102,8 +102,8 @@ cleanup() {
   if [[ $exit_code -ne 0 ]]; then
     local fail_time
     fail_time="$(date +%s)"
-    local textfile_dir="${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}"
-    if [[ -d "$textfile_dir" || -n "${NODE_EXPORTER_TEXTFILE_DIR:-}" ]]; then
+    local textfile_dir="${NODE_EXPORTER_TEXTFILE_DIR:-${NODE_EXPORTER_TEXTFILE_HOST_PATH:-/var/lib/node_exporter/textfile_collector}}"
+    if [[ -d "$textfile_dir" || -n "${NODE_EXPORTER_TEXTFILE_DIR:-}" || -n "${NODE_EXPORTER_TEXTFILE_HOST_PATH:-}" ]]; then
       mkdir -p -- "$textfile_dir" 2>/dev/null || true
       # N-88: Record failure status without removing the last success metrics file
       cat <<EOF > "$textfile_dir/.backup_postgres_status.prom.$$" 2>/dev/null || true
@@ -117,7 +117,9 @@ backup_last_failure_timestamp_seconds $fail_time
 # TYPE backup_last_attempt_timestamp_seconds gauge
 backup_last_attempt_timestamp_seconds $fail_time
 EOF
+      chmod 644 "$textfile_dir/.backup_postgres_status.prom.$$" 2>/dev/null || true
       mv -f -- "$textfile_dir/.backup_postgres_status.prom.$$" "$textfile_dir/backup_postgres_status.prom" 2>/dev/null || true
+      chmod 644 "$textfile_dir/backup_postgres_status.prom" 2>/dev/null || true
     fi
   fi
 }
@@ -176,8 +178,8 @@ echo "Encrypted PostgreSQL backup completed: $final_dir"
 # Publish completion metrics for Prometheus node_exporter textfile collector (N-79, N-88)
 end_epoch="$(date +%s)"
 duration_seconds=$(( end_epoch - start_epoch ))
-textfile_dir="${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}"
-if [[ -d "$textfile_dir" || -n "${NODE_EXPORTER_TEXTFILE_DIR:-}" ]]; then
+textfile_dir="${NODE_EXPORTER_TEXTFILE_DIR:-${NODE_EXPORTER_TEXTFILE_HOST_PATH:-/var/lib/node_exporter/textfile_collector}}"
+if [[ -d "$textfile_dir" || -n "${NODE_EXPORTER_TEXTFILE_DIR:-}" || -n "${NODE_EXPORTER_TEXTFILE_HOST_PATH:-}" ]]; then
   mkdir -p -- "$textfile_dir" 2>/dev/null || true
   # N-88: Last success metric in a dedicated persistent file that failures never overwrite
   cat <<EOF > "$textfile_dir/.backup_postgres_last_success.prom.$$"
@@ -188,7 +190,9 @@ backup_last_completion_timestamp_seconds $end_epoch
 # TYPE backup_last_duration_seconds gauge
 backup_last_duration_seconds $duration_seconds
 EOF
+  chmod 644 "$textfile_dir/.backup_postgres_last_success.prom.$$" 2>/dev/null || true
   mv -f -- "$textfile_dir/.backup_postgres_last_success.prom.$$" "$textfile_dir/backup_postgres_last_success.prom"
+  chmod 644 "$textfile_dir/backup_postgres_last_success.prom" 2>/dev/null || true
 
   cat <<EOF > "$textfile_dir/.backup_postgres_status.prom.$$"
 # HELP backup_last_status Exit status of the last PostgreSQL backup attempt (1 = success, 0 = failure).
@@ -198,7 +202,9 @@ backup_last_status 1
 # TYPE backup_last_attempt_timestamp_seconds gauge
 backup_last_attempt_timestamp_seconds $end_epoch
 EOF
+  chmod 644 "$textfile_dir/.backup_postgres_status.prom.$$" 2>/dev/null || true
   mv -f -- "$textfile_dir/.backup_postgres_status.prom.$$" "$textfile_dir/backup_postgres_status.prom"
+  chmod 644 "$textfile_dir/backup_postgres_status.prom" 2>/dev/null || true
   rm -f -- "$textfile_dir/backup_postgres.prom" 2>/dev/null || true
 fi
 
