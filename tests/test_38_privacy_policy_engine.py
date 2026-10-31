@@ -105,6 +105,7 @@ NON_PATIENT_OR_DEFERRED_GET_ROUTES = {
     "/api/pharmacy/medications",
     "/api/privacy/breach-incidents",
     "/api/privacy/breach-incidents/{incident_id}",
+    "/api/privacy/data-rights/patients/{patient_id}/export-dossier",
     "/api/privacy/data-rights/patients/{patient_id}/summary",
     "/api/privacy/data-rights/requests",
     "/api/privacy/data-rights/requests/{request_id}",

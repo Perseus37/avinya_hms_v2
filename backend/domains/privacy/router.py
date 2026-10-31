@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 from typing import Any, Literal
 
@@ -8,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
-from backend.core.database import get_db
+from backend.core.database import get_db, resolve_tenant_context
 from backend.core.dependencies import RequirePermission
 from backend.domains.identity.models import User
 from backend.domains.patients.models import Patient
@@ -1111,6 +1112,206 @@ def get_patient_data_access_summary(
             for r in requests
         ],
     }
+
+
+@router.get(
+    "/data-rights/patients/{patient_id}/export-dossier",
+    dependencies=[Depends(RequirePermission("privacy:read"))],
+)
+def export_patient_dpdp_dossier(
+    patient_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Generates an exportable comprehensive DPDP Section 11 data portability electronic dossier."""
+    patient = db.get(Patient, patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+
+    tenant = resolve_tenant_context(request)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 1. Allergies & Comorbidities
+    from backend.domains.patients.models import PatientAllergy
+    from backend.domains.clinical.models import PatientComorbidity, ClinicalNote, EncounterVital, EncounterDiagnosis
+    from backend.domains.encounters.models import PatientEncounter, InpatientAdmission
+    from backend.domains.pharmacy.models import Prescription
+    from backend.domains.diagnostics.models import DiagnosticOrder
+    from backend.domains.surgery.models import SurgicalSchedule
+    from backend.domains.billing.models import Invoice
+
+    allergies = db.query(PatientAllergy).filter(PatientAllergy.patient_id == patient_id).all()
+    comorbidities = db.query(PatientComorbidity).filter(PatientComorbidity.patient_id == patient_id).all()
+
+    # 2. Encounters & Admissions
+    encounters = db.query(PatientEncounter).filter(PatientEncounter.patient_id == patient_id).all()
+    encounter_ids = [e.id for e in encounters]
+
+    admissions = db.query(InpatientAdmission).join(PatientEncounter).filter(PatientEncounter.patient_id == patient_id).all()
+
+    # 3. Clinical Notes, Vitals & Diagnoses
+    notes = db.query(ClinicalNote).filter(ClinicalNote.encounter_id.in_(encounter_ids)).all() if encounter_ids else []
+    vitals = db.query(EncounterVital).filter(EncounterVital.encounter_id.in_(encounter_ids)).all() if encounter_ids else []
+    diagnoses = db.query(EncounterDiagnosis).filter(EncounterDiagnosis.encounter_id.in_(encounter_ids)).all() if encounter_ids else []
+
+    # 4. Prescriptions
+    prescriptions = db.query(Prescription).filter(Prescription.encounter_id.in_(encounter_ids)).all() if encounter_ids else []
+
+    # 5. Diagnostics
+    diagnostic_orders = db.query(DiagnosticOrder).filter(DiagnosticOrder.patient_id == patient_id).all()
+
+    # 6. Surgeries
+    surgeries = db.query(SurgicalSchedule).filter(SurgicalSchedule.patient_id == patient_id).all()
+
+    # 7. Invoices & Billing
+    invoices = db.query(Invoice).filter(Invoice.patient_id == patient_id).all()
+
+    # 8. Consents
+    consents = db.query(PatientConsentRecord).filter(PatientConsentRecord.patient_id == patient_id).all()
+
+    bundle = {
+        "export_metadata": {
+            "tenant_branch": tenant.branch_code,
+            "hospital_name": tenant.hospital_name,
+            "patient_id": patient.id,
+            "mrn": patient.mrn,
+            "exported_at": now_iso,
+            "compliance_framework": "DPDP Act 2023 Section 11 (Right to Data Portability & Access)",
+        },
+        "patient_profile": {
+            "id": patient.id,
+            "mrn": patient.mrn,
+            "full_name": patient.full_name,
+            "gender": patient.gender.value if hasattr(patient.gender, "value") else str(patient.gender),
+            "date_of_birth": patient.date_of_birth.isoformat() if patient.date_of_birth else None,
+            "phone_masked": f"{patient.phone_number[:3]}****{patient.phone_number[-4:]}" if patient.phone_number and len(patient.phone_number) >= 7 else "****",
+            "blood_group": patient.blood_group.value if hasattr(patient.blood_group, "value") else str(patient.blood_group) if patient.blood_group else None,
+            "registered_at": patient.created_at.isoformat() if hasattr(patient, "created_at") and patient.created_at else None,
+        },
+        "allergies": [
+            {
+                "id": a.id,
+                "allergen": a.allergen_name if hasattr(a, "allergen_name") else getattr(a, "allergy_name", ""),
+                "severity": a.severity.value if hasattr(a.severity, "value") else str(a.severity) if hasattr(a, "severity") else "UNKNOWN",
+                "recorded_at": a.created_at.isoformat() if hasattr(a, "created_at") and a.created_at else None,
+            }
+            for a in allergies
+        ],
+        "comorbidities": [
+            {
+                "id": c.id,
+                "condition_name": c.comorbidity_name if hasattr(c, "comorbidity_name") else str(c.id),
+                "icd10_code": getattr(c, "icd10_code", None),
+            }
+            for c in comorbidities
+        ],
+        "encounters": [
+            {
+                "id": e.id,
+                "encounter_type": e.encounter_type.value if hasattr(e.encounter_type, "value") else str(e.encounter_type),
+                "status": e.status.value if hasattr(e.status, "value") else str(e.status),
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+            for e in encounters
+        ],
+        "inpatient_admissions": [
+            {
+                "id": adm.id,
+                "admission_type": adm.admission_type.value if hasattr(adm.admission_type, "value") else str(adm.admission_type),
+                "admitted_at": adm.created_at.isoformat() if adm.created_at else None,
+                "discharged_at": adm.discharge_time.isoformat() if adm.discharge_time else None,
+                "discharge_disposition": adm.discharge_disposition.value if adm.discharge_disposition and hasattr(adm.discharge_disposition, "value") else str(adm.discharge_disposition) if adm.discharge_disposition else None,
+            }
+            for adm in admissions
+        ],
+        "clinical_notes": [
+            {
+                "id": n.id,
+                "encounter_id": n.encounter_id,
+                "subjective": n.subjective_notes,
+                "assessment": n.assessment_notes,
+                "plan": n.plan_notes,
+                "created_at": n.created_at.isoformat() if n.created_at else None,
+            }
+            for n in notes
+        ],
+        "vitals": [
+            {
+                "id": v.id,
+                "encounter_id": v.encounter_id,
+                "systolic_bp": getattr(v, "systolic_bp", None),
+                "diastolic_bp": getattr(v, "diastolic_bp", None),
+                "heart_rate_bpm": getattr(v, "heart_rate_bpm", None),
+                "spo2_percent": getattr(v, "spo2_percent", None),
+                "temperature_f": getattr(v, "temperature_f", None),
+                "recorded_at": v.created_at.isoformat() if v.created_at else None,
+            }
+            for v in vitals
+        ],
+        "diagnoses": [
+            {
+                "id": d.id,
+                "encounter_id": d.encounter_id,
+                "diagnosis_type": d.diagnosis_type.value if hasattr(d.diagnosis_type, "value") else str(d.diagnosis_type),
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+            }
+            for d in diagnoses
+        ],
+        "prescriptions": [
+            {
+                "id": rx.id,
+                "encounter_id": rx.encounter_id,
+                "status": rx.status.value if hasattr(rx.status, "value") else str(rx.status),
+                "created_at": rx.created_at.isoformat() if rx.created_at else None,
+            }
+            for rx in prescriptions
+        ],
+        "diagnostics": [
+            {
+                "id": o.id,
+                "urgency": o.urgency.value if hasattr(o.urgency, "value") else str(o.urgency),
+                "status": o.status.value if hasattr(o.status, "value") else str(o.status),
+                "ordered_at": o.created_at.isoformat() if o.created_at else None,
+            }
+            for o in diagnostic_orders
+        ],
+        "surgeries": [
+            {
+                "id": s.id,
+                "case_number": s.case_number,
+                "status": s.status.value if hasattr(s.status, "value") else str(s.status),
+                "scheduled_time": s.scheduled_time.isoformat() if s.scheduled_time else None,
+            }
+            for s in surgeries
+        ],
+        "invoices_and_billing": [
+            {
+                "id": inv.id,
+                "invoice_number": inv.invoice_number,
+                "status": inv.status.value if hasattr(inv.status, "value") else str(inv.status),
+                "net_amount_inr": round(inv.net_amount_paise / 100, 2),
+                "amount_paid_inr": round(inv.amount_paid_paise / 100, 2),
+                "created_at": inv.created_at.isoformat() if inv.created_at else None,
+            }
+            for inv in invoices
+        ],
+        "consent_evidence": [
+            {
+                "id": c.id,
+                "purpose": c.purpose,
+                "consent_type": c.consent_type,
+                "decision": c.decision,
+                "recorded_at": c.recorded_at.isoformat(),
+            }
+            for c in consents
+        ],
+    }
+
+    # Compute bundle integrity hash
+    raw_bytes = json.dumps(bundle, sort_keys=True, default=str).encode("utf-8")
+    bundle["export_metadata"]["bundle_integrity_sha256"] = hashlib.sha256(raw_bytes).hexdigest()
+
+    return bundle
 
 
 # =========================================================================

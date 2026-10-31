@@ -251,3 +251,34 @@ def test_clinical_documents_pdf_format_support(client, superuser_headers):
     if res.status_code == 200:
         assert "text/html" in res.headers["content-type"]
 
+
+def test_dpdp_patient_data_portability_dossier(client, superuser_headers):
+    # 1. Register a patient to export
+    payload = {
+        "full_name": "Kavitha Reddy",
+        "date_of_birth": "1990-05-15T00:00:00Z",
+        "gender": "FEMALE",
+        "phone_number": "9876543210",
+        "abha_number": "ABHA-DOSSIER-001",
+    }
+    create_res = client.post("/v1/api/patients", headers=superuser_headers, json=payload)
+    assert create_res.status_code == 201
+    patient_id = create_res.json()["id"]
+
+    # 2. Export patient dossier
+    res = client.get(f"/v1/api/privacy/data-rights/patients/{patient_id}/export-dossier", headers=superuser_headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert "export_metadata" in data
+    assert "bundle_integrity_sha256" in data["export_metadata"]
+    assert "patient_profile" in data
+    assert data["patient_profile"]["id"] == patient_id
+    assert "allergies" in data
+    assert "encounters" in data
+    assert "clinical_notes" in data
+    assert "vitals" in data
+    assert "prescriptions" in data
+    assert "invoices_and_billing" in data
+    assert "consent_evidence" in data
+
+
