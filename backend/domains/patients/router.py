@@ -1,3 +1,4 @@
+from datetime import date
 import secrets
 from typing import Optional
 import httpx
@@ -8,7 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from backend.control_plane.models import GlobalPatientPointer
 from backend.core.database import get_control_db, get_db, resolve_tenant_context
+from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.export import stream_csv_response
 from backend.domains.identity.models import User
 from backend.domains.patients.models import (
     AllergyMaster,
@@ -157,12 +160,16 @@ def register_patient(
 )
 def list_patients(
     search: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     page: int = 1,
     page_size: int = 50,
+    export_format: Optional[str] = Query(default=None, alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("patients:read")),
 ):
-    page, page_size = validate_pagination(page, page_size)
+    """Lists patients with search, registration date filtering, and streaming CSV export."""
+    start_at, end_at = resolve_record_date_window(start_date, end_date)
     query = db.query(Patient).filter(Patient.is_active == True)
     if search:
         term = f"%{search.strip()}%"
@@ -172,7 +179,47 @@ def list_patients(
             | (Patient.phone_number.ilike(term))
             | (Patient.abha_number.ilike(term))
         )
+    if start_at is not None and end_at is not None:
+        query = query.filter(
+            Patient.created_at >= start_at,
+            Patient.created_at < end_at,
+        )
+
     query = query.order_by(Patient.id.desc())
+
+    if export_format and export_format.lower() == "csv":
+        fieldnames = [
+            "id",
+            "mrn",
+            "full_name",
+            "gender",
+            "date_of_birth",
+            "phone_number",
+            "abha_number",
+            "is_active",
+            "created_at",
+        ]
+
+        def row_generator():
+            for item in query.all():
+                dob_str = item.date_of_birth.strftime("%Y-%m-%d") if item.date_of_birth else ""
+                gender_str = item.gender.value if hasattr(item.gender, "value") else str(item.gender or "")
+                yield {
+                    "id": item.id,
+                    "mrn": item.mrn,
+                    "full_name": item.full_name,
+                    "gender": gender_str,
+                    "date_of_birth": dob_str,
+                    "phone_number": item.phone_number or "",
+                    "abha_number": item.abha_number or "",
+                    "is_active": item.is_active,
+                    "created_at": item.created_at,
+                }
+
+        filename = f"patients_registry_{start_date or 'all'}_{end_date or 'all'}"
+        return stream_csv_response(row_generator(), fieldnames, filename)
+
+    page, page_size = validate_pagination(page, page_size)
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     decisions = evaluate_tenant_data_use_for_patients(

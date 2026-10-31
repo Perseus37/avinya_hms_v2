@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission
+from backend.core.export import stream_csv_response
+from backend.domains.service_ops.models import BiomedicalWasteBag
 from backend.domains.analytics.schemas import (
     AnalyticsDashboardResponse,
     AnalyticsTrendResponse,
@@ -3261,4 +3263,49 @@ def get_inventory_and_blood_radar(
             "Governance figures are current configuration/account snapshots, except federation transfer count, which is a lifetime log count.",
             "This route includes identifiable medication batch details and must remain permission-gated.",
         ],
+    }
+
+
+@router.get("/data-inventory")
+def get_tenant_data_inventory(
+    export_format: Optional[str] = Query(default=None, alias="format"),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("executive_bi:read")),
+):
+    """Calculates live tenant-wide operational data footprint, total record counts, and table storage inventory."""
+    inventory_items = [
+        {"domain": "Patients (MPI)", "table": "patients", "record_count": db.query(func.count(Patient.id)).scalar() or 0, "category": "Master Index"},
+        {"domain": "Patient Allergies", "table": "patient_allergies", "record_count": db.query(func.count(PatientAllergy.id)).scalar() or 0, "category": "Clinical Safety"},
+        {"domain": "OPD Appointments", "table": "appointments", "record_count": db.query(func.count(Appointment.id)).scalar() or 0, "category": "Outpatient"},
+        {"domain": "Inpatient Admissions", "table": "inpatient_admissions", "record_count": db.query(func.count(InpatientAdmission.id)).scalar() or 0, "category": "Inpatient ADT"},
+        {"domain": "Patient Encounters", "table": "patient_encounters", "record_count": db.query(func.count(PatientEncounter.id)).scalar() or 0, "category": "Clinical Encounters"},
+        {"domain": "Clinical SOAP Notes", "table": "clinical_notes", "record_count": db.query(func.count(ClinicalNote.id)).scalar() or 0, "category": "Clinical Documentation"},
+        {"domain": "Vitals & Observations", "table": "encounter_vitals", "record_count": db.query(func.count(EncounterVital.id)).scalar() or 0, "category": "Clinical Vitals"},
+        {"domain": "Diagnoses (ICD-10)", "table": "encounter_diagnoses", "record_count": db.query(func.count(EncounterDiagnosis.id)).scalar() or 0, "category": "Clinical Diagnoses"},
+        {"domain": "Pharmacy Batches", "table": "inventory_batches", "record_count": db.query(func.count(InventoryBatch.id)).scalar() or 0, "category": "Pharmacy Stock"},
+        {"domain": "Prescriptions (eRx)", "table": "prescriptions", "record_count": db.query(func.count(Prescription.id)).scalar() or 0, "category": "Pharmacy Orders"},
+        {"domain": "eMAR Administrations", "table": "medication_administration_logs", "record_count": db.query(func.count(MedicationAdministrationLog.id)).scalar() or 0, "category": "Nursing Administration"},
+        {"domain": "Diagnostic Orders", "table": "diagnostic_orders", "record_count": db.query(func.count(DiagnosticOrder.id)).scalar() or 0, "category": "Laboratory & Radiology"},
+        {"domain": "Diagnostic Tasks", "table": "diagnostic_tasks", "record_count": db.query(func.count(DiagnosticTask.id)).scalar() or 0, "category": "Laboratory & Radiology"},
+        {"domain": "Surgeries & Procedures", "table": "surgical_schedules", "record_count": db.query(func.count(SurgicalSchedule.id)).scalar() or 0, "category": "OT & Surgery"},
+        {"domain": "Surgical Implants", "table": "surgical_implant_logs", "record_count": db.query(func.count(SurgicalImplantLog.id)).scalar() or 0, "category": "OT & Surgery"},
+        {"domain": "Billing Invoices", "table": "invoices", "record_count": db.query(func.count(Invoice.id)).scalar() or 0, "category": "Revenue Cycle"},
+        {"domain": "Payments & Receipts", "table": "payment_receipts", "record_count": db.query(func.count(PaymentReceipt.id)).scalar() or 0, "category": "Revenue Cycle"},
+        {"domain": "Insurance Claims", "table": "insurance_claims", "record_count": db.query(func.count(InsuranceClaim.id)).scalar() or 0, "category": "Insurance & TPA"},
+        {"domain": "Blood Bank Inventory", "table": "blood_bag_inventories", "record_count": db.query(func.count(BloodBagInventory.id)).scalar() or 0, "category": "Blood Bank"},
+        {"domain": "Bio-Medical Waste Bags", "table": "biomedical_waste_bags", "record_count": db.query(func.count(BiomedicalWasteBag.id)).scalar() or 0, "category": "Environmental & Safety"},
+    ]
+
+    total_records = sum(item["record_count"] for item in inventory_items)
+
+    if export_format and export_format.lower() == "csv":
+        fieldnames = ["domain", "table", "category", "record_count"]
+        filename = f"tenant_data_inventory_{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+        return stream_csv_response(iter(inventory_items), fieldnames, filename)
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "total_monitored_tables": len(inventory_items),
+        "total_records_stored": total_records,
+        "items": inventory_items,
     }

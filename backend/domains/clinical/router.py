@@ -1,13 +1,15 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, get_redis, resolve_tenant_context
-from backend.core.dependencies import RequirePermission
+from backend.core.date_ranges import resolve_record_date_window
+from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.export import stream_csv_response
 from backend.domains.clinical.models import (
     ClinicalEarlyWarningScore,
     ClinicalNote,

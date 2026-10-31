@@ -1,13 +1,16 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import List, Optional
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
-from backend.core.database import get_db
-from backend.core.dependencies import RequirePermission
+from backend.core.database import get_db, resolve_tenant_context
+from backend.core.date_ranges import resolve_record_date_window
+from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.export import stream_csv_response
+from backend.schemas.common import PaginatedResponse
 from backend.domains.billing.models import Invoice, InvoiceStatusEnum, PaymentMethodEnum, PaymentReceipt
 from backend.domains.diagnostics.models import ServiceCatalog
 from backend.domains.encounters.models import EncounterStatusEnum, PatientEncounter
@@ -640,6 +643,85 @@ def submit_insurance_claim(
     db.commit()
     db.refresh(claim)
     return claim
+
+
+@router.get("/claims", response_model=PaginatedResponse[InsuranceClaimResponse])
+def list_insurance_claims(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    policy_id: Optional[int] = None,
+    claim_status: Optional[ClaimStatusEnum] = Query(default=None, alias="status"),
+    page: int = 1,
+    page_size: int = 50,
+    export_format: Optional[str] = Query(default=None, alias="format"),
+    db: Session = Depends(get_db),
+    actor: User = Depends(RequirePermission("billing:read")),
+):
+    """Lists insurance claims with date filtering and streaming CSV export support."""
+    start_at, end_at = resolve_record_date_window(start_date, end_date)
+    query = (
+        db.query(InsuranceClaim)
+        .options(
+            joinedload(InsuranceClaim.invoice).joinedload(Invoice.patient),
+            joinedload(InsuranceClaim.policy).joinedload(PatientInsurancePolicy.provider),
+        )
+    )
+    if policy_id:
+        query = query.filter(InsuranceClaim.policy_id == policy_id)
+    if claim_status:
+        query = query.filter(InsuranceClaim.status == claim_status)
+    if start_at is not None and end_at is not None:
+        query = query.filter(
+            InsuranceClaim.created_at >= start_at,
+            InsuranceClaim.created_at < end_at,
+        )
+
+    query = query.order_by(InsuranceClaim.id.desc())
+
+    if export_format and export_format.lower() == "csv":
+        fieldnames = [
+            "id",
+            "claim_number",
+            "invoice_id",
+            "patient_mrn",
+            "patient_name",
+            "provider_name",
+            "status",
+            "claimed_amount_inr",
+            "insurer_payable_inr",
+            "patient_copay_inr",
+            "settled_amount_inr",
+            "settlement_utr",
+            "created_at",
+        ]
+
+        def row_generator():
+            for item in query.all():
+                patient = item.invoice.patient if item.invoice else None
+                provider = item.policy.provider if item.policy else None
+                yield {
+                    "id": item.id,
+                    "claim_number": item.claim_number,
+                    "invoice_id": item.invoice_id,
+                    "patient_mrn": patient.mrn if patient else "",
+                    "patient_name": patient.full_name if patient else "",
+                    "provider_name": provider.name if provider else "",
+                    "status": item.status.value if hasattr(item.status, "value") else str(item.status),
+                    "claimed_amount_inr": f"{item.claimed_amount_paise / 100:.2f}",
+                    "insurer_payable_inr": f"{item.insurer_payable_paise / 100:.2f}",
+                    "patient_copay_inr": f"{item.patient_copay_paise / 100:.2f}",
+                    "settled_amount_inr": f"{item.settled_amount_paise / 100:.2f}",
+                    "settlement_utr": item.settlement_utr_reference or "",
+                    "created_at": item.created_at,
+                }
+
+        filename = f"insurance_claims_{start_date or 'all'}_{end_date or 'all'}"
+        return stream_csv_response(row_generator(), fieldnames, filename)
+
+    page, page_size = validate_pagination(page, page_size)
+    total = query.count()
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get(

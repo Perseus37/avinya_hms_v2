@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import List, Optional
 import secrets
 
@@ -8,7 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, resolve_tenant_context
-from backend.core.dependencies import RequirePermission
+from backend.core.date_ranges import resolve_record_date_window
+from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.export import stream_csv_response
+from backend.schemas.common import PaginatedResponse
 from backend.domains.diagnostics.models import ServiceCatalog
 from backend.domains.encounters.models import EncounterStatusEnum, PatientEncounter
 from backend.domains.identity.models import User
@@ -18,6 +21,7 @@ from backend.domains.reports.router import (
     _fmt_local_time,
     _render_template_parts,
     _resolve_template_for_print,
+    _pdf_response_from_html,
 )
 from backend.domains.surgery.schemas import OperationTheatreCreate, OperationTheatreResponse, OperativeRecordResponse, OperativeRecordUpsert, SurgeryStatusUpdateRequest, SurgicalImplantCreate, SurgicalImplantResponse, SurgicalScheduleCreate, SurgicalScheduleResponse, WHOChecklistResponse, WHOChecklistUpsert
 from backend.domains.billing.services import auto_bill_completed_surgery
@@ -132,6 +136,86 @@ def schedule_surgery(
     db.commit()
     db.refresh(surgery)
     return surgery
+
+
+@router.get("/surgeries", response_model=PaginatedResponse[SurgicalScheduleResponse])
+def list_surgeries(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    theatre_id: Optional[int] = None,
+    lead_surgeon_id: Optional[int] = None,
+    surgery_status: Optional[SurgeryStatusEnum] = Query(default=None, alias="status"),
+    page: int = 1,
+    page_size: int = 50,
+    export_format: Optional[str] = Query(default=None, alias="format"),
+    db: Session = Depends(get_db),
+    actor: User = Depends(RequirePermission("adt:read", "opd:read")),
+):
+    """Lists surgeries with date filtering and streaming CSV export support."""
+    start_at, end_at = resolve_record_date_window(start_date, end_date)
+    query = (
+        db.query(SurgicalSchedule)
+        .options(
+            joinedload(SurgicalSchedule.theatre),
+            joinedload(SurgicalSchedule.patient),
+            joinedload(SurgicalSchedule.lead_surgeon),
+            joinedload(SurgicalSchedule.procedure_service),
+        )
+    )
+    if theatre_id:
+        query = query.filter(SurgicalSchedule.theatre_id == theatre_id)
+    if lead_surgeon_id:
+        query = query.filter(SurgicalSchedule.lead_surgeon_id == lead_surgeon_id)
+    if surgery_status:
+        query = query.filter(SurgicalSchedule.status == surgery_status)
+    if start_at is not None and end_at is not None:
+        query = query.filter(
+            SurgicalSchedule.scheduled_start_time >= start_at,
+            SurgicalSchedule.scheduled_start_time < end_at,
+        )
+
+    query = query.order_by(SurgicalSchedule.scheduled_start_time.desc())
+
+    if export_format and export_format.lower() == "csv":
+        fieldnames = [
+            "id",
+            "case_number",
+            "patient_mrn",
+            "patient_name",
+            "theatre_code",
+            "procedure_name",
+            "lead_surgeon",
+            "scheduled_start",
+            "scheduled_end",
+            "actual_start",
+            "actual_end",
+            "status",
+        ]
+
+        def row_generator():
+            for item in query.all():
+                yield {
+                    "id": item.id,
+                    "case_number": item.case_number,
+                    "patient_mrn": item.patient.mrn if item.patient else "",
+                    "patient_name": item.patient.full_name if item.patient else "",
+                    "theatre_code": item.theatre.code if item.theatre else "",
+                    "procedure_name": item.procedure_service.name if item.procedure_service else "",
+                    "lead_surgeon": item.lead_surgeon.full_name if item.lead_surgeon else "",
+                    "scheduled_start": item.scheduled_start_time,
+                    "scheduled_end": item.scheduled_end_time,
+                    "actual_start": item.actual_start_time,
+                    "actual_end": item.actual_end_time,
+                    "status": item.status.value if hasattr(item.status, "value") else str(item.status),
+                }
+
+        filename = f"ot_surgeries_{start_date or 'all'}_{end_date or 'all'}"
+        return stream_csv_response(row_generator(), fieldnames, filename)
+
+    page, page_size = validate_pagination(page, page_size)
+    total = query.count()
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 # -----------------------------------------------------------------------------
@@ -313,6 +397,7 @@ def print_surgical_operative_note(
     surgery_id: int,
     request: Request,
     print_mode: Optional[PrintModeEnum] = Query(default=None),
+    output_format: Optional[str] = Query(default="html", alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read", "opd:read")),
 ):
@@ -384,4 +469,6 @@ def print_surgical_operative_note(
         db, ReportTypeEnum.SURGICAL_OPERATIVE_NOTE, None, print_mode
     )
     html = _render_template_parts(tpl_parts, context)
+    if output_format and output_format.lower() == "pdf":
+        return _pdf_response_from_html(html, f"op-note-{surgery.case_number}.pdf")
     return HTMLResponse(content=html, status_code=200)

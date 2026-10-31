@@ -1,12 +1,13 @@
 from datetime import date
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, user_has_permission, validate_pagination
+from backend.core.export import stream_csv_response
 from backend.domains.identity.models import User
 from backend.domains.patients.models import Patient
 from backend.domains.diagnostics.models import (
@@ -330,12 +331,20 @@ def list_diagnostic_orders(
     end_date: Optional[date] = None,
     page: int = 1,
     page_size: int = 50,
+    export_format: Optional[str] = Query(default=None, alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("diagnostics:read")),
 ):
-    page, page_size = validate_pagination(page, page_size)
+    """Lists diagnostic orders with date filtering and streaming CSV export."""
     start_at, end_at = resolve_record_date_window(start_date, end_date)
-    query = db.query(DiagnosticOrder).options(joinedload(DiagnosticOrder.tasks))
+    query = (
+        db.query(DiagnosticOrder)
+        .options(
+            joinedload(DiagnosticOrder.tasks),
+            joinedload(DiagnosticOrder.patient),
+            joinedload(DiagnosticOrder.ordering_doctor),
+        )
+    )
     if patient_id:
         query = query.filter(DiagnosticOrder.patient_id == patient_id)
     if start_at is not None and end_at is not None:
@@ -345,6 +354,38 @@ def list_diagnostic_orders(
         )
     query = query.order_by(DiagnosticOrder.id.desc())
 
+    if export_format and export_format.lower() == "csv":
+        fieldnames = [
+            "id",
+            "patient_mrn",
+            "patient_name",
+            "ordering_doctor",
+            "tasks_count",
+            "status",
+            "clinical_notes",
+            "created_at",
+        ]
+
+        def row_generator():
+            for item in query.all():
+                p = item.patient
+                doc = item.ordering_doctor
+                st_val = item.status.value if hasattr(item.status, "value") else str(item.status)
+                yield {
+                    "id": item.id,
+                    "patient_mrn": p.mrn if p else "",
+                    "patient_name": p.full_name if p else "",
+                    "ordering_doctor": doc.full_name if doc else "",
+                    "tasks_count": len(item.tasks) if item.tasks else 0,
+                    "status": st_val,
+                    "clinical_notes": (item.clinical_notes or "").replace("\n", " "),
+                    "created_at": item.created_at,
+                }
+
+        filename = f"diagnostic_orders_{start_date or 'all'}_{end_date or 'all'}"
+        return stream_csv_response(row_generator(), fieldnames, filename)
+
+    page, page_size = validate_pagination(page, page_size)
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     decisions = evaluate_tenant_patient_data_uses(

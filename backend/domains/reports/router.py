@@ -19,13 +19,32 @@ from backend.core.config import settings
 from backend.core.dependencies import RequirePermission
 from backend.domains.billing.models import Invoice
 from backend.domains.bloodbank.models import RadiologyStudyMetadata
-from backend.domains.clinical.models import ClinicalNote, EncounterDiagnosis, EncounterVital
+from backend.domains.clinical.models import (
+    BirthRecord,
+    ClinicalNote,
+    DeathRecord,
+    EncounterDiagnosis,
+    EncounterVital,
+    MedicoLegalCase,
+)
 from backend.domains.diagnostics.models import DiagnosticOrder, TaskStatusEnum
-from backend.domains.encounters.models import Appointment, InpatientAdmission
+from backend.domains.encounters.models import Appointment, InpatientAdmission, PatientEncounter
 from backend.domains.identity.models import User
-from backend.domains.insurance.models import InsuranceClaim
+from backend.domains.insurance.models import (
+    InsuranceClaim,
+    InsurancePlan,
+    InsurancePreAuth,
+    InsuranceProvider,
+    PatientInsurancePolicy,
+)
 from backend.domains.patients.models import PatientAllergy
 from backend.domains.pharmacy.models import Prescription
+from backend.domains.procurement.models import PurchaseOrder, PurchaseOrderItem, VendorMaster
+from backend.domains.surgery.models import (
+    OperativeAnesthesiaRecord,
+    SurgicalImplantLog,
+    SurgicalSchedule,
+)
 from backend.domains.reports.models import (
     PageSizeEnum,
     PrintModeEnum,
@@ -59,6 +78,19 @@ def _fmt_local_time(dt: Optional[datetime]) -> str:
 
 def _fmt_inr(paise: int) -> str:
     return f"₹{paise / 100:,.2f}"
+
+
+def _pdf_response_from_html(html_str: str, filename: str) -> Response:
+    try:
+        pdf = render_html_pdf(html_str)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    safe_filename = re.sub(r"[^A-Za-z0-9._-]", "_", filename if filename.endswith(".pdf") else f"{filename}.pdf")
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+    )
 
 
 def _invoice_document_profile(db: Session) -> Dict[str, Any]:
@@ -938,6 +970,7 @@ def print_opd_appointment_case_sheet(
     request: Request,
     template_code: Optional[str] = Query(default=None),
     print_mode: Optional[PrintModeEnum] = Query(default=None),
+    output_format: Optional[str] = Query(default="html", alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("opd:read", "adt:read")),
 ):
@@ -1028,6 +1061,8 @@ def print_opd_appointment_case_sheet(
         db, ReportTypeEnum.OPD_APPOINTMENT_SLIP, template_code, print_mode
     )
     html = _render_template_parts(tpl_parts, context)
+    if output_format and output_format.lower() == "pdf":
+        return _pdf_response_from_html(html, f"appointment-{appointment_id}.pdf")
     return HTMLResponse(content=html, status_code=200)
 
 
@@ -1182,6 +1217,7 @@ def print_erx_prescription(
     request: Request,
     template_code: Optional[str] = Query(default=None),
     print_mode: Optional[PrintModeEnum] = Query(default=None),
+    output_format: Optional[str] = Query(default="html", alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("pharmacy:read", "opd:read", "adt:read")),
 ):
@@ -1252,6 +1288,8 @@ def print_erx_prescription(
         db, ReportTypeEnum.PRESCRIPTION, template_code, print_mode
     )
     html = _render_template_parts(tpl_parts, context)
+    if output_format and output_format.lower() == "pdf":
+        return _pdf_response_from_html(html, f"prescription-{prescription_id}.pdf")
     return HTMLResponse(content=html, status_code=200)
 
 
@@ -1266,6 +1304,7 @@ def print_diagnostic_lab_report(
     request: Request,
     template_code: Optional[str] = Query(default=None),
     print_mode: Optional[PrintModeEnum] = Query(default=None),
+    output_format: Optional[str] = Query(default="html", alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("diagnostics:read")),
 ):
@@ -1352,6 +1391,8 @@ def print_diagnostic_lab_report(
         db, ReportTypeEnum.DIAGNOSTIC_REPORT, template_code, print_mode
     )
     html = _render_template_parts(tpl_parts, context)
+    if output_format and output_format.lower() == "pdf":
+        return _pdf_response_from_html(html, f"diagnostic-order-{order_id}.pdf")
     return HTMLResponse(content=html, status_code=200)
 
 
@@ -1366,6 +1407,7 @@ def print_ipd_discharge_summary(
     request: Request,
     template_code: Optional[str] = Query(default=None),
     print_mode: Optional[PrintModeEnum] = Query(default=None),
+    output_format: Optional[str] = Query(default="html", alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read")),
 ):
@@ -1452,4 +1494,6 @@ def print_ipd_discharge_summary(
         db, ReportTypeEnum.DISCHARGE_SUMMARY, template_code, print_mode
     )
     html = _render_template_parts(tpl_parts, context)
+    if output_format and output_format.lower() == "pdf":
+        return _pdf_response_from_html(html, f"discharge-summary-{admission_id}.pdf")
     return HTMLResponse(content=html, status_code=200)

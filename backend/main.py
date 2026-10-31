@@ -41,6 +41,7 @@ from backend.domains.patients.break_glass_router import router as break_glass_ro
 from backend.domains.pharmacy import router as pharmacy_router
 from backend.domains.facility import router as ward_router
 from backend.domains.reports import router as reports_router
+from backend.domains.reports.registers_router import router as registers_router
 from backend.domains.insurance import router as insurance_router
 from backend.domains.surgery import router as ot_router
 from backend.domains.bloodbank import router as blood_pacs_router
@@ -332,6 +333,7 @@ for target in (v1_app, app):
     target.include_router(clinical_router.router)
     target.include_router(federation_router.router)
     target.include_router(reports_router.router)
+    target.include_router(registers_router)
     target.include_router(websocket_router.ws_router)
     target.include_router(tenant_admin_router.router)
     target.include_router(audit_router.router)

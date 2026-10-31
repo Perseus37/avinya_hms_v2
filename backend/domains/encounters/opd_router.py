@@ -2,12 +2,13 @@ from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select,func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from backend.domains.policies.router import get_or_create_policy
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.dependencies import RequirePermission, validate_pagination
 from backend.core.date_ranges import resolve_record_date_window
+from backend.core.export import stream_csv_response
 from backend.domains.encounters.models import Appointment, AppointmentStatusEnum, AppointmentStatusHistory, AppointmentWaitlistEntry, AppointmentWaitlistHistory, AppointmentWaitlistStatusEnum, DoctorLeave, PatientEncounter, ServiceDemandReasonEnum, ServiceDemandRequest, ServiceDemandStatusEnum, ServiceDemandStatusHistory
 from backend.domains.identity.models import DoctorProfile, User
 from backend.domains.patients.models import Patient
@@ -184,10 +185,10 @@ def list_appointments(
     end_date: Optional[date] = None,
     page: int = 1,
     page_size: int = 50,
+    export_format: Optional[str] = Query(default=None, alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("opd:read")),
 ):
-    page, page_size = validate_pagination(page, page_size)
     window_start, window_end = resolve_record_date_window(start_date, end_date)
     if window_start is not None and (date_start is not None or date_end is not None):
         raise HTTPException(
@@ -214,6 +215,44 @@ def list_appointments(
         query = query.filter(Appointment.appointment_time <= date_end)
 
     query = query.order_by(Appointment.appointment_time.asc())
+
+    if export_format and export_format.lower() == "csv":
+        fieldnames = [
+            "id",
+            "token_number",
+            "patient_mrn",
+            "patient_name",
+            "doctor_name",
+            "appointment_time",
+            "planned_duration_minutes",
+            "status",
+            "reason_for_visit",
+        ]
+
+        def row_generator():
+            for item in query.options(
+                joinedload(Appointment.patient),
+                joinedload(Appointment.doctor),
+            ).all():
+                p = item.patient
+                doc = item.doctor
+                status_str = item.status.value if hasattr(item.status, "value") else str(item.status)
+                yield {
+                    "id": item.id,
+                    "token_number": item.token_number or "",
+                    "patient_mrn": p.mrn if p else "",
+                    "patient_name": p.full_name if p else "",
+                    "doctor_name": doc.full_name if doc else "",
+                    "appointment_time": item.appointment_time,
+                    "planned_duration_minutes": item.planned_duration_minutes or "",
+                    "status": status_str,
+                    "reason_for_visit": item.reason_for_visit or "",
+                }
+
+        filename = f"opd_appointments_{start_date or 'all'}_{end_date or 'all'}"
+        return stream_csv_response(row_generator(), fieldnames, filename)
+
+    page, page_size = validate_pagination(page, page_size)
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     decisions = evaluate_tenant_patient_data_uses(

@@ -1,15 +1,17 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, resolve_tenant_context
+from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.export import stream_csv_response
 from backend.domains.billing.models import Invoice, InvoiceStatusEnum
-from backend.domains.encounters.models import BedTransferLog, EncounterStatusEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter, DischargeDispositionEnum
-from backend.domains.facility.models import Bed, BedStatusEnum
+from backend.domains.encounters.models import AdmissionTypeEnum, BedTransferLog, EncounterStatusEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter, DischargeDispositionEnum
+from backend.domains.facility.models import Bed, BedStatusEnum, PhysicalRoom
 from backend.domains.identity.models import User
 from backend.domains.insurance.models import InsurancePreAuth, PreAuthStatusEnum
 from backend.schemas.common import PaginatedResponse
@@ -203,18 +205,79 @@ def admit_patient(
     openapi_extra={"x-privacy-data-use-point": "adt.admissions.search"},
 )
 def list_admissions(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     patient_id: Optional[int] = None,
+    admission_type: Optional[AdmissionTypeEnum] = None,
+    is_discharged: Optional[bool] = None,
     page: int = 1,
     page_size: int = 50,
+    export_format: Optional[str] = Query(default=None, alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read")),
 ):
-    page, page_size = validate_pagination(page, page_size)
-    query = db.query(InpatientAdmission)
+    """Lists inpatient admissions with date filtering and streaming CSV export."""
+    start_at, end_at = resolve_record_date_window(start_date, end_date)
+    query = (
+        db.query(InpatientAdmission)
+        .options(
+            joinedload(InpatientAdmission.encounter).joinedload(PatientEncounter.patient),
+            joinedload(InpatientAdmission.current_bed).joinedload(Bed.room).joinedload(PhysicalRoom.ward),
+        )
+    )
     if patient_id:
         query = query.join(InpatientAdmission.encounter).filter(PatientEncounter.patient_id == patient_id)
+    if admission_type:
+        query = query.filter(InpatientAdmission.admission_type == admission_type)
+    if is_discharged is True:
+        query = query.filter(InpatientAdmission.discharge_time.isnot(None))
+    elif is_discharged is False:
+        query = query.filter(InpatientAdmission.discharge_time.is_(None))
+    if start_at is not None and end_at is not None:
+        query = query.filter(
+            InpatientAdmission.created_at >= start_at,
+            InpatientAdmission.created_at < end_at,
+        )
+
     query = query.order_by(InpatientAdmission.id.desc())
 
+    if export_format and export_format.lower() == "csv":
+        fieldnames = [
+            "id",
+            "patient_mrn",
+            "patient_name",
+            "admission_type",
+            "ward_name",
+            "bed_code",
+            "is_discharged",
+            "discharge_time",
+            "created_at",
+        ]
+
+        def row_generator():
+            for item in query.all():
+                enc = item.encounter
+                p = enc.patient if enc else None
+                b = item.current_bed
+                r = b.room if b else None
+                w = r.ward if r else None
+                adm_type_str = item.admission_type.value if hasattr(item.admission_type, "value") else str(item.admission_type)
+                yield {
+                    "id": item.id,
+                    "patient_mrn": p.mrn if p else "",
+                    "patient_name": p.full_name if p else "",
+                    "admission_type": adm_type_str,
+                    "ward_name": w.name if w else "",
+                    "bed_code": b.bed_number if b else "",
+                    "is_discharged": item.discharge_time is not None,
+                    "discharge_time": item.discharge_time or "",
+                    "created_at": item.created_at,
+                }
+
+        filename = f"inpatient_admissions_{start_date or 'all'}_{end_date or 'all'}"
+        return stream_csv_response(row_generator(), fieldnames, filename)
+
+    page, page_size = validate_pagination(page, page_size)
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     patient_ids = [

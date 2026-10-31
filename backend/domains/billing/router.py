@@ -2,13 +2,14 @@ from datetime import date, datetime, timezone
 from typing import Optional
 import secrets
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission, validate_pagination
 from backend.core.date_ranges import resolve_record_date_window
+from backend.core.export import stream_csv_response
 from backend.domains.billing.models import Invoice, InvoiceLineItem, InvoiceStatusEnum, PaymentReceipt, DepositStatusEnum, PatientDeposit, PaymentMethodEnum, RefundVoucher
 from backend.domains.diagnostics.models import ServiceCatalog
 from backend.domains.encounters.models import PatientEncounter
@@ -85,10 +86,10 @@ def list_invoices(
     end_date: Optional[date] = None,
     page: int = 1,
     page_size: int = 50,
+    export_format: Optional[str] = Query(default=None, alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("billing:read")),
 ):
-    page, page_size = validate_pagination(page, page_size)
     start_at, end_at = resolve_record_date_window(start_date, end_date)
     query = db.query(Invoice).options(joinedload(Invoice.line_items), joinedload(Invoice.payments))
     if patient_id:
@@ -99,6 +100,43 @@ def list_invoices(
         query = query.filter(Invoice.created_at >= start_at, Invoice.created_at < end_at)
     query = query.order_by(Invoice.id.desc())
 
+    if export_format and export_format.lower() == "csv":
+        fieldnames = [
+            "id",
+            "invoice_number",
+            "patient_mrn",
+            "patient_name",
+            "status",
+            "total_inr",
+            "discount_inr",
+            "net_inr",
+            "amount_paid_inr",
+            "balance_inr",
+            "created_at",
+        ]
+
+        def row_generator():
+            for item in query.options(joinedload(Invoice.patient)).all():
+                p = item.patient
+                bal_paise = item.net_amount_paise - item.amount_paid_paise
+                yield {
+                    "id": item.id,
+                    "invoice_number": item.invoice_number,
+                    "patient_mrn": p.mrn if p else "",
+                    "patient_name": p.full_name if p else "",
+                    "status": item.status.value if hasattr(item.status, "value") else str(item.status),
+                    "total_inr": f"{item.total_amount_paise / 100:.2f}",
+                    "discount_inr": f"{item.discount_amount_paise / 100:.2f}",
+                    "net_inr": f"{item.net_amount_paise / 100:.2f}",
+                    "amount_paid_inr": f"{item.amount_paid_paise / 100:.2f}",
+                    "balance_inr": f"{bal_paise / 100:.2f}",
+                    "created_at": item.created_at,
+                }
+
+        filename = f"invoices_{start_date or 'all'}_{end_date or 'all'}"
+        return stream_csv_response(row_generator(), fieldnames, filename)
+
+    page, page_size = validate_pagination(page, page_size)
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     decisions = evaluate_tenant_patient_data_uses(

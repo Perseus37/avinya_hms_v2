@@ -1,13 +1,15 @@
 import secrets
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, BackgroundTasks, Response, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import select
 from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
+from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.export import stream_csv_response
 from backend.domains.identity.models import User
 from backend.domains.procurement.models import (
     VendorMaster, PurchaseOrder, PurchaseOrderItem, POStatusEnum,
@@ -130,6 +132,95 @@ def accept_goods(grn_id: int, db: Session = Depends(get_db), current_user: User 
     grn.status = GRNStatusEnum.ACCEPTED
     db.commit()
     return {"status": "success", "message": "Goods accepted into Pharmacy inventory."}
+
+
+@router.get("/grn")
+def list_goods_receipt_notes(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    po_id: Optional[int] = None,
+    grn_status: Optional[GRNStatusEnum] = Query(default=None, alias="status"),
+    page: int = 1,
+    page_size: int = 50,
+    export_format: Optional[str] = Query(default=None, alias="format"),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    """Lists Goods Receipt Notes (GRN) with date filtering and streaming CSV export."""
+    start_at, end_at = resolve_record_date_window(start_date, end_date)
+    query = (
+        db.query(GoodsReceiptNote)
+        .options(
+            joinedload(GoodsReceiptNote.purchase_order).joinedload(PurchaseOrder.vendor),
+            joinedload(GoodsReceiptNote.items),
+        )
+    )
+    if po_id:
+        query = query.filter(GoodsReceiptNote.po_id == po_id)
+    if grn_status:
+        query = query.filter(GoodsReceiptNote.status == grn_status)
+    if start_at is not None and end_at is not None:
+        query = query.filter(
+            GoodsReceiptNote.created_at >= start_at,
+            GoodsReceiptNote.created_at < end_at,
+        )
+
+    query = query.order_by(GoodsReceiptNote.id.desc())
+
+    if export_format and export_format.lower() == "csv":
+        fieldnames = [
+            "id",
+            "grn_number",
+            "po_number",
+            "vendor_name",
+            "invoice_number",
+            "invoice_date",
+            "items_count",
+            "status",
+            "created_at",
+        ]
+
+        def row_generator():
+            for item in query.all():
+                po = item.purchase_order
+                vendor = po.vendor if po else None
+                yield {
+                    "id": item.id,
+                    "grn_number": item.grn_number,
+                    "po_number": po.po_number if po else "",
+                    "vendor_name": vendor.name if vendor else "",
+                    "invoice_number": item.invoice_number,
+                    "invoice_date": item.invoice_date,
+                    "items_count": len(item.items) if item.items else 0,
+                    "status": item.status.value if hasattr(item.status, "value") else str(item.status),
+                    "created_at": item.created_at,
+                }
+
+        filename = f"goods_receipt_notes_{start_date or 'all'}_{end_date or 'all'}"
+        return stream_csv_response(row_generator(), fieldnames, filename)
+
+    page, page_size = validate_pagination(page, page_size)
+    total = query.count()
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "items": [
+            {
+                "id": g.id,
+                "grn_number": g.grn_number,
+                "po_id": g.po_id,
+                "po_number": g.purchase_order.po_number if g.purchase_order else None,
+                "vendor_name": g.purchase_order.vendor.name if g.purchase_order and g.purchase_order.vendor else None,
+                "invoice_number": g.invoice_number,
+                "invoice_date": g.invoice_date,
+                "status": g.status,
+                "created_at": g.created_at,
+            }
+            for g in items
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 # --- Invoice Upload & AI Matching ---
 @router.post("/invoices/upload-document")
@@ -372,6 +463,7 @@ def print_purchase_order(
     request: Request,
     template_code: Optional[str] = Query(default=None),
     print_mode: Optional[PrintModeEnum] = Query(default=None),
+    output_format: Optional[str] = Query(default="pdf", alias="format"),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("procurement:read"))
 ):
@@ -429,6 +521,8 @@ def print_purchase_order(
 
     # 4. Render through the Security Sandbox
     html = _render_template_parts(tpl_parts, context)
+    if output_format and output_format.lower() == "html":
+        return HTMLResponse(content=html, status_code=200)
 
     # 5. Convert to PDF
     try:

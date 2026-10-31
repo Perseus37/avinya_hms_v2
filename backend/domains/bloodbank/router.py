@@ -1,12 +1,14 @@
-from datetime import datetime, timezone
-from typing import Dict, List, Set
+from datetime import date, datetime, timezone
+from typing import Dict, List, Optional, Set
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db
+from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission
+from backend.core.export import stream_csv_response
 from backend.domains.bloodbank.models import BloodBagInventory, BloodBagStatusEnum, BloodComponentTypeEnum, BloodCrossMatchOrder, RadiologyStudyMetadata, TransfusionReactionTypeEnum
 from backend.domains.encounters.models import EncounterStatusEnum, PatientEncounter
 from backend.domains.identity.models import BloodGroupEnum, User
@@ -76,15 +78,59 @@ def receive_blood_bag(
 def list_blood_bags(
     blood_group: BloodGroupEnum | None = None,
     bag_status: BloodBagStatusEnum | None = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    export_format: Optional[str] = Query(default=None, alias="format"),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("diagnostics:read", "adt:read", "opd:read")),
 ):
+    """Lists blood bank inventory bags with date filtering and streaming CSV export."""
+    start_at, end_at = resolve_record_date_window(start_date, end_date)
     stmt = select(BloodBagInventory)
     if blood_group:
         stmt = stmt.where(BloodBagInventory.blood_group == blood_group)
     if bag_status:
         stmt = stmt.where(BloodBagInventory.status == bag_status)
-    return list(db.execute(stmt.order_by(BloodBagInventory.id.asc())).scalars().all())
+    if start_at is not None and end_at is not None:
+        stmt = stmt.where(
+            BloodBagInventory.collection_date >= start_at,
+            BloodBagInventory.collection_date < end_at,
+        )
+
+    stmt = stmt.order_by(BloodBagInventory.expiry_date.asc(), BloodBagInventory.id.asc())
+
+    if export_format and export_format.lower() == "csv":
+        fieldnames = [
+            "id",
+            "bag_number",
+            "blood_group",
+            "component_type",
+            "volume_ml",
+            "collection_date",
+            "expiry_date",
+            "status",
+        ]
+
+        def row_generator():
+            for item in db.execute(stmt).scalars().all():
+                bg_str = item.blood_group.value if hasattr(item.blood_group, "value") else str(item.blood_group)
+                comp_str = item.component_type.value if hasattr(item.component_type, "value") else str(item.component_type)
+                st_str = item.status.value if hasattr(item.status, "value") else str(item.status)
+                yield {
+                    "id": item.id,
+                    "bag_number": item.bag_number,
+                    "blood_group": bg_str,
+                    "component_type": comp_str,
+                    "volume_ml": item.volume_ml,
+                    "collection_date": item.collection_date,
+                    "expiry_date": item.expiry_date,
+                    "status": st_str,
+                }
+
+        filename = f"blood_bags_{start_date or 'all'}_{end_date or 'all'}"
+        return stream_csv_response(row_generator(), fieldnames, filename)
+
+    return list(db.execute(stmt).scalars().all())
 
 
 @router.post(

@@ -2,13 +2,15 @@ from datetime import date, datetime, timezone
 from typing import Optional
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db
+from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.export import stream_csv_response
 from backend.core.date_ranges import resolve_record_date_window
 from backend.domains.billing.models import Invoice, InvoiceLineItem, InvoiceStatusEnum, PaymentMethodEnum, RefundVoucher
 from backend.domains.billing.rcm_services import recalculate_invoice_totals
@@ -176,17 +178,63 @@ def receive_inventory_batch(
 @router.get("/inventory/batches", response_model=PaginatedResponse[InventoryBatchResponse])
 def list_inventory_batches(
     medication_id: Optional[int] = None,
+    include_depleted: bool = False,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     page: int = 1,
     page_size: int = 50,
+    export_format: Optional[str] = Query(default=None, alias="format"),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("pharmacy:read")),
 ):
-    page, page_size = validate_pagination(page, page_size)
-    query = db.query(InventoryBatch).options(joinedload(InventoryBatch.medication)).filter(InventoryBatch.stock_quantity > 0)
+    """Lists pharmacy inventory batches with optional depleted stock inclusion and streaming CSV export."""
+    start_at, end_at = resolve_record_date_window(start_date, end_date)
+    query = db.query(InventoryBatch).options(joinedload(InventoryBatch.medication))
+    if not include_depleted:
+        query = query.filter(InventoryBatch.stock_quantity > 0)
     if medication_id:
         query = query.filter(InventoryBatch.medication_id == medication_id)
+    if start_at is not None and end_at is not None:
+        query = query.filter(
+            InventoryBatch.created_at >= start_at,
+            InventoryBatch.created_at < end_at,
+        )
 
     query = query.order_by(InventoryBatch.expiry_date.asc(), InventoryBatch.id.asc())
+
+    if export_format and export_format.lower() == "csv":
+        fieldnames = [
+            "id",
+            "medication_code",
+            "medication_name",
+            "batch_number",
+            "expiry_date",
+            "stock_quantity",
+            "unit_price_inr",
+            "total_value_inr",
+            "created_at",
+        ]
+
+        def row_generator():
+            for item in query.all():
+                med = item.medication
+                total_val_paise = item.stock_quantity * item.unit_price_paise
+                yield {
+                    "id": item.id,
+                    "medication_code": med.code if med else "",
+                    "medication_name": med.name if med else "",
+                    "batch_number": item.batch_number,
+                    "expiry_date": item.expiry_date.strftime("%Y-%m-%d") if item.expiry_date else "",
+                    "stock_quantity": item.stock_quantity,
+                    "unit_price_inr": f"{item.unit_price_paise / 100:.2f}",
+                    "total_value_inr": f"{total_val_paise / 100:.2f}",
+                    "created_at": item.created_at,
+                }
+
+        filename = f"pharmacy_batches_{start_date or 'all'}_{end_date or 'all'}"
+        return stream_csv_response(row_generator(), fieldnames, filename)
+
+    page, page_size = validate_pagination(page, page_size)
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     return {"items": items, "total": total, "page": page, "page_size": page_size}

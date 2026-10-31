@@ -20,6 +20,7 @@ from backend.domains.reports.router import (
     _fmt_local_time,
     _render_template_parts,
     _resolve_template_for_print,
+    _pdf_response_from_html,
 )
 from backend.domains.clinical.schemas import BirthRecordCreate, BirthRecordResponse, DeathRecordCreate, DeathRecordResponse
 from backend.domains.privacy.runtime import evaluate_tenant_patient_data_uses
@@ -170,6 +171,7 @@ def print_official_birth_certificate(
     birth_id: int,
     request: Request,
     print_mode: Optional[PrintModeEnum] = Query(default=None),
+    output_format: Optional[str] = Query(default="html", alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read", "opd:read")),
 ):
@@ -233,6 +235,8 @@ def print_official_birth_certificate(
         db, ReportTypeEnum.BIRTH_CERTIFICATE, None, print_mode
     )
     html = _render_template_parts(tpl_parts, context)
+    if output_format and output_format.lower() == "pdf":
+        return _pdf_response_from_html(html, f"birth-certificate-{rec.certificate_number}.pdf")
     return HTMLResponse(content=html, status_code=200)
 
 
@@ -315,6 +319,7 @@ def print_mccd_death_certificate(
     death_id: int,
     request: Request,
     print_mode: Optional[PrintModeEnum] = Query(default=None),
+    output_format: Optional[str] = Query(default="html", alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read", "opd:read")),
 ):
@@ -368,4 +373,6 @@ def print_mccd_death_certificate(
         db, ReportTypeEnum.DEATH_CERTIFICATE_MCCD, None, print_mode
     )
     html = _render_template_parts(tpl_parts, context)
+    if output_format and output_format.lower() == "pdf":
+        return _pdf_response_from_html(html, f"death-certificate-mccd-{rec.certificate_number}.pdf")
     return HTMLResponse(content=html, status_code=200)

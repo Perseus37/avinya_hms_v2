@@ -18,6 +18,7 @@ from backend.domains.reports.router import (
     _fmt_local_time,
     _render_template_parts,
     _resolve_template_for_print,
+    _pdf_response_from_html,
 )
 from backend.domains.clinical.schemas import ERTriageCreate, ERTriageResponse, FluidBalanceSummaryResponse, FluidLogCreate, FluidLogResponse, MLCCreate, MLCPoliceIntimationRequest, MLCResponse, eMARCreate, eMARResponse
 from backend.domains.clinical.services import check_allergy_hard_stop
@@ -373,6 +374,7 @@ def print_mlc_police_intimation_report(
     mlc_id: int,
     request: Request,
     print_mode: Optional[PrintModeEnum] = Query(default=None),
+    output_format: Optional[str] = Query(default="html", alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read", "opd:read")),
 ):
@@ -428,4 +430,6 @@ def print_mlc_police_intimation_report(
         db, ReportTypeEnum.MLC_POLICE_REPORT, None, print_mode
     )
     html = _render_template_parts(tpl_parts, context)
+    if output_format and output_format.lower() == "pdf":
+        return _pdf_response_from_html(html, f"mlc-intimation-{mlc_id}.pdf")
     return HTMLResponse(content=html, status_code=200)
