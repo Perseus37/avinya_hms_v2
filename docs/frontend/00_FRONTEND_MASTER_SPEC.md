@@ -181,3 +181,4 @@ flowchart LR
 5. **Operational State Machine:** Component behavior across Loading, Empty, Partial, Active, Error, Forbidden, Unlicensed, and Stale states.
 6. **API Contracts:** Exact HTTP methods, endpoints, request payloads, and query parameters.
 7. **Identified Backend Gaps:** Any missing aggregate endpoints, missing enum values, or required schema extensions needed to power the frontend cleanly.
+

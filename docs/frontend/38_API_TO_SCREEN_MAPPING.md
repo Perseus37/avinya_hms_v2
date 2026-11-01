@@ -169,3 +169,4 @@ Every screen is mapped to its primary REST API endpoints, HTTP verbs, payload sc
 | `/admin/identity` | Hospital Identity & Letterhead | `POST /v1/api/tenants/profile/update` | `domains/tenants` | `admin:identity` |
 | `/admin/policies` | Statutory Hospital Policies | `POST /v1/api/tenants/policies/update` | `domains/tenants` | `admin:policies` |
 | `/admin/access` | IAM & Role Management | `POST /v1/api/identity/users/manage` | `domains/identity` | `admin:users` |
+

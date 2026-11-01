@@ -1,5 +1,7 @@
 export type WorkspaceId =
   | "registration"
+  | "patient-record"
+  | "opd-queue"
   | "adt"
   | "doctor"
   | "nursing"

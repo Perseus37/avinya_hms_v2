@@ -71,6 +71,8 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     defaultWorkspace: "admin",
     allowedWorkspaces: [
       "registration",
+      "patient-record",
+      "opd-queue",
       "adt",
       "doctor",
       "nursing",
@@ -121,7 +123,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "Registration",
     description: "Registers patients, looks up MPI, books OPD appointments, issues clinic queue tokens, and collects consultation fees.",
     defaultWorkspace: "registration",
-    allowedWorkspaces: ["registration", "billing"],
+    allowedWorkspaces: ["registration", "patient-record", "opd-queue", "billing"],
     permissions: [
       "patient.register",
       "patient.view_mpi",
@@ -139,7 +141,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "Doctor Cockpit",
     description: "Access to Doctor Cockpit, longitudinal EMR, CPOE electronic prescription, CDS safety alerts, and clinical discharge signing.",
     defaultWorkspace: "doctor",
-    allowedWorkspaces: ["doctor", "diagnostics", "adt", "registration"],
+    allowedWorkspaces: ["doctor", "patient-record", "opd-queue", "diagnostics", "adt", "registration"],
     permissions: [
       "doctor.cockpit_view",
       "order.cpoe_prescribe",
@@ -156,7 +158,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "Bed Allocation",
     description: "Manages 500+ campus bed hierarchy, allocates admissions, executes bed transfers, and manages housekeeping status.",
     defaultWorkspace: "adt",
-    allowedWorkspaces: ["adt", "registration", "billing"],
+    allowedWorkspaces: ["adt", "patient-record", "registration", "billing"],
     permissions: [
       "bed.view_matrix",
       "bed.allocate",
@@ -173,7 +175,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "eMAR & Vitals",
     description: "Bed census matrix, eMAR medication administration schedule, BCMA barcode validation, and NEWS2 vitals monitoring.",
     defaultWorkspace: "nursing",
-    allowedWorkspaces: ["nursing", "adt", "doctor"],
+    allowedWorkspaces: ["nursing", "patient-record", "adt", "doctor"],
     permissions: [
       "nurse.view_station",
       "nurse.administer_emar",
@@ -190,7 +192,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "ED Triage",
     description: "Emergency Department intake, ESI 1-5 acuity triage, GCS calculator, Code Red resuscitation alert, and MLC intimation.",
     defaultWorkspace: "triage",
-    allowedWorkspaces: ["triage", "nursing", "registration"],
+    allowedWorkspaces: ["triage", "patient-record", "nursing", "registration"],
     permissions: [
       "triage.view_board",
       "triage.assign_esi",
@@ -206,7 +208,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "Cashier Billing",
     description: "TPA insurance pre-authorization settlement, itemized folio charges, co-pay split, and tax invoice generation.",
     defaultWorkspace: "billing",
-    allowedWorkspaces: ["billing", "registration", "adt"],
+    allowedWorkspaces: ["billing", "patient-record", "registration", "adt"],
     permissions: [
       "billing.view_counter",
       "billing.collect_fee",

@@ -11,6 +11,8 @@ import {
   CreditCard,
   ShieldCheck,
   Shield,
+  User,
+  Clock,
 } from "lucide-react";
 import { WorkspaceId } from "../../types";
 import { usePermissions } from "../../core/context/PermissionsContext";
@@ -34,6 +36,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     badge?: string;
   }> = [
     { id: "registration", label: "Patient Intake", icon: UserPlus, shortcut: "Alt+1", badge: "New" },
+    { id: "patient-record", label: "Patient 360", icon: User, shortcut: "Alt+P", badge: "Core" },
+    { id: "opd-queue", label: "OPD Command", icon: Clock, shortcut: "Alt+Q", badge: "Queue" },
     { id: "adt", label: "Inpatient ADT", icon: DoorOpen, shortcut: "Alt+2" },
     { id: "doctor", label: "Doctor Cockpit", icon: Stethoscope, shortcut: "Alt+3" },
     { id: "nursing", label: "Ward Nursing", icon: BedDouble, shortcut: "Alt+4" },
@@ -49,7 +53,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside className="w-64 bg-slate-950 border-r border-slate-800 flex flex-col justify-between p-3 select-none">
-      <div className="space-y-1">
+      <nav aria-label="Hospital Workspaces" className="space-y-1">
         {/* Active Role Scope Badge */}
         <div className="px-3 py-2 bg-slate-900/60 rounded-lg border border-slate-800/80 mb-2">
           <div className="text-[10px] font-mono text-slate-500 uppercase flex items-center gap-1 font-bold">
@@ -64,38 +68,46 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500 font-mono">
           Permitted Workspaces
         </div>
-        {items.map((item) => {
-          const Icon = item.icon;
-          const isActive = activeWorkspace === item.id;
+        <ul className="space-y-1">
+          {items.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeWorkspace === item.id;
 
-          return (
-            <button
-              key={item.id}
-              onClick={() => onSelectWorkspace(item.id)}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-all ${
-                isActive
-                  ? "bg-sky-500/10 text-sky-400 border border-sky-500/30 font-semibold"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <Icon size={17} className={isActive ? "text-sky-400" : "text-slate-400"} />
-                <span>{item.label}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {item.badge && (
-                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-rose-950 text-rose-400 border border-rose-900/60">
-                    {item.badge}
-                  </span>
-                )}
-                <span className="text-[9px] font-mono text-slate-600 opacity-60 group-hover:opacity-100">
-                  {item.shortcut}
-                </span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
+            return (
+              <li key={item.id}>
+                <a
+                  href={`#workspace/${item.id}`}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onSelectWorkspace(item.id);
+                  }}
+                  aria-current={isActive ? "page" : undefined}
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-all ${
+                    isActive
+                      ? "bg-sky-500/10 text-sky-400 border border-sky-500/30 font-semibold"
+                      : "text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-transparent"
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Icon size={17} className={isActive ? "text-sky-400" : "text-slate-400"} />
+                    <span>{item.label}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {item.badge && (
+                      <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-rose-950 text-rose-400 border border-rose-900/60">
+                        {item.badge}
+                      </span>
+                    )}
+                    <span className="text-[9px] font-mono text-slate-600 opacity-60 group-hover:opacity-100">
+                      {item.shortcut}
+                    </span>
+                  </div>
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
 
       <div className="p-3 rounded-lg bg-slate-900/60 border border-slate-800 text-[11px] text-slate-500">
         <div className="font-semibold text-slate-400">Avinya Customization Engine</div>

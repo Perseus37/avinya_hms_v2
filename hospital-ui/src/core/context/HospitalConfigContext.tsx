@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
+import { generateEnterprise500Beds } from "../../data/enterpriseBeds";
 
 export type BedCategory = "General" | "Semi-Private" | "Private" | "ICU";
 export type BedOccupancyStatus = "VACANT_CLEAN" | "OCCUPIED" | "HOUSEKEEPING" | "RESERVED";
@@ -80,43 +81,7 @@ const DEFAULT_DOCTORS: OpdDoctor[] = [
   { id: "doc-7", name: "Dr. Sameer Joshi", specialty: "Critical Care & Pulmonology", department: "Pulmonology", roomNumber: "OPD Cabin 208", consultationFee: 750, currentWaitMins: 18, patientsWaiting: 4, isActive: true },
 ];
 
-const DEFAULT_BEDS: EnterpriseBed[] = [
-  // Tower A - Main Tower (Floor 2: General Surgical Wards)
-  { bedId: 201, bedNumber: "B-201", roomNumber: "R-201", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "VACANT_CLEAN", features: ["O2 Wall Outlet", "Call Bell"] },
-  { bedId: 202, bedNumber: "B-202", roomNumber: "R-201", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "OCCUPIED", features: ["O2 Wall Outlet", "Call Bell"], occupiedBy: { patientName: "Ramesh Sharma", mrn: "MRN-2026-0091", admittedDays: 3, doctor: "Dr. Radhika Sen" } },
-  { bedId: 203, bedNumber: "B-203", roomNumber: "R-202", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "VACANT_CLEAN", features: ["O2 Wall Outlet", "Call Bell"] },
-  { bedId: 204, bedNumber: "B-204", roomNumber: "R-202", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "HOUSEKEEPING", features: ["O2 Wall Outlet"] },
-
-  // Tower A - Main Tower (Floor 3: Cardiology HDU & Step-Down)
-  { bedId: 205, bedNumber: "HDU-301", roomNumber: "HDU-BAY-1", tower: "Main Tower", floor: "Floor 3", wardName: "Cardiology HDU", dailyTariffRupees: 5500, category: "General", status: "VACANT_CLEAN", features: ["Cardiac Telemetry", "O2 High-Flow", "Defibrillator Stand"] },
-  { bedId: 206, bedNumber: "HDU-302", roomNumber: "HDU-BAY-1", tower: "Main Tower", floor: "Floor 3", wardName: "Cardiology HDU", dailyTariffRupees: 5500, category: "General", status: "OCCUPIED", features: ["Cardiac Telemetry", "O2 High-Flow"], occupiedBy: { patientName: "Kishore Kumar", mrn: "MRN-2026-0082", admittedDays: 2, doctor: "Dr. Vikram Seth" } },
-  { bedId: 207, bedNumber: "SP-301", roomNumber: "R-305", tower: "Main Tower", floor: "Floor 3", wardName: "Semi-Private Cardiology Wing", dailyTariffRupees: 4500, category: "Semi-Private", status: "VACANT_CLEAN", features: ["Air Conditioned", "Attached Bath", "O2 Outlet"] },
-  { bedId: 208, bedNumber: "SP-302", roomNumber: "R-305", tower: "Main Tower", floor: "Floor 3", wardName: "Semi-Private Cardiology Wing", dailyTariffRupees: 4500, category: "Semi-Private", status: "RESERVED", features: ["Air Conditioned", "Attached Bath"] },
-
-  // Tower A - Main Tower (Floor 4: Critical Care ICU & CCU)
-  { bedId: 209, bedNumber: "ICU-401", roomNumber: "ICU-BAY-A", tower: "Main Tower", floor: "Floor 4", wardName: "Intensive Care Unit (ICU)", dailyTariffRupees: 14000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "Invasive Arterial Line", "Cardiac Monitor", "Dialysis Port"] },
-  { bedId: 210, bedNumber: "ICU-402", roomNumber: "ICU-BAY-A", tower: "Main Tower", floor: "Floor 4", wardName: "Intensive Care Unit (ICU)", dailyTariffRupees: 14000, category: "ICU", status: "OCCUPIED", features: ["Ventilator Ready", "Invasive Arterial Line", "Cardiac Monitor"], occupiedBy: { patientName: "Ananya Deshmukh", mrn: "ER-0914", admittedDays: 1, doctor: "Dr. Sameer Joshi" } },
-  { bedId: 211, bedNumber: "ICU-403", roomNumber: "ICU-BAY-A", tower: "Main Tower", floor: "Floor 4", wardName: "Intensive Care Unit (ICU)", dailyTariffRupees: 14000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "Isolation / Negative Pressure", "Cardiac Monitor"] },
-  { bedId: 212, bedNumber: "CCU-404", roomNumber: "CCU-BAY-B", tower: "Main Tower", floor: "Floor 4", wardName: "Coronary Care Unit (CCU)", dailyTariffRupees: 15000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "IABP Support Port", "Cardiac Monitor"] },
-
-  // Tower A - Main Tower (Floor 5: Executive Deluxe Suites)
-  { bedId: 213, bedNumber: "PV-501", roomNumber: "SUITE-501", tower: "Main Tower", floor: "Floor 5", wardName: "Executive Deluxe Suites", dailyTariffRupees: 8500, category: "Private", status: "VACANT_CLEAN", features: ["Attendant Couch", "Smart TV", "Mini Fridge", "Attached Luxury Bath", "O2 Outlet"] },
-  { bedId: 214, bedNumber: "PV-502", roomNumber: "SUITE-502", tower: "Main Tower", floor: "Floor 5", wardName: "Executive Deluxe Suites", dailyTariffRupees: 8500, category: "Private", status: "OCCUPIED", features: ["Attendant Couch", "Smart TV", "Mini Fridge"], occupiedBy: { patientName: "Sunil Mittal", mrn: "MRN-2026-0045", admittedDays: 4, doctor: "Dr. Vikram Seth" } },
-
-  // Tower B - Super-Specialty Surgical Wing (Floor 2: Ortho & Neuro)
-  { bedId: 215, bedNumber: "ORT-201", roomNumber: "R-B201", tower: "Surgical Wing", floor: "Floor 2", wardName: "Orthopedic Post-Op Ward", dailyTariffRupees: 3500, category: "General", status: "VACANT_CLEAN", features: ["Trapeze Bar", "O2 Wall Outlet", "Call Bell"] },
-  { bedId: 216, bedNumber: "ORT-202", roomNumber: "R-B201", tower: "Surgical Wing", floor: "Floor 2", wardName: "Orthopedic Post-Op Ward", dailyTariffRupees: 3500, category: "General", status: "VACANT_CLEAN", features: ["Trapeze Bar", "O2 Wall Outlet"] },
-  { bedId: 217, bedNumber: "NEU-205", roomNumber: "R-B205", tower: "Surgical Wing", floor: "Floor 2", wardName: "Neuro-Spine Special Ward", dailyTariffRupees: 5000, category: "Semi-Private", status: "VACANT_CLEAN", features: ["Air Conditioned", "Specialized Spine Mattress", "O2 Outlet"] },
-
-  // Tower C - Emergency & Trauma Center (Ground Floor)
-  { bedId: 218, bedNumber: "TRM-01", roomNumber: "BAY-RED", tower: "Trauma Center", floor: "Ground Floor", wardName: "Trauma Resuscitation Bay", dailyTariffRupees: 9000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "Rapid Infuser", "Crash Cart", "Cardiac Monitor"] },
-  { bedId: 219, bedNumber: "TRM-02", roomNumber: "BAY-YELLOW", tower: "Trauma Center", floor: "Ground Floor", wardName: "Trauma Observation", dailyTariffRupees: 4000, category: "General", status: "VACANT_CLEAN", features: ["O2 Wall Outlet", "Vital Sign Monitor"] },
-  { bedId: 220, bedNumber: "TRM-03", roomNumber: "BAY-YELLOW", tower: "Trauma Center", floor: "Ground Floor", wardName: "Trauma Observation", dailyTariffRupees: 4000, category: "General", status: "OCCUPIED", features: ["O2 Wall Outlet"], occupiedBy: { patientName: "Aakash Roy", mrn: "ER-0922", admittedDays: 1, doctor: "Dr. Sameer Joshi" } },
-
-  // Tower D - Women & Children Pavilion (Floor 2: Maternity & PICU)
-  { bedId: 221, bedNumber: "MAT-201", roomNumber: "LDR-1", tower: "Women & Child", floor: "Floor 2", wardName: "Maternity & LDR Ward", dailyTariffRupees: 6500, category: "Private", status: "VACANT_CLEAN", features: ["Baby Warmer", "Fetal Doppler Monitor", "Attached Bath"] },
-  { bedId: 222, bedNumber: "PICU-01", roomNumber: "PICU-BAY", tower: "Women & Child", floor: "Floor 2", wardName: "Pediatric ICU (PICU)", dailyTariffRupees: 12000, category: "ICU", status: "VACANT_CLEAN", features: ["Pediatric Ventilator", "Phototherapy Unit", "Cardiac Monitor"] },
-];
+const DEFAULT_BEDS: EnterpriseBed[] = generateEnterprise500Beds();
 
 interface HospitalConfigContextType {
   hospitalProfile: HospitalProfile;
@@ -177,7 +142,11 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
   const [beds, setBeds] = useState<EnterpriseBed[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.BEDS);
-      return saved ? JSON.parse(saved) : DEFAULT_BEDS;
+      const parsed = saved ? JSON.parse(saved) : null;
+      if (parsed && Array.isArray(parsed) && parsed.length >= 100) {
+        return parsed;
+      }
+      return DEFAULT_BEDS;
     } catch {
       return DEFAULT_BEDS;
     }

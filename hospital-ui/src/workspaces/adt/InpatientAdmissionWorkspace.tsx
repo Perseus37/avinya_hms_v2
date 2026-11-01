@@ -17,6 +17,8 @@ import {
   LayoutGrid,
   Table as TableIcon,
   Sparkles,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
@@ -25,6 +27,9 @@ import { Modal } from "../../components/ui/Modal";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
 import { PermissionGate } from "../../components/auth/PermissionGate";
+import { printDocument } from "../../utils/printDocument";
+import { uiApi } from "../../api/uiApi";
+import { PatientQuickSearchItem } from "../../types";
 
 export interface MasterPatientRecord {
   id: number;
@@ -208,11 +213,15 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
   const [selectedEquipment, setSelectedEquipment] = useState<string>("ALL");
   const [bedSearchQuery, setBedSearchQuery] = useState("");
   const [bedViewMode, setBedViewMode] = useState<"GRID" | "TABLE">("GRID");
+  const [bedPage, setBedPage] = useState(1);
+  const [bedPageSize, setBedPageSize] = useState<number>(36);
 
   // Patient MPI Search & Auto-Population State
   const [patientSearchQuery, setPatientSearchQuery] = useState("");
   const [isPatientDropdownOpen, setIsPatientDropdownOpen] = useState(false);
   const [selectedPatientRecord, setSelectedPatientRecord] = useState<MasterPatientRecord | null>(MASTER_PATIENT_DIRECTORY[0]);
+  const [mpiSearchResults, setMpiSearchResults] = useState<PatientQuickSearchItem[]>([]);
+  const [isSearchingMpi, setIsSearchingMpi] = useState(false);
 
   // Form State
   const [targetPatientName, setTargetPatientName] = useState(MASTER_PATIENT_DIRECTORY[0].name);
@@ -270,6 +279,35 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
     setPatientSearchQuery("");
   };
 
+  const handleSelectMpiPatient = (item: PatientQuickSearchItem) => {
+    setTargetPatientName(item.full_name);
+    setTargetMrn(item.mrn);
+    setAdmissionDiagnosis("Inpatient Admission Evaluation");
+    setIsPatientDropdownOpen(false);
+    setPatientSearchQuery("");
+  };
+
+  // Debounced Live MPI Quick Search
+  useEffect(() => {
+    if (!patientSearchQuery.trim() || patientSearchQuery.trim().length < 2) {
+      setMpiSearchResults([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setIsSearchingMpi(true);
+      try {
+        const results = await uiApi.quickSearchPatients(patientSearchQuery.trim());
+        setMpiSearchResults(results);
+        setIsPatientDropdownOpen(true);
+      } catch {
+        setMpiSearchResults([]);
+      } finally {
+        setIsSearchingMpi(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [patientSearchQuery]);
+
   useEffect(() => {
     if (patientSummary) {
       setTargetPatientName(patientSummary.full_name);
@@ -284,6 +322,10 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
       }
     }
   }, [patientSummary]);
+
+  // Dynamic Campus Towers extracted from 500+ Bed Pool
+  const campusTowers = Array.from(new Set(ENTERPRISE_BED_POOL.map((b) => b.tower)));
+  const campusFloors = Array.from(new Set(ENTERPRISE_BED_POOL.map((b) => b.floor)));
 
   // Filter beds according to 500+ scale hierarchical criteria
   const filteredBeds = ENTERPRISE_BED_POOL.filter((bed) => {
@@ -305,6 +347,10 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
     }
     return true;
   });
+
+  // 500+ Bed Pagination
+  const totalBedPages = Math.max(1, Math.ceil(filteredBeds.length / bedPageSize));
+  const paginatedBeds = filteredBeds.slice((bedPage - 1) * bedPageSize, bedPage * bedPageSize);
 
   const vacantBedsCount = ENTERPRISE_BED_POOL.filter((b) => b.status === "VACANT_CLEAN").length;
   const occupiedBedsCount = ENTERPRISE_BED_POOL.filter((b) => b.status === "OCCUPIED").length;
@@ -408,6 +454,76 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
     setIsDischargeSummaryOpen(true);
   };
 
+  const handlePrintBHT = () => {
+    if (!confirmedAdmission) return;
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 680px; margin: 0 auto; border: 1px solid #333; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 11px; font-weight: bold; color: #444; margin-top: 2px;">INPATIENT ADMISSION FACE SHEET & BED HEAD TICKET (BHT)</div>
+          <div style="font-size: 10px; color: #666;">${hospitalProfile.accreditation} • Phone: ${hospitalProfile.phone}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 14px; font-family: monospace; font-size: 13px;">
+          <div><b>ADMISSION DOCKET:</b> ADM-${confirmedAdmission.id}</div>
+          <div><b>ASSIGNED BED:</b> Bed ${confirmedAdmission.bedNumber} (${confirmedAdmission.roomNumber})</div>
+        </div>
+        <div style="border: 1px solid #ccc; padding: 12px; font-size: 12px; margin-bottom: 14px; line-height: 1.6;">
+          <div><b>Patient Legal Name:</b> ${confirmedAdmission.patientName.toUpperCase()}</div>
+          <div><b>UHID / MRN:</b> ${confirmedAdmission.mrn}</div>
+          <div><b>Ward / Department:</b> ${confirmedAdmission.ward}</div>
+          <div><b>Admitting Consultant:</b> ${confirmedAdmission.admittingDoctor}</div>
+          <div><b>Admission Timestamp:</b> ${confirmedAdmission.admittedAt}</div>
+          <div><b>Financial Classification:</b> ${confirmedAdmission.tpaInsurance || "Self-Pay / Cash"}</div>
+        </div>
+        <div style="text-align: center; padding: 10px; background: #f5f5f5; border: 1px solid #ccc; font-family: monospace; letter-spacing: 4px; font-size: 14px; margin-bottom: 16px;">
+          *ADM-${confirmedAdmission.id}-${confirmedAdmission.mrn}*
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 50px; font-size: 11px;">
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">ADT Officer Signature</div>
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Patient / Guardian Signature</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: `BHT_${confirmedAdmission.mrn}`, docType: "CLINICAL_SUMMARY" });
+  };
+
+  const handlePrintDischargeSummary = () => {
+    if (!lastDischargedRecord) return;
+    const { admission, disposition, summaryNotes, followup, dischargedAt } = lastDischargedRecord;
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 720px; margin: 0 auto; border: 1px solid #333; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 12px; font-weight: bold; color: #333; margin-top: 2px;">FORMAL STATUTORY INPATIENT DISCHARGE SUMMARY</div>
+          <div style="font-size: 10px; color: #666;">${hospitalProfile.address} • Tel: ${hospitalProfile.phone}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 12px;">
+          <div><b>Patient Name:</b> ${admission.patientName.toUpperCase()}</div>
+          <div><b>UHID / MRN:</b> ${admission.mrn}</div>
+          <div><b>Discharge Date:</b> ${dischargedAt}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 12px;">
+          <div><b>Attending Doctor:</b> ${admission.admittingDoctor}</div>
+          <div><b>Discharge Ward:</b> ${admission.ward} (Bed ${admission.bedNumber})</div>
+          <div><b>Disposition:</b> ${disposition.replace(/_/g, " ")}</div>
+        </div>
+        <div style="margin-bottom: 14px; font-size: 12px;">
+          <b>Clinical Course & Summary Notes:</b>
+          <p style="background: #fafafa; border: 1px solid #eee; padding: 12px; margin-top: 6px; line-height: 1.5;">${summaryNotes}</p>
+        </div>
+        <div style="margin-bottom: 14px; font-size: 12px;">
+          <b>Outpatient Follow-Up Plan:</b>
+          <div style="padding: 6px 0; color: #0284c7; font-weight: bold;">Review with ${admission.admittingDoctor} on ${followup} in OPD.</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 60px; font-size: 11px;">
+          <div style="border-top: 1px solid #000; width: 230px; text-align: center; padding-top: 4px;">Treating Consultant Signature & Seal</div>
+          <div style="border-top: 1px solid #000; width: 230px; text-align: center; padding-top: 4px;">Medical Superintendent Clearance</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: `Discharge_Summary_${admission.mrn}`, docType: "CLINICAL_SUMMARY" });
+  };
+
   return (
     <div className="flex-1 flex overflow-hidden bg-slate-950">
       {/* Left Column: Admission & Bed Allocation Form */}
@@ -491,6 +607,38 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                       Close ✕
                     </button>
                   </div>
+                  {/* Live Backend MPI Search Results */}
+                  {isSearchingMpi && (
+                    <div className="p-3 text-center text-xs text-sky-400 font-mono flex items-center justify-center gap-2">
+                      <Sparkles size={13} className="animate-spin" /> Querying Master Patient Index...
+                    </div>
+                  )}
+
+                  {mpiSearchResults.map((mpi) => (
+                    <div
+                      key={`mpi-${mpi.id}`}
+                      onClick={() => handleSelectMpiPatient(mpi)}
+                      className="p-3 hover:bg-slate-800/80 cursor-pointer border-b border-slate-800/50 last:border-0 transition-colors bg-sky-950/20"
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-bold text-xs text-slate-100 flex items-center gap-1.5">
+                          {mpi.full_name}
+                          <span className="font-mono text-[10px] font-normal text-slate-400">
+                            ({mpi.age_years || "--"}y • {mpi.gender})
+                          </span>
+                        </span>
+                        <span className="font-mono text-[10px] text-emerald-400 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800">
+                          {mpi.mrn}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono mt-1 pt-1 border-t border-slate-800/40">
+                        <span>Blood: {mpi.blood_group || "O+"} • Ph: {mpi.phone_number || "--"}</span>
+                        <span className="text-sky-400 font-semibold">Live Enterprise MPI</span>
+                      </div>
+                    </div>
+                  ))}
+
+                  {/* Seeded Directory Records */}
                   {MASTER_PATIENT_DIRECTORY.filter((p) => {
                     if (!patientSearchQuery.trim()) return true;
                     const q = patientSearchQuery.toLowerCase();
@@ -664,26 +812,36 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                   <Building size={12} /> Tower:
                 </span>
                 <div className="flex flex-wrap gap-1.5">
-                  {[
-                    { id: "ALL", label: "All Towers (550 Beds)" },
-                    { id: "Main Tower", label: "Main Tower (320 Beds • 88% Occ)" },
-                    { id: "Surgical Wing", label: "Surgical Wing (120 Beds • 75% Occ)" },
-                    { id: "Trauma Center", label: "Trauma Wing (60 Beds • 92% Occ)" },
-                    { id: "Women & Child", label: "Women & Child (50 Beds • 68% Occ)" },
-                  ].map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() => setSelectedTower(t.id)}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
-                        selectedTower === t.id
-                          ? "bg-sky-600 text-white shadow-sm"
-                          : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
-                      }`}
-                    >
-                      {t.label}
-                    </button>
-                  ))}
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedTower("ALL"); setBedPage(1); }}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                      selectedTower === "ALL"
+                        ? "bg-sky-600 text-white shadow-sm"
+                        : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                    }`}
+                  >
+                    All Towers ({ENTERPRISE_BED_POOL.length} Beds)
+                  </button>
+                  {campusTowers.map((towerName) => {
+                    const towerBeds = ENTERPRISE_BED_POOL.filter((b) => b.tower === towerName);
+                    const occ = towerBeds.filter((b) => b.status === "OCCUPIED").length;
+                    const pct = towerBeds.length > 0 ? Math.round((occ / towerBeds.length) * 100) : 0;
+                    return (
+                      <button
+                        key={towerName}
+                        type="button"
+                        onClick={() => { setSelectedTower(towerName); setBedPage(1); }}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                          selectedTower === towerName
+                            ? "bg-sky-600 text-white shadow-sm"
+                            : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                        }`}
+                      >
+                        {towerName} ({towerBeds.length} • {pct}% Occ)
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -693,11 +851,22 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                   <Layers size={12} /> Floor:
                 </span>
                 <div className="flex flex-wrap gap-1.5">
-                  {["ALL", "Ground Floor", "Floor 2", "Floor 3", "Floor 4", "Floor 5"].map((fl) => (
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedFloor("ALL"); setBedPage(1); }}
+                    className={`px-2 py-0.5 rounded text-[10px] font-mono transition-all ${
+                      selectedFloor === "ALL"
+                        ? "bg-sky-500/20 text-sky-300 border border-sky-500/50 font-bold"
+                        : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                    }`}
+                  >
+                    ALL
+                  </button>
+                  {campusFloors.map((fl) => (
                     <button
                       key={fl}
                       type="button"
-                      onClick={() => setSelectedFloor(fl)}
+                      onClick={() => { setSelectedFloor(fl); setBedPage(1); }}
                       className={`px-2 py-0.5 rounded text-[10px] font-mono transition-all ${
                         selectedFloor === fl
                           ? "bg-sky-500/20 text-sky-300 border border-sky-500/50 font-bold"
@@ -800,7 +969,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                     No beds matching the selected filter criteria.
                   </div>
                 ) : (
-                  filteredBeds.map((bed) => {
+                  paginatedBeds.map((bed) => {
                     const isSelected = selectedBedId === bed.bedId;
                     const isVacant = bed.status === "VACANT_CLEAN";
                     return (
@@ -890,7 +1059,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/80 text-slate-300">
-                    {filteredBeds.map((bed) => {
+                    {paginatedBeds.map((bed) => {
                       const isVacant = bed.status === "VACANT_CLEAN";
                       const isSelected = selectedBedId === bed.bedId;
                       return (
@@ -952,6 +1121,51 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                 </table>
               </div>
             )}
+
+            {/* 500+ Bed Scale Pagination & Census Barometer */}
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-xs font-mono">
+              <div className="flex items-center gap-2 text-slate-400">
+                <span>Showing {filteredBeds.length === 0 ? 0 : (bedPage - 1) * bedPageSize + 1}–{Math.min(bedPage * bedPageSize, filteredBeds.length)} of {filteredBeds.length} Beds</span>
+                <span className="text-slate-600">|</span>
+                <span>Page Size:</span>
+                {[36, 72, 144].map((size) => (
+                  <button
+                    key={size}
+                    type="button"
+                    onClick={() => { setBedPageSize(size); setBedPage(1); }}
+                    className={`px-1.5 py-0.5 rounded ${
+                      bedPageSize === size
+                        ? "bg-sky-500/20 text-sky-400 font-bold border border-sky-500/50"
+                        : "text-slate-500 hover:text-slate-300"
+                    }`}
+                  >
+                    {size}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400">
+                  Page {bedPage} of {totalBedPages}
+                </span>
+                <button
+                  type="button"
+                  disabled={bedPage <= 1}
+                  onClick={() => setBedPage((p) => Math.max(1, p - 1))}
+                  className="p-1 rounded bg-slate-900 border border-slate-800 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-800"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+                <button
+                  type="button"
+                  disabled={bedPage >= totalBedPages}
+                  onClick={() => setBedPage((p) => Math.min(totalBedPages, p + 1))}
+                  className="p-1 rounded bg-slate-900 border border-slate-800 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-800"
+                >
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
           </Card>
 
           {/* Medico-Legal Case (MLC) Intimation */}
@@ -1386,7 +1600,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.print()}
+                onClick={handlePrintDischargeSummary}
                 className="flex items-center gap-1.5"
               >
                 <Printer size={13} className="text-sky-400" /> Print Formal Discharge Summary
@@ -1507,7 +1721,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.print()}
+                onClick={handlePrintBHT}
                 className="flex items-center gap-1.5"
               >
                 <Printer size={13} className="text-sky-400" /> Print Bed Head Ticket (BHT)

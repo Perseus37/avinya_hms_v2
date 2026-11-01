@@ -24,6 +24,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
   const workspaces: Array<{ id: WorkspaceId; label: string; shortcut: string; altShortcut: string }> = [
     { id: "registration", label: "Patient Registration & Front Desk Intake", shortcut: "R", altShortcut: "Alt+1" },
+    { id: "patient-record", label: "Patient 360 & Longitudinal Care Timeline", shortcut: "P360", altShortcut: "Alt+P" },
+    { id: "opd-queue", label: "OPD Command Center & Queue Board", shortcut: "Q", altShortcut: "Alt+Q" },
     { id: "adt", label: "Inpatient Admission & Bed Allocation (ADT)", shortcut: "I", altShortcut: "Alt+2" },
     { id: "doctor", label: "Doctor Clinical Cockpit (OPD)", shortcut: "D", altShortcut: "Alt+3" },
     { id: "nursing", label: "Ward Nursing Station & eMAR", shortcut: "N", altShortcut: "Alt+4" },
@@ -110,6 +112,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         // Select patient
         const patient = searchResults[selectedIndex];
         selectPatient(patient.id);
+        onSelectWorkspace("patient-record");
         onClose();
       } else {
         // Select workspace

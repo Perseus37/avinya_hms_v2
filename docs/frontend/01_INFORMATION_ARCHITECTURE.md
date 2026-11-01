@@ -203,3 +203,4 @@ graph TD
 | `/admin/identity` | Hospital Identity & Letterhead | Legal name, NABH/JCI IDs, ROHINI code, emergency hotlines, branding logos. | `admin:identity` |
 | `/admin/policies` | Statutory Hospital Policies | MLC enforcement, mandatory ABHA, dual-witness narcotics, 3-tier discharge rules. | `admin:policies` |
 | `/admin/access` | IAM & Role Management | User accounts, department assignments, granular capability permissions, MFA reset. | `admin:users` |
+

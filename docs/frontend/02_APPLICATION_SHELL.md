@@ -221,3 +221,4 @@ The bottom bar provides continuous operational telemetry:
 - **Hospital Time Zone:** `Asia/Kolkata (IST UTC+05:30)`.
 - **Request Correlation ID:** E.g. `X-Request-ID: f47ac10b-58cc-4372-a567-0e02b2c3d479` (1-click copy for IT helpdesk).
 - **Software Build:** `Avinya HMS v3.0.0-ENTERPRISE (Release e2fbd09)`.
+

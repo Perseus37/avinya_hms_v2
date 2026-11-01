@@ -7,6 +7,8 @@ import { PatientSafetyBanner } from "../clinical/PatientSafetyBanner";
 import { CommandPalette } from "../clinical/CommandPalette";
 
 import { PatientRegistrationWorkspace } from "../../workspaces/registration/PatientRegistrationWorkspace";
+import { PatientRecordWorkspace } from "../../workspaces/patient/PatientRecordWorkspace";
+import { OPDQueueWorkspace } from "../../workspaces/opd/OPDQueueWorkspace";
 import { InpatientAdmissionWorkspace } from "../../workspaces/adt/InpatientAdmissionWorkspace";
 import { DoctorCockpit } from "../../workspaces/doctor/DoctorCockpit";
 import { WardNursingStation } from "../../workspaces/nursing/WardNursingStation";
@@ -15,11 +17,14 @@ import { PharmacyWorkspace } from "../../workspaces/pharmacy/PharmacyWorkspace";
 import { DiagnosticsWorkspace } from "../../workspaces/diagnostics/DiagnosticsWorkspace";
 import { CashierCounterWorkspace } from "../../workspaces/billing/CashierCounterWorkspace";
 import { AdminWorkspace } from "../../workspaces/admin/AdminWorkspace";
+import { MyWorkDrawer } from "./MyWorkDrawer";
+import { ErrorBoundary } from "../ui/ErrorBoundary";
 
 export const AppShell: React.FC = () => {
   const { isWorkspaceAllowed, roleDefinition } = usePermissions();
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>(roleDefinition.defaultWorkspace);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isTasksOpen, setIsTasksOpen] = useState(false);
 
   // If active role changes and current workspace is not allowed, route to role's default workspace
   useEffect(() => {
@@ -40,6 +45,8 @@ export const AppShell: React.FC = () => {
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
         const workspaceOrder: WorkspaceId[] = [
           "registration",
+          "patient-record",
+          "opd-queue",
           "adt",
           "doctor",
           "nursing",
@@ -64,6 +71,10 @@ export const AppShell: React.FC = () => {
     switch (activeWorkspace) {
       case "registration":
         return <PatientRegistrationWorkspace />;
+      case "patient-record":
+        return <PatientRecordWorkspace />;
+      case "opd-queue":
+        return <OPDQueueWorkspace />;
       case "adt":
         return <InpatientAdmissionWorkspace />;
       case "doctor":
@@ -87,16 +98,23 @@ export const AppShell: React.FC = () => {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-slate-950 overflow-hidden select-none">
-      {/* 1. Global Navigation Bar */}
-      <TopNavbar onOpenCommandPalette={() => setIsCommandPaletteOpen(true)} />
+      {/* 1. Global Navigation Bar with My Work Drawer Trigger */}
+      <TopNavbar
+        onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+        onOpenTasks={() => setIsTasksOpen(true)}
+      />
 
       {/* 2. Universal Clinical Patient Safety Banner (CCOW Context) */}
-      <PatientSafetyBanner />
+      <PatientSafetyBanner onOpenPatientRecord={() => setActiveWorkspace("patient-record")} />
 
       {/* 3. Main Workspace Layout */}
       <div className="flex-1 flex overflow-hidden">
         <Sidebar activeWorkspace={activeWorkspace} onSelectWorkspace={setActiveWorkspace} />
-        <main className="flex-1 flex overflow-hidden bg-slate-950">{renderActiveWorkspace()}</main>
+        <main className="flex-1 flex overflow-hidden bg-slate-950">
+          <ErrorBoundary moduleName={`Workspace: ${activeWorkspace}`}>
+            {renderActiveWorkspace()}
+          </ErrorBoundary>
+        </main>
       </div>
 
       {/* 4. Command Palette (Cmd+K) */}
@@ -104,6 +122,13 @@ export const AppShell: React.FC = () => {
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
         onSelectWorkspace={setActiveWorkspace}
+      />
+
+      {/* 5. My Clinical Work Center Slide-Over Drawer */}
+      <MyWorkDrawer
+        isOpen={isTasksOpen}
+        onClose={() => setIsTasksOpen(false)}
+        onNavigateWorkspace={(ws) => setActiveWorkspace(ws)}
       />
     </div>
   );

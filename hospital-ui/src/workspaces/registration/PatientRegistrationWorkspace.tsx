@@ -19,6 +19,7 @@ import { patientApi, PatientCreatedResponse } from "../../api/patientApi";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
 import { PermissionGate } from "../../components/auth/PermissionGate";
+import { printDocument } from "../../utils/printDocument";
 
 interface GeneratedTokenDetails {
   tokenNumber: number;
@@ -306,6 +307,54 @@ export const PatientRegistrationWorkspace: React.FC = () => {
       }
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handlePrintDocument = () => {
+    if (!successPatient) return;
+    if (printDocType === "OPD_TOKEN" && generatedToken) {
+      const html = `
+        <div class="thermal-slip">
+          <div class="center bold" style="font-size: 13px;">${hospitalProfile.name.toUpperCase()}</div>
+          <div class="center" style="font-size: 9px; margin-bottom: 4px;">OPD CONSULTATION TOKEN & RECEIPT</div>
+          <div class="divider"></div>
+          <div class="center bold" style="font-size: 24px; letter-spacing: 2px;">${generatedToken.tokenCode}</div>
+          <div class="center" style="font-size: 10px;">Token #${generatedToken.tokenNumber} • Room ${generatedToken.roomNumber}</div>
+          <div class="divider"></div>
+          <div><b>Doctor:</b> ${generatedToken.doctorName}</div>
+          <div><b>Specialty:</b> ${generatedToken.department}</div>
+          <div><b>Est. Wait:</b> ~${generatedToken.estimatedWaitMins} mins</div>
+          <div class="divider"></div>
+          <div><b>Patient:</b> ${successPatient.full_name.toUpperCase()}</div>
+          <div><b>UHID:</b> ${successPatient.mrn}</div>
+          <div><b>Age/Gender:</b> ${successPatient.gender} | ${successPatient.blood_group || "O+"}</div>
+          <div><b>Priority:</b> ${generatedToken.priority}</div>
+          <div class="divider"></div>
+          <div><b>Receipt No:</b> ${generatedToken.receiptNumber}</div>
+          <div><b>Payment Mode:</b> ${generatedToken.paymentMode}</div>
+          <div class="bold" style="font-size: 12px; margin-top: 2px;">Fee Paid: ₹${generatedToken.consultationFee}.00</div>
+          <div class="divider"></div>
+          <div class="center" style="font-size: 9px;">Issued: ${generatedToken.issuedAt}</div>
+          <div class="center" style="font-size: 8px;">Please proceed to waiting lounge. Valid today only.</div>
+        </div>
+      `;
+      printDocument(html, { title: `OPD_Token_${generatedToken.tokenCode}`, docType: "THERMAL_TOKEN" });
+    } else {
+      const html = `
+        <div class="wristband-slip">
+          <div>
+            <div class="bold" style="font-size: 12px;">${hospitalProfile.name.toUpperCase()}</div>
+            <div class="bold" style="font-size: 14px; margin-top: 2px;">${successPatient.full_name.toUpperCase()}</div>
+            <div style="font-size: 10px;">${successPatient.gender} • Blood: ${successPatient.blood_group || "O+"}</div>
+            <div style="font-size: 9px;">Ph: ${successPatient.phone_number || "--"}</div>
+          </div>
+          <div class="center">
+            <div class="barcode-box">||||| | |||| || ||| | |||</div>
+            <div class="bold" style="font-size: 13px;">${successPatient.mrn}</div>
+          </div>
+        </div>
+      `;
+      printDocument(html, { title: `UHID_Wristband_${successPatient.mrn}`, docType: "WRISTBAND" });
     }
   };
 
@@ -1121,7 +1170,7 @@ export const PatientRegistrationWorkspace: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.print()}
+                onClick={handlePrintDocument}
                 className="flex items-center gap-1.5 font-semibold"
               >
                 <Printer size={14} className="text-sky-400" /> Print {printDocType === "OPD_TOKEN" ? "OPD Consultation Slip" : "Wristband"}

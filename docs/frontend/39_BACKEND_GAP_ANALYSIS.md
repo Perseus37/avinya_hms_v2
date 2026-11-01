@@ -107,3 +107,4 @@ This gap analysis bridges the gap between the Avinya HMS backend architecture an
 | **P1** | Multi-factor weighted fuzzy matching in duplicate patient detection (Fix C-04) | `/patients/new` | `domains/patients` |
 | **P2** | Real-duration overlap collision check in appointment booking (Fix C-06) | `/opd/appointments/new` | `domains/appointments`|
 | **P2** | Add `GET /v1/api/nursing/shift-roster/my-ward` (Shift roster, bed acuity, tasks summary) | `/nursing/station` | `domains/nursing` |
+

@@ -49,5 +49,19 @@ export const uiApi = {
       }),
     });
   },
+
+  getOpdQueueSummary: async (queueDate?: string) => {
+    return apiClient<any>("/api/ui/opd/queue-summary", {
+      params: { queue_date: queueDate },
+    });
+  },
+
+  getDischargePipeline: async () => {
+    return apiClient<any[]>("/api/ui/admissions/discharge-pipeline");
+  },
+
+  getMyWorkTasks: async () => {
+    return apiClient<any[]>("/api/ui/tasks/my-work");
+  },
 };
 

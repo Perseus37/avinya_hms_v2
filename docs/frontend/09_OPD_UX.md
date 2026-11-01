@@ -108,3 +108,4 @@ In legacy implementations, client boards polled the status history of every indi
 Avinya HMS replaces per-patient polling with a **Consolidated Queue Summary API**:
 - **Endpoint:** `GET /v1/api/opd/queue-summary?department_id=4&date=2026-11-01`
 - **Response Payload:** Delivers the consolidated list of all active tokens, waiting intervals, triage status, and assigned rooms in a single unified JSON response (cached via Redis Pub/Sub with 5-second delta invalidation).
+

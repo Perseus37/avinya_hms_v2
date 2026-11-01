@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Search, LogOut, Activity, User, HelpCircle, Keyboard, ChevronDown, Shield } from "lucide-react";
+import { Search, LogOut, Activity, User, HelpCircle, Keyboard, ChevronDown, Shield, CheckSquare } from "lucide-react";
 import { useAuth } from "../../core/context/AuthContext";
 import { usePermissions, ROLE_DEFINITIONS, RoleCode } from "../../core/context/PermissionsContext";
 import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
@@ -7,9 +7,10 @@ import { Modal } from "../ui/Modal";
 
 interface TopNavbarProps {
   onOpenCommandPalette: () => void;
+  onOpenTasks?: () => void;
 }
 
-export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenCommandPalette }) => {
+export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenCommandPalette, onOpenTasks }) => {
   const { user, logout } = useAuth();
   const { activeRole, roleDefinition, isSimulating, isDev, setActiveRole, resetToAuthenticatedRole } = usePermissions();
   const { hospitalProfile } = useHospitalConfig();
@@ -146,6 +147,21 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenCommandPalette }) =>
               </div>
             )}
           </div>
+        )}
+
+        {/* Global Task Center ("My Work") Trigger */}
+        {onOpenTasks && (
+          <button
+            onClick={onOpenTasks}
+            title="My Clinical Work Center (Tasks & Approvals)"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-xs text-slate-300 hover:text-sky-400 transition-colors shadow-sm"
+          >
+            <CheckSquare size={13} className="text-sky-400" />
+            <span className="hidden md:inline font-semibold">My Work</span>
+            <span className="font-mono text-[10px] px-1.5 py-0.2 rounded-full bg-rose-950 text-rose-300 border border-rose-800 font-bold">
+              5
+            </span>
+          </button>
         )}
 
         <button

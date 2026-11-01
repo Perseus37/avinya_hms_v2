@@ -116,3 +116,4 @@ The bedside vitals entry form automatically calculates the aggregate NEWS2 score
   - Triggers **Emergency Rapid Response Team (RRT) / Code Blue alert**.
   - System automatically broadcasts push notification to ICU Registrar and Duty Cardiologist.
   - Opens clinical intervention documentation modal on bedside workstation.
+

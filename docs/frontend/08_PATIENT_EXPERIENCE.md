@@ -126,3 +126,4 @@ When viewing a patient, the screen presents a unified 3-tier view:
 - `[+ Record Bedside Vitals]`
 - `[Print Patient Wristband]` (Isolated thermal output)
 - `[Print Clinical Summary]` (A4 Letterhead)
+

@@ -2,7 +2,11 @@ import React from "react";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 import { AlertTriangle, User, Activity, BedDouble, X } from "lucide-react";
 
-export const PatientSafetyBanner: React.FC = () => {
+interface PatientSafetyBannerProps {
+  onOpenPatientRecord?: () => void;
+}
+
+export const PatientSafetyBanner: React.FC<PatientSafetyBannerProps> = ({ onOpenPatientRecord }) => {
   const { patientSummary, clearPatient } = useActivePatient();
 
   if (!patientSummary) {
@@ -107,6 +111,17 @@ export const PatientSafetyBanner: React.FC = () => {
               </span>
             )}
           </div>
+        )}
+
+        {/* Patient 360 Jump Button */}
+        {onOpenPatientRecord && (
+          <button
+            onClick={onOpenPatientRecord}
+            className="text-xs px-2.5 py-1 rounded-lg bg-sky-950/80 hover:bg-sky-900 border border-sky-800 text-sky-300 font-semibold transition-colors flex items-center gap-1 shadow-sm"
+            title="Open Complete Patient 360 Record & Longitudinal Timeline"
+          >
+            <span>Patient 360</span>
+          </button>
         )}
 
         {/* Clear active patient button */}

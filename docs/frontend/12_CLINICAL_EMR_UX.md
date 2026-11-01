@@ -110,3 +110,4 @@ Physicians can execute an entire consultation without touching a mouse:
 - `Alt + R`: Focus medication prescription search bar.
 - `Alt + D`: Focus ICD-10 diagnosis search bar.
 - `Esc`: Close any active modal or return focus to SOAP editor.
+

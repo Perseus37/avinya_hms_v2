@@ -120,3 +120,4 @@ Discharge delays in tertiary hospitals are notorious for paralyzing bed turnover
 2. **Key 2: Pharmacy Clearance:** Ward pharmacy must verify physical return of all unconsumed bedside medications, issuing credit notes to the patient's folio.
 3. **Key 3: Billing Clearance:** Cashier must reconcile all folio charges (midnight census room rent, labs, surgeries, implants) against TPA insurance cashless approval letters or collect the final patient co-payment.
 *Until all three keys are verified (`TRUE`), the bed cannot be released or assigned to incoming patients.*
+
