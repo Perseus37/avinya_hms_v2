@@ -7,6 +7,8 @@ import {
   CreditCard,
   Printer,
   Activity,
+  ArrowRightLeft,
+  LogOut,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
@@ -100,6 +102,31 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
   const [payerName, setPayerName] = useState("Star Health Insurance");
   const [preAuthAmount, setPreAuthAmount] = useState("150000");
 
+  // Bed Transfer State
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [transferringAdmission, setTransferringAdmission] = useState<ActiveAdmissionItem | null>(null);
+  const [transferDestinationBedId, setTransferDestinationBedId] = useState<number>(202);
+  const [transferReason, setTransferReason] = useState("Clinical step-down / condition stable");
+
+  // Clinical Discharge State
+  const [isDischargeModalOpen, setIsDischargeModalOpen] = useState(false);
+  const [dischargingAdmission, setDischargingAdmission] = useState<ActiveAdmissionItem | null>(null);
+  const [dischargeDisposition, setDischargeDisposition] = useState<
+    "ROUTINE_DISCHARGE" | "REFERRED_OUT" | "AGAINST_MEDICAL_ADVICE" | "DECEASED"
+  >("ROUTINE_DISCHARGE");
+  const [dischargeSummaryNotes, setDischargeSummaryNotes] = useState(
+    "Patient is clinically and hemodynamically stable. Nil acute complaints. Prescriptions explained. Follow-up advised in OPD."
+  );
+  const [followupDate, setFollowupDate] = useState("2026-11-08");
+  const [isDischargeSummaryOpen, setIsDischargeSummaryOpen] = useState(false);
+  const [lastDischargedRecord, setLastDischargedRecord] = useState<{
+    admission: ActiveAdmissionItem;
+    disposition: string;
+    summaryNotes: string;
+    followup: string;
+    dischargedAt: string;
+  } | null>(null);
+
   useEffect(() => {
     if (patientSummary) {
       setTargetPatientName(patientSummary.full_name);
@@ -136,9 +163,60 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
     setIsSuccessModalOpen(true);
   };
 
-  const handleDischargePatient = (admissionId: number) => {
-    setAdmissions((prev) => prev.filter((a) => a.id !== admissionId));
-    alert("Patient successfully discharged. Bed marked for terminal sanitization.");
+  const handleOpenTransfer = (adm: ActiveAdmissionItem) => {
+    setTransferringAdmission(adm);
+    const firstOther = availableBeds.find((b) => b.bedNumber !== adm.bedNumber);
+    if (firstOther) {
+      setTransferDestinationBedId(firstOther.bedId);
+    }
+    setIsTransferModalOpen(true);
+  };
+
+  const handleExecuteTransfer = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!transferringAdmission) return;
+    const destBed = availableBeds.find((b) => b.bedId === transferDestinationBedId);
+    if (!destBed) return;
+
+    setAdmissions((prev) =>
+      prev.map((a) =>
+        a.id === transferringAdmission.id
+          ? {
+              ...a,
+              ward: destBed.wardName,
+              bedNumber: destBed.bedNumber,
+              roomNumber: destBed.roomNumber,
+            }
+          : a
+      )
+    );
+
+    setIsTransferModalOpen(false);
+    setTransferringAdmission(null);
+  };
+
+  const handleOpenDischarge = (adm: ActiveAdmissionItem) => {
+    setDischargingAdmission(adm);
+    setIsDischargeModalOpen(true);
+  };
+
+  const handleExecuteDischarge = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!dischargingAdmission) return;
+
+    const record = {
+      admission: dischargingAdmission,
+      disposition: dischargeDisposition,
+      summaryNotes: dischargeSummaryNotes,
+      followup: followupDate,
+      dischargedAt: new Date().toISOString().replace("T", " ").substring(0, 16),
+    };
+
+    setLastDischargedRecord(record);
+    setAdmissions((prev) => prev.filter((a) => a.id !== dischargingAdmission.id));
+    setIsDischargeModalOpen(false);
+    setDischargingAdmission(null);
+    setIsDischargeSummaryOpen(true);
   };
 
   return (
@@ -437,19 +515,217 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                   )}
                 </div>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleDischargePatient(adm.id)}
-                  className="text-[10px] py-0.5 px-2 text-rose-400 hover:bg-rose-950"
-                >
-                  Discharge
-                </Button>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleOpenTransfer(adm)}
+                    className="text-[10px] py-0.5 px-2 text-sky-400 hover:bg-sky-950 flex items-center gap-1"
+                  >
+                    <ArrowRightLeft size={10} /> Transfer
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleOpenDischarge(adm)}
+                    className="text-[10px] py-0.5 px-2 text-rose-400 hover:bg-rose-950 flex items-center gap-1"
+                  >
+                    <LogOut size={10} /> Discharge
+                  </Button>
+                </div>
               </div>
             </Card>
           ))}
         </div>
       </div>
+
+      {/* Modal: Bed Transfer */}
+      {transferringAdmission && (
+        <Modal
+          isOpen={isTransferModalOpen}
+          onClose={() => setIsTransferModalOpen(false)}
+          title={`Bed Transfer Desk — ${transferringAdmission.patientName} (${transferringAdmission.bedNumber})`}
+        >
+          <form onSubmit={handleExecuteTransfer} className="space-y-4">
+            <div className="p-3 rounded-lg bg-sky-950/30 border border-sky-900/60 text-xs text-sky-300 font-mono">
+              Current Bed: {transferringAdmission.bedNumber} ({transferringAdmission.roomNumber} - {transferringAdmission.ward})
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Destination Available Bed</label>
+              <select
+                value={transferDestinationBedId}
+                onChange={(e) => setTransferDestinationBedId(parseInt(e.target.value, 10))}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200"
+              >
+                {availableBeds
+                  .filter((b) => b.bedNumber !== transferringAdmission.bedNumber)
+                  .map((b) => (
+                    <option key={b.bedId} value={b.bedId}>
+                      {b.bedNumber} — {b.roomNumber} ({b.wardName} - {b.category} • ₹{b.dailyTariffRupees}/day)
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Reason for Bed Transfer</label>
+              <select
+                value={transferReason}
+                onChange={(e) => setTransferReason(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 mb-2"
+              >
+                <option value="Clinical step-down / condition stable">Clinical step-down (ICU to Ward) / Condition stable</option>
+                <option value="Clinical escalation / requires ICU hemodynamic monitoring">Clinical escalation / Requires ICU monitoring</option>
+                <option value="Patient / Attendant request for room upgrade (Private Deluxe)">Attendant request for room upgrade (Private Deluxe)</option>
+                <option value="Infection control isolation requirement">Infection control isolation requirement</option>
+                <option value="Terminal sanitization of previous room">Terminal sanitization of previous room</option>
+              </select>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+              <Button type="button" variant="outline" size="sm" onClick={() => setIsTransferModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary" size="sm" className="flex items-center gap-1.5">
+                <ArrowRightLeft size={12} /> Confirm Bed Transfer
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Modal: Clinical Discharge Entry */}
+      {dischargingAdmission && (
+        <Modal
+          isOpen={isDischargeModalOpen}
+          onClose={() => setIsDischargeModalOpen(false)}
+          title={`Clinical Discharge Order — ${dischargingAdmission.patientName} (${dischargingAdmission.mrn})`}
+        >
+          <form onSubmit={handleExecuteDischarge} className="space-y-4">
+            <div className="p-3 rounded-lg bg-amber-950/30 border border-amber-900/60 text-xs text-amber-300 font-mono">
+              Terminal Discharge: Releases bed {dischargingAdmission.bedNumber} to Housekeeping sanitization queue.
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Discharge Disposition</label>
+              <select
+                value={dischargeDisposition}
+                onChange={(e) => setDischargeDisposition(e.target.value as any)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 font-semibold"
+              >
+                <option value="ROUTINE_DISCHARGE">Routine Medical Discharge (Condition Improved / Stable)</option>
+                <option value="REFERRED_OUT">Referred Out to Tertiary Super-Specialty Center</option>
+                <option value="AGAINST_MEDICAL_ADVICE">Left Against Medical Advice (LAMA / DAMA)</option>
+                <option value="DECEASED">Deceased / Clinical Death Intimation</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Discharge Summary & Medical Advice</label>
+              <textarea
+                rows={3}
+                required
+                value={dischargeSummaryNotes}
+                onChange={(e) => setDischargeSummaryNotes(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Scheduled OPD Follow-up Date</label>
+              <input
+                type="date"
+                value={followupDate}
+                onChange={(e) => setFollowupDate(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+              <Button type="button" variant="outline" size="sm" onClick={() => setIsDischargeModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="danger" size="sm" className="flex items-center gap-1.5">
+                <LogOut size={12} /> Confirm & Authorize Discharge
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Modal: Printable Formal Discharge Summary */}
+      {lastDischargedRecord && (
+        <Modal
+          isOpen={isDischargeSummaryOpen}
+          onClose={() => setIsDischargeSummaryOpen(false)}
+          title="Clinical Discharge Summary Slip"
+        >
+          <div className="space-y-4">
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3 font-mono text-xs">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <div>
+                  <span className="text-slate-400 text-[10px] uppercase block">Hospital Discharge Document</span>
+                  <span className="font-bold text-emerald-400">DISCHARGE #{lastDischargedRecord.admission.id}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-slate-400 text-[10px] uppercase block">Disposition</span>
+                  <span className="font-bold text-sky-400">{lastDischargedRecord.disposition}</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <span className="text-slate-500 text-[10px] block">Patient Name</span>
+                  <span className="text-slate-200 font-semibold">{lastDischargedRecord.admission.patientName}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] block">UHID / MRN</span>
+                  <span className="text-slate-200">{lastDischargedRecord.admission.mrn}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] block">Admission Ward / Bed</span>
+                  <span className="text-slate-200">{lastDischargedRecord.admission.ward} ({lastDischargedRecord.admission.bedNumber})</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] block">Discharge Time</span>
+                  <span className="text-slate-200">{lastDischargedRecord.dischargedAt}</span>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-800">
+                <span className="text-slate-400 text-[10px] uppercase block mb-1">Clinical Advice / Course in Hospital</span>
+                <p className="text-slate-200 bg-slate-900 p-2.5 rounded text-[11px] leading-relaxed">
+                  {lastDischargedRecord.summaryNotes}
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-slate-400 text-[11px]">Recommended Follow-up:</span>
+                <span className="text-sky-400 font-bold">{lastDischargedRecord.followup}</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => window.print()}
+                className="flex items-center gap-1.5"
+              >
+                <Printer size={13} /> Print Discharge Summary
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setIsDischargeSummaryOpen(false)}
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {/* Modal: Inpatient Admission Confirmation & Bed Head Ticket */}
       {confirmedAdmission && (

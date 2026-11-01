@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Pill, ShieldAlert, Download, Barcode, CheckCircle2, UserCheck, ShieldCheck } from "lucide-react";
+import { Pill, ShieldAlert, Download, Barcode, CheckCircle2, UserCheck, ShieldCheck, PlusCircle } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -101,6 +101,38 @@ export const PharmacyWorkspace: React.FC = () => {
   const [witnessPin, setWitnessPin] = useState("");
   const [ndpsLogMessage, setNdpsLogMessage] = useState<string | null>(null);
 
+  // Walk-in Dispense Form State
+  const [isWalkInModalOpen, setIsWalkInModalOpen] = useState(false);
+  const [walkInPatientName, setWalkInPatientName] = useState("Rajesh Gupta");
+  const [walkInMrn, setWalkInMrn] = useState("MRN-2026-0012");
+  const [walkInMedName, setWalkInMedName] = useState("Azithromycin 500mg Tablet");
+  const [walkInDosage, setWalkInDosage] = useState("1 tab PO OD x 3 days");
+  const [walkInBatch, setWalkInBatch] = useState("AZM-2026-X1");
+  const [walkInQty, setWalkInQty] = useState("3");
+
+  const handleCreateWalkInRx = (e: React.FormEvent) => {
+    e.preventDefault();
+    const newRx: PrescriptionItem = {
+      id: Date.now(),
+      rxNumber: `Rx #${Math.floor(9100 + Math.random() * 800)}`,
+      patientName: walkInPatientName,
+      mrn: walkInMrn,
+      medications: [
+        {
+          name: walkInMedName,
+          dosage: walkInDosage,
+          batchNumber: walkInBatch,
+          quantity: parseInt(walkInQty, 10) || 1,
+          status: "PENDING",
+        },
+      ],
+      ddiPassed: true,
+      dispensed: false,
+    };
+    setPrescriptions([newRx, ...prescriptions]);
+    setIsWalkInModalOpen(false);
+  };
+
   const handleOpenDispenseModal = (rx: PrescriptionItem) => {
     setActiveRxForDispense(rx);
     setScannedBarcode("");
@@ -197,9 +229,19 @@ export const PharmacyWorkspace: React.FC = () => {
             <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">
               Pending e-Prescriptions for Dispense ({prescriptions.filter((p) => !p.dispensed).length})
             </h2>
-            <Badge variant="neutral" size="sm">
-              Pharmacist Station 1
-            </Badge>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setIsWalkInModalOpen(true)}
+                className="flex items-center gap-1.5 text-xs font-semibold"
+              >
+                <PlusCircle size={14} /> Intake Walk-in Prescription
+              </Button>
+              <Badge variant="neutral" size="sm">
+                Pharmacist Station 1
+              </Badge>
+            </div>
           </div>
 
           <div className="space-y-3">
@@ -491,6 +533,97 @@ export const PharmacyWorkspace: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      {/* Modal: Intake Walk-in Prescription */}
+      <Modal
+        isOpen={isWalkInModalOpen}
+        onClose={() => setIsWalkInModalOpen(false)}
+        title="Intake Walk-in Prescription / Direct Dispensary Order"
+      >
+        <form onSubmit={handleCreateWalkInRx} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Patient Full Name</label>
+              <input
+                type="text"
+                required
+                value={walkInPatientName}
+                onChange={(e) => setWalkInPatientName(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 font-semibold"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">UHID / MRN</label>
+              <input
+                type="text"
+                required
+                value={walkInMrn}
+                onChange={(e) => setWalkInMrn(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Medication Name & Strength</label>
+            <input
+              type="text"
+              required
+              value={walkInMedName}
+              onChange={(e) => setWalkInMedName(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Dosage Frequency & Route</label>
+            <input
+              type="text"
+              required
+              value={walkInDosage}
+              onChange={(e) => setWalkInDosage(e.target.value)}
+              placeholder="e.g. 1 tab PO BD x 5 days"
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Batch Number</label>
+              <input
+                type="text"
+                required
+                value={walkInBatch}
+                onChange={(e) => setWalkInBatch(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Quantity (Units / Tabs)</label>
+              <input
+                type="number"
+                min="1"
+                required
+                value={walkInQty}
+                onChange={(e) => setWalkInQty(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+            <Button type="button" variant="outline" size="sm" onClick={() => setIsWalkInModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" size="sm" className="flex items-center gap-1.5 font-semibold">
+              <Pill size={14} /> Queue for Barcode Dispense
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
     </div>
   );
 };

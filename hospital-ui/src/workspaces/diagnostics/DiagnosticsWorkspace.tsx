@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Microscope, AlertCircle, PhoneCall, CheckCircle2, FileCheck, Barcode } from "lucide-react";
+import { Microscope, AlertCircle, PhoneCall, CheckCircle2, FileCheck, Barcode, Printer, PlusCircle } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -70,6 +70,52 @@ export const DiagnosticsWorkspace: React.FC = () => {
 
   // Form values for result entry
   const [testResults, setTestResults] = useState<Record<string, string>>({});
+
+  // New Walk-in Lab Order Intake State
+  const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
+  const [newPatientName, setNewPatientName] = useState("Vijay Sharma");
+  const [newMrn, setNewMrn] = useState("MRN-2026-0009");
+  const [newSampleType, setNewSampleType] = useState("Serum Gel Tube (Yellow)");
+  const [newTestCategory, setNewTestCategory] = useState("Biochemistry");
+  const [newTestName, setNewTestName] = useState("Lipid Profile (Total Cholesterol, HDL, LDL, Triglycerides)");
+  const [newRefRange, setNewRefRange] = useState("< 200");
+  const [newUnit, setNewUnit] = useState("mg/dL");
+
+  // Print Lab Report State
+  const [isPrintReportModalOpen, setIsPrintReportModalOpen] = useState(false);
+  const [reportOrder, setReportOrder] = useState<LabOrder | null>(null);
+
+  const handleCreateLabOrder = (e: React.FormEvent) => {
+    e.preventDefault();
+    const newId = Date.now();
+    const barcodeNum = `SMP-${Math.floor(10000 + Math.random() * 90000)}`;
+    const newOrder: LabOrder = {
+      id: newId,
+      orderNumber: `LAB-${Math.floor(4100 + Math.random() * 900)}`,
+      patientName: newPatientName,
+      mrn: newMrn,
+      sampleType: `${newSampleType} [${newTestCategory}]`,
+      status: "COLLECTED",
+      tests: [
+        {
+          name: newTestName,
+          barcode: barcodeNum,
+          result: "",
+          unit: newUnit,
+          referenceRange: newRefRange,
+          flag: "NORMAL",
+        },
+      ],
+    };
+
+    setOrders([newOrder, ...orders]);
+    setIsNewOrderModalOpen(false);
+  };
+
+  const handleOpenPrintReport = (order: LabOrder) => {
+    setReportOrder(order);
+    setIsPrintReportModalOpen(true);
+  };
 
   const [isCalloutModalOpen, setIsCalloutModalOpen] = useState(false);
   const [doctorContacted, setDoctorContacted] = useState("Dr. Sameer Joshi (Emergency Physician)");
@@ -166,6 +212,14 @@ export const DiagnosticsWorkspace: React.FC = () => {
             <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">
               Accessioning & Processing Queue ({orders.length})
             </h2>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setIsNewOrderModalOpen(true)}
+              className="flex items-center gap-1.5 text-xs font-semibold"
+            >
+              <PlusCircle size={14} /> Intake Walk-in Specimen
+            </Button>
           </div>
 
           <div className="space-y-3">
@@ -243,6 +297,17 @@ export const DiagnosticsWorkspace: React.FC = () => {
                       className="text-xs flex items-center gap-1"
                     >
                       <Barcode size={13} /> Receive & Load to Analyzer
+                    </Button>
+                  )}
+
+                  {order.status === "AUTHORIZED" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleOpenPrintReport(order)}
+                      className="text-xs flex items-center gap-1 text-slate-300 hover:text-white"
+                    >
+                      <Printer size={13} /> Print Lab Report
                     </Button>
                   )}
 
@@ -423,6 +488,200 @@ export const DiagnosticsWorkspace: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      {/* Modal: Intake Walk-in Lab Specimen */}
+      <Modal
+        isOpen={isNewOrderModalOpen}
+        onClose={() => setIsNewOrderModalOpen(false)}
+        title="Intake Walk-in Laboratory Specimen & Order Investigation"
+      >
+        <form onSubmit={handleCreateLabOrder} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Patient Full Name</label>
+              <input
+                type="text"
+                required
+                value={newPatientName}
+                onChange={(e) => setNewPatientName(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500 font-semibold"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">MRN / UHID</label>
+              <input
+                type="text"
+                required
+                value={newMrn}
+                onChange={(e) => setNewMrn(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Laboratory Discipline</label>
+              <select
+                value={newTestCategory}
+                onChange={(e) => setNewTestCategory(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+              >
+                <option value="Biochemistry">Clinical Biochemistry</option>
+                <option value="Hematology">Hematology & Coagulation</option>
+                <option value="Microbiology">Microbiology & Serology</option>
+                <option value="Histopathology">Histopathology / Cytology</option>
+                <option value="Immunology">Clinical Immunology</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Specimen Collection Tube</label>
+              <select
+                value={newSampleType}
+                onChange={(e) => setNewSampleType(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+              >
+                <option value="Serum Gel Tube (Yellow)">SST / Serum Gel Tube (Yellow Top)</option>
+                <option value="EDTA Whole Blood (Lavender)">EDTA K2/K3 Whole Blood (Lavender Top)</option>
+                <option value="Sodium Citrate 3.2% (Light Blue)">Sodium Citrate Coagulation (Light Blue)</option>
+                <option value="Sodium Fluoride (Grey)">Fluoride Glycolysis Inhibitor (Grey Top)</option>
+                <option value="Sterile Urine Container">Sterile Mid-Stream Urine Container</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">Investigation Name / Test Panel</label>
+            <input
+              type="text"
+              required
+              value={newTestName}
+              onChange={(e) => setNewTestName(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500 font-semibold"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Standard Reference Range</label>
+              <input
+                type="text"
+                required
+                value={newRefRange}
+                onChange={(e) => setNewRefRange(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Measurement Unit</label>
+              <input
+                type="text"
+                required
+                value={newUnit}
+                onChange={(e) => setNewUnit(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+            <Button type="button" variant="outline" size="sm" onClick={() => setIsNewOrderModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" size="sm" className="flex items-center gap-1.5 font-semibold">
+              <Barcode size={13} /> Accession & Generate Barcode
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Modal: Printable Laboratory Report Slip */}
+      {reportOrder && (
+        <Modal
+          isOpen={isPrintReportModalOpen}
+          onClose={() => setIsPrintReportModalOpen(false)}
+          title={`Clinical Diagnostic Report — ${reportOrder.orderNumber}`}
+        >
+          <div className="space-y-4">
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3 font-mono text-xs">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <div>
+                  <span className="text-slate-400 text-[10px] uppercase block">Department of Pathology & LIS</span>
+                  <span className="font-bold text-emerald-400 text-sm">ACCESSION #{reportOrder.orderNumber}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-slate-400 text-[10px] uppercase block">Status</span>
+                  <Badge variant="success" size="sm">NABL Authorized</Badge>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <span className="text-slate-500 text-[10px] block">Patient Name</span>
+                  <span className="text-slate-200 font-semibold">{reportOrder.patientName}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] block">UHID / MRN</span>
+                  <span className="text-slate-200">{reportOrder.mrn}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] block">Specimen Type</span>
+                  <span className="text-slate-200">{reportOrder.sampleType}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] block">Report Date</span>
+                  <span className="text-slate-200">{new Date().toISOString().substring(0, 10)}</span>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-800 space-y-2">
+                <div className="text-[10px] text-slate-400 uppercase font-bold">Investigation Results</div>
+                <div className="bg-slate-900 rounded-lg p-2.5 space-y-2">
+                  {reportOrder.tests.map((t, idx) => (
+                    <div key={idx} className="flex items-center justify-between text-xs pb-1 border-b border-slate-800 last:border-0 last:pb-0">
+                      <div>
+                        <div className="text-slate-200 font-medium">{t.name}</div>
+                        <div className="text-[10px] text-slate-500">Ref: {t.referenceRange} {t.unit}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold text-sky-400 font-mono">{t.result || "Normal"} {t.unit}</div>
+                        <div className="text-[9px] text-slate-500 font-mono">Barcode: {t.barcode}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-500">
+                <span>Verified by: Dr. Anjali Mehta, MD (Pathology)</span>
+                <span>Reg #MC-44910</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => window.print()}
+                className="flex items-center gap-1.5"
+              >
+                <Printer size={13} /> Print Laboratory Report
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => setIsPrintReportModalOpen(false)}
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
     </div>
   );
 };

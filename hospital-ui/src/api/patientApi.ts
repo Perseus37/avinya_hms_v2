@@ -70,4 +70,16 @@ export const patientApi = {
       params: { pincode },
     });
   },
+
+  updatePatient: async (id: number, payload: Partial<PatientCreatePayload>): Promise<PatientCreatedResponse> => {
+    return apiClient<PatientCreatedResponse>(`/api/patients/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  getPatient: async (id: number): Promise<PatientCreatedResponse> => {
+    return apiClient<PatientCreatedResponse>(`/api/patients/${id}`);
+  },
 };
+

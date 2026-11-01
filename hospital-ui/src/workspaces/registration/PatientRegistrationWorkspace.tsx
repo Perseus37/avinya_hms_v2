@@ -8,6 +8,7 @@ import {
   Stethoscope,
   RefreshCw,
   User,
+  Edit3,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -56,6 +57,66 @@ export const PatientRegistrationWorkspace: React.FC = () => {
   // Instant OPD Consultation Token
   const [bookOpdConsult, setBookOpdConsult] = useState(true);
   const [selectedDept, setSelectedDept] = useState("General Medicine");
+
+  // Edit Demographic Profile Modal State
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingPatient, setEditingPatient] = useState<PatientCreatedResponse | null>(null);
+  const [editFullName, setEditFullName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editBloodGroup, setEditBloodGroup] = useState<string>("O+");
+  const [editAddress, setEditAddress] = useState("");
+  const [editPincode, setEditPincode] = useState("");
+  const [editCity, setEditCity] = useState("");
+  const [editState, setEditState] = useState("");
+  const [editEmergencyName, setEditEmergencyName] = useState("");
+  const [editEmergencyPhone, setEditEmergencyPhone] = useState("");
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  const handleOpenEdit = (patient: PatientCreatedResponse, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingPatient(patient);
+    setEditFullName(patient.full_name);
+    setEditPhone(patient.phone_number || "");
+    setEditBloodGroup(patient.blood_group || "O+");
+    setEditAddress(patient.address || "");
+    setEditPincode(patient.pincode || "");
+    setEditCity(patient.city || "");
+    setEditState(patient.state || "");
+    setEditEmergencyName("");
+    setEditEmergencyPhone("");
+    setIsEditModalOpen(true);
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPatient) return;
+    setIsUpdating(true);
+    try {
+      const updated = await patientApi.updatePatient(editingPatient.id, {
+        full_name: editFullName,
+        phone_number: editPhone,
+        blood_group: editBloodGroup as any,
+        address: editAddress,
+        pincode: editPincode || undefined,
+        city: editCity,
+        state: editState,
+        emergency_contact_name: editEmergencyName || undefined,
+        emergency_contact_phone: editEmergencyPhone || undefined,
+      });
+      setIsEditModalOpen(false);
+      setEditingPatient(null);
+      await loadRecentPatients();
+      selectPatient(updated.id);
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        alert(`Update failed: ${err.message}`);
+      } else {
+        alert("Update failed. Please check inputs.");
+      }
+    } finally {
+      setIsUpdating(false);
+    }
+  };
 
   // Synchronize DOB and Age
   const handleAgeChange = (ageStr: string) => {
@@ -573,13 +634,155 @@ export const PatientRegistrationWorkspace: React.FC = () => {
                 </div>
                 <div className="flex items-center justify-between text-[10px] text-slate-500 mt-1.5 pt-1.5 border-t border-slate-800/60">
                   <span>Blood: {p.blood_group || "--"}</span>
-                  <span>{p.city ? `${p.city}, ${p.state}` : ""}</span>
+                  <div className="flex items-center gap-2">
+                    <span>{p.city ? `${p.city}, ${p.state}` : ""}</span>
+                    <button
+                      type="button"
+                      onClick={(e) => handleOpenEdit(p, e)}
+                      title="Edit Demographic Profile"
+                      className="p-1 hover:bg-slate-800 text-sky-400 hover:text-sky-300 rounded transition-colors"
+                    >
+                      <Edit3 size={12} />
+                    </button>
+                  </div>
                 </div>
               </Card>
             ))
           )}
         </div>
       </div>
+
+      {/* Modal: Edit Patient Demographic Details */}
+      {editingPatient && (
+        <Modal
+          isOpen={isEditModalOpen}
+          onClose={() => setIsEditModalOpen(false)}
+          title={`Edit Demographic Profile — ${editingPatient.mrn}`}
+        >
+          <form onSubmit={handleSaveEdit} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Full Name</label>
+                <input
+                  type="text"
+                  required
+                  value={editFullName}
+                  onChange={(e) => setEditFullName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Mobile Number</label>
+                <input
+                  type="tel"
+                  required
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Blood Group</label>
+                <select
+                  value={editBloodGroup}
+                  onChange={(e) => setEditBloodGroup(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+                >
+                  <option value="A+">A+ (A Positive)</option>
+                  <option value="A-">A- (A Negative)</option>
+                  <option value="B+">B+ (B Positive)</option>
+                  <option value="B-">B- (B Negative)</option>
+                  <option value="AB+">AB+ (AB Positive)</option>
+                  <option value="AB-">AB- (AB Negative)</option>
+                  <option value="O+">O+ (O Positive)</option>
+                  <option value="O-">O- (O Negative)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Postal PIN Code</label>
+                <input
+                  type="text"
+                  maxLength={6}
+                  value={editPincode}
+                  onChange={(e) => setEditPincode(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Residential Address</label>
+              <input
+                type="text"
+                value={editAddress}
+                onChange={(e) => setEditAddress(e.target.value)}
+                placeholder="Door / Flat / Street address"
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">City / Town</label>
+                <input
+                  type="text"
+                  value={editCity}
+                  onChange={(e) => setEditCity(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">State</label>
+                <input
+                  type="text"
+                  value={editState}
+                  onChange={(e) => setEditState(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800/80">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Emergency Contact Name</label>
+                <input
+                  type="text"
+                  value={editEmergencyName}
+                  onChange={(e) => setEditEmergencyName(e.target.value)}
+                  placeholder="Kin / Guardian Name"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Emergency Contact Mobile</label>
+                <input
+                  type="tel"
+                  value={editEmergencyPhone}
+                  onChange={(e) => setEditEmergencyPhone(e.target.value)}
+                  placeholder="10-digit phone"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+              <Button type="button" variant="outline" size="sm" onClick={() => setIsEditModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary" size="sm" disabled={isUpdating}>
+                {isUpdating ? "Saving..." : "Save Demographic Changes"}
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {/* Modal: Patient Registered Confirmation & Wristband Print */}
       {successPatient && (
