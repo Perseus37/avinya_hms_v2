@@ -23,6 +23,7 @@ interface AvailableBedOption {
   wardName: string;
   dailyTariffRupees: number;
   category: "General" | "Semi-Private" | "Private" | "ICU";
+  features: string[];
 }
 
 interface ActiveAdmissionItem {
@@ -37,6 +38,13 @@ interface ActiveAdmissionItem {
   admittedAt: string;
   isMlc: boolean;
   tpaInsurance?: string;
+  edd: string;
+  clearances: {
+    clinicalSummary: boolean;
+    pharmacyCleared: boolean;
+    tpaApproved: boolean;
+    cashierSettled: boolean;
+  };
 }
 
 export const InpatientAdmissionWorkspace: React.FC = () => {
@@ -59,6 +67,13 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
       admittedAt: "2026-10-31 09:30",
       isMlc: false,
       tpaInsurance: "Star Health (Auth: ₹1,50,000)",
+      edd: "2026-11-03",
+      clearances: {
+        clinicalSummary: true,
+        pharmacyCleared: true,
+        tpaApproved: true,
+        cashierSettled: false,
+      },
     },
     {
       id: 102,
@@ -72,17 +87,26 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
       admittedAt: "2026-10-31 14:10",
       isMlc: false,
       tpaInsurance: "HDFC ERGO (Auth: ₹3,00,000)",
+      edd: "2026-11-05",
+      clearances: {
+        clinicalSummary: false,
+        pharmacyCleared: false,
+        tpaApproved: true,
+        cashierSettled: false,
+      },
     },
   ]);
 
   // Available Beds Pool
   const [availableBeds] = useState<AvailableBedOption[]>([
-    { bedId: 201, bedNumber: "B-102", roomNumber: "R-101", wardName: "General Ward 1", dailyTariffRupees: 2500, category: "General" },
-    { bedId: 202, bedNumber: "B-103", roomNumber: "R-102", wardName: "General Ward 1", dailyTariffRupees: 2500, category: "General" },
-    { bedId: 203, bedNumber: "SP-201", roomNumber: "R-201", wardName: "Semi-Private Ward", dailyTariffRupees: 4500, category: "Semi-Private" },
-    { bedId: 204, bedNumber: "PV-301", roomNumber: "R-301", wardName: "Private Deluxe Suite", dailyTariffRupees: 7500, category: "Private" },
-    { bedId: 205, bedNumber: "ICU-05", roomNumber: "ICU-BAY-B", wardName: "Intensive Care Unit", dailyTariffRupees: 12000, category: "ICU" },
+    { bedId: 201, bedNumber: "B-102", roomNumber: "R-101", wardName: "General Ward 1", dailyTariffRupees: 2500, category: "General", features: ["O2 Wall Outlet", "Call Bell"] },
+    { bedId: 202, bedNumber: "B-103", roomNumber: "R-102", wardName: "General Ward 1", dailyTariffRupees: 2500, category: "General", features: ["O2 Wall Outlet", "Call Bell"] },
+    { bedId: 203, bedNumber: "SP-201", roomNumber: "R-201", wardName: "Semi-Private Ward", dailyTariffRupees: 4500, category: "Semi-Private", features: ["Air Conditioned", "Attached Bath"] },
+    { bedId: 204, bedNumber: "PV-301", roomNumber: "R-301", wardName: "Private Deluxe Suite", dailyTariffRupees: 7500, category: "Private", features: ["Attendant Couch", "Smart TV", "Mini Fridge"] },
+    { bedId: 205, bedNumber: "ICU-05", roomNumber: "ICU-BAY-B", wardName: "Intensive Care Unit", dailyTariffRupees: 12000, category: "ICU", features: ["Ventilator Ready", "Invasive Arterial Line", "Cardiac Monitor"] },
   ]);
+
+  const [bedCategoryFilter, setBedCategoryFilter] = useState<"ALL" | "General" | "Semi-Private" | "Private" | "ICU">("ALL");
 
   // Form State
   const [targetPatientName, setTargetPatientName] = useState(patientSummary?.full_name || "Siddharth Verma");
@@ -156,6 +180,13 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
       admittedAt: new Date().toISOString().replace("T", " ").substring(0, 16),
       isMlc,
       tpaInsurance: hasInsurance ? `${payerName} (Auth: ₹${parseInt(preAuthAmount || "0").toLocaleString()})` : undefined,
+      edd: new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10),
+      clearances: {
+        clinicalSummary: false,
+        pharmacyCleared: false,
+        tpaApproved: hasInsurance,
+        cashierSettled: false,
+      },
     };
 
     setAdmissions([newAdmission, ...admissions]);
@@ -337,8 +368,32 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
               <span className="text-[11px] font-mono text-emerald-400">{availableBeds.length} Vacant Beds Ready</span>
             </div>
 
+            {/* Category Filter Pills */}
+            <div className="flex items-center gap-1.5 pt-1">
+              {(["ALL", "General", "Semi-Private", "Private", "ICU"] as const).map((cat) => {
+                const count = cat === "ALL" ? availableBeds.length : availableBeds.filter((b) => b.category === cat).length;
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setBedCategoryFilter(cat)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                      bedCategoryFilter === cat
+                        ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                        : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                    }`}
+                  >
+                    {cat} ({count})
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="grid grid-cols-3 gap-3">
-              {availableBeds.map((bed) => {
+              {(bedCategoryFilter === "ALL"
+                ? availableBeds
+                : availableBeds.filter((b) => b.category === bedCategoryFilter)
+              ).map((bed) => {
                 const isSelected = selectedBedId === bed.bedId;
                 return (
                   <div
@@ -358,6 +413,17 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                     </div>
                     <div className="text-[11px] text-slate-400">{bed.wardName}</div>
                     <div className="text-[10px] text-slate-500 font-mono mt-0.5">Room: {bed.roomNumber}</div>
+
+                    {bed.features && bed.features.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {bed.features.map((f, i) => (
+                          <span key={i} className="px-1.5 py-0.5 rounded text-[9px] bg-slate-900 text-slate-400 border border-slate-800 font-mono">
+                            {f}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
                     <div className="mt-2 pt-1.5 border-t border-slate-800 flex justify-between items-center text-[11px] font-mono">
                       <span className="text-slate-400">Tariff:</span>
                       <span className="text-emerald-400 font-bold">₹{bed.dailyTariffRupees.toLocaleString()}/day</span>
@@ -502,6 +568,51 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                   {adm.tpaInsurance}
                 </div>
               )}
+
+              {/* Discharge Readiness Checklist */}
+              <div className="pt-2 border-t border-slate-800/80 space-y-1">
+                <div className="text-[10px] uppercase text-slate-500 font-mono flex items-center justify-between">
+                  <span>Discharge Readiness (EDD: {adm.edd})</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1 text-[10px] font-mono">
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-center border ${
+                      adm.clearances?.clinicalSummary
+                        ? "bg-emerald-950/60 text-emerald-400 border-emerald-800/60"
+                        : "bg-slate-950 text-slate-500 border-slate-800"
+                    }`}
+                  >
+                    {adm.clearances?.clinicalSummary ? "✓ Summary Signed" : "○ Summary Due"}
+                  </span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-center border ${
+                      adm.clearances?.pharmacyCleared
+                        ? "bg-emerald-950/60 text-emerald-400 border-emerald-800/60"
+                        : "bg-slate-950 text-slate-500 border-slate-800"
+                    }`}
+                  >
+                    {adm.clearances?.pharmacyCleared ? "✓ Pharmacy Clr" : "○ Pharmacy Due"}
+                  </span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-center border ${
+                      adm.clearances?.tpaApproved
+                        ? "bg-emerald-950/60 text-emerald-400 border-emerald-800/60"
+                        : "bg-slate-950 text-slate-500 border-slate-800"
+                    }`}
+                  >
+                    {adm.clearances?.tpaApproved ? "✓ TPA Pre-Auth" : "○ TPA Query"}
+                  </span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-center border ${
+                      adm.clearances?.cashierSettled
+                        ? "bg-emerald-950/60 text-emerald-400 border-emerald-800/60"
+                        : "bg-amber-950/60 text-amber-400 border-amber-800/60"
+                    }`}
+                  >
+                    {adm.clearances?.cashierSettled ? "✓ Bill Settled" : "⏳ Bill Pending"}
+                  </span>
+                </div>
+              </div>
 
               <div className="flex items-center justify-between pt-2 border-t border-slate-800">
                 <div className="flex items-center gap-1">
