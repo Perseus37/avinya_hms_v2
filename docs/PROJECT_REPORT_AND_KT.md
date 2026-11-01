@@ -26,23 +26,25 @@ cross-tenant query exposure, but does not alone prove tenant isolation: request
 routing, credentials, authorization, network boundaries, backups, and
 operations still need to be configured correctly.
 
-The React UI in this repository is the **onboarding/control-plane console**. It
-is not a complete hospital staff/clinical web application. The tenant API
-provides endpoints and Swagger documentation; a separate staff UI is not
-present in the current source tree.
+The repository provides two dedicated front-end applications:
+1. **Clinical Staff Workstation (`hospital-ui/`):** A modern React 18 / TypeScript single-page application delivering 9 dedicated hospital workspaces (Patient Registration & Fast-Track Token, Inpatient ADT 500+ Bed Scale, Doctor Clinical Cockpit & CDS Radar, Ward Nursing Station & BCMA 2D scanning, Emergency Triage ESI 1-5, Central Pharmacy & NDPS Vault, Diagnostics LIS & Panic Delta, Cashier Billing Counter & TPA Split, and Executive HUD & Facility Builder). Includes dynamic hospital customization (`HospitalConfigContext`), cryptographic RBAC session binding (`PermissionsContext`), and isolated thermal printing.
+2. **Onboarding & Fleet Console (`onboarding-ui/`):** A React/Vite console for platform operators governing tenant provisioning, pricing simulation, fleet operations, and data migration.
 
 ## 2. Runtime topology and request flow
 
 ```text
-Operator browser
-  └─ Onboarding React SPA (built into onboarding-ui/dist)
-       └─ Control-plane FastAPI (backend/control_plane/app.py)
-            ├─ hms_control_plane PostgreSQL database
-            └─ tenant DB connections for fleet operations
+Clinical Staff Browser
+  └─ Hospital Clinical SPA (hospital-ui/)
+       └─ Tenant FastAPI Engine (backend/main.py mounted at :8000)
+            ├─ Dynamic TenantEnginePool
+            ├─ Multi-Tenant PostgreSQL databases (hms_{tenant_slug})
+            └─ Redis 8 broker & background queues
 
-Hospital client / integration
-  └─ Traefik in production (direct host port locally)
-       └─ Tenant FastAPI (backend/main.py; root routes and /v1 mount)
+Operator Browser
+  └─ Onboarding React SPA (onboarding-ui/dist)
+       └─ Control-plane FastAPI (backend/control_plane/app.py mounted at :8080)
+            ├─ hms_control_plane PostgreSQL database
+            └─ Tenant DB connections for fleet maintenance & migrations
             ├─ Host/subdomain -> tenant registry -> isolated tenant DB
             ├─ hms_control_plane lookup for routing/configuration
             └─ Redis for rate limiting, cache/events, and realtime streams
@@ -282,8 +284,7 @@ Re-run tests against the current revision before release.
 
 ## 7. Current limitations and production decisions
 
-1. **No clinical staff UI in this repository.** The React app is for onboarding
-   and fleet administration; `/docs` is API Swagger.
+1. **Client Applications Delivered:** The platform delivers both the complete 9-workspace clinical staff application (`hospital-ui/`) and the administrative fleet onboarding console (`onboarding-ui/`). Public consumer self-service mobile app (M-10) is deferred to future patient-facing release phases.
 2. **One-host Compose is a single failure domain.** Local Docker volumes do not
    provide off-host recovery or high availability.
 3. **Off-host backups still require operator setup.** The production host

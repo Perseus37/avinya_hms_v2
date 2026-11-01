@@ -24,7 +24,12 @@ docs/complete_guide/
 ├── 08_API_AND_INTEGRATION_REFERENCE.md                <-- Native HL7 v2 MLLP (:2575), FHIR R4, ABDM & Webhooks
 ├── 09_DATABASE_SCHEMA_AND_DATA_DICTIONARY.md          <-- 70+ tables, constraints, fields & sandbox classification
 ├── 10_TESTING_QA_AND_RELEASE_GOVERNANCE.md            <-- 443 tests (100% green), Bandit SAST, pip-audit, and release gates
-└── 11_DEVELOPER_AND_LOCAL_ENVIRONMENT_RUNBOOK.md      <-- Local dev setup, hot-reload, Alembic migrations, test data seeding & debugging
+├── 11_DEVELOPER_AND_LOCAL_ENVIRONMENT_RUNBOOK.md      <-- Local dev setup, hot-reload, Alembic migrations, test data seeding & debugging
+└── 12_ENTERPRISE_HOSPITAL_UI_AND_WORKSPACES.md        <-- 9 Workspaces, CCOW Banner, Dynamic Facility Builder & RBAC Session Binding
+
+Companion Reference Documents:
+* [ENTERPRISE_HOSPITAL_UI_SPECIFICATION_AND_AUDIT.md](../ENTERPRISE_HOSPITAL_UI_SPECIFICATION_AND_AUDIT.md) <-- Comprehensive ASCII elemental wireframes & AI audit remediation
+* [ENTERPRISE_METRICS_AND_KPI_INVENTORY.md](../ENTERPRISE_METRICS_AND_KPI_INVENTORY.md)                 <-- 700+ Multidimensional metric cube & statutory registers
 ```
 
 ---
@@ -36,9 +41,10 @@ Different stakeholders require different entry points into the system documentat
 ### 1. New Software Engineers & Architects
 - **Step 1:** Read [`01_PROJECT_OVERVIEW_AND_CONCEPTS.md`](01_PROJECT_OVERVIEW_AND_CONCEPTS.md) for architectural mission and healthcare vocabulary.
 - **Step 2:** Study [`02_ARCHITECTURE_AND_SYSTEM_DESIGN.md`](02_ARCHITECTURE_AND_SYSTEM_DESIGN.md) to understand the dual-ASGI engine (Hospital Engine vs. Control Plane) and database pooling.
-- **Step 3:** Explore [`03_END_TO_END_CLINICAL_AND_BUSINESS_WORKFLOWS.md`](03_END_TO_END_CLINICAL_AND_BUSINESS_WORKFLOWS.md) to understand domain logic, CPOE order sets, NEWS2 scoring, and BCMA verification.
-- **Step 4:** Review [`06_SECURITY_PRIVACY_AND_COMPLIANCE.md`](06_SECURITY_PRIVACY_AND_COMPLIANCE.md) for cryptographic boundaries (AES-256-GCM envelope encryption).
-- **Step 5:** Dive into [`11_DEVELOPER_AND_LOCAL_ENVIRONMENT_RUNBOOK.md`](11_DEVELOPER_AND_LOCAL_ENVIRONMENT_RUNBOOK.md) to launch the dual-ASGI servers with hot-reload, author Alembic migrations, seed test data, and run the pre-commit test suite.
+- **Step 3:** Explore [`12_ENTERPRISE_HOSPITAL_UI_AND_WORKSPACES.md`](12_ENTERPRISE_HOSPITAL_UI_AND_WORKSPACES.md) and [`ENTERPRISE_HOSPITAL_UI_SPECIFICATION_AND_AUDIT.md`](../ENTERPRISE_HOSPITAL_UI_SPECIFICATION_AND_AUDIT.md) for the 9-workspace frontend SPA and RBAC session security.
+- **Step 4:** Explore [`03_END_TO_END_CLINICAL_AND_BUSINESS_WORKFLOWS.md`](03_END_TO_END_CLINICAL_AND_BUSINESS_WORKFLOWS.md) to understand domain logic, CPOE order sets, NEWS2 scoring, and BCMA verification.
+- **Step 5:** Review [`06_SECURITY_PRIVACY_AND_COMPLIANCE.md`](06_SECURITY_PRIVACY_AND_COMPLIANCE.md) for cryptographic boundaries (AES-256-GCM envelope encryption).
+- **Step 6:** Dive into [`11_DEVELOPER_AND_LOCAL_ENVIRONMENT_RUNBOOK.md`](11_DEVELOPER_AND_LOCAL_ENVIRONMENT_RUNBOOK.md) to launch the dual-ASGI servers and `hospital-ui` dev server with hot-reload.
 
 ### 2. DevOps, Site Reliability & Platform Operators
 - **Step 1:** Read [`02_ARCHITECTURE_AND_SYSTEM_DESIGN.md`](02_ARCHITECTURE_AND_SYSTEM_DESIGN.md) for network ingress, Traefik routing, PostgreSQL 17, and Redis 8 infrastructure.

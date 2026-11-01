@@ -91,6 +91,61 @@ flowchart TD
 
 ---
 
+### 2.3 Client Clinical Workstation Architecture (`hospital-ui`)
+
+The front-end client workstation (`hospital-ui/`) is a high-performance React 18 / TypeScript single-page application engineered to eliminate cognitive fatigue and navigation fragmentation in demanding clinical environments:
+
+```mermaid
+flowchart TD
+    APP_SHELL["AppShell & Master Layout Container"]
+    
+    subgraph GLOBAL_CHROME["Persistent Application Chrome"]
+        NAV["TopNavbar (Identity, Shift, Cmd+K, Role Chip)"]
+        BANNER["PatientSafetyBanner (CCOW Context Sync)"]
+        SIDEBAR["Sidebar (RBAC Filtered Workspace Navigation)"]
+    end
+
+    subgraph CORE_CONTEXTS["Core Application Contexts"]
+        AUTH_CTX["AuthContext (JWT Session & Identity)"]
+        PERM_CTX["PermissionsContext (RBAC Claims & Permission Gates)"]
+        CONFIG_CTX["HospitalConfigContext (Dynamic Facility, Roster & Policy Store)"]
+        PATIENT_CTX["ActivePatientContext (Global Active Patient Context)"]
+    end
+
+    subgraph WORKSPACES["9 Enterprise Clinical & Operational Workspaces"]
+        WS_REG["1. Patient Intake & Fast-Track OPD Token"]
+        WS_ADT["2. Inpatient ADT (500+ Bed Scale Hierarchy)"]
+        WS_DOC["3. Doctor Cockpit (Longitudinal EMR, SOAP, CPOE, CDS Radar)"]
+        WS_NUR["4. Ward Nursing Station (eMAR, BCMA 2D Scan, NEWS2, SBAR)"]
+        WS_ED["5. Emergency Triage (ESI 1-5 Kanban, GCS, Code Red)"]
+        WS_PHARM["6. Central Pharmacy (Formulary & NDPS Vault)"]
+        WS_LIS["7. Diagnostics LIS (Accessioning, Panic Delta Read-Back)"]
+        WS_BILL["8. Cashier Counter (Folio Aggregation, TPA Cashless Split)"]
+        WS_ADM["9. Executive HUD (700+ KPI Cube & Master Facility Builder)"]
+    end
+
+    AUTH_CTX --> PERM_CTX
+    PERM_CTX --> SIDEBAR
+    CONFIG_CTX --> WS_REG
+    CONFIG_CTX --> WS_ADT
+    CONFIG_CTX --> WS_DOC
+    CONFIG_CTX --> WS_ADM
+    PATIENT_CTX --> BANNER
+    PATIENT_CTX --> WS_DOC
+    PATIENT_CTX --> WS_NUR
+    PATIENT_CTX --> WS_BILL
+    APP_SHELL --> GLOBAL_CHROME
+    APP_SHELL --> WORKSPACES
+```
+
+#### Core Client Architectural Tenets:
+1. **Dynamic Facility Customization:** The application eliminates hardcoded static beds and fees. `HospitalConfigContext` persists the entire hospital structure (Campuses, Towers, Floors, Wards, Beds, Doctor Rosters, Tariffs, Letterheads, and Policies) enabling instant on-the-fly customization.
+2. **Cryptographic RBAC & Session Binding:** User roles are cryptographically derived from verified JWT identity claims (`user.roles` and `is_superuser`). UI actions are protected by `<PermissionGate>`. Role switching is prohibited in production builds and demoted to a local-development-only simulator (`import.meta.env.DEV`).
+3. **Hardware-Isolated Thermal Printing:** Implements dedicated `@media print` CSS isolating `.print-area` and `.print-wristband` while statically stripping all application chrome for 2-inch thermal wristband and receipt printers.
+
+
+---
+
 ## 3. Ingress, Request Lifecycle & Middleware Pipeline
 
 Every HTTP transaction entering the application passes through a deterministic sequence of middleware guards:

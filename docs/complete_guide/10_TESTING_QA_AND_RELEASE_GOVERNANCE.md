@@ -20,7 +20,8 @@ flowchart TD
         DIFF["2. Schema Parity Diff Detector (0 Schema Drift)"]
         BANDIT["3. Bandit Security Linter (0 High / 0 Medium Issues)"]
         AUDIT["4. Strict pip-audit (0 Known CVEs)"]
-        BUILD["5. Vite Production Build (0 Warnings, 415 kB Bundle)"]
+        BUILD_ONBOARD["5. Onboarding UI Build (npm run build --prefix onboarding-ui)"]
+        BUILD_HOSPITAL["6. Clinical Workstation Build (npm run build --prefix hospital-ui, 0 TS Errors)"]
     end
 
     subgraph RELEASE["Production Release Gated Execution"]

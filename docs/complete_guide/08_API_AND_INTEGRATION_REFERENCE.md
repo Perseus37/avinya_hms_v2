@@ -37,11 +37,12 @@ flowchart LR
     "sub": "42",
     "email": "dr.sharma@apollo.com",
     "tenant_slug": "apollo-delhi",
-    "roles": ["DOCTOR"],
+    "roles": ["ROLE_DOCTOR"],
     "permissions": ["clinical:read", "clinical:write", "cpoe:order"],
     "exp": 1730000000
   }
   ```
+- **Client Session Binding:** In the hospital workstation (`hospital-ui/src/core/context/PermissionsContext.tsx`), these JWT claims are automatically resolved via `resolveRoleFromUser()`, binding the staff member's active capabilities (`ATTENDING_PHYSICIAN`, `WARD_NURSE`, `BILLING_CLERK`, etc.) and gating actions via `<PermissionGate>` with zero role spoofing permitted in production.
 - **Token Expiry & Refresh:** Access tokens expire after 30 minutes. To maintain continuous clinical sessions without re-entering passwords, client applications invoke:
   `POST /api/identity/refresh` with the refresh token (valid for 7 days unless revoked).
 

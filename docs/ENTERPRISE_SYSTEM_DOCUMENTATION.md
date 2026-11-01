@@ -142,6 +142,24 @@ Avinya HMS implements **physical database-per-tenant multi-tenancy**.
 - **Tenant Engine Pool:** The backend maintains a LRU-cached dynamic pool of SQLAlchemy engine instances (`TenantEnginePool`). Connections are established lazily on incoming requests and disposed of during idle timeouts.
 - **Fail-Safe Isolation:** Cross-tenant SQL joins are physically impossible at the database engine level, completely eliminating horizontal data leakage vulnerabilities.
 
+### 2.4 Client Single-Page Application Tier (`hospital-ui`)
+
+The enterprise user interface (`hospital-ui/`) is a high-velocity React 18 / TypeScript single-page application engineered to eliminate cognitive friction and medical order entry errors:
+- **Global Patient Safety Banner (CCOW Pattern):** Displays verified MRN, Patient Name, Blood Group, Active Encounters, Resuscitation Status, and High-Risk Allergies continuously across all clinical workflows.
+- **9 Dedicated Clinical & Operational Workspaces:**
+  1. *Patient Registration:* Master Patient Index deduplication, ABHA linking, unified 1-click Fast-Track OPD Token generation, DPDP Section 6 consent recording, and isolated thermal wristband printing.
+  2. *Inpatient ADT:* MPI autocomplete search, 500+ Bed Scale hierarchy (`Campus/Tower -> Floor -> Ward -> Bed`), MLC Section 39 CrPC intimation, and TPA pre-authorization.
+  3. *Doctor Cockpit:* Longitudinal EMR timeline, SOAP note editor, ICD-10 diagnosis search, 1-click CPOE order sets, and Clinical Decision Support (CDS) safety radar for drug-drug interactions and allergy conflicts.
+  4. *Ward Nursing Station:* Bedside eMAR administration grid, optical BCMA 2D barcode scan verification for 5 Rights, NEWS2 acute deterioration calculation with automated RRT/Code Blue escalation, and SBAR shift handover Kardex.
+  5. *Emergency Department Triage:* ESI 1–5 triage Kanban lanes, Glasgow Coma Scale (GCS) calculator, and Code Red mass casualty disaster activation.
+  6. *Central Pharmacy:* Formulary CPOE dispensing and NDPS Schedule H1 controlled substances perpetual double-witness vault.
+  7. *Diagnostic Laboratory (LIS):* Specimen accessioning, Code-128 barcodes, Panic Critical Value protocol with mandatory read-back logging, and DICOM PACS report editor.
+  8. *Cashier Counter & Finance:* Categorized folio aggregation, TPA insurance split allocator, multi-tender receipting, and GST tax invoicing.
+  9. *Executive Command HUD & Master Administration:* 700+ multidimensional metric cube explorer and live dynamic Hospital Master & Facility Builder.
+- **Dynamic Hospital Customization Console:** Backed by `HospitalConfigContext.tsx`, enabling hospital leadership to customize facility matrices, bed tariffs, doctor rosters, consultation fees, branding letterheads, and clinical policy rules on the fly.
+- **Cryptographic RBAC & Session Binding:** Operational capabilities are cryptographically bound to authenticated JWT identity claims (`user.roles` and `is_superuser`). UI actions are gated by `<PermissionGate>`. Role switching is prohibited in production and demoted to a local-development-only simulator (`import.meta.env.DEV`).
+- **Hardware-Isolated Thermal Printing:** Strips browser chrome and isolates `.print-area` and `.print-wristband` for 2-inch thermal continuous roll wristbands, token receipts, and A4 letterhead summaries.
+
 ---
 
 ## 3. Domain-Driven Design (DDD) & The 26 Core Subsystems

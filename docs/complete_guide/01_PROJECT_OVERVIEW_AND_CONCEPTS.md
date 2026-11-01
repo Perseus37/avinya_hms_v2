@@ -43,6 +43,21 @@ Hospital networks operate multiple branches or independent hospitals. Traditiona
 - **Physical Database-per-Tenant Isolation:** Every hospital tenant is provisioned into a physically distinct PostgreSQL database (`hms_apollo`, `hms_manipal`). Horizontal data leakage is physically impossible at the database engine level.
 - **Nexus Fleet Control Plane:** Centralizes tenant provisioning, subscription billing, and health monitoring in an independent administrative application (`hms_control_plane`), giving operators the management efficiency of SaaS with the military-grade isolation of dedicated databases.
 
+### Problem 4: Fragile UI Form Chaos, Disconnected Front-Desks & Print Nightmares
+In legacy hospital systems:
+- Front-desk clerks register a patient on one screen, then must navigate to a completely different screen to book an appointment or issue an OPD queue token.
+- ADT officers navigating a 500+ bed hospital are confronted with massive, unscrollable flat lists that freeze browsers.
+- Bed matrices, doctor consultation fees, and letterheads are hardcoded into static software configs requiring expensive IT engineering tickets to change a single bed or fee.
+- Clicking "Print" on patient wristbands or discharge sheets prints dark app themes, menus, and sidebars, wasting thermal paper and rendering barcode bands unreadable.
+- End-user dropdowns permit unauthorized staff to switch roles freely without security checks.
+
+**How Avinya HMS Solves It:**
+- **Unified Front-Desk Intake:** 1-click demographic registration + doctor selection + fee collection + thermal token generation.
+- **500+ Bed Scale ADT Matrix:** Multi-tier `Campus -> Tower -> Floor -> Ward -> Bed` hierarchy with real-time status filtering.
+- **Live Hospital Master & Facility Builder:** Decoupled runtime configuration store (`HospitalConfigContext`) for beds, doctors, fees, and letterheads.
+- **Isolated Hardware Printing:** Dedicated `@media print` CSS engine stripping all application chrome and isolating `.print-area` and `.print-wristband`.
+- **Cryptographic RBAC Session Security:** Roles cryptographically bound to authenticated JWT identity claims (`user.roles`), locking role switching in production.
+
 ---
 
 ## 3. Core Architectural Philosophy

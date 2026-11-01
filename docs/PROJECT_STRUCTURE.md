@@ -31,13 +31,32 @@ backend/
   security/                 Encryption helpers
   scripts/                  Bootstrap, staged migration, backup, restore
   alembic/                  Tenant database migration environment/history
+hospital-ui/                 Tenant-facing enterprise hospital clinical workstation
+  src/
+    components/
+      auth/                   PermissionGate, LoginView
+      layout/                 AppShell, TopNavbar, Sidebar, PatientSafetyBanner
+      ui/                     Card, Modal, StatusBadge, Button
+    core/
+      context/                AuthContext, ActivePatientContext, PermissionsContext, HospitalConfigContext
+    workspaces/
+      registration/           PatientRegistrationWorkspace (MPI Intake & Fast-Track Token)
+      adt/                    InpatientAdmissionWorkspace (500+ Bed Matrix, MLC, TPA)
+      doctor/                 DoctorCockpit (Longitudinal EMR, SOAP, CPOE, CDS Radar)
+      nursing/                WardNursingStation (eMAR, BCMA 2D Scan, NEWS2, SBAR)
+      triage/                 EmergencyTriageBoard (ESI 1-5 Kanban, GCS, Code Red)
+      pharmacy/               PharmacyWorkspace (Formulary & NDPS Vault)
+      diagnostics/            DiagnosticsWorkspace (LIS Accessioning, Panic Delta)
+      billing/                BillingWorkspace (Folio Aggregation, TPA Cashless Split)
+      admin/                  AdminWorkspace (700+ KPI Explorer & Master Facility Builder)
+    api/                      REST clients, Axios interceptors & typed adapters
 onboarding-ui/
   src/components/           Shared control-plane UI components
   src/views/                Control-plane screens, including MigrationStudio
   src/hooks/                Authenticated API and fleet/catalog state hooks
   src/lib/                  Shared UI helpers
 tests/                       Pytest suite
-docs/                        Architecture and operations documents
+docs/                        Architecture, clinical specifications and operations documents
 ```
 
 There are two ASGI applications: `backend/main.py` serves the hospital API and mounts its V1 app at `/v1`; `backend/control_plane/app.py` serves tenant provisioning and administration. Compose launches both applications directly from their canonical modules. They share configuration and database modules. Tenant ORM models, domain schemas, tenant routers, and business services are owned by `backend/domains/<domain>/`.
@@ -46,18 +65,7 @@ Control-plane persistence models live in `backend/control_plane/models.py`. HTTP
 
 The React console uses `useControlPlaneApi` for authenticated JSON and multipart requests and `useFleetData` for fleet/catalog synchronization. The active migration screen is `onboarding-ui/src/views/MigrationStudio.jsx`; its duplicate root-level screen and unused Axios client have been removed. Vite proxies development `/api` calls to the backend.
 
-Patient registration and updates are exposed by the tenant API in
-`backend/domains/patients/`; this repository does not include a tenant-facing
-patient registration UI. Patient `address` remains optional, and the structured
-`pincode`, `city`, `district`, `state`, and `village` fields are also optional
-for backward compatibility. Authenticated clients with `patients:write` can
-request locality suggestions from
-`GET /v1/api/patients/pincode-suggestions?pincode=560001`. The endpoint validates
-six-digit Indian PIN codes and returns postal-office/locality names with their
-district and state; clients can use those names to suggest village values and
-leave city entry editable. The lookup forwards only the PIN code to the
-external provider. If the lookup is unavailable, it responds with HTTP 502 so
-clients can allow manual entry.
+Patient registration, intake, and longitudinal care are governed by the modern single-page application under `hospital-ui/`. The intake desk (`hospital-ui/src/workspaces/registration/PatientRegistrationWorkspace.tsx`) features unified fast-track OPD token generation, Master Patient Index (MPI) search deduplication, Indian PIN code postal locality suggestions via `GET /v1/api/patients/pincode-suggestions`, DPDP Section 6 consent tracking, and isolated thermal wristband printing without browser chrome. Inpatient bed admissions are managed by `hospital-ui/src/workspaces/adt/InpatientAdmissionWorkspace.tsx` with dynamic multi-tier 500+ Bed Scale hierarchy and real-time occupancy synchronization backed by `HospitalConfigContext.tsx`.
 
 ## Structural risks and current fixes
 

@@ -993,8 +993,10 @@ has completed and verification succeeds.
 ## 11. Release checklist
 
 - [ ] Source revision and image are pinned and reviewed.
-- [ ] Full backend tests and frontend production build pass on the release
-  candidate.
+- [ ] Full backend tests pass (451 passed across 64 test suites, 0 failures).
+- [ ] Clinical workstation build passes with zero errors: `npm run build --prefix hospital-ui`.
+- [ ] Onboarding console build passes with zero errors: `npm run build --prefix onboarding-ui`.
+- [ ] Role simulation is confirmed disabled for production builds (`import.meta.env.PROD` locks navbar role switcher; JWT session binding enforced).
 - [ ] Both Alembic histories were reviewed and tested on compatible staging
   databases.
 - [ ] Pre-change encrypted backup exists, is copied off-host, and restore

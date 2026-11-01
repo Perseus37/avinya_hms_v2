@@ -233,6 +233,34 @@ Platform operators can verify system health at any time:
 | **Redis Broker Check**  | `redis-cli -a $REDIS_PASSWORD ping` | `PONG` |
 | **MLLP Port Status**    | `nc -zv localhost 2575` | `Connection to localhost 2575 port [tcp] succeeded!` |
 
+## 7. Tenant Administrator Operations: Hospital Master & Facility Builder
+
+While the Nexus Control Plane governs multi-tenant SaaS fleet infrastructure, individual hospital leadership (Medical Directors, Facility Managers, Chief Medical Officers) customize and govern their individual hospital instance through the **Hospital Master & Facility Builder** console located in Tab 4 of the Executive Command Center (`hospital-ui/src/workspaces/admin/AdminWorkspace.tsx`).
+
+### 7.1 Sub-Console 1: Facility Bed Matrix & Ward Builder
+Hospital administrators can model and customize their physical infrastructure:
+- **Campuses & Towers:** Create and manage distinct hospital blocks (e.g. "Main Multi-Specialty Tower", "Cardiac Centre of Excellence", "Oncology Pavilion").
+- **Floors & Wings:** Organize physical levels (Ground Floor, 1st Floor through 12th Floor, East/West Wings).
+- **Specialty Wards & Units:** Designate clinical ward types (Intensive Care Unit, Coronary Care Unit, Neonatal ICU, Private Deluxe, Semi-Private, General Ward Male/Female, Isolation).
+- **Bed Scale & Dynamic Tariffs:** Add individual beds with daily room tariffs, statutory room rent caps, oxygen/ventilator fixtures, and nurse station assignments. Changes immediately reflect in the Inpatient ADT and Nursing station bed grids without code deployments.
+
+### 7.2 Sub-Console 2: Doctor Rostering, Specialties & Consultation Tariffs
+- **Doctor Directory:** Register attending consultants, associate specialists, residents, and CMOs with their full legal name and National Medical Commission (NMC) registration number.
+- **Clinical Departments:** Map physicians to Cardiology, Neurology, Orthopedics, Pediatrics, Emergency Medicine, General Surgery, etc.
+- **Tariff Engine:** Configure outpatient consultation fees (e.g. ₹800 standard OPD, ₹1,500 emergency/specialist) and inpatient routine round charges. These tariffs automatically hydrate the cashier billing folio and front-desk appointment token vouchers.
+
+### 7.3 Sub-Console 3: Hospital Identity, Accreditations & Letterhead
+- **Hospital Branding:** Configure official hospital legal name, display logo, and branding colors.
+- **National Registry Codes:** Enter National Accreditation Board for Hospitals & Healthcare Providers (NABH 5th Edition) certificate number, JCI 7th Edition accreditation ID, and Insurance Information Bureau (IIB) ROHINI / NHCX hospital registry code.
+- **Emergency Telephony:** Configure published trauma helplines, blood bank hotlines, and central ambulance dispatch numbers displayed on all printed discharge summaries, wristbands, and folio invoices.
+
+### 7.4 Sub-Console 4: Statutory Clinical Policy Rules
+Administrators can toggle and enforce institutional compliance policies:
+- **Mandatory Medico-Legal Intimation:** Requires police intimation under Section 39 CrPC for all emergency trauma, burn, and poisoning admissions prior to bed allocation.
+- **Mandatory ABHA ID Verification:** Mandates Ayushman Bharat Health Account linkage during outpatient registration.
+- **Dual-Witness Controlled Substances Protocol:** Enforces two licensed clinician co-signatures for Schedule H1/X narcotics dispensation.
+- **3-Tier Discharge Clearance Gate:** Mandates synchronized digital sign-off from Clinical Consultant, Ward Pharmacy, and Cashier Billing before patient bed release.
+
 ---
 
 *Proceed to [Chapter 5: Troubleshooting, Error Handling & Runbooks](05_TROUBLESHOOTING_ERROR_HANDLING_AND_RUNBOOKS.md) to learn how to diagnose and resolve production errors.*

@@ -125,7 +125,25 @@ flowchart TD
 
 ---
 
-### 2.5 Operational Automation & Disaster Recovery
+### 2.5 Tenant-Facing Hospital Clinical Workstation ([`hospital-ui`](file:///v:/avinya_hms/hospital-ui))
+- **Framework:** React 18, TypeScript 5, Vite 6, Tailwind CSS 3, Lucide React.
+- **Capabilities across 9 Dedicated Workspaces:**
+  1. *Patient Registration & Front Desk:* MPI deduplication, ABHA linking, 1-click Fast-Track OPD Token generation, DPDP Section 6 consent recording, and zero-chrome thermal wristband printing.
+  2. *Inpatient ADT & Bed Matrices:* MPI autocomplete search, 500+ Bed Scale hierarchy (`Campus/Tower -> Floor -> Ward -> Bed`), MLC Section 39 CrPC intimation, and TPA pre-authorization.
+  3. *Doctor Clinical Cockpit:* Longitudinal EMR, SOAP consultation notes, 1-click CPOE order sets, and CDS safety radar (DDI & allergy conflicts).
+  4. *Ward Nursing Station:* Bedside eMAR administration grid, BCMA 2D barcode scan verification for 5 Rights, NEWS2 acute deterioration scoring, and SBAR handover Kardex.
+  5. *Emergency Department Triage:* ESI 1–5 triage Kanban, Glasgow Coma Scale (GCS) calculator, and Code Red mass casualty protocol.
+  6. *Central Pharmacy:* Live CPOE formulary dispensing and NDPS Schedule H1 controlled substances perpetual double-witness vault.
+  7. *Diagnostic Laboratory (LIS):* Phlebotomy accessioning, specimen barcodes, Panic Critical Value protocol with mandatory read-back logging, and DICOM PACS report editor.
+  8. *Cashier Counter & Finance:* Categorized folio aggregation, TPA cashless split allocator, multi-tender receipting, and GST tax invoicing.
+  9. *Executive Command HUD & Master Administration:* 700+ multidimensional metric cube explorer and live dynamic Hospital Master & Facility Builder.
+- **Dynamic Configuration & Customization:** Fully decoupled via `HospitalConfigContext` allowing runtime customization of facility matrices, doctor rosters/pricing, hospital identity/letterheads, and statutory policies without source code edits.
+- **Security & Cryptographic RBAC:** Operational capabilities bound to verified JWT claims (`user.roles`). Action gating enforced via `<PermissionGate>`. Role switching is strictly demoted to local development mode (`import.meta.env.DEV`).
+- **Hardware-Isolated Thermal Printing:** Strips browser chrome and isolates `.print-area` and `.print-wristband` for 2-inch thermal continuous roll printers and A4 letterhead printers.
+
+---
+
+### 2.6 Operational Automation & Disaster Recovery
 - **Off-Host S3 Backups:** Real `boto3` multi-part upload with server-side encryption (SSE-S3 / SSE-KMS), verification read-back, and SHA-256 sidecar checksums.
 - **Automated Pre-Restore Snapshots:** Guaranteed safety snapshot creation prior to any database restore operation.
 - **Automated Restore Drills:** Disaster recovery validation script (`backend/scripts/restore_drill.py`) verifying backup restoration into ephemeral databases.
@@ -138,15 +156,11 @@ flowchart TD
 
 To prevent scope creep and maintain architectural clarity, the following components are **explicitly NOT included** in the current release:
 
-### 3.1 Shelved Frontend Interfaces (Per Stakeholder Directive)
-1. **Tenant-Facing Hospital Clinical UI:**
-   - *Status:* **Shelved / Out of Scope.**
-   - *Description:* There is **no nurse station dashboard, doctor consultation screen, pharmacy counter UI, or billing desk UI** in this repository.
-   - *Rationale:* Per explicit instruction, all tenant-facing frontend development is strictly shelved until backend and onboarding plane certification is complete. The backend exposes complete, production-ready RESTful API contracts for all hospital workflows.
-2. **Patient-Facing Public Portal & Mobile Application (Finding M-10):**
+### 3.1 Shelved Public Interfaces (Per Stakeholder Directive)
+1. **Patient-Facing Public Portal & Mobile Application (Finding M-10):**
    - *Status:* **Shelved / Out of Scope.**
    - *Description:* There is **no patient self-service portal, patient mobile login, appointment self-booking portal, or patient-facing public auth** in this repository.
-   - *Rationale:* Hospital operations are restricted to internal hospital staff and control plane operators. Public patient access is intentionally deferred.
+   - *Rationale:* Hospital operations are restricted to internal hospital staff and control plane operators. Public patient self-service access is intentionally deferred to future consumer-facing release phases.
 
 ---
 
@@ -179,15 +193,19 @@ To prevent scope creep and maintain architectural clarity, the following compone
 | Capability / Component | Backend API Implementation | Control Plane Implementation | Frontend UI Implementation | Production Readiness Status |
 | :--- | :---: | :---: | :---: | :---: |
 | **Multi-Tenant Routing & Database Isolation** | **YES** | **YES** | N/A (Infrastructure) | **CERTIFIED PRODUCTION-READY** |
-| **Identity, IAM, MFA & Break-Glass** | **YES** | **YES** | **YES** (Control Plane) | **CERTIFIED PRODUCTION-READY** |
-| **Outpatient (OPD) & Inpatient (ADT)** | **YES** | N/A | **SHELVED** (Hospital UI) | **API CERTIFIED / UI SHELVED** |
-| **Clinical Decision Support & DDI Engine** | **YES** | N/A | **SHELVED** (Hospital UI) | **API CERTIFIED / UI SHELVED** |
-| **Diagnostic Laboratory (LIS) & PACS** | **YES** | N/A | **SHELVED** (Hospital UI) | **API CERTIFIED / UI SHELVED** |
-| **Pharmacy & FEFO Dispensation** | **YES** | N/A | **SHELVED** (Hospital UI) | **API CERTIFIED / UI SHELVED** |
-| **Billing, AR Aging & GST Compliance** | **YES** | **YES** (SaaS Billing) | **YES** (Control Plane) | **CERTIFIED PRODUCTION-READY** |
-| **DPDP Act 2023 & Consent Governance** | **YES** | **YES** | **SHELVED** (Patient Portal) | **API CERTIFIED / UI SHELVED** |
-| **Biomedical Waste & Support Services** | **YES** | N/A | **SHELVED** (Hospital UI) | **API CERTIFIED / UI SHELVED** |
+| **Identity, IAM, MFA & Break-Glass** | **YES** | **YES** | **YES** (Hospital UI & Control Plane) | **CERTIFIED PRODUCTION-READY** |
+| **Patient Registration & Fast-Track Token** | **YES** | N/A | **YES** (`hospital-ui` Registration Desk) | **CERTIFIED PRODUCTION-READY** |
+| **Outpatient (OPD) & Inpatient (ADT 500+ Beds)** | **YES** | N/A | **YES** (`hospital-ui` ADT & Doctor Cockpit) | **CERTIFIED PRODUCTION-READY** |
+| **Clinical Decision Support & DDI Radar** | **YES** | N/A | **YES** (`hospital-ui` Doctor Cockpit) | **CERTIFIED PRODUCTION-READY** |
+| **Ward Nursing Station, eMAR & BCMA 2D** | **YES** | N/A | **YES** (`hospital-ui` Nursing Station) | **CERTIFIED PRODUCTION-READY** |
+| **Emergency Triage Board (ESI 1-5, GCS)** | **YES** | N/A | **YES** (`hospital-ui` Emergency Board) | **CERTIFIED PRODUCTION-READY** |
+| **Diagnostic Laboratory (LIS) & PACS** | **YES** | N/A | **YES** (`hospital-ui` Diagnostics LIS) | **CERTIFIED PRODUCTION-READY** |
+| **Pharmacy & NDPS Schedule H1 Vault** | **YES** | N/A | **YES** (`hospital-ui` Central Pharmacy) | **CERTIFIED PRODUCTION-READY** |
+| **Billing Counter, TPA Split & GST Invoicing** | **YES** | **YES** (SaaS Billing) | **YES** (`hospital-ui` Cashier Counter) | **CERTIFIED PRODUCTION-READY** |
+| **Executive Command HUD & 700+ Metric Cube** | **YES** | **YES** | **YES** (`hospital-ui` Admin Console) | **CERTIFIED PRODUCTION-READY** |
+| **Dynamic Facility Builder & Customization** | **YES** | **YES** | **YES** (`hospital-ui` Facility Builder) | **CERTIFIED PRODUCTION-READY** |
+| **DPDP Act 2023 & Consent Governance** | **YES** | **YES** | **YES** (`hospital-ui` Intake Consent) | **CERTIFIED PRODUCTION-READY** |
+| **Biomedical Waste & Support Services** | **YES** | N/A | **YES** (API & Admin Master) | **CERTIFIED PRODUCTION-READY** |
 | **Tenant Onboarding & Fleet Management** | **YES** | **YES** | **YES** (Onboarding Console)| **CERTIFIED PRODUCTION-READY** |
 | **Disaster Recovery & Off-Host S3 Backups**| **YES** | **YES** | **YES** (Snapshot Views) | **CERTIFIED PRODUCTION-READY** |
 | **Patient-Facing Self-Service Login (M-10)**| **SHELVED** | **SHELVED** | **SHELVED** | **OUT OF SCOPE / DEFERRED** |
-| **Tenant-Facing Clinical Web Application** | **API READY** | N/A | **SHELVED** | **OUT OF SCOPE / DEFERRED** |

@@ -457,11 +457,14 @@ curl --fail --show-error https://<BASE_DOMAIN>/health
 curl --fail --show-error https://onboard.<BASE_DOMAIN>/docs
 ```
 
-Open `https://onboard.<BASE_DOMAIN>` for the onboarding console. A newly
-provisioned tenant URL is `https://<slug>.<BASE_DOMAIN>`; `/docs` is the API
-Swagger page, not a hospital user interface. Use a real browser check to
-confirm wildcard DNS, TLS, API health, onboarding authentication, tenant
-provisioning, tenant login, and database separation.
+Open `https://onboard.<BASE_DOMAIN>` for the SaaS onboarding console. A newly
+provisioned tenant URL is `https://<slug>.<BASE_DOMAIN>`, which serves the
+enterprise clinical workstation (`hospital-ui/dist`), connecting to the tenant API
+engine at `/api` and `/v1/api`. The clinical workstation provides all 9 clinical workspaces
+(Registration, ADT, Doctor Cockpit, Nursing Station, Emergency Board, Pharmacy, LIS, Billing, Admin),
+with cryptographic RBAC session binding and zero-chrome isolated thermal printing. Use a real browser
+check to confirm wildcard DNS, TLS, API health, onboarding authentication, tenant
+provisioning, clinical login, and database separation.
 
 ### Updates and rollback
 

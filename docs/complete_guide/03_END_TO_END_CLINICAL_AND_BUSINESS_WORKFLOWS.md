@@ -37,21 +37,27 @@ sequenceDiagram
 ```
 
 ### Detailed Workflow Stages:
-1. **Patient Registration & MPI Lookup:**
-   - If a patient is new, the clerk enters their demographic data. The system generates an immutable Medical Record Number (`MRN-YYYYMM-XXXXXX`).
+1. **Unified Patient Registration, MPI Lookup & Fast-Track Token Issue:**
+   - When a patient presents at the front desk, the clerk enters their demographic data. The system generates an immutable Medical Record Number (`MRN-YYYYMM-XXXXXX`) or resolves an existing identity via fuzzy MPI search.
+   - **Elimination of Navigation Fragmentation:** Unlike legacy systems where staff must register a patient on one screen and navigate to another to book a visit, Avinya HMS combines demographic entry, attending doctor selection, consultation fee collection, and OPD token generation into a single unified intake view (`PatientRegistrationWorkspace.tsx`).
    - Sensitive identifiers (Aadhaar number, mobile number, postal address) are encrypted at the column level using **AES-256-GCM**.
-   - If the patient has visited other hospitals in a corporate group, an audited cross-tenant MPI lookup (`/mpi/lookup`) can resolve the pointer record with mandatory justification.
+   - **DPDP Act 2023 Consent Collection:** Digital consent is captured under Section 6 with granular purpose binding.
+   - **Isolated Thermal Wristband Printing:** Immediate generation of waterproof 2D Datamatrix patient wristbands isolating `.print-wristband` without application chrome.
 2. **Triage & Vital Signs:**
    - The triage nurse records blood pressure, pulse rate, respiratory rate, and oxygen saturation.
-   - The system immediately evaluates these vitals against **NEWS2 early warning thresholds**. If the vitals indicate high clinical risk, an immediate alert is displayed.
+   - The system immediately evaluates these vitals against **NEWS2 early warning thresholds**. If the vitals indicate high clinical risk ($\ge 7$), an immediate alert modal triggers Rapid Response Team escalation.
 3. **Doctor Consultation & SOAP Documentation:**
    - The physician documents findings in structured **SOAP notes**:
      - *Subjective:* Chief complaints, patient history of present illness.
      - *Objective:* Physical examination findings, current vital signs.
      - *Assessment:* ICD-10 coded clinical diagnoses (e.g., `I10` Essential Hypertension, `E11` Type 2 Diabetes).
      - *Plan:* Prescriptions, diagnostic orders, and follow-up advice.
-4. **Prescription Safety Checks:**
-   - The moment the doctor adds a medication, the **Drug-Drug Interaction (DDI)** and **Drug-Disease Contraindication** engines execute synchronously before the order can be signed.
+4. **Prescription Safety Checks & CDS Radar:**
+   - The moment the doctor adds a medication, the **Clinical Decision Support (CDS) Radar** synchronously evaluates:
+     - **Drug-Drug Interactions (DDI):** Detects severe clashes (e.g. Sildenafil + Nitroglycerin ➔ severe hypotension).
+     - **Drug-Allergy Contraindications:** Clashes against documented allergies (e.g. Penicillin anaphylaxis).
+     - **Drug-Disease Contraindications:** Evaluates contraindications against active ICD-10 diagnoses.
+   - Hard contraindications require documented clinical justification before electronic signing.
 
 ---
 

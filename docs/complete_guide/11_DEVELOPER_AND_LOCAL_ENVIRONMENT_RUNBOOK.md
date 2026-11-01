@@ -138,8 +138,22 @@ docker compose up -d --build
 ```
 - In development mode, files in `backend/` are live-mounted into the containers. Any Python code changes trigger immediate Uvicorn reload.
 
-### Method C: Frontend UI Development (Hot Module Replacement)
-To develop the Nexus Control Plane React console:
+### Method C: Frontend Clinical Workstation Development (`hospital-ui`)
+To develop the enterprise clinical workstation:
+```bash
+cd hospital-ui
+npm install
+npm run dev
+```
+- The Vite dev server boots on `http://localhost:5173` (or `5174` if onboarding-ui is active).
+- Features live HMR, hotkeys (Cmd+K, Alt+1 to Alt+9), and the **Dev RBAC Role Simulator** pill in the top navbar for instant role switching without logging out.
+- To execute production bundle validation:
+```bash
+npm run build --prefix hospital-ui
+```
+
+### Method D: Onboarding Portal Development (`onboarding-ui`)
+To develop the Nexus Control Plane SaaS onboarding portal:
 ```bash
 cd onboarding-ui
 npm install
@@ -156,11 +170,11 @@ In development mode (`ENVIRONMENT=development`), interactive OpenAPI documentati
 
 | Application | Local URL | Description & Credentials |
 | :--- | :--- | :--- |
+| **Hospital Clinical UI**   | `http://127.0.0.1:5173/`     | React 18 hospital workstation (9 workspaces, RBAC, CCOW banner). |
 | **Hospital API Swagger UI** | `http://127.0.0.1:8000/docs` | Interactive API explorer for all 26 clinical domains. |
 | **Hospital API ReDoc**      | `http://127.0.0.1:8000/redoc`| Clean architectural schema documentation. |
 | **Control Plane Swagger UI**| `http://127.0.0.1:8080/docs` | Fleet provisioning, operator auth, and billing APIs. |
 | **Control Plane Console**   | `http://127.0.0.1:8080/`     | React 18 visual onboarding portal & pricing simulator. |
-| **Vite Dev Server (Frontend)**| `http://127.0.0.1:5173/`   | Live Vite HMR development server. |
 | **MLLP Lab Analyzer Socket**| `tcp://127.0.0.1:2575`       | Raw TCP socket receiving HL7 v2 `ORU^R01` messages. |
 
 ### 5.1 Authenticating & Testing Endpoints in Swagger UI (`/docs`):

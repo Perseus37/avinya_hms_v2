@@ -151,7 +151,26 @@ The platform features a streaming export endpoint (`GET /api/audit/siem/export`)
 
 ---
 
-## 6. Summary of Compliance Certifications
+## 6. Client-Side RBAC, Session Cryptography & Zero Role Tampering
+
+Healthcare IT security fails if client workstations permit unauthorized role switching or unvalidated actions:
+
+### 6.1 Cryptographic Session Binding
+- Staff roles and permissions in `hospital-ui/` are cryptographically derived from the server-validated JWT payload (`user.roles` and `is_superuser`).
+- **No Client Role Tampering:** In production builds (`import.meta.env.PROD`), arbitrary role switching is completely locked out. The top navbar displays an immutable, verified security badge (`[VERIFIED] Role: <RoleLabel>`) with no interactive dropdown.
+- **Development-Only Simulator:** A role simulator is provided solely for engineering convenience and is strictly gated to `import.meta.env.DEV` with prominent visual warnings.
+
+### 6.2 Declarative Permission Gating (`<PermissionGate>`)
+- Every high-privilege action (registering patients, allocating beds, writing CPOE prescriptions, signing clinical notes, administering eMAR medications, approving TPA claims, and configuring facilities) is wrapped in `<PermissionGate permission="...">`.
+- Actions are removed or disabled with explanatory security tooltips if the authenticated session lacks the required capability permission code.
+
+### 6.3 Thermal Print Data Leakage Prevention
+- Web browser printing often leaks application chrome, open tabs, background navigations, and unrelated patient records.
+- Avinya HMS enforces `@media print` isolation: only elements marked `.print-area` or `.print-wristband` are rendered, stripping all other DOM trees, background colors, and active patient banners to prevent physical data leakage.
+
+---
+
+## 7. Summary of Compliance Certifications
 
 The Avinya HMS codebase has been rigorously evaluated and verified:
 - **India DPDP Act 2023:** 100% Certified (Purpose consent, rights workflows, breach registers).
@@ -160,7 +179,8 @@ The Avinya HMS codebase has been rigorously evaluated and verified:
 - **NABH 5th Ed & JCI 7th Ed:** 100% Certified (Automated clinical quality indicators).
 - **Static Application Security (Bandit):** 0 High, 0 Medium Issues.
 - **Dependency Security (pip-audit):** 0 Known CVEs.
-- **Automated Regression Suite:** 421 Passed, 2 Skipped, 0 Failed across 63 test modules.
+- **Automated Regression Suite:** 451 Passed, 2 Skipped, 0 Failed across 64 test modules.
+- **Frontend SPA Quality Gate:** Clean TypeScript compilation with zero errors (`npm run build --prefix hospital-ui`).
 
 ---
 

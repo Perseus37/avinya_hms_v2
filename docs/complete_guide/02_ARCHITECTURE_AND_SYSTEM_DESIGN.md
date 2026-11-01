@@ -243,4 +243,31 @@ Every log entry emitted by the backend is structured JSON containing:
 
 ---
 
+## 7. Client Workstation SPA Architecture (`hospital-ui/`)
+
+The web frontend (`hospital-ui/`) is a React 18 / TypeScript single-page application engineered to deliver sub-millisecond local state transitions and eliminate cognitive load across hospital desks:
+
+### 7.1 Core State & Context Topology
+1. **`AuthContext`:** Governs session state, JWT refresh cycles, and user profile hydration (`authApi.getMe()`).
+2. **`PermissionsContext`:** Derives active user roles and permissions directly from JWT claims (`user.roles`), locking role switching in production and reserving simulation strictly for development (`import.meta.env.DEV`). Actions are gated declaratively via `<PermissionGate>`.
+3. **`HospitalConfigContext`:** Decouples facility layout from hardcoded source code. Provides live dynamic configuration of Campuses, Towers, Floors, Wards, 500+ Bed Matrices, Doctor Rosters, Tariffs, Letterheads, and Statutory Rules.
+4. **`ActivePatientContext`:** Maintains global patient safety synchronization (CCOW pattern), powering the persistent Patient Safety Banner across all clinical screens.
+
+### 7.2 Nine Dedicated Workspaces
+- `registration/` — Demographic intake, ABHA lookup, fast-track OPD token generation, and thermal wristband printing.
+- `adt/` — Inpatient admission, 500+ Bed Scale matrix, MLC Section 39 CrPC intimation, and TPA pre-auth.
+- `doctor/` — Longitudinal EMR, SOAP notes, CPOE 1-click order sets, and CDS drug-drug/allergy safety radar.
+- `nursing/` — Bedside eMAR administration grid, BCMA 2D barcode scan verification, NEWS2 calculation, and SBAR Kardex handover.
+- `triage/` — Emergency ESI 1–5 triage Kanban, Glasgow Coma Scale calculator, and Code Red mass casualty activation.
+- `pharmacy/` — CPOE formulary dispensing and Schedule H1 narcotics dual-witness perpetual vault.
+- `diagnostics/` — LIS phlebotomy accessioning, Code-128 tube barcodes, Panic Delta telephone read-back protocol, and DICOM PACS editor.
+- `billing/` — Inpatient folio aggregation, TPA cashless split allocator, multi-tender receipting, and GST tax invoicing.
+- `admin/` — 700+ multidimensional KPI cube explorer, statutory registers export, and Master Facility Builder console.
+
+### 7.3 Isolated Hardware Printing Architecture
+- Integrates specialized `@media print` CSS isolating `.print-area` and `.print-wristband`.
+- Automatically strips application chrome, sidebars, navbars, and dark theme backdrops to deliver clean black-and-white output on 2-inch continuous thermal rolls and standard A4/A5 clinical stationery.
+
+---
+
 *Proceed to [Chapter 3: End-to-End Clinical & Business Workflows](03_END_TO_END_CLINICAL_AND_BUSINESS_WORKFLOWS.md) to explore the clinical journey from registration to discharge.*
