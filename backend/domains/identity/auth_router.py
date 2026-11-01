@@ -10,6 +10,7 @@ clinical and operational modules.
 from collections import defaultdict
 import base64
 import hashlib
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -473,6 +474,63 @@ def oauth2_token(
 def get_logged_in_user(current_user: User = Depends(get_current_user)):
     """Return the currently authenticated user record without exposing secrets."""
     return current_user
+
+
+class UserPreferences(BaseModel):
+    default_workspace: Optional[str] = Field(default="doctor", max_length=50)
+    theme: Optional[str] = Field(default="dark", max_length=20)
+    default_ward_id: Optional[int] = None
+    default_department_id: Optional[int] = None
+
+
+@router.post("/session/refresh")
+def refresh_session(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Refreshes the active session token for the authenticated user, extending session continuity
+    for clinical workstations without losing in-flight form data.
+    """
+    tenant = resolve_tenant_context(request)
+    new_token = _issue_access_session(current_user, tenant, db)
+    db.commit()
+    return {"access_token": new_token, "token_type": "bearer"}
+
+
+@router.get("/me/preferences", response_model=UserPreferences)
+def get_user_preferences(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    redis_client=Depends(get_redis),
+):
+    """Returns stored UI workspace preferences for the authenticated user."""
+    tenant = resolve_tenant_context(request)
+    key = f"user_prefs:{tenant.subdomain_slug}:{current_user.id}"
+    raw = redis_client.get(key) if redis_client else None
+    if raw:
+        try:
+            data = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+            return UserPreferences(**data)
+        except Exception:
+            pass
+    return UserPreferences()
+
+
+@router.patch("/me/preferences", response_model=UserPreferences)
+def update_user_preferences(
+    payload: UserPreferences,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    redis_client=Depends(get_redis),
+):
+    """Updates stored UI workspace preferences for the authenticated user."""
+    tenant = resolve_tenant_context(request)
+    key = f"user_prefs:{tenant.subdomain_slug}:{current_user.id}"
+    if redis_client:
+        redis_client.set(key, json.dumps(payload.model_dump()))
+    return payload
 
 
 @router.post("/logout")
