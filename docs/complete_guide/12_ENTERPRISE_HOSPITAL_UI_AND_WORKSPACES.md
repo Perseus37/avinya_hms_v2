@@ -204,3 +204,4 @@ Every sensitive button, tab, and input in the UI is gated by `<PermissionGate>`:
 - `config.facility_manage`
 
 Unauthorized actions are cleanly removed or disabled with tooltip explanation, preventing unauthorized state mutations.
+
