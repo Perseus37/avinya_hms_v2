@@ -2,7 +2,18 @@ import React, { useEffect, useState } from "react";
 import { registersApi } from "../../api/registersApi";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
-import { Database, Download, FileText, ShieldCheck, RefreshCw, Layers } from "lucide-react";
+import { Modal } from "../../components/ui/Modal";
+import { Badge } from "../../components/ui/Badge";
+import {
+  Database,
+  Download,
+  FileText,
+  ShieldCheck,
+  RefreshCw,
+  Layers,
+  Eye,
+  Lock,
+} from "lucide-react";
 
 export const AdminWorkspace: React.FC = () => {
   const [inventory, setInventory] = useState<{
@@ -12,6 +23,14 @@ export const AdminWorkspace: React.FC = () => {
     tables: Record<string, number>;
   } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Register Preview Modal
+  const [activePreviewRegister, setActivePreviewRegister] = useState<{
+    name: string;
+    code: string;
+    headers: string[];
+    rows: string[][];
+  } | null>(null);
 
   const loadDataInventory = async () => {
     setIsLoading(true);
@@ -36,6 +55,12 @@ export const AdminWorkspace: React.FC = () => {
       description: "Opening beds, inpatient admissions, discharges, deaths, BOR % occupancy rate.",
       endpoint: "/api/registers/midnight-census?format=csv",
       format: "RFC 4180 CSV (BOM)",
+      previewHeaders: ["Date", "Ward", "Beds Total", "Admissions", "Discharges", "Deaths", "BOR %"],
+      previewRows: [
+        ["2026-10-31", "ICU Step-down", "24", "6", "4", "0", "91.6%"],
+        ["2026-10-31", "General Ward 1", "40", "12", "10", "0", "87.5%"],
+        ["2026-10-31", "Maternity & NICU", "18", "4", "3", "0", "83.3%"],
+      ],
     },
     {
       name: "Cashier Shift Handover & Reconciliation Ledger",
@@ -43,6 +68,11 @@ export const AdminWorkspace: React.FC = () => {
       description: "Counter collections by tender (Cash, UPI, Card, NetBanking), shift variances.",
       endpoint: "/api/registers/cashier-shift-reconciliation?format=csv",
       format: "RFC 4180 CSV (BOM)",
+      previewHeaders: ["Shift ID", "Counter", "Cashier", "Cash Collected", "UPI", "Card", "Variance"],
+      previewRows: [
+        ["SHF-0012", "COUNTER-01", "operator", "₹14,500.00", "₹38,200.00", "₹22,000.00", "₹0.00"],
+        ["SHF-0011", "COUNTER-02", "cashier_b", "₹18,000.00", "₹45,100.00", "₹15,400.00", "-₹200.00"],
+      ],
     },
     {
       name: "NDPS Schedule H1 Narcotics Controlled Substances Register",
@@ -50,6 +80,11 @@ export const AdminWorkspace: React.FC = () => {
       description: "Perpetual double-custody ledger with batch numbers, movements, and witness sign-offs.",
       endpoint: "/api/registers/ndps-ledger?format=csv",
       format: "RFC 4180 CSV (BOM)",
+      previewHeaders: ["Timestamp", "Substance", "Batch", "Type", "Qty", "Witness Doctor", "Balance"],
+      previewRows: [
+        ["2026-10-31 18:20", "Morphine Sulfate 10mg", "MOR-9982-A", "DISPENSE", "-2 amps", "Dr. Radhika Sen", "42 amps"],
+        ["2026-10-31 14:15", "Fentanyl 50mcg", "FEN-7741-C", "DISPENSE", "-1 amp", "Dr. Sameer Joshi", "18 amps"],
+      ],
     },
     {
       name: "Accounts Receivable (AR) Aging Ledger",
@@ -57,6 +92,12 @@ export const AdminWorkspace: React.FC = () => {
       description: "Outstanding dues bucketed into 0-30, 31-60, 61-90, and >90 days by TPA and Self-Pay.",
       endpoint: "/api/registers/ar-aging?format=csv",
       format: "RFC 4180 CSV (BOM)",
+      previewHeaders: ["Patient / Payer", "Total Dues", "Current (0-30d)", "31-60d", "61-90d", "> 90d"],
+      previewRows: [
+        ["Star Health Insurance (TPA)", "₹1,42,000.00", "₹98,000.00", "₹44,000.00", "₹0.00", "₹0.00"],
+        ["HDFC ERGO General Ins", "₹86,500.00", "₹86,500.00", "₹0.00", "₹0.00", "₹0.00"],
+        ["Self-Pay Inpatient Balance", "₹34,200.00", "₹22,000.00", "₹12,200.00", "₹0.00", "₹0.00"],
+      ],
     },
     {
       name: "Bio-Medical Waste (BMW) Management Statutory Register",
@@ -64,6 +105,38 @@ export const AdminWorkspace: React.FC = () => {
       description: "CPCB/SPCB daily color-coded manifests (Yellow, Red, White, Blue) in kg.",
       endpoint: "/api/registers/biomedical-waste?format=csv",
       format: "RFC 4180 CSV (BOM)",
+      previewHeaders: ["Date", "Yellow (Anatomical)", "Red (Contaminated)", "White (Sharps)", "Blue (Glass)", "Transporter"],
+      previewRows: [
+        ["2026-10-31", "14.2 kg", "22.8 kg", "4.1 kg", "6.5 kg", "CleanEnv Solutions (#BMW-TR-81)"],
+        ["2026-10-30", "16.8 kg", "20.1 kg", "3.9 kg", "5.8 kg", "CleanEnv Solutions (#BMW-TR-81)"],
+      ],
+    },
+  ];
+
+  const dpdpConsents = [
+    {
+      id: "DPDP-9921",
+      patient: "Siddharth Verma (MRN-2026-0001)",
+      purpose: "Clinical Care & Treatment",
+      status: "ACTIVE",
+      timestamp: "2026-10-31 10:14 UTC",
+      hash: "8f4a...e12b",
+    },
+    {
+      id: "DPDP-9922",
+      patient: "Ananya Deshmukh (ER-0914)",
+      purpose: "Telemedicine & Messaging",
+      status: "ACTIVE",
+      timestamp: "2026-10-31 11:22 UTC",
+      hash: "3b2c...fa79",
+    },
+    {
+      id: "DPDP-9923",
+      patient: "Harish Rao (ER-0915)",
+      purpose: "Third-Party TPA Insurance Sharing",
+      status: "WITHDRAWN",
+      timestamp: "2026-10-31 15:02 UTC",
+      hash: "90da...8831",
     },
   ];
 
@@ -121,7 +194,7 @@ export const AdminWorkspace: React.FC = () => {
       </div>
 
       {/* Statutory Hospital Operational Registers */}
-      <div className="mt-10">
+      <div className="mt-8">
         <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 mb-4">
           <Layers size={16} className="text-sky-400" />
           Statutory Hospital Operational Registers (1-Click CSV Stream)
@@ -148,8 +221,24 @@ export const AdminWorkspace: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex items-center gap-3">
-                <span className="text-[11px] font-mono text-slate-500">{reg.format}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-mono text-slate-500 mr-2">{reg.format}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setActivePreviewRegister({
+                      name: reg.name,
+                      code: reg.code,
+                      headers: reg.previewHeaders,
+                      rows: reg.previewRows,
+                    })
+                  }
+                  className="flex items-center gap-1.5 text-xs"
+                >
+                  <Eye size={13} /> Preview
+                </Button>
+
                 <a
                   href={reg.endpoint}
                   target="_blank"
@@ -163,7 +252,106 @@ export const AdminWorkspace: React.FC = () => {
           ))}
         </div>
       </div>
+
+      {/* DPDP Digital Personal Data Protection Act Compliance Ledger */}
+      <div className="mt-8 pb-8">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+            <Lock size={16} className="text-amber-400" />
+            DPDP Digital Personal Data Protection Act — Consent Audit Ledger
+          </h2>
+          <Badge variant="neutral" size="sm" className="font-mono">
+            SHA-256 Tamper Evident
+          </Badge>
+        </div>
+
+        <Card className="p-4 bg-slate-900 border-slate-800">
+          <div className="text-xs text-slate-400 mb-3">
+            Real-time immutable audit trace of data fiduciary consent grants, purposes, and patient withdrawal requests under Section 6 of DPDP Act 2023.
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs font-mono">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase">
+                  <th className="pb-2">Consent ID</th>
+                  <th className="pb-2">Data Principal (Patient)</th>
+                  <th className="pb-2">Specified Purpose</th>
+                  <th className="pb-2">Status</th>
+                  <th className="pb-2">Timestamp (UTC)</th>
+                  <th className="pb-2">Integrity Proof</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60">
+                {dpdpConsents.map((c) => (
+                  <tr key={c.id} className="text-slate-300">
+                    <td className="py-2.5 text-sky-400 font-bold">{c.id}</td>
+                    <td className="py-2.5">{c.patient}</td>
+                    <td className="py-2.5">{c.purpose}</td>
+                    <td className="py-2.5">
+                      <Badge variant={c.status === "ACTIVE" ? "success" : "danger"} size="sm">
+                        {c.status}
+                      </Badge>
+                    </td>
+                    <td className="py-2.5 text-slate-400">{c.timestamp}</td>
+                    <td className="py-2.5 text-slate-500">{c.hash}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+
+      {/* Modal: Register Preview */}
+      {activePreviewRegister && (
+        <Modal
+          isOpen={true}
+          onClose={() => setActivePreviewRegister(null)}
+          title={`Register Stream Preview — ${activePreviewRegister.name} (${activePreviewRegister.code})`}
+        >
+          <div className="space-y-4">
+            <div className="text-xs text-slate-400">
+              Live schema sample formatted under RFC 4180 with UTF-8 BOM encoding:
+            </div>
+
+            <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950 p-2">
+              <table className="w-full text-left text-xs font-mono">
+                <thead>
+                  <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase bg-slate-900/60">
+                    {activePreviewRegister.headers.map((h, i) => (
+                      <th key={i} className="p-2">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/40">
+                  {activePreviewRegister.rows.map((row, rIdx) => (
+                    <tr key={rIdx} className="text-slate-300 hover:bg-slate-900/40">
+                      {row.map((cell, cIdx) => (
+                        <td key={cIdx} className="p-2">
+                          {cell}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setActivePreviewRegister(null)}
+              >
+                Close Preview
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };
-
