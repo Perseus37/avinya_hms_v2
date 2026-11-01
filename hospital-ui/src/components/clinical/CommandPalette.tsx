@@ -31,6 +31,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     { id: "nursing", label: "Ward Nursing Station & eMAR", shortcut: "N", altShortcut: "Alt+4" },
     { id: "triage", label: "Emergency & ED Triage Board", shortcut: "E", altShortcut: "Alt+5" },
     { id: "surgery", label: "Operating Theatre (OT) & Surgical Suite", shortcut: "S", altShortcut: "Alt+S" },
+    { id: "blood-bank", label: "Blood Bank & Transfusion Medicine", shortcut: "BB", altShortcut: "Alt+B" },
     { id: "billing", label: "Billing & Cashier Settlement", shortcut: "B", altShortcut: "Alt+6" },
     { id: "pharmacy", label: "Pharmacy & NDPS Register", shortcut: "P", altShortcut: "Alt+7" },
     { id: "diagnostics", label: "Diagnostics & Laboratory LIS", shortcut: "L", altShortcut: "Alt+8" },

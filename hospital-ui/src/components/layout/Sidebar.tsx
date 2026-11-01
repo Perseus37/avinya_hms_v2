@@ -14,6 +14,7 @@ import {
   User,
   Clock,
   Scissors,
+  Droplet,
 } from "lucide-react";
 import { WorkspaceId } from "../../types";
 import { usePermissions } from "../../core/context/PermissionsContext";
@@ -44,6 +45,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: "nursing", label: "Ward Nursing", icon: BedDouble, shortcut: "Alt+4" },
     { id: "triage", label: "ED Triage", icon: Siren, shortcut: "Alt+5", badge: "Trauma" },
     { id: "surgery", label: "Surgery & OT Suite", icon: Scissors, shortcut: "Alt+S", badge: "OT" },
+    { id: "blood-bank", label: "Blood Bank", icon: Droplet, shortcut: "Alt+B", badge: "Live" },
     { id: "pharmacy", label: "Pharmacy & NDPS", icon: Pill, shortcut: "Alt+6" },
     { id: "diagnostics", label: "Diagnostics & LIS", icon: Microscope, shortcut: "Alt+7" },
     { id: "billing", label: "Cashier Billing", icon: CreditCard, shortcut: "Alt+8" },
