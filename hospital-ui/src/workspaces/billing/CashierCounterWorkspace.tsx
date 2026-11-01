@@ -17,6 +17,7 @@ import {
   PlusCircle,
   Trash2,
   QrCode,
+  ShieldCheck,
 } from "lucide-react";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 
@@ -84,6 +85,7 @@ export const CashierCounterWorkspace: React.FC = () => {
   const [newItemCategory, setNewItemCategory] = useState<"Consultation" | "Bed Charge" | "Diagnostics" | "Pharmacy" | "Procedure">("Diagnostics");
   const [newItemPrice, setNewItemPrice] = useState("850");
   const [newItemQty, setNewItemQty] = useState("1");
+  const [folioFilter, setFolioFilter] = useState<"ALL" | "Consultation" | "Bed Charge" | "Diagnostics" | "Pharmacy" | "Procedure">("ALL");
 
   // Payment Settlement State
   const [isSettlementModalOpen, setIsSettlementModalOpen] = useState(false);
@@ -332,14 +334,61 @@ export const CashierCounterWorkspace: React.FC = () => {
         </Card>
       </div>
 
+      {/* TPA Insurance Pre-Authorization & Co-Pay Card */}
+      <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-3 mt-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ShieldCheck size={16} className="text-emerald-400" />
+            <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+              TPA Insurance Pre-Authorization &amp; Co-Pay Allocation
+            </span>
+          </div>
+          <Badge variant="success" size="sm">Pre-Auth Sanctioned</Badge>
+        </div>
+
+        <div className="grid grid-cols-4 gap-4 text-xs font-mono">
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+            <span className="text-slate-400 block text-[10px] uppercase">Insurance TPA</span>
+            <span className="text-slate-100 font-bold">Star Health &amp; Allied</span>
+            <div className="text-[10px] text-slate-500">Claim #TPA-2026-9812</div>
+          </div>
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+            <span className="text-slate-400 block text-[10px] uppercase">Sanctioned Limit</span>
+            <span className="text-emerald-400 font-bold text-sm">₹1,50,000.00</span>
+            <div className="text-[10px] text-slate-500">Cashless Approved</div>
+          </div>
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+            <span className="text-slate-400 block text-[10px] uppercase">Policy Co-Pay (10%)</span>
+            <span className="text-amber-400 font-bold text-sm">₹15,000.00</span>
+            <div className="text-[10px] text-slate-500">Patient Share Payable</div>
+          </div>
+          <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex flex-col justify-between">
+            <span className="text-slate-400 block text-[10px] uppercase">Net Insurer Liability</span>
+            <span className="text-sky-400 font-bold text-sm">₹1,35,000.00</span>
+            <button
+              type="button"
+              onClick={() => {
+                const total = totalBillAmount;
+                const tpaCoverage = Math.min(135000, total * 0.9);
+                setTpaClaimTendered(tpaCoverage.toFixed(2));
+                setCashTendered((total - tpaCoverage).toFixed(2));
+              }}
+              className="mt-1 text-[10px] font-bold text-sky-400 hover:text-sky-300 underline text-left"
+            >
+              Auto-Split to Folio
+            </button>
+          </div>
+        </div>
+      </Card>
+
       {/* Main Billing Workspace: Charge Entry & Folio */}
-      <div className="mt-8 grid grid-cols-3 gap-6">
+      <div className="mt-6 grid grid-cols-3 gap-6">
         {/* Left 2 Cols: Charge Entry Table */}
         <div className="col-span-2 space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">
-                Patient Bill Folio & Charge Items
+                Patient Bill Folio &amp; Charge Items
               </h2>
               <Badge variant="neutral" size="sm">
                 Patient: {patientSummary?.full_name || "Siddharth Verma"} ({patientSummary?.mrn || "MRN-2026-0001"})
@@ -356,6 +405,27 @@ export const CashierCounterWorkspace: React.FC = () => {
             </Button>
           </div>
 
+          {/* Folio Category Filter Tabs */}
+          <div className="flex items-center gap-1.5">
+            {(["ALL", "Consultation", "Bed Charge", "Diagnostics", "Pharmacy", "Procedure"] as const).map((cat) => {
+              const count = cat === "ALL" ? billItems.length : billItems.filter((i) => i.category === cat).length;
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setFolioFilter(cat)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                    folioFilter === cat
+                      ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                      : "bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800"
+                  }`}
+                >
+                  {cat} ({count})
+                </button>
+              );
+            })}
+          </div>
+
           <Card className="p-0 bg-slate-900 border-slate-800 overflow-hidden">
             <table className="w-full text-left text-xs font-mono">
               <thead>
@@ -370,7 +440,7 @@ export const CashierCounterWorkspace: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
-                {billItems.map((item) => {
+                {(folioFilter === "ALL" ? billItems : billItems.filter((i) => i.category === folioFilter)).map((item) => {
                   const lineTotal = item.unitPrice * item.quantity * (1 + item.gstRate / 100);
                   return (
                     <tr key={item.id} className="hover:bg-slate-950/40">
