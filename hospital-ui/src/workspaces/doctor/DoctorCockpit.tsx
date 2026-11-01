@@ -7,7 +7,22 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Modal } from "../../components/ui/Modal";
-import { Clock, Stethoscope, RefreshCw, PlusCircle, Trash2, CheckCircle2, Printer, FileText } from "lucide-react";
+import {
+  Clock,
+  Stethoscope,
+  RefreshCw,
+  PlusCircle,
+  Trash2,
+  CheckCircle2,
+  Printer,
+  FileText,
+  AlertTriangle,
+  Zap,
+  TrendingUp,
+  History,
+  Activity,
+  ShieldAlert,
+} from "lucide-react";
 
 interface PrescribedMedication {
   id: string;
@@ -16,7 +31,8 @@ interface PrescribedMedication {
   frequency: string;
   duration: string;
   instructions: string;
-  ddiStatus: "SAFE" | "CAUTION";
+  ddiStatus: "SAFE" | "CAUTION" | "CRITICAL";
+  ddiWarning?: string;
 }
 
 interface PrescribedTest {
@@ -27,9 +43,19 @@ interface PrescribedTest {
 }
 
 export const DoctorCockpit: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<"consultation" | "history" | "trends">("consultation");
   const [queue, setQueue] = useState<DoctorQueueSummary | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const { selectPatient, patientSummary } = useActivePatient();
+
+  // Selected Appointment State
+  const [selectedAppointmentId, setSelectedAppointmentId] = useState<number | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [completionBanner, setCompletionBanner] = useState<{
+    patientName: string;
+    tokenNumber: number;
+    timestamp: string;
+  } | null>(null);
 
   // SOAP State
   const [subjective, setSubjective] = useState("Patient presents with intermittent low-grade fever for 3 days and dry irritating cough. No chest tightness, no hemoptysis.");
@@ -67,10 +93,16 @@ export const DoctorCockpit: React.FC = () => {
     },
   ]);
 
+  // CDS Clinical Override State
+  const [isOverrideModalOpen, setIsOverrideModalOpen] = useState(false);
+  const [overrideRationale, setOverrideRationale] = useState("Clinical benefit outweighs minor interaction risk; monitoring renal and cardiac parameters.");
+  const [isOverrideDocumented, setIsOverrideDocumented] = useState(false);
+
   // Modal States
   const [isAddDrugModalOpen, setIsAddDrugModalOpen] = useState(false);
   const [isAddTestModalOpen, setIsAddTestModalOpen] = useState(false);
   const [isSummarySlipOpen, setIsSummarySlipOpen] = useState(false);
+  const [orderSetToast, setOrderSetToast] = useState<string | null>(null);
 
   // Add Drug Form State
   const [drugName, setDrugName] = useState("Azithromycin 500mg Tablet");
@@ -88,10 +120,89 @@ export const DoctorCockpit: React.FC = () => {
     "J06.9 - Acute upper respiratory infection, unspecified",
     "I10 - Essential (primary) hypertension",
     "E11.9 - Type 2 diabetes mellitus without complications",
+    "I21.9 - Acute myocardial infarction, unspecified (STEMI/NSTEMI)",
+    "A90 - Dengue fever [classical dengue]",
     "K21.9 - Gastro-esophageal reflux disease without esophagitis",
     "M54.5 - Low back pain, unspecified",
     "A09 - Infectious gastroenteritis and colitis, unspecified",
+    "Z01.811 - Encounter for preprocedural cardiovascular examination",
   ];
+
+  // 1-Click Order Sets Definition
+  const orderSets = [
+    {
+      id: "acs",
+      name: "ACS / Chest Pain Protocol",
+      icon: "🫀",
+      icd10: "I21.9 - Acute myocardial infarction, unspecified (STEMI/NSTEMI)",
+      meds: [
+        { id: `med-${Date.now()}-1`, name: "Tab. Aspirin 300mg (STAT)", dosage: "300mg", frequency: "STAT (Immediate)", duration: "1 dose", instructions: "Chewable", ddiStatus: "CAUTION" as const, ddiWarning: "Antithrombotic therapy: monitor for bleeding" },
+        { id: `med-${Date.now()}-2`, name: "Tab. Clopidogrel 300mg (STAT)", dosage: "300mg", frequency: "STAT (Immediate)", duration: "1 dose", instructions: "Oral", ddiStatus: "CAUTION" as const, ddiWarning: "Dual antiplatelet bleeding precaution" },
+        { id: `med-${Date.now()}-3`, name: "Tab. Atorvastatin 80mg", dosage: "80mg", frequency: "OD (Once daily)", duration: "30 days", instructions: "At bedtime", ddiStatus: "SAFE" as const },
+        { id: `med-${Date.now()}-4`, name: "Tab. Nitroglycerin 0.5mg Sublingual", dosage: "0.5mg", frequency: "SOS (If chest pain persists)", duration: "3 doses max", instructions: "Under tongue, 5m apart", ddiStatus: "SAFE" as const },
+      ],
+      tests: [
+        { id: `test-${Date.now()}-1`, name: "12-Lead Electrocardiogram (ECG) STAT", category: "Radiology" as const, priority: "STAT" as const },
+        { id: `test-${Date.now()}-2`, name: "Serum High-Sensitivity Troponin I Quantitative", category: "Biochemistry" as const, priority: "STAT" as const },
+        { id: `test-${Date.now()}-3`, name: "CK-MB Mass Quantitative", category: "Biochemistry" as const, priority: "STAT" as const },
+      ],
+    },
+    {
+      id: "dengue",
+      name: "Dengue Febrile Protocol",
+      icon: "🩸",
+      icd10: "A90 - Dengue fever [classical dengue]",
+      meds: [
+        { id: `med-${Date.now()}-1`, name: "IV Normal Saline 0.9%", dosage: "500ml", frequency: "100ml/hr Infusion", duration: "24 hours", instructions: "Maintenance hydration", ddiStatus: "SAFE" as const },
+        { id: `med-${Date.now()}-2`, name: "Tab. Paracetamol 650mg", dosage: "650mg", frequency: "TDS (Thrice daily)", duration: "5 days", instructions: "Strict avoidance of NSAIDs", ddiStatus: "SAFE" as const },
+      ],
+      tests: [
+        { id: `test-${Date.now()}-1`, name: "Complete Blood Count (CBC) with Platelet Count STAT", category: "Hematology" as const, priority: "STAT" as const },
+        { id: `test-${Date.now()}-2`, name: "Dengue NS1 Antigen ELISA", category: "Microbiology" as const, priority: "STAT" as const },
+        { id: `test-${Date.now()}-3`, name: "Dengue IgM / IgG Antibodies", category: "Microbiology" as const, priority: "ROUTINE" as const },
+      ],
+    },
+    {
+      id: "dm",
+      name: "Type 2 Diabetes Review",
+      icon: "🩺",
+      icd10: "E11.9 - Type 2 diabetes mellitus without complications",
+      meds: [
+        { id: `med-${Date.now()}-1`, name: "Tab. Metformin 500mg SR", dosage: "500mg", frequency: "BD (Twice daily)", duration: "90 days", instructions: "With main meals", ddiStatus: "SAFE" as const },
+        { id: `med-${Date.now()}-2`, name: "Tab. Glimepiride 1mg", dosage: "1mg", frequency: "OD (Once daily)", duration: "90 days", instructions: "Before breakfast", ddiStatus: "SAFE" as const },
+      ],
+      tests: [
+        { id: `test-${Date.now()}-1`, name: "Glycated Hemoglobin (HbA1c)", category: "Biochemistry" as const, priority: "ROUTINE" as const },
+        { id: `test-${Date.now()}-2`, name: "Fasting & Postprandial Blood Glucose", category: "Biochemistry" as const, priority: "ROUTINE" as const },
+        { id: `test-${Date.now()}-3`, name: "Lipid Profile & Serum Creatinine", category: "Biochemistry" as const, priority: "ROUTINE" as const },
+      ],
+    },
+    {
+      id: "preop",
+      name: "Pre-Operative Clearance",
+      icon: "🦴",
+      icd10: "Z01.811 - Encounter for preprocedural cardiovascular examination",
+      meds: [],
+      tests: [
+        { id: `test-${Date.now()}-1`, name: "Blood Grouping & Rh Typing with Crossmatch 2 Units", category: "Hematology" as const, priority: "ROUTINE" as const },
+        { id: `test-${Date.now()}-2`, name: "Coagulation Profile (PT / INR & aPTT)", category: "Hematology" as const, priority: "ROUTINE" as const },
+        { id: `test-${Date.now()}-3`, name: "Chest X-Ray PA View", category: "Radiology" as const, priority: "ROUTINE" as const },
+        { id: `test-${Date.now()}-4`, name: "12-Lead Resting ECG", category: "Radiology" as const, priority: "ROUTINE" as const },
+      ],
+    },
+  ];
+
+  const applyOrderSet = (bundle: typeof orderSets[0]) => {
+    setSelectedIcd10(bundle.icd10);
+    if (bundle.meds.length > 0) {
+      setMedications(bundle.meds);
+    }
+    if (bundle.tests.length > 0) {
+      setDiagnosticOrders(bundle.tests);
+    }
+    setOrderSetToast(`Order Set Applied: ${bundle.name}`);
+    setTimeout(() => setOrderSetToast(null), 4000);
+  };
 
   const loadQueue = async () => {
     setIsLoading(true);
@@ -143,14 +254,6 @@ export const DoctorCockpit: React.FC = () => {
   const handleRemoveTest = (id: string) => {
     setDiagnosticOrders((prev) => prev.filter((t) => t.id !== id));
   };
-
-  const [selectedAppointmentId, setSelectedAppointmentId] = useState<number | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [completionBanner, setCompletionBanner] = useState<{
-    patientName: string;
-    tokenNumber: number;
-    timestamp: string;
-  } | null>(null);
 
   const handleSelectAppointment = async (appt: {
     appointment_id: number;
@@ -234,6 +337,14 @@ export const DoctorCockpit: React.FC = () => {
       setCompletionBanner(null);
     }
   };
+
+  // Evaluate DDI & Allergy Safety Radar
+  const hasMultipleAntithrombotics =
+    medications.some((m) => m.name.toLowerCase().includes("aspirin")) &&
+    medications.some((m) => m.name.toLowerCase().includes("clopidogrel"));
+  const hasBetaLactamAllergyClash =
+    (patientSummary?.critical_allergies?.some((a) => a.allergen.toLowerCase().includes("penicillin")) ?? false) &&
+    medications.some((m) => m.name.toLowerCase().includes("amoxicillin") || m.name.toLowerCase().includes("ceftriaxone"));
 
   return (
     <div className="flex-1 flex overflow-hidden">
@@ -374,6 +485,17 @@ export const DoctorCockpit: React.FC = () => {
           </div>
         )}
 
+        {/* Order Set Application Toast */}
+        {orderSetToast && (
+          <div className="mb-4 p-3 rounded-xl bg-sky-950/50 border border-sky-500/80 flex items-center justify-between text-xs font-mono text-sky-200 animate-fadeIn">
+            <div className="flex items-center gap-2">
+              <Zap size={16} className="text-sky-400" />
+              <span>{orderSetToast}</span>
+            </div>
+            <span className="text-[10px] text-sky-400">CPOE Bundle Loaded</span>
+          </div>
+        )}
+
         {patientSummary ? (
           <div className="space-y-6 max-w-5xl">
             {/* Header / Active Encounter Status */}
@@ -389,7 +511,7 @@ export const DoctorCockpit: React.FC = () => {
               </div>
               <div className="flex items-center gap-3">
                 <Button variant="primary" size="sm" onClick={handleFinalizeEncounter} className="flex items-center gap-1.5">
-                  <FileText size={14} /> Finalize & Sign Slip
+                  <FileText size={14} /> Finalize &amp; Sign Slip
                 </Button>
               </div>
             </div>
@@ -426,136 +548,366 @@ export const DoctorCockpit: React.FC = () => {
               </Card>
             </div>
 
-            {/* Diagnosis (ICU-10) Picker */}
-            <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-2">
-              <label className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
-                Primary Diagnosis (ICD-10-CM)
-              </label>
-              <select
-                value={selectedIcd10}
-                onChange={(e) => setSelectedIcd10(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
+            {/* Clinical Perspectives Sub-Tabs */}
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+              <button
+                type="button"
+                onClick={() => setActiveTab("consultation")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                  activeTab === "consultation"
+                    ? "bg-sky-500/10 text-sky-400 border border-sky-500/30"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+                }`}
               >
-                {commonIcd10List.map((icd, idx) => (
-                  <option key={idx} value={icd}>
-                    {icd}
-                  </option>
-                ))}
-              </select>
+                <Stethoscope size={14} /> Active Consultation &amp; CPOE
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("history")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                  activeTab === "history"
+                    ? "bg-sky-500/10 text-sky-400 border border-sky-500/30"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+                }`}
+              >
+                <History size={14} /> Longitudinal Patient History
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("trends")}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+                  activeTab === "trends"
+                    ? "bg-sky-500/10 text-sky-400 border border-sky-500/30"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+                }`}
+              >
+                <TrendingUp size={14} /> Vitals &amp; Lab Trends
+              </button>
             </div>
 
-            {/* Soap Notes & Prescriptions Pad */}
-            <div className="grid grid-cols-2 gap-6">
-              {/* Clinical Notes */}
-              <div className="space-y-4">
-                <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Consultation Notes (SOAP)</h3>
-                <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1">Subjective / Chief Complaint</label>
-                  <textarea
-                    rows={4}
-                    value={subjective}
-                    onChange={(e) => setSubjective(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-400 mb-1">Assessment & Clinical Plan</label>
-                  <textarea
-                    rows={4}
-                    value={assessment}
-                    onChange={(e) => setAssessment(e.target.value)}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500"
-                  />
-                </div>
-              </div>
-
-              {/* Medication Orders & Diagnostics */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Prescriptions (eRx)</h3>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setIsAddDrugModalOpen(true)}
-                    className="text-xs text-sky-400 flex items-center gap-1"
-                  >
-                    <PlusCircle size={13} /> Add Drug
-                  </Button>
-                </div>
-
-                <div className="border border-slate-800 rounded-lg bg-slate-900 p-3 space-y-2">
-                  {medications.length === 0 ? (
-                    <div className="text-xs text-slate-500 py-3 text-center">No medications prescribed.</div>
-                  ) : (
-                    medications.map((med) => (
-                      <div
-                        key={med.id}
-                        className="flex items-center justify-between p-2.5 rounded bg-slate-950 border border-slate-800 text-xs"
+            {/* TAB 1: ACTIVE CONSULTATION & CPOE */}
+            {activeTab === "consultation" && (
+              <div className="space-y-6">
+                {/* 1-Click Order Sets / Clinical Protocol Bundles Bar */}
+                <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Zap size={14} className="text-amber-400" /> Evidence-Based 1-Click Order Sets (CPOE Bundles)
+                    </span>
+                    <span className="text-[11px] text-slate-500 font-mono">Auto-populates Diagnosis, e-Rx &amp; Diagnostic Orders</span>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-1">
+                    {orderSets.map((bundle) => (
+                      <button
+                        key={bundle.id}
+                        type="button"
+                        onClick={() => applyOrderSet(bundle)}
+                        className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 hover:border-sky-500 hover:bg-slate-900 text-left transition-all group flex items-center gap-2.5"
                       >
+                        <span className="text-lg">{bundle.icon}</span>
                         <div>
-                          <div className="font-semibold text-slate-200">{med.name}</div>
-                          <div className="text-slate-400 text-[11px]">
-                            {med.dosage} • {med.frequency} • {med.duration}
+                          <div className="text-xs font-bold text-slate-200 group-hover:text-sky-400 transition-colors">
+                            {bundle.name}
                           </div>
-                          <div className="text-slate-500 text-[10px] italic">{med.instructions}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            {bundle.meds.length} Meds • {bundle.tests.length} Labs
+                          </div>
                         </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* CDS Clinical Decision Support & Drug Safety Radar */}
+                {(hasMultipleAntithrombotics || hasBetaLactamAllergyClash) && (
+                  <div className="p-4 rounded-xl bg-amber-950/30 border border-amber-600/70 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                        <AlertTriangle size={15} className="text-amber-400" />
+                        Clinical Decision Support (CDS) Safety Alert
+                      </span>
+                      <Badge variant="warning" size="sm">
+                        {isOverrideDocumented ? "OVERRIDE DOCUMENTED" : "ACTION REQUIRED"}
+                      </Badge>
+                    </div>
+
+                    <div className="space-y-1 text-xs font-mono text-amber-200">
+                      {hasMultipleAntithrombotics && (
                         <div className="flex items-center gap-2">
-                          <Badge variant="success" size="sm">No DDI</Badge>
-                          <button
-                            onClick={() => handleRemoveMedication(med.id)}
-                            className="p-1 text-slate-500 hover:text-rose-400 transition-colors"
-                          >
-                            <Trash2 size={13} />
-                          </button>
+                          <span>• Dual Antiplatelet Therapy (Aspirin + Clopidogrel): Elevated gastrointestinal bleeding risk. Gastroprotection (PPI) advised.</span>
                         </div>
-                      </div>
-                    ))
-                  )}
-                </div>
+                      )}
+                      {hasBetaLactamAllergyClash && (
+                        <div className="flex items-center gap-2 text-rose-300 font-bold">
+                          <span>• Severe Allergy Clash: Patient has documented Penicillin hypersensitivity. Beta-lactam antibiotic cross-reactivity warning.</span>
+                        </div>
+                      )}
+                    </div>
 
-                {/* Diagnostics Orders */}
-                <div className="flex items-center justify-between pt-2">
-                  <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Diagnostic Orders</h3>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setIsAddTestModalOpen(true)}
-                    className="text-xs text-sky-400 flex items-center gap-1"
-                  >
-                    <PlusCircle size={13} /> Add Order
-                  </Button>
-                </div>
-
-                <div className="border border-slate-800 rounded-lg bg-slate-900 p-3 space-y-2">
-                  {diagnosticOrders.length === 0 ? (
-                    <div className="text-xs text-slate-500 py-3 text-center">No lab/radiology tests ordered.</div>
-                  ) : (
-                    diagnosticOrders.map((test) => (
-                      <div
-                        key={test.id}
-                        className="flex items-center justify-between p-2 rounded bg-slate-950 border border-slate-800 text-xs"
+                    <div className="flex items-center justify-between pt-1 border-t border-amber-800/60 text-xs">
+                      <span className="text-[11px] text-slate-400 font-mono">
+                        {isOverrideDocumented ? `Rationale: "${overrideRationale}"` : "Attending physician acknowledgement required to finalize slip."}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setIsOverrideModalOpen(true)}
+                        className="text-xs border-amber-700 text-amber-300 hover:bg-amber-950/60"
                       >
-                        <div>
-                          <span className="text-slate-200 font-semibold">{test.name}</span>
-                          <span className="text-[10px] text-slate-500 ml-2 font-mono">({test.category})</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge variant={test.priority === "STAT" ? "danger" : "neutral"} size="sm">
-                            {test.priority}
-                          </Badge>
-                          <button
-                            onClick={() => handleRemoveTest(test.id)}
-                            className="p-1 text-slate-500 hover:text-rose-400 transition-colors"
+                        {isOverrideDocumented ? "Edit Rationale" : "Document Clinical Override"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Diagnosis (ICD-10) Picker */}
+                <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-2">
+                  <label className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
+                    Primary Diagnosis (ICD-10-CM)
+                  </label>
+                  <select
+                    value={selectedIcd10}
+                    onChange={(e) => setSelectedIcd10(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
+                  >
+                    {commonIcd10List.map((icd, idx) => (
+                      <option key={idx} value={icd}>
+                        {icd}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* SOAP Notes & Prescriptions Pad */}
+                <div className="grid grid-cols-2 gap-6">
+                  {/* Clinical Notes */}
+                  <div className="space-y-4">
+                    <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Consultation Notes (SOAP)</h3>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1">Subjective / Chief Complaint</label>
+                      <textarea
+                        rows={4}
+                        value={subjective}
+                        onChange={(e) => setSubjective(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1">Assessment &amp; Clinical Plan</label>
+                      <textarea
+                        rows={4}
+                        value={assessment}
+                        onChange={(e) => setAssessment(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-sky-500 font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Medication Orders & Diagnostics */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Prescriptions (eRx)</h3>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsAddDrugModalOpen(true)}
+                        className="text-xs text-sky-400 flex items-center gap-1"
+                      >
+                        <PlusCircle size={13} /> Add Drug
+                      </Button>
+                    </div>
+
+                    <div className="border border-slate-800 rounded-lg bg-slate-900 p-3 space-y-2">
+                      {medications.length === 0 ? (
+                        <div className="text-xs text-slate-500 py-3 text-center">No medications prescribed.</div>
+                      ) : (
+                        medications.map((med) => (
+                          <div
+                            key={med.id}
+                            className="flex items-center justify-between p-2.5 rounded bg-slate-950 border border-slate-800 text-xs"
                           >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
+                            <div>
+                              <div className="font-semibold text-slate-200">{med.name}</div>
+                              <div className="text-slate-400 text-[11px]">
+                                {med.dosage} • {med.frequency} • {med.duration}
+                              </div>
+                              <div className="text-slate-500 text-[10px] italic">{med.instructions}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge
+                                variant={med.ddiStatus === "CRITICAL" ? "danger" : med.ddiStatus === "CAUTION" ? "warning" : "success"}
+                                size="sm"
+                              >
+                                {med.ddiStatus === "SAFE" ? "No DDI" : "Monitored"}
+                              </Badge>
+                              <button
+                                onClick={() => handleRemoveMedication(med.id)}
+                                className="p-1 text-slate-500 hover:text-rose-400 transition-colors"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {/* Diagnostics Orders */}
+                    <div className="flex items-center justify-between pt-2">
+                      <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Diagnostic Orders</h3>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsAddTestModalOpen(true)}
+                        className="text-xs text-sky-400 flex items-center gap-1"
+                      >
+                        <PlusCircle size={13} /> Add Order
+                      </Button>
+                    </div>
+
+                    <div className="border border-slate-800 rounded-lg bg-slate-900 p-3 space-y-2">
+                      {diagnosticOrders.length === 0 ? (
+                        <div className="text-xs text-slate-500 py-3 text-center">No lab/radiology tests ordered.</div>
+                      ) : (
+                        diagnosticOrders.map((test) => (
+                          <div
+                            key={test.id}
+                            className="flex items-center justify-between p-2 rounded bg-slate-950 border border-slate-800 text-xs"
+                          >
+                            <div>
+                              <span className="text-slate-200 font-semibold">{test.name}</span>
+                              <span className="text-[10px] text-slate-500 ml-2 font-mono">({test.category})</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge variant={test.priority === "STAT" ? "danger" : "neutral"} size="sm">
+                                {test.priority}
+                              </Badge>
+                              <button
+                                onClick={() => handleRemoveTest(test.id)}
+                                className="p-1 text-slate-500 hover:text-rose-400 transition-colors"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
+
+            {/* TAB 2: LONGITUDINAL PATIENT HISTORY */}
+            {activeTab === "history" && (
+              <div className="space-y-4">
+                <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <ShieldAlert size={14} className="text-amber-400" /> Active Chronic Problem List
+                  </span>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { code: "I10", name: "Essential (Primary) Hypertension", since: "2024", status: "Active" },
+                      { code: "E11.9", name: "Type 2 Diabetes Mellitus", since: "2022", status: "Active" },
+                      { code: "E78.5", name: "Hyperlipidemia / Dyslipidemia", since: "2023", status: "Active" },
+                    ].map((p, i) => (
+                      <div key={i} className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono">
+                        <div className="text-slate-200 font-semibold">{p.name}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">ICD-10: {p.code} • Since {p.since}</div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+
+                <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <History size={14} className="text-sky-400" /> Past Consultations &amp; Encounters Timeline
+                  </span>
+                  <div className="space-y-2">
+                    {[
+                      { date: "2026-08-14", dept: "Cardiology OPD", doc: "Dr. Vikram Seth", notes: "Follow-up for Stage 1 HTN; BP 138/88 mmHg. Advised continuation of Telmisartan 40mg." },
+                      { date: "2026-05-22", dept: "Emergency Dept", doc: "Dr. Sameer Joshi", notes: "Acute gastroenteritis with mild dehydration. Managed with IV crystalloids and oral rehydration." },
+                      { date: "2026-01-10", dept: "General Surgery IPD", doc: "Dr. Alok Verma", notes: "Elective Laparoscopic Cholecystectomy. Uneventful recovery and discharged on POD 2." },
+                    ].map((enc, idx) => (
+                      <div key={idx} className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs">
+                        <div className="flex justify-between font-mono text-slate-300 mb-1">
+                          <strong className="text-sky-400">{enc.dept} — {enc.doc}</strong>
+                          <span className="text-slate-500">{enc.date}</span>
+                        </div>
+                        <p className="text-slate-400 text-[11px]">{enc.notes}</p>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              </div>
+            )}
+
+            {/* TAB 3: VITALS & LAB TRENDS */}
+            {activeTab === "trends" && (
+              <div className="space-y-4">
+                <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Activity size={14} className="text-emerald-400" /> Longitudinal Laboratory &amp; Vitals Progression
+                  </span>
+                  <div className="overflow-x-auto rounded-lg border border-slate-800">
+                    <table className="w-full text-left text-xs font-mono">
+                      <thead className="bg-slate-950 text-slate-400 text-[11px] uppercase border-b border-slate-800">
+                        <tr>
+                          <th className="p-3">Biomarker / Vital</th>
+                          <th className="p-3">6 Months Ago</th>
+                          <th className="p-3">3 Months Ago</th>
+                          <th className="p-3">Last Visit</th>
+                          <th className="p-3 text-sky-400">Current Reading</th>
+                          <th className="p-3">Clinical Trajectory</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/80">
+                        <tr>
+                          <td className="p-3 font-semibold text-slate-200">Blood Pressure (mmHg)</td>
+                          <td className="p-3 text-slate-400">142/90</td>
+                          <td className="p-3 text-slate-400">138/88</td>
+                          <td className="p-3 text-slate-400">130/84</td>
+                          <td className="p-3 text-emerald-400 font-bold">120/80</td>
+                          <td className="p-3 text-emerald-400">↓ Well-Controlled</td>
+                        </tr>
+                        <tr>
+                          <td className="p-3 font-semibold text-slate-200">Heart Rate (bpm)</td>
+                          <td className="p-3 text-slate-400">88</td>
+                          <td className="p-3 text-slate-400">82</td>
+                          <td className="p-3 text-slate-400">76</td>
+                          <td className="p-3 text-emerald-400 font-bold">72</td>
+                          <td className="p-3 text-emerald-400">Stable Sinus</td>
+                        </tr>
+                        <tr>
+                          <td className="p-3 font-semibold text-slate-200">HbA1c (%)</td>
+                          <td className="p-3 text-rose-400">9.4</td>
+                          <td className="p-3 text-amber-400">8.2</td>
+                          <td className="p-3 text-amber-400">7.4</td>
+                          <td className="p-3 text-emerald-400 font-bold">6.8</td>
+                          <td className="p-3 text-emerald-400">↓ Target Met (&lt; 7.0%)</td>
+                        </tr>
+                        <tr>
+                          <td className="p-3 font-semibold text-slate-200">Hemoglobin (g/dL)</td>
+                          <td className="p-3 text-slate-400">14.2</td>
+                          <td className="p-3 text-slate-400">13.8</td>
+                          <td className="p-3 text-slate-400">13.6</td>
+                          <td className="p-3 text-slate-200 font-bold">13.5</td>
+                          <td className="p-3 text-slate-400">Normal Range</td>
+                        </tr>
+                        <tr>
+                          <td className="p-3 font-semibold text-slate-200">Serum Creatinine (mg/dL)</td>
+                          <td className="p-3 text-slate-400">0.90</td>
+                          <td className="p-3 text-slate-400">0.92</td>
+                          <td className="p-3 text-slate-400">0.95</td>
+                          <td className="p-3 text-emerald-400 font-bold">0.91</td>
+                          <td className="p-3 text-emerald-400">eGFR &gt; 90 mL/min</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-slate-500">
@@ -568,211 +920,264 @@ export const DoctorCockpit: React.FC = () => {
         )}
       </div>
 
-      {/* Modal: Add Medication */}
-      <Modal
-        isOpen={isAddDrugModalOpen}
-        onClose={() => setIsAddDrugModalOpen(false)}
-        title="Add Medication to e-Prescription"
-      >
-        <form onSubmit={handleAddMedication} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">Medication Name & Strength</label>
-            <input
-              type="text"
-              required
-              value={drugName}
-              onChange={(e) => setDrugName(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
-            />
-          </div>
-
-          <div className="grid grid-cols-3 gap-2">
+      {/* Modal: Document Clinical Override Rationale */}
+      {isOverrideModalOpen && (
+        <Modal
+          isOpen={true}
+          onClose={() => setIsOverrideModalOpen(false)}
+          title="Clinical Decision Support (CDS) Override Documentation"
+        >
+          <div className="space-y-4">
+            <div className="p-3 rounded-lg bg-amber-950/40 border border-amber-800 text-xs text-amber-200 font-mono">
+              Attending physician rationale is required under NABH/JCI clinical safety audit standards to override active Drug-Drug Interactions or Allergy Warnings.
+            </div>
             <div>
-              <label className="block text-[11px] text-slate-400 mb-1">Dosage Form</label>
-              <input
-                type="text"
-                value={drugDosage}
-                onChange={(e) => setDrugDosage(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200"
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Documented Clinical Rationale &amp; Monitoring Plan
+              </label>
+              <textarea
+                rows={4}
+                value={overrideRationale}
+                onChange={(e) => setOverrideRationale(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
               />
             </div>
-            <div>
-              <label className="block text-[11px] text-slate-400 mb-1">Frequency</label>
-              <select
-                value={drugFrequency}
-                onChange={(e) => setDrugFrequency(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200"
-              >
-                <option value="OD (Once daily)">OD (Once daily)</option>
-                <option value="BD (Twice daily)">BD (Twice daily)</option>
-                <option value="TDS (Thrice daily)">TDS (Thrice daily)</option>
-                <option value="QID (Four times daily)">QID (Four times daily)</option>
-                <option value="SOS (As needed)">SOS (As needed)</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-[11px] text-slate-400 mb-1">Duration</label>
-              <input
-                type="text"
-                value={drugDuration}
-                onChange={(e) => setDrugDuration(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-[11px] text-slate-400 mb-1">Patient Instructions</label>
-            <input
-              type="text"
-              value={drugInstructions}
-              onChange={(e) => setDrugInstructions(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
-            />
-          </div>
-
-          <div className="p-2.5 rounded bg-emerald-950/40 border border-emerald-800 text-[11px] text-emerald-300 font-mono flex items-center gap-2">
-            <CheckCircle2 size={14} /> Drug-Drug Interaction (DDI) & Allergy Check: Clean
-          </div>
-
-          <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
-            <Button type="button" variant="outline" size="sm" onClick={() => setIsAddDrugModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" size="sm">
-              Add to Prescription
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* Modal: Add Diagnostic Order */}
-      <Modal
-        isOpen={isAddTestModalOpen}
-        onClose={() => setIsAddTestModalOpen(false)}
-        title="Add Diagnostic Laboratory / Radiology Order"
-      >
-        <form onSubmit={handleAddDiagnosticOrder} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">Test Name</label>
-            <input
-              type="text"
-              required
-              value={testName}
-              onChange={(e) => setTestName(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Laboratory Discipline</label>
-              <select
-                value={testCategory}
-                onChange={(e) => setTestCategory(e.target.value as any)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
-              >
-                <option value="Hematology">Hematology</option>
-                <option value="Biochemistry">Biochemistry</option>
-                <option value="Microbiology">Microbiology</option>
-                <option value="Radiology">Radiology (X-Ray/CT/USG)</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Clinical Priority</label>
-              <select
-                value={testPriority}
-                onChange={(e) => setTestPriority(e.target.value as any)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
-              >
-                <option value="ROUTINE">Routine</option>
-                <option value="STAT">STAT / Urgent</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
-            <Button type="button" variant="outline" size="sm" onClick={() => setIsAddTestModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" size="sm">
-              Place Test Order
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* Modal: Final Consultation Slip & Summary */}
-      <Modal
-        isOpen={isSummarySlipOpen}
-        onClose={() => setIsSummarySlipOpen(false)}
-        title="Consultation Summary Slip & Digital Signature"
-      >
-        <div className="space-y-4">
-          <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg space-y-3 font-mono text-xs">
-            <div className="flex justify-between border-b border-slate-800 pb-2">
-              <div>
-                <strong className="text-slate-100">{patientSummary?.full_name}</strong>
-                <div className="text-[11px] text-slate-400">MRN: {patientSummary?.mrn}</div>
-              </div>
-              <div className="text-right">
-                <div className="text-sky-400">Dr. {queue?.doctor_name || "Doctor"}</div>
-                <div className="text-[10px] text-slate-500">{new Date().toLocaleDateString()}</div>
-              </div>
-            </div>
-
-            <div>
-              <span className="text-slate-400 block text-[10px] uppercase">Diagnosis:</span>
-              <span className="text-slate-200 font-semibold">{selectedIcd10}</span>
-            </div>
-
-            <div>
-              <span className="text-slate-400 block text-[10px] uppercase">Prescriptions ({medications.length}):</span>
-              {medications.map((m, i) => (
-                <div key={i} className="text-slate-300 pl-2">
-                  • {m.name} — {m.dosage} ({m.frequency} x {m.duration})
-                </div>
-              ))}
-            </div>
-
-            {diagnosticOrders.length > 0 && (
-              <div>
-                <span className="text-slate-400 block text-[10px] uppercase">Orders ({diagnosticOrders.length}):</span>
-                {diagnosticOrders.map((t, i) => (
-                  <div key={i} className="text-slate-300 pl-2">
-                    • {t.name} [{t.priority}]
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center justify-between pt-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => window.print()}
-              className="flex items-center gap-1.5"
-            >
-              <Printer size={13} /> Print Slip
-            </Button>
-
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => setIsSummarySlipOpen(false)}>
-                Review Notes
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+              <Button variant="outline" size="sm" onClick={() => setIsOverrideModalOpen(false)}>
+                Cancel
               </Button>
               <Button
                 variant="primary"
                 size="sm"
-                disabled={isSubmitting}
-                onClick={handleConfirmAndComplete}
+                onClick={() => {
+                  setIsOverrideDocumented(true);
+                  setIsOverrideModalOpen(false);
+                }}
               >
-                {isSubmitting ? "Signing & Broadcasting..." : "Sign & Finalize Encounter"}
+                Sign &amp; Attach Override
               </Button>
             </div>
           </div>
-        </div>
-      </Modal>
+        </Modal>
+      )}
+
+      {/* Modal: Add Medication */}
+      {isAddDrugModalOpen && (
+        <Modal
+          isOpen={true}
+          onClose={() => setIsAddDrugModalOpen(false)}
+          title="Add Medication to e-Prescription"
+        >
+          <form onSubmit={handleAddMedication} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Medication Name &amp; Strength</label>
+              <input
+                type="text"
+                required
+                value={drugName}
+                onChange={(e) => setDrugName(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Dosage Form</label>
+                <input
+                  type="text"
+                  value={drugDosage}
+                  onChange={(e) => setDrugDosage(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Frequency</label>
+                <select
+                  value={drugFrequency}
+                  onChange={(e) => setDrugFrequency(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200"
+                >
+                  <option value="OD (Once daily)">OD (Once daily)</option>
+                  <option value="BD (Twice daily)">BD (Twice daily)</option>
+                  <option value="TDS (Thrice daily)">TDS (Thrice daily)</option>
+                  <option value="QID (Four times daily)">QID (Four times daily)</option>
+                  <option value="SOS (As needed)">SOS (As needed)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Duration</label>
+                <input
+                  type="text"
+                  value={drugDuration}
+                  onChange={(e) => setDrugDuration(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">Patient Instructions</label>
+              <input
+                type="text"
+                value={drugInstructions}
+                onChange={(e) => setDrugInstructions(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
+              />
+            </div>
+
+            <div className="p-2.5 rounded bg-emerald-950/40 border border-emerald-800 text-[11px] text-emerald-300 font-mono flex items-center gap-2">
+              <CheckCircle2 size={14} /> Drug-Drug Interaction (DDI) &amp; Allergy Check: Clean
+            </div>
+
+            <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
+              <Button type="button" variant="outline" size="sm" onClick={() => setIsAddDrugModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary" size="sm">
+                Add to Prescription
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Modal: Add Diagnostic Order */}
+      {isAddTestModalOpen && (
+        <Modal
+          isOpen={true}
+          onClose={() => setIsAddTestModalOpen(false)}
+          title="Place Diagnostic Laboratory / Radiology Order"
+        >
+          <form onSubmit={handleAddDiagnosticOrder} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Test Name</label>
+              <input
+                type="text"
+                required
+                value={testName}
+                onChange={(e) => setTestName(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Laboratory Discipline</label>
+                <select
+                  value={testCategory}
+                  onChange={(e) => setTestCategory(e.target.value as any)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
+                >
+                  <option value="Hematology">Hematology</option>
+                  <option value="Biochemistry">Biochemistry</option>
+                  <option value="Microbiology">Microbiology</option>
+                  <option value="Radiology">Radiology (X-Ray/CT/USG)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Clinical Priority</label>
+                <select
+                  value={testPriority}
+                  onChange={(e) => setTestPriority(e.target.value as any)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
+                >
+                  <option value="ROUTINE">Routine</option>
+                  <option value="STAT">STAT / Urgent</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
+              <Button type="button" variant="outline" size="sm" onClick={() => setIsAddTestModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="primary" size="sm">
+                Place Test Order
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Modal: Final Consultation Slip & Summary */}
+      {isSummarySlipOpen && (
+        <Modal
+          isOpen={true}
+          onClose={() => setIsSummarySlipOpen(false)}
+          title="Consultation Summary Slip &amp; Digital Signature"
+        >
+          <div className="space-y-4">
+            <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg space-y-3 font-mono text-xs">
+              <div className="flex justify-between border-b border-slate-800 pb-2">
+                <div>
+                  <strong className="text-slate-100">{patientSummary?.full_name}</strong>
+                  <div className="text-[11px] text-slate-400">MRN: {patientSummary?.mrn}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-sky-400">Dr. {queue?.doctor_name || "Doctor"}</div>
+                  <div className="text-[10px] text-slate-500">{new Date().toLocaleDateString()}</div>
+                </div>
+              </div>
+
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase">Diagnosis:</span>
+                <span className="text-slate-200 font-semibold">{selectedIcd10}</span>
+              </div>
+
+              <div>
+                <span className="text-slate-400 block text-[10px] uppercase">Prescriptions ({medications.length}):</span>
+                {medications.map((m, i) => (
+                  <div key={i} className="text-slate-300 pl-2">
+                    • {m.name} — {m.dosage} ({m.frequency} x {m.duration})
+                  </div>
+                ))}
+              </div>
+
+              {diagnosticOrders.length > 0 && (
+                <div>
+                  <span className="text-slate-400 block text-[10px] uppercase">Orders ({diagnosticOrders.length}):</span>
+                  {diagnosticOrders.map((t, i) => (
+                    <div key={i} className="text-slate-300 pl-2">
+                      • {t.name} [{t.priority}]
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {isOverrideDocumented && (
+                <div className="pt-2 border-t border-slate-800 text-[10px] text-amber-300">
+                  <span className="font-bold uppercase">Clinical Safety Override Attached:</span> &quot;{overrideRationale}&quot;
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => window.print()}
+                className="flex items-center gap-1.5"
+              >
+                <Printer size={13} /> Print Slip
+              </Button>
+
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => setIsSummarySlipOpen(false)}>
+                  Review Notes
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={isSubmitting}
+                  onClick={handleConfirmAndComplete}
+                >
+                  {isSubmitting ? "Signing & Broadcasting..." : "Sign & Finalize Encounter"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

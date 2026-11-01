@@ -24,9 +24,19 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenCommandPalette }) =>
           </span>
         </div>
         <span className="text-slate-600">|</span>
-        <span className="text-xs font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-          Hospital Node: <span className="text-slate-200 font-semibold">{localStorage.getItem("avinya_tenant_slug") || "General Base"}</span>
-        </span>
+        <div className="flex items-center gap-2 text-[11px] font-mono">
+          <span className="text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-slate-200 font-semibold">{localStorage.getItem("avinya_tenant_slug") || "Apollo Indraprastha"}</span>
+            <span className="text-slate-500">• Main Tower</span>
+          </span>
+          <span className="hidden lg:inline-flex text-slate-400 bg-slate-900/80 px-2 py-0.5 rounded border border-slate-800">
+            ☀️ Morning Shift (07:00–15:00)
+          </span>
+          <span className="hidden xl:inline-flex items-center gap-1 text-emerald-400 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-800/60 text-[10px]">
+            <span className="w-1 h-1 rounded-full bg-emerald-400" /> 12ms Sync
+          </span>
+        </div>
       </div>
 
       {/* Global Command Search (Cmd+K) */}
@@ -96,9 +106,9 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenCommandPalette }) =>
               { key: "Alt + 3", desc: "Doctor Clinical Cockpit, SOAP Notes & CPOE e-Rx" },
               { key: "Alt + 4", desc: "Ward Nursing Station, Bed Grid & NEWS2 Vitals" },
               { key: "Alt + 5", desc: "Emergency Triage Board, Trauma MLC & ESI Scores" },
-              { key: "Alt + 6", desc: "Central Pharmacy, Barcode Scanning & NDPS Vault" },
-              { key: "Alt + 7", desc: "Laboratory Diagnostics, Accessioning & Panic Delta" },
-              { key: "Alt + 8", desc: "Cashier Counter, Shift Reconcile & GST Invoicing" },
+              { key: "Alt + 6", desc: "Cashier Counter, Shift Reconcile & GST Invoicing" },
+              { key: "Alt + 7", desc: "Central Pharmacy, Barcode Scanning & NDPS Vault" },
+              { key: "Alt + 8", desc: "Laboratory Diagnostics, Accessioning & Panic Delta" },
               { key: "Alt + 9", desc: "Executive Command Center HUD & Statutory Exports" },
               { key: "Esc", desc: "Close any open dialog or modal without committing" },
             ].map((item, idx) => (
