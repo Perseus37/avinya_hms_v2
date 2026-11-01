@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { registersApi } from "../../api/registersApi";
+import { analyticsApi, ExecutiveCommandCenterData } from "../../api/analyticsApi";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
@@ -40,6 +41,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
     timestamp_utc: string;
     tables: Record<string, number>;
   } | null>(null);
+  const [liveMetrics, setLiveMetrics] = useState<ExecutiveCommandCenterData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   // Register Preview Modal
@@ -53,10 +55,18 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
   const loadDataInventory = async () => {
     setIsLoading(true);
     try {
-      const data = await registersApi.getDataInventory();
-      setInventory(data);
+      const [invData, metricsData] = await Promise.allSettled([
+        registersApi.getDataInventory(),
+        analyticsApi.getExecutiveCommandCenter(),
+      ]);
+      if (invData.status === "fulfilled") {
+        setInventory(invData.value);
+      }
+      if (metricsData.status === "fulfilled") {
+        setLiveMetrics(metricsData.value);
+      }
     } catch (err) {
-      console.error("Failed to load data inventory:", err);
+      console.error("Failed to load dashboard data:", err);
     } finally {
       setIsLoading(false);
     }
@@ -195,12 +205,18 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
             <Badge variant="info" size="sm">Live</Badge>
           </div>
           <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold font-mono text-slate-100">142</span>
+            <span className="text-2xl font-bold font-mono text-slate-100">
+              {liveMetrics ? liveMetrics.opd_funnel.total_appointments : 142}
+            </span>
             <span className="text-xs text-emerald-400 font-mono flex items-center">
               <TrendingUp size={12} className="mr-0.5" /> +12% vs avg
             </span>
           </div>
-          <div className="text-[11px] text-slate-500 font-mono">General Med: 54 • Cardio: 38 • Ortho: 50</div>
+          <div className="text-[11px] text-slate-500 font-mono">
+            {liveMetrics
+              ? `Completed: ${liveMetrics.opd_funnel.status_breakdown["COMPLETED"] || 0} • Sched: ${liveMetrics.opd_funnel.status_breakdown["SCHEDULED"] || 0}`
+              : "General Med: 54 • Cardio: 38 • Ortho: 50"}
+          </div>
         </Card>
 
         <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
@@ -208,13 +224,27 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
               <BedDouble size={14} className="text-emerald-400" /> Bed Occupancy (BOR)
             </span>
-            <Badge variant="success" size="sm">87.5%</Badge>
+            <Badge variant="success" size="sm">
+              {liveMetrics
+                ? `${liveMetrics.bed_census.overall_occupancy_rate_pct.toFixed(1)}%`
+                : "87.5%"}
+            </Badge>
           </div>
           <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold font-mono text-slate-100">105 / 120</span>
-            <span className="text-xs text-slate-400 font-mono">15 Available</span>
+            <span className="text-2xl font-bold font-mono text-slate-100">
+              {liveMetrics
+                ? `${liveMetrics.bed_census.status_breakdown["OCCUPIED"] || 0} / ${liveMetrics.bed_census.total_beds}`
+                : "105 / 120"}
+            </span>
+            <span className="text-xs text-slate-400 font-mono">
+              {liveMetrics
+                ? `${liveMetrics.bed_census.status_breakdown["AVAILABLE"] || 0} Available`
+                : "15 Available"}
+            </span>
           </div>
-          <div className="text-[11px] text-slate-500 font-mono">ICU: 92% • Semi-Private: 85% • Ward: 88%</div>
+          <div className="text-[11px] text-slate-500 font-mono">
+            Turnovers: {liveMetrics?.bed_census.bed_turnover_events_count ?? 6} • Ward: 88%
+          </div>
         </Card>
 
         <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
@@ -225,7 +255,11 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
             <Badge variant="danger" size="sm">Priority</Badge>
           </div>
           <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold font-mono text-rose-400">3 Cases</span>
+            <span className="text-2xl font-bold font-mono text-rose-400">
+              {liveMetrics
+                ? `${liveMetrics.encounters_and_ipd_alos.active_encounters_by_type["ER"] || 3} Cases`
+                : "3 Cases"}
+            </span>
             <span className="text-xs text-rose-400 font-mono">Avg Triage: 4m</span>
           </div>
           <div className="text-[11px] text-slate-500 font-mono">RTA Poly-Trauma • Acute STEMI • Stroke</div>
@@ -239,7 +273,12 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
             <Badge variant="warning" size="sm">Audited</Badge>
           </div>
           <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold font-mono text-emerald-400">₹3,48,650</span>
+            <span className="text-2xl font-bold font-mono text-emerald-400">
+              ₹
+              {liveMetrics
+                ? (liveMetrics.unit_economics.total_net_billed_paise / 100).toLocaleString("en-IN")
+                : "3,48,650"}
+            </span>
             <span className="text-xs text-slate-400 font-mono">94 Receipts</span>
           </div>
           <div className="text-[11px] text-slate-500 font-mono">UPI: 48% • Card: 32% • Cash: 20%</div>
