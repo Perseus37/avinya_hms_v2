@@ -6,13 +6,50 @@ import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
-import { BedDouble, RefreshCw, Activity, Sparkles, User } from "lucide-react";
+import {
+  BedDouble,
+  RefreshCw,
+  Activity,
+  Sparkles,
+  User,
+  Pill,
+  CheckCircle2,
+  AlertTriangle,
+  Siren,
+  QrCode,
+  Printer,
+  Clock,
+  ShieldCheck,
+} from "lucide-react";
+
+interface ScheduledMedication {
+  id: string;
+  bedNumber: string;
+  patientName: string;
+  mrn: string;
+  drugName: string;
+  dose: string;
+  route: string;
+  scheduledTime: string;
+  status: "DUE" | "OVERDUE" | "ADMINISTERED";
+  isHighAlert?: boolean;
+  administeredAt?: string;
+  administeredBy?: string;
+}
 
 export const WardNursingStation: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<"beds" | "emar">("beds");
   const [beds, setBeds] = useState<DetailedBedItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedWardId] = useState(1);
   const { selectPatient } = useActivePatient();
+
+  // Alert & Notification States
+  const [notificationToast, setNotificationToast] = useState<{
+    type: "success" | "rrt";
+    message: string;
+    details?: string;
+  } | null>(null);
 
   // NEWS2 / Vitals Recording Modal
   const [activeBedForVitals, setActiveBedForVitals] = useState<DetailedBedItem | null>(null);
@@ -23,6 +60,70 @@ export const WardNursingStation: React.FC = () => {
   const [pulse, setPulse] = useState(72);
   const [consciousness, setConsciousness] = useState<"ALERT" | "CVPU">("ALERT");
   const [temperature, setTemperature] = useState(37.0);
+
+  // eMAR State
+  const [medications, setMedications] = useState<ScheduledMedication[]>([
+    {
+      id: "med-1",
+      bedNumber: "101",
+      patientName: "Ramesh Sharma",
+      mrn: "UHID-2026-0042",
+      drugName: "Inj. Ceftriaxone 1g IV",
+      dose: "1g in 100ml NS",
+      route: "Intravenous Infusion",
+      scheduledTime: "14:00",
+      status: "OVERDUE",
+      isHighAlert: false,
+    },
+    {
+      id: "med-2",
+      bedNumber: "102",
+      patientName: "Ananya Deshmukh",
+      mrn: "UHID-2026-0089",
+      drugName: "Inj. Pantoprazole 40mg IV",
+      dose: "40mg Slow IV Bolus",
+      route: "Intravenous Push",
+      scheduledTime: "17:00",
+      status: "DUE",
+      isHighAlert: false,
+    },
+    {
+      id: "med-3",
+      bedNumber: "103",
+      patientName: "Pooja Nair",
+      mrn: "UHID-2026-0104",
+      drugName: "Inj. Enoxaparin 40mg SC",
+      dose: "40mg (0.4ml Pre-filled syringe)",
+      route: "Subcutaneous",
+      scheduledTime: "18:00",
+      status: "DUE",
+      isHighAlert: true,
+    },
+    {
+      id: "med-4",
+      bedNumber: "105",
+      patientName: "Sunil Verma",
+      mrn: "UHID-2026-0112",
+      drugName: "Inj. Regular Insulin 8 Units SC",
+      dose: "8 Units (U-100)",
+      route: "Subcutaneous",
+      scheduledTime: "13:30",
+      status: "ADMINISTERED",
+      isHighAlert: true,
+      administeredAt: "13:35",
+      administeredBy: "Staff Nurse Priya (RN-901)",
+    },
+  ]);
+
+  // BCMA Administer Dose Modal State
+  const [selectedMedForAdmin, setSelectedMedForAdmin] = useState<ScheduledMedication | null>(null);
+  const [wristbandScanned, setWristbandScanned] = useState(false);
+  const [ampouleScanned, setAmpouleScanned] = useState(false);
+  const [witnessStaffId, setWitnessStaffId] = useState("RN-904");
+  const [isSubmittingEmar, setIsSubmittingEmar] = useState(false);
+
+  // Shift Handover Kardex Modal
+  const [isKardexModalOpen, setIsKardexModalOpen] = useState(false);
 
   const calculateNews2 = () => {
     let score = 0;
@@ -107,8 +208,61 @@ export const WardNursingStation: React.FC = () => {
       })
     );
 
+    if (calculatedScore >= 7) {
+      setNotificationToast({
+        type: "rrt",
+        message: `CRITICAL ALERT: NEWS2 Score ${calculatedScore} on Bed ${activeBedForVitals.bed_number}!`,
+        details: "Rapid Response Team (RRT) paged. Attending Medical Officer & ICU Registrar dispatched.",
+      });
+    } else {
+      setNotificationToast({
+        type: "success",
+        message: `Vitals & NEWS2 score of ${calculatedScore} recorded for Bed ${activeBedForVitals.bed_number}.`,
+      });
+    }
+
     setActiveBedForVitals(null);
-    alert(`Vitals & NEWS2 score of ${calculatedScore} recorded for Bed ${activeBedForVitals.bed_number}.`);
+  };
+
+  const handleOpenAdminModal = (med: ScheduledMedication) => {
+    setSelectedMedForAdmin(med);
+    setWristbandScanned(false);
+    setAmpouleScanned(false);
+  };
+
+  const handleConfirmAdministration = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedMedForAdmin) return;
+    if (!wristbandScanned || !ampouleScanned) {
+      alert("Both Patient Wristband and Drug Ampoule GS1 barcodes must be verified!");
+      return;
+    }
+
+    setIsSubmittingEmar(true);
+    try {
+      // Update local MAR state
+      setMedications((prev) =>
+        prev.map((m) =>
+          m.id === selectedMedForAdmin.id
+            ? {
+                ...m,
+                status: "ADMINISTERED",
+                administeredAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                administeredBy: "Staff Nurse Priya (RN-901)",
+              }
+            : m
+        )
+      );
+
+      setNotificationToast({
+        type: "success",
+        message: `Dose Administered: ${selectedMedForAdmin.drugName} to Bed ${selectedMedForAdmin.bedNumber}`,
+        details: `BCMA 5-Rights Verified. Logged to statutory electronic MAR ledger.`,
+      });
+      setSelectedMedForAdmin(null);
+    } finally {
+      setIsSubmittingEmar(false);
+    }
   };
 
   const occupiedCount = beds.filter((b) => b.status === "OCCUPIED").length;
@@ -122,10 +276,10 @@ export const WardNursingStation: React.FC = () => {
         <div>
           <h1 className="text-xl font-bold text-slate-100 flex items-center gap-2">
             <BedDouble className="text-emerald-400" />
-            Ward Nursing Station — Inpatient Bed Census Matrix
+            Ward Nursing Station — Inpatient Bed Census &amp; eMAR
           </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            General Inpatient Ward 1 • Real-time occupancy, sanitization & NEWS2 vital surveillance
+          <p className="text-xs text-slate-400 mt-1 font-mono">
+            General Inpatient Ward 1 • Real-time occupancy, NEWS2 surveillance &amp; BCMA medication administration
           </p>
         </div>
 
@@ -142,6 +296,15 @@ export const WardNursingStation: React.FC = () => {
             </span>
           </div>
 
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setIsKardexModalOpen(true)}
+            className="flex items-center gap-1.5"
+          >
+            <Printer size={14} /> SBAR Handover Kardex
+          </Button>
+
           <button
             onClick={loadBeds}
             disabled={isLoading}
@@ -152,123 +315,271 @@ export const WardNursingStation: React.FC = () => {
         </div>
       </div>
 
-      {/* Interactive Bed Matrix Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mt-6">
-        {beds.length === 0 ? (
-          <div className="col-span-full py-16 text-center text-slate-500 text-sm">
-            No beds configured in this ward, or loading bed matrix...
+      {/* RRT / Notification Alert Toast */}
+      {notificationToast && (
+        <div
+          className={`mt-4 p-3 rounded-xl border flex items-center justify-between text-xs font-mono animate-fadeIn ${
+            notificationToast.type === "rrt"
+              ? "bg-rose-950/60 border-rose-500 text-rose-200 animate-pulse"
+              : "bg-emerald-950/40 border-emerald-800 text-emerald-200"
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            {notificationToast.type === "rrt" ? (
+              <Siren size={18} className="text-rose-400" />
+            ) : (
+              <CheckCircle2 size={18} className="text-emerald-400" />
+            )}
+            <div>
+              <strong className="font-bold">{notificationToast.message}</strong>
+              {notificationToast.details && (
+                <div className="text-[11px] opacity-80 mt-0.5">{notificationToast.details}</div>
+              )}
+            </div>
           </div>
-        ) : (
-          beds.map((bed) => {
-            const isOccupied = bed.status === "OCCUPIED" && bed.occupied_details;
-            const patient = bed.occupied_details;
+          <button
+            onClick={() => setNotificationToast(null)}
+            className="text-[10px] font-bold text-slate-400 hover:text-white px-2 py-0.5"
+          >
+            DISMISS
+          </button>
+        </div>
+      )}
 
-            return (
-              <Card
-                key={bed.bed_id}
-                onClick={() => {
-                  if (patient?.patient_id) {
-                    selectPatient(patient.patient_id);
-                  }
-                }}
-                className={`p-4 rounded-xl border transition-all cursor-pointer ${
-                  isOccupied
-                    ? "bg-slate-900/90 border-slate-700 hover:border-sky-500 shadow-md"
-                    : bed.status === "CLEANING"
-                    ? "bg-amber-950/20 border-amber-900/40"
-                    : "bg-slate-950 border-slate-800 hover:border-slate-700 opacity-70"
-                }`}
-              >
-                <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm font-bold text-slate-200">
-                      Bed {bed.bed_number}
-                    </span>
-                    <span className="text-[11px] text-slate-500 font-mono">
-                      Room {bed.room_number}
-                    </span>
-                  </div>
-                  <Badge
-                    variant={
-                      bed.status === "OCCUPIED"
-                        ? "info"
-                        : bed.status === "AVAILABLE"
-                        ? "success"
-                        : "warning"
+      {/* Tabs */}
+      <div className="flex items-center gap-2 mt-4 pb-2 border-b border-slate-800">
+        <button
+          type="button"
+          onClick={() => setActiveTab("beds")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "beds"
+              ? "bg-sky-500/10 text-sky-400 border border-sky-500/30"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+          }`}
+        >
+          <BedDouble size={14} /> Bed Matrix &amp; Vital Surveillance ({beds.length} Beds)
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("emar")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "emar"
+              ? "bg-sky-500/10 text-sky-400 border border-sky-500/30"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+          }`}
+        >
+          <Pill size={14} /> Inpatient eMAR &amp; BCMA Administration Desk
+        </button>
+      </div>
+
+      {/* TAB 1: BED MATRIX */}
+      {activeTab === "beds" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mt-6">
+          {beds.length === 0 ? (
+            <div className="col-span-full py-16 text-center text-slate-500 text-sm">
+              No beds configured in this ward, or loading bed matrix...
+            </div>
+          ) : (
+            beds.map((bed) => {
+              const isOccupied = bed.status === "OCCUPIED" && bed.occupied_details;
+              const patient = bed.occupied_details;
+
+              return (
+                <Card
+                  key={bed.bed_id}
+                  onClick={() => {
+                    if (patient?.patient_id) {
+                      selectPatient(patient.patient_id);
                     }
-                    size="sm"
-                  >
-                    {bed.status}
-                  </Badge>
-                </div>
-
-                {isOccupied && patient ? (
-                  <div className="space-y-3">
-                    <div>
-                      <div className="font-semibold text-sm text-slate-100 flex items-center gap-1.5">
-                        <User size={13} className="text-slate-400" />
-                        {patient.patient_name}
-                      </div>
-                      <div className="text-[11px] text-slate-400 font-mono">
-                        {patient.mrn} • {patient.gender} • {patient.age_years ? `${patient.age_years}y` : "--"}
-                      </div>
-                    </div>
-
-                    <div className="text-xs text-slate-400">
-                      Admitted:{" "}
-                      <span className="font-mono text-slate-300">
-                        {patient.admitted_at ? new Date(patient.admitted_at).toLocaleDateString() : "--"}
+                  }}
+                  className={`p-4 rounded-xl border transition-all cursor-pointer ${
+                    isOccupied
+                      ? "bg-slate-900/90 border-slate-700 hover:border-sky-500 shadow-md"
+                      : bed.status === "CLEANING"
+                      ? "bg-amber-950/20 border-amber-900/40"
+                      : "bg-slate-950 border-slate-800 hover:border-slate-700 opacity-70"
+                  }`}
+                >
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm font-bold text-slate-200">
+                        Bed {bed.bed_number}
+                      </span>
+                      <span className="text-[11px] text-slate-500 font-mono">
+                        Room {bed.room_number}
                       </span>
                     </div>
+                    <Badge
+                      variant={
+                        bed.status === "OCCUPIED"
+                          ? "info"
+                          : bed.status === "AVAILABLE"
+                          ? "success"
+                          : "warning"
+                      }
+                      size="sm"
+                    >
+                      {bed.status}
+                    </Badge>
+                  </div>
 
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
-                      <div className="flex items-center gap-1 text-xs">
-                        <span className="text-slate-400">NEWS2:</span>
-                        <span
-                          className={`font-mono font-bold px-1.5 py-0.5 rounded text-[11px] ${
-                            (patient.news2_score ?? 0) >= 7
-                              ? "bg-rose-950 text-rose-400 border border-rose-800 animate-pulse"
-                              : (patient.news2_score ?? 0) >= 5
-                              ? "bg-amber-950 text-amber-400 border border-amber-800"
-                              : "bg-emerald-950 text-emerald-400 border border-emerald-800"
-                          }`}
-                        >
-                          {patient.news2_score ?? 0}
+                  {isOccupied && patient ? (
+                    <div className="space-y-3">
+                      <div>
+                        <div className="font-semibold text-sm text-slate-100 flex items-center gap-1.5">
+                          <User size={13} className="text-slate-400" />
+                          {patient.patient_name}
+                        </div>
+                        <div className="text-[11px] text-slate-400 font-mono">
+                          {patient.mrn} • {patient.gender} • {patient.age_years ? `${patient.age_years}y` : "--"}
+                        </div>
+                      </div>
+
+                      <div className="text-xs text-slate-400">
+                        Admitted:{" "}
+                        <span className="font-mono text-slate-300">
+                          {patient.admitted_at ? new Date(patient.admitted_at).toLocaleDateString() : "--"}
                         </span>
                       </div>
 
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
+                        <div className="flex items-center gap-1 text-xs">
+                          <span className="text-slate-400">NEWS2:</span>
+                          <span
+                            className={`font-mono font-bold px-1.5 py-0.5 rounded text-[11px] ${
+                              (patient.news2_score ?? 0) >= 7
+                                ? "bg-rose-950 text-rose-400 border border-rose-800 animate-pulse"
+                                : (patient.news2_score ?? 0) >= 5
+                                ? "bg-amber-950 text-amber-400 border border-amber-800"
+                                : "bg-emerald-950 text-emerald-400 border border-emerald-800"
+                            }`}
+                          >
+                            {patient.news2_score ?? 0}
+                          </span>
+                        </div>
+
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveBedForVitals(bed);
+                          }}
+                          className="px-2 py-1 text-[11px] rounded bg-sky-950 text-sky-400 border border-sky-800 hover:bg-sky-900 transition-colors flex items-center gap-1"
+                        >
+                          <Activity size={11} /> Vitals &amp; NEWS2
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="py-6 flex flex-col items-center justify-center text-slate-600 space-y-2">
+                      <span className="text-xs">
+                        {bed.status === "CLEANING" ? "Terminal Sanitization in Progress" : "Ready for Inpatient Admission"}
+                      </span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setActiveBedForVitals(bed);
+                          toggleSanitization(bed.bed_id);
                         }}
-                        className="px-2 py-1 text-[11px] rounded bg-sky-950 text-sky-400 border border-sky-800 hover:bg-sky-900 transition-colors flex items-center gap-1"
+                        className="px-2 py-1 rounded text-[10px] bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800 flex items-center gap-1"
                       >
-                        <Activity size={11} /> Vitals & NEWS2
+                        <Sparkles size={11} /> {bed.status === "CLEANING" ? "Mark Ready / Clean" : "Request Cleaning"}
                       </button>
                     </div>
-                  </div>
-                ) : (
-                  <div className="py-6 flex flex-col items-center justify-center text-slate-600 space-y-2">
-                    <span className="text-xs">
-                      {bed.status === "CLEANING" ? "Terminal Sanitization in Progress" : "Ready for Inpatient Admission"}
-                    </span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleSanitization(bed.bed_id);
-                      }}
-                      className="px-2 py-1 rounded text-[10px] bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800 flex items-center gap-1"
-                    >
-                      <Sparkles size={11} /> {bed.status === "CLEANING" ? "Mark Ready / Clean" : "Request Cleaning"}
-                    </button>
-                  </div>
-                )}
-              </Card>
-            );
-          })
-        )}
-      </div>
+                  )}
+                </Card>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* TAB 2: INPATIENT eMAR & BCMA */}
+      {activeTab === "emar" && (
+        <div className="space-y-4 mt-6">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+              <Pill size={14} className="text-emerald-400" /> Scheduled Inpatient Doses Due Today
+            </span>
+            <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
+              <ShieldCheck size={13} className="text-emerald-400" />
+              <span>BCMA 5-Rights Barcode Verification Active</span>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-slate-800">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-900 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
+                <tr>
+                  <th className="p-3">Bed</th>
+                  <th className="p-3">Patient &amp; MRN</th>
+                  <th className="p-3">Medication &amp; Dose</th>
+                  <th className="p-3">Route</th>
+                  <th className="p-3">Scheduled</th>
+                  <th className="p-3">Status</th>
+                  <th className="p-3 text-right">BCMA Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/80 font-mono">
+                {medications.map((m) => (
+                  <tr key={m.id} className="hover:bg-slate-900/50 transition-colors">
+                    <td className="p-3 font-bold text-sky-400">Bed {m.bedNumber}</td>
+                    <td className="p-3">
+                      <div className="text-slate-200 font-semibold">{m.patientName}</div>
+                      <div className="text-[10px] text-slate-500">{m.mrn}</div>
+                    </td>
+                    <td className="p-3">
+                      <div className="text-slate-100 font-semibold flex items-center gap-1.5">
+                        {m.drugName}
+                        {m.isHighAlert && (
+                          <span className="px-1 py-0.5 rounded text-[9px] bg-rose-950 text-rose-400 border border-rose-800 font-bold">
+                            HIGH-ALERT
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-slate-400">{m.dose}</div>
+                    </td>
+                    <td className="p-3 text-slate-300">{m.route}</td>
+                    <td className="p-3 text-slate-300 flex items-center gap-1">
+                      <Clock size={11} className="text-slate-500" /> {m.scheduledTime}
+                    </td>
+                    <td className="p-3">
+                      <Badge
+                        variant={
+                          m.status === "ADMINISTERED"
+                            ? "success"
+                            : m.status === "OVERDUE"
+                            ? "danger"
+                            : "warning"
+                        }
+                        size="sm"
+                      >
+                        {m.status}
+                      </Badge>
+                    </td>
+                    <td className="p-3 text-right">
+                      {m.status === "ADMINISTERED" ? (
+                        <div className="text-[10px] text-emerald-400">
+                          <div>✓ Done at {m.administeredAt}</div>
+                          <div className="text-slate-500">{m.administeredBy}</div>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={() => handleOpenAdminModal(m)}
+                          className="flex items-center gap-1 ml-auto text-xs"
+                        >
+                          <QrCode size={12} /> Scan &amp; Administer
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Modal: Bedside Vitals & NEWS2 Scoring */}
       {activeBedForVitals && (
@@ -393,10 +704,197 @@ export const WardNursingStation: React.FC = () => {
                 Cancel
               </Button>
               <Button type="submit" variant="primary" size="sm">
-                Save Vitals & Record NEWS2
+                Save Vitals &amp; Record NEWS2
               </Button>
             </div>
           </form>
+        </Modal>
+      )}
+
+      {/* Modal: BCMA Barcode Scan & Dose Administration */}
+      {selectedMedForAdmin && (
+        <Modal
+          isOpen={true}
+          onClose={() => setSelectedMedForAdmin(null)}
+          title={`BCMA Barcode Verification — Bed ${selectedMedForAdmin.bedNumber}`}
+        >
+          <form onSubmit={handleConfirmAdministration} className="space-y-4">
+            <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg space-y-2 text-xs font-mono">
+              <div className="flex justify-between border-b border-slate-800 pb-1.5">
+                <span className="text-slate-400">Patient:</span>
+                <span className="text-slate-100 font-bold">{selectedMedForAdmin.patientName} ({selectedMedForAdmin.mrn})</span>
+              </div>
+              <div className="flex justify-between border-b border-slate-800 pb-1.5">
+                <span className="text-slate-400">Prescribed Drug:</span>
+                <span className="text-sky-400 font-bold">{selectedMedForAdmin.drugName}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Dose &amp; Route:</span>
+                <span className="text-slate-200">{selectedMedForAdmin.dose} • {selectedMedForAdmin.route}</span>
+              </div>
+            </div>
+
+            {/* 5 Rights Barcode Verification Checkpoints */}
+            <div className="space-y-3">
+              {/* Step 1: Patient Wristband */}
+              <div className="p-3 rounded-lg border border-slate-800 bg-slate-900/60 flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                    <QrCode size={14} className={wristbandScanned ? "text-emerald-400" : "text-slate-500"} />
+                    Step 1: Patient UHID Wristband Barcode
+                  </div>
+                  <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                    Target: {selectedMedForAdmin.mrn}
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant={wristbandScanned ? "outline" : "primary"}
+                  size="sm"
+                  onClick={() => setWristbandScanned(true)}
+                  className="text-xs"
+                >
+                  {wristbandScanned ? "✓ Wristband Verified" : "Simulate Scan"}
+                </Button>
+              </div>
+
+              {/* Step 2: Drug Ampoule GS1 */}
+              <div className="p-3 rounded-lg border border-slate-800 bg-slate-900/60 flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                    <Pill size={14} className={ampouleScanned ? "text-emerald-400" : "text-slate-500"} />
+                    Step 2: Medication Ampoule / Vial GS1 Barcode
+                  </div>
+                  <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                    Match: {selectedMedForAdmin.drugName}
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant={ampouleScanned ? "outline" : "primary"}
+                  size="sm"
+                  onClick={() => setAmpouleScanned(true)}
+                  className="text-xs"
+                >
+                  {ampouleScanned ? "✓ Ampoule Verified" : "Simulate Scan"}
+                </Button>
+              </div>
+
+              {/* High Alert Witness Sign-off */}
+              {selectedMedForAdmin.isHighAlert && (
+                <div className="p-3 rounded-lg border border-rose-900/40 bg-rose-950/20 space-y-2">
+                  <div className="text-xs font-bold text-rose-300 flex items-center gap-1.5">
+                    <AlertTriangle size={14} /> Dual-Witness High-Alert Verification Required
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                    <div>
+                      <label className="text-[10px] text-slate-400 block mb-0.5">Witness Staff ID / Badge</label>
+                      <input
+                        type="text"
+                        value={witnessStaffId}
+                        onChange={(e) => setWitnessStaffId(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-200 text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400 block mb-0.5">Witness Role</label>
+                      <input
+                        type="text"
+                        disabled
+                        value="Senior Staff Nurse (RN-ICU)"
+                        className="w-full bg-slate-900/60 border border-slate-800 rounded px-2 py-1 text-slate-400 text-xs"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setSelectedMedForAdmin(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="primary"
+                size="sm"
+                disabled={!wristbandScanned || !ampouleScanned || isSubmittingEmar}
+              >
+                {isSubmittingEmar ? "Logging BCMA..." : "Confirm & Administer Dose"}
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Modal: SBAR Shift Handover Kardex */}
+      {isKardexModalOpen && (
+        <Modal
+          isOpen={true}
+          onClose={() => setIsKardexModalOpen(false)}
+          title="NABH SBAR Inpatient Nursing Shift Handover Kardex"
+        >
+          <div className="space-y-4">
+            <div className="p-4 bg-slate-950 border border-slate-800 rounded-lg space-y-3 font-mono text-xs">
+              <div className="flex justify-between border-b border-slate-800 pb-2">
+                <div>
+                  <strong className="text-slate-100 uppercase">Ward 1 Nursing Kardex</strong>
+                  <div className="text-[11px] text-slate-400">Shift: Morning &rarr; Afternoon Handover</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-emerald-400">Inpatients: {occupiedCount} / Beds: {beds.length}</div>
+                  <div className="text-[10px] text-slate-500">{new Date().toLocaleDateString()} {new Date().toLocaleTimeString()}</div>
+                </div>
+              </div>
+
+              <div>
+                <span className="text-sky-400 font-bold block uppercase text-[10px]">[S] Situation:</span>
+                <p className="text-slate-300">
+                  12 beds total, 4 occupied. Bed 101 high fever spike NEWS2=6; Bed 103 DVT prophylaxis enoxaparin due at 18:00.
+                </p>
+              </div>
+
+              <div>
+                <span className="text-amber-400 font-bold block uppercase text-[10px]">[B] Background:</span>
+                <p className="text-slate-300">
+                  Bed 101 post-op Appendectomy Day 2; Bed 102 acute GERD stepdown; Bed 105 Diabetic Ketoacidosis stabilized.
+                </p>
+              </div>
+
+              <div>
+                <span className="text-purple-400 font-bold block uppercase text-[10px]">[A] Assessment:</span>
+                <p className="text-slate-300">
+                  All 4 patients stable on room air except Bed 101 receiving 2L O2 by cannula. All morning doses administered and audited.
+                </p>
+              </div>
+
+              <div>
+                <span className="text-emerald-400 font-bold block uppercase text-[10px]">[R] Recommendation:</span>
+                <p className="text-slate-300">
+                  Recheck Bed 101 temperature &amp; CBC blood culture at 16:00. Terminal cleaning requested for Bed 104.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => window.print()}
+                className="flex items-center gap-1.5"
+              >
+                <Printer size={13} /> Print Kardex
+              </Button>
+              <Button variant="primary" size="sm" onClick={() => setIsKardexModalOpen(false)}>
+                Close Handover
+              </Button>
+            </div>
+          </div>
         </Modal>
       )}
     </div>

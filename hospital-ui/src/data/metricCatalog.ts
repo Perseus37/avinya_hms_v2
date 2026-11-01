@@ -290,3 +290,4 @@ export const SAMPLE_METRIC_CATALOG: MetricItem[] = [
     targetBenchmark: "99.99% | < 85ms",
   },
 ];
+
