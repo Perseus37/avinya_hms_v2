@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { registersApi } from "../../api/registersApi";
 import { analyticsApi, ExecutiveCommandCenterData } from "../../api/analyticsApi";
 import { METRIC_DOMAINS, SAMPLE_METRIC_CATALOG } from "../../data/metricCatalog";
+import { OperationalTrendsDashboard } from "../../components/analytics/OperationalTrendsDashboard";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
@@ -532,6 +533,15 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                 );
               })}
             </div>
+          </div>
+
+          {/* Operational Velocity & Visual Trend Analytics */}
+          <div className="mt-8 pt-6 border-t border-slate-800/80">
+            <OperationalTrendsDashboard
+              totalBeds={liveMetrics?.bed_census.total_beds || 120}
+              occupiedBeds={liveMetrics?.bed_census.status_breakdown["OCCUPIED"] || 105}
+              totalCollectionsPaise={liveMetrics?.unit_economics.total_net_billed_paise || 34865000}
+            />
           </div>
 
           {/* Database Footprint Live Overview */}

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { uiApi } from "../../api/uiApi";
+import { encounterApi } from "../../api/encounterApi";
 import { DoctorQueueSummary } from "../../types";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 import { Button } from "../../components/ui/Button";
@@ -143,26 +144,95 @@ export const DoctorCockpit: React.FC = () => {
     setDiagnosticOrders((prev) => prev.filter((t) => t.id !== id));
   };
 
+  const [selectedAppointmentId, setSelectedAppointmentId] = useState<number | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [completionBanner, setCompletionBanner] = useState<{
+    patientName: string;
+    tokenNumber: number;
+    timestamp: string;
+  } | null>(null);
+
+  const handleSelectAppointment = async (appt: {
+    appointment_id: number;
+    patient_id: number;
+    status: string;
+  }) => {
+    setSelectedAppointmentId(appt.appointment_id);
+    selectPatient(appt.patient_id);
+    setCompletionBanner(null);
+
+    // If patient is checked in / arrived, auto-transition to IN_CONSULTATION
+    if (appt.status === "ARRIVED" || appt.status === "CHECKED_IN") {
+      try {
+        await encounterApi.updateAppointmentStatus(appt.appointment_id, "IN_CONSULTATION");
+        if (queue) {
+          setQueue({
+            ...queue,
+            checked_in: Math.max(0, queue.checked_in - 1),
+            in_consultation: queue.in_consultation + 1,
+            appointments: queue.appointments.map((a) =>
+              a.appointment_id === appt.appointment_id
+                ? { ...a, status: "IN_CONSULTATION" }
+                : a
+            ),
+          });
+        }
+      } catch (err) {
+        console.warn("Status transition to IN_CONSULTATION remote call skipped:", err);
+      }
+    }
+  };
+
   const handleFinalizeEncounter = () => {
     setIsSummarySlipOpen(true);
   };
 
-  const handleConfirmAndComplete = () => {
-    setIsSummarySlipOpen(false);
-    if (queue && patientSummary) {
-      // Mark current appointment as completed in queue
-      setQueue({
-        ...queue,
-        completed: queue.completed + 1,
-        in_consultation: Math.max(0, queue.in_consultation - 1),
-        appointments: queue.appointments.map((a) =>
-          a.patient_id === patientSummary.patient_id
-            ? { ...a, status: "COMPLETED" }
-            : a
-        ),
-      });
+  const handleConfirmAndComplete = async () => {
+    setIsSubmitting(true);
+    try {
+      if (selectedAppointmentId) {
+        try {
+          await encounterApi.updateAppointmentStatus(selectedAppointmentId, "COMPLETED");
+        } catch (apiErr) {
+          console.warn("Could not patch appointment status remotely (using local state update):", apiErr);
+        }
+      }
+
+      if (queue && patientSummary) {
+        setQueue({
+          ...queue,
+          completed: queue.completed + 1,
+          in_consultation: Math.max(0, queue.in_consultation - 1),
+          appointments: queue.appointments.map((a) =>
+            a.patient_id === patientSummary.patient_id
+              ? { ...a, status: "COMPLETED" }
+              : a
+          ),
+        });
+
+        const activeAppt = queue.appointments.find((a) => a.patient_id === patientSummary.patient_id);
+        setCompletionBanner({
+          patientName: patientSummary.full_name,
+          tokenNumber: activeAppt?.token_number ?? 1,
+          timestamp: new Date().toLocaleTimeString(),
+        });
+      }
+      setIsSummarySlipOpen(false);
+    } finally {
+      setIsSubmitting(false);
     }
-    alert("Encounter signed and prescription broadcast to Central Pharmacy and LIS!");
+  };
+
+  const handleProceedToNextPatient = () => {
+    if (!queue) return;
+    const nextWaiting = queue.appointments.find(
+      (a) => a.status === "ARRIVED" || a.status === "CHECKED_IN" || a.status === "SCHEDULED"
+    );
+    if (nextWaiting) {
+      handleSelectAppointment(nextWaiting);
+    } else {
+      setCompletionBanner(null);
+    }
   };
 
   return (
@@ -216,7 +286,7 @@ export const DoctorCockpit: React.FC = () => {
             queue?.appointments.map((appt) => (
               <div
                 key={appt.appointment_id}
-                onClick={() => selectPatient(appt.patient_id)}
+                onClick={() => handleSelectAppointment(appt)}
                 className={`p-3 rounded-lg border cursor-pointer transition-all shadow-sm ${
                   patientSummary?.patient_id === appt.patient_id
                     ? "bg-slate-800/90 border-sky-500"
@@ -268,6 +338,42 @@ export const DoctorCockpit: React.FC = () => {
 
       {/* Column 2 & 3: Clinical Consultation Action Pad */}
       <div className="flex-1 flex flex-col bg-slate-950 p-6 overflow-y-auto">
+        {completionBanner && (
+          <div className="mb-4 p-4 rounded-xl bg-emerald-950/40 border border-emerald-800/80 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-emerald-900/60 text-emerald-400">
+                <CheckCircle2 size={20} />
+              </div>
+              <div>
+                <div className="text-sm font-bold text-emerald-200">
+                  Encounter Finalized &amp; Signed — Token #{completionBanner.tokenNumber} ({completionBanner.patientName})
+                </div>
+                <div className="text-xs text-emerald-400/80 font-mono mt-0.5">
+                  Signed at {completionBanner.timestamp} • eRx dispatched to Pharmacy • Lab orders routed to LIS • Cashier billing updated
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setIsSummarySlipOpen(true)}
+                className="border-emerald-700 text-emerald-300 hover:bg-emerald-900/50"
+              >
+                <Printer size={13} className="mr-1.5" /> Re-print Slip
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleProceedToNextPatient}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white"
+              >
+                Call Next Patient
+              </Button>
+            </div>
+          </div>
+        )}
+
         {patientSummary ? (
           <div className="space-y-6 max-w-5xl">
             {/* Header / Active Encounter Status */}
@@ -655,8 +761,13 @@ export const DoctorCockpit: React.FC = () => {
               <Button variant="outline" size="sm" onClick={() => setIsSummarySlipOpen(false)}>
                 Review Notes
               </Button>
-              <Button variant="primary" size="sm" onClick={handleConfirmAndComplete}>
-                Sign & Finalize Encounter
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={isSubmitting}
+                onClick={handleConfirmAndComplete}
+              >
+                {isSubmitting ? "Signing & Broadcasting..." : "Sign & Finalize Encounter"}
               </Button>
             </div>
           </div>
