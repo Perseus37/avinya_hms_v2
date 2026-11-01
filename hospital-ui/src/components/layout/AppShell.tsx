@@ -50,7 +50,7 @@ export const AppShell: React.FC = () => {
       case "billing":
         return <CashierCounterWorkspace />;
       case "admin":
-        return <AdminWorkspace />;
+        return <AdminWorkspace onSelectWorkspace={setActiveWorkspace} />;
       default:
         return <PatientRegistrationWorkspace />;
     }

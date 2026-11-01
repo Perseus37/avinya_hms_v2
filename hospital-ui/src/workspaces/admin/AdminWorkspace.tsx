@@ -4,6 +4,7 @@ import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { Badge } from "../../components/ui/Badge";
+import { WorkspaceId } from "../../types";
 import {
   Database,
   Download,
@@ -13,9 +14,26 @@ import {
   Layers,
   Eye,
   Lock,
+  UserPlus,
+  DoorOpen,
+  Stethoscope,
+  BedDouble,
+  Siren,
+  Pill,
+  Microscope,
+  CreditCard,
+  TrendingUp,
+  Activity,
+  ArrowUpRight,
+  Users,
 } from "lucide-react";
 
-export const AdminWorkspace: React.FC = () => {
+interface AdminWorkspaceProps {
+  onSelectWorkspace?: (workspace: WorkspaceId) => void;
+}
+
+export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspace }) => {
+
   const [inventory, setInventory] = useState<{
     tenant_id: number;
     total_hospital_records: number;
@@ -164,6 +182,163 @@ export const AdminWorkspace: React.FC = () => {
           >
             <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} /> Refresh Data Footprint
           </Button>
+        </div>
+      </div>
+
+      {/* 1. Real-Time Hospital Operational KPIs */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+        <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+              <Users size={14} className="text-sky-400" /> Today&apos;s OPD Consults
+            </span>
+            <Badge variant="info" size="sm">Live</Badge>
+          </div>
+          <div className="flex items-baseline justify-between">
+            <span className="text-2xl font-bold font-mono text-slate-100">142</span>
+            <span className="text-xs text-emerald-400 font-mono flex items-center">
+              <TrendingUp size={12} className="mr-0.5" /> +12% vs avg
+            </span>
+          </div>
+          <div className="text-[11px] text-slate-500 font-mono">General Med: 54 • Cardio: 38 • Ortho: 50</div>
+        </Card>
+
+        <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+              <BedDouble size={14} className="text-emerald-400" /> Bed Occupancy (BOR)
+            </span>
+            <Badge variant="success" size="sm">87.5%</Badge>
+          </div>
+          <div className="flex items-baseline justify-between">
+            <span className="text-2xl font-bold font-mono text-slate-100">105 / 120</span>
+            <span className="text-xs text-slate-400 font-mono">15 Available</span>
+          </div>
+          <div className="text-[11px] text-slate-500 font-mono">ICU: 92% • Semi-Private: 85% • Ward: 88%</div>
+        </Card>
+
+        <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+              <Siren size={14} className="text-rose-400" /> Emergency Trauma (ESI-1/2)
+            </span>
+            <Badge variant="danger" size="sm">Priority</Badge>
+          </div>
+          <div className="flex items-baseline justify-between">
+            <span className="text-2xl font-bold font-mono text-rose-400">3 Cases</span>
+            <span className="text-xs text-rose-400 font-mono">Avg Triage: 4m</span>
+          </div>
+          <div className="text-[11px] text-slate-500 font-mono">RTA Poly-Trauma • Acute STEMI • Stroke</div>
+        </Card>
+
+        <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+              <CreditCard size={14} className="text-amber-400" /> Today&apos;s Gross Collections
+            </span>
+            <Badge variant="warning" size="sm">Audited</Badge>
+          </div>
+          <div className="flex items-baseline justify-between">
+            <span className="text-2xl font-bold font-mono text-emerald-400">₹3,48,650</span>
+            <span className="text-xs text-slate-400 font-mono">94 Receipts</span>
+          </div>
+          <div className="text-[11px] text-slate-500 font-mono">UPI: 48% • Card: 32% • Cash: 20%</div>
+        </Card>
+      </div>
+
+      {/* 2. Departmental Quick Intake Launchpad */}
+      <div className="mt-6">
+        <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 mb-3">
+          <Activity size={16} className="text-sky-400" />
+          Clinical &amp; Operational Intake Launchpad
+        </h2>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            {
+              id: "registration" as WorkspaceId,
+              title: "Patient Registration",
+              desc: "New UHID, PIN lookup, DPDP consent",
+              icon: UserPlus,
+              color: "text-sky-400",
+            },
+            {
+              id: "adt" as WorkspaceId,
+              title: "Inpatient Bed ADT",
+              desc: "Admit, transfer bed, discharge summary",
+              icon: DoorOpen,
+              color: "text-emerald-400",
+            },
+            {
+              id: "doctor" as WorkspaceId,
+              title: "Doctor Cockpit",
+              desc: "SOAP consult, CPOE e-Rx, lab orders",
+              icon: Stethoscope,
+              color: "text-purple-400",
+            },
+            {
+              id: "nursing" as WorkspaceId,
+              title: "Ward Nursing Station",
+              desc: "NEWS2 early warning, vitals, MAR",
+              icon: BedDouble,
+              color: "text-teal-400",
+            },
+            {
+              id: "triage" as WorkspaceId,
+              title: "Emergency Triage",
+              desc: "ESI 1-5 triage, GCS score, trauma MLC",
+              icon: Siren,
+              color: "text-rose-400",
+            },
+            {
+              id: "pharmacy" as WorkspaceId,
+              title: "Pharmacy & NDPS",
+              desc: "Barcode dispensing, Schedule H1 ledger",
+              icon: Pill,
+              color: "text-emerald-400",
+            },
+            {
+              id: "diagnostics" as WorkspaceId,
+              title: "Diagnostics & LIS",
+              desc: "Accessioning, panic callouts, reports",
+              icon: Microscope,
+              color: "text-indigo-400",
+            },
+            {
+              id: "billing" as WorkspaceId,
+              title: "Cashier Billing Counter",
+              desc: "Shift reconciliations, split tender, tax invoice",
+              icon: CreditCard,
+              color: "text-amber-400",
+            },
+          ].map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onSelectWorkspace && onSelectWorkspace(item.id)}
+                className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-sky-500/50 hover:bg-slate-800/80 transition-all text-left group flex flex-col justify-between"
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className={`p-2 rounded-lg bg-slate-950 border border-slate-800 ${item.color}`}>
+                    <Icon size={18} />
+                  </div>
+                  <ArrowUpRight
+                    size={14}
+                    className="text-slate-600 group-hover:text-sky-400 transition-colors"
+                  />
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-slate-200 group-hover:text-white transition-colors">
+                    {item.title}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                    {item.desc}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
 
