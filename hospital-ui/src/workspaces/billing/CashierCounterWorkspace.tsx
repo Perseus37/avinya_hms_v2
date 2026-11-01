@@ -20,6 +20,8 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { printDocument } from "../../utils/printDocument";
 
 interface BillItem {
   id: string;
@@ -32,6 +34,7 @@ interface BillItem {
 
 export const CashierCounterWorkspace: React.FC = () => {
   const { patientSummary } = useActivePatient();
+  const { hospitalProfile } = useHospitalConfig();
   const [shift, setShift] = useState<CashierShiftStatus | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isOpenModalActive, setIsOpenModalActive] = useState(false);
@@ -225,6 +228,68 @@ export const CashierCounterWorkspace: React.FC = () => {
 
     setIsSettlementModalOpen(false);
     setIsInvoicePrintModalOpen(true);
+  };
+
+  const handlePrintInvoice = () => {
+    if (!lastSettledInvoice) return;
+    const subtotal = billItems.reduce((acc, it) => acc + it.unitPrice * it.quantity, 0);
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 680px; margin: 0 auto; border: 1px solid #333; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 12px; font-weight: bold; color: #333; margin-top: 2px;">STATUTORY GST TAX INVOICE & CASHIER SETTLEMENT RECEIPT</div>
+          <div style="font-size: 10px; color: #555;">${hospitalProfile.address} • GSTIN: ${hospitalProfile.taxGstin || "36AABCA1234D1Z5"}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 12px;">
+          <div><b>Patient Legal Name:</b> ${lastSettledInvoice.patientName.toUpperCase()}</div>
+          <div><b>UHID / MRN:</b> ${lastSettledInvoice.mrn}</div>
+          <div><b>Invoice No:</b> ${lastSettledInvoice.invoiceNumber}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 16px;">
+          <div><b>Settlement Date:</b> ${new Date().toLocaleString()}</div>
+          <div><b>Payment Status:</b> <span style="color: #16a34a; font-weight: bold;">PAID IN FULL</span></div>
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 16px;">
+          <thead>
+            <tr style="background: #f1f5f9; border-bottom: 2px solid #cbd5e1; text-align: left;">
+              <th style="padding: 6px;">Particulars / Healthcare Service</th>
+              <th style="padding: 6px; text-align: center;">Category</th>
+              <th style="padding: 6px; text-align: center;">Qty</th>
+              <th style="padding: 6px; text-align: right;">Rate (₹)</th>
+              <th style="padding: 6px; text-align: right;">Amount (₹)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${billItems.map((item) => `
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 6px;">${item.description}</td>
+                <td style="padding: 6px; text-align: center; font-size: 10px; color: #64748b;">${item.category}</td>
+                <td style="padding: 6px; text-align: center;">${item.quantity}</td>
+                <td style="padding: 6px; text-align: right;">₹${item.unitPrice.toFixed(2)}</td>
+                <td style="padding: 6px; text-align: right; font-weight: bold;">₹${(item.unitPrice * item.quantity).toFixed(2)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+        <div style="display: flex; justify-content: flex-end; margin-bottom: 20px;">
+          <div style="width: 250px; font-size: 12px; line-height: 1.8;">
+            <div style="display: flex; justify-content: space-between;"><span>Subtotal:</span> <span>₹${subtotal.toFixed(2)}</span></div>
+            <div style="display: flex; justify-content: space-between;"><span>Healthcare GST (Exempt/0%):</span> <span>₹0.00</span></div>
+            <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 2px solid #000; font-size: 13px;">
+              <span>Total Paid:</span> <span style="color: #16a34a;">₹${lastSettledInvoice.totalAmount.toFixed(2)}</span>
+            </div>
+          </div>
+        </div>
+        <div style="font-size: 9px; color: #64748b; border-top: 1px dashed #ccc; padding-top: 8px; text-align: center;">
+          Healthcare clinical diagnosis and in-patient treatment services are exempted under GST Notification 12/2017-CT(R). Computer generated invoice.
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 40px; font-size: 11px;">
+          <div style="border-top: 1px solid #000; width: 200px; text-align: center; padding-top: 4px;">Authorized Cashier Signature</div>
+          <div style="border-top: 1px solid #000; width: 200px; text-align: center; padding-top: 4px;">Hospital Revenue Accounts Stamp</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: `Invoice_${lastSettledInvoice.invoiceNumber}`, docType: "CLINICAL_SUMMARY" });
   };
 
   return (
@@ -749,7 +814,7 @@ export const CashierCounterWorkspace: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.print()}
+                onClick={handlePrintInvoice}
                 className="flex items-center gap-1.5"
               >
                 <Printer size={13} /> Print Tax Invoice (80mm / A4)

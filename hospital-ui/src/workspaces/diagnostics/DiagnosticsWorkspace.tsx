@@ -4,6 +4,8 @@ import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { printDocument } from "../../utils/printDocument";
 
 interface LabOrder {
   id: number;
@@ -23,6 +25,7 @@ interface LabOrder {
 }
 
 export const DiagnosticsWorkspace: React.FC = () => {
+  const { hospitalProfile } = useHospitalConfig();
   const [orders, setOrders] = useState<LabOrder[]>([
     {
       id: 1,
@@ -181,6 +184,57 @@ export const DiagnosticsWorkspace: React.FC = () => {
     }
     setIsCalloutModalOpen(false);
     alert("Critical panic delta verbal callout successfully recorded in audit log.");
+  };
+
+  const handlePrintLabReport = (order: LabOrder) => {
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 750px; margin: 0 auto; border: 1px solid #333; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 12px; font-weight: bold; color: #0284c7; margin-top: 2px;">NABL ACCREDITED CENTRAL CLINICAL LABORATORY REPORT</div>
+          <div style="font-size: 10px; color: #555;">${hospitalProfile.accreditation} • Phone: ${hospitalProfile.phone}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 14px;">
+          <div><b>Patient:</b> ${order.patientName.toUpperCase()}</div>
+          <div><b>UHID / MRN:</b> ${order.mrn}</div>
+          <div><b>Lab Order No:</b> ${order.orderNumber}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 11px; margin-bottom: 16px;">
+          <div><b>Specimen Type:</b> ${order.sampleType}</div>
+          <div><b>Status:</b> ${order.status}</div>
+          <div><b>Date:</b> ${new Date().toLocaleDateString()}</div>
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 20px;">
+          <thead>
+            <tr style="background: #f1f5f9; border-bottom: 2px solid #cbd5e1; text-align: left;">
+              <th style="padding: 8px;">Investigation / Analyte</th>
+              <th style="padding: 8px;">Result Value</th>
+              <th style="padding: 8px;">Reference Range</th>
+              <th style="padding: 8px;">Unit</th>
+              <th style="padding: 8px;">Barcode</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${order.tests.map((t) => `
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 8px; font-weight: bold;">${t.name}</td>
+                <td style="padding: 8px; font-family: monospace; font-weight: bold; color: ${t.flag === "PANIC" ? "#dc2626" : t.flag === "HIGH" ? "#ea580c" : "#0f172a"};">
+                  ${t.result || "Verified Normal"}
+                </td>
+                <td style="padding: 8px; color: #64748b;">${t.referenceRange || "--"}</td>
+                <td style="padding: 8px; color: #64748b;">${t.unit || "--"}</td>
+                <td style="padding: 8px; font-family: monospace; font-size: 10px;">${t.barcode}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+        <div style="margin-top: 50px; display: flex; justify-content: space-between; font-size: 11px;">
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Medical Laboratory Technologist</div>
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Dr. Anjali Mehta, MD (Pathology)<br/><span style="font-size: 9px; color: #64748b;">Authorized Pathologist • Reg #MC-44910</span></div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: `Lab_Report_${order.orderNumber}`, docType: "CLINICAL_SUMMARY" });
   };
 
   return (
@@ -665,7 +719,7 @@ export const DiagnosticsWorkspace: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.print()}
+                onClick={() => reportOrder && handlePrintLabReport(reportOrder)}
                 className="flex items-center gap-1.5"
               >
                 <Printer size={13} /> Print Laboratory Report

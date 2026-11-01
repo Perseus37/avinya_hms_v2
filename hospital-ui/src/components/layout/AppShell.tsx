@@ -13,6 +13,7 @@ import { InpatientAdmissionWorkspace } from "../../workspaces/adt/InpatientAdmis
 import { DoctorCockpit } from "../../workspaces/doctor/DoctorCockpit";
 import { WardNursingStation } from "../../workspaces/nursing/WardNursingStation";
 import { EDTriageBoard } from "../../workspaces/triage/EDTriageBoard";
+import { SurgeryWorkspace } from "../../workspaces/surgery/SurgeryWorkspace";
 import { PharmacyWorkspace } from "../../workspaces/pharmacy/PharmacyWorkspace";
 import { DiagnosticsWorkspace } from "../../workspaces/diagnostics/DiagnosticsWorkspace";
 import { CashierCounterWorkspace } from "../../workspaces/billing/CashierCounterWorkspace";
@@ -51,6 +52,7 @@ export const AppShell: React.FC = () => {
           "doctor",
           "nursing",
           "triage",
+          "surgery",
           "pharmacy",
           "diagnostics",
           "billing",
@@ -83,6 +85,8 @@ export const AppShell: React.FC = () => {
         return <WardNursingStation />;
       case "triage":
         return <EDTriageBoard />;
+      case "surgery":
+        return <SurgeryWorkspace />;
       case "pharmacy":
         return <PharmacyWorkspace />;
       case "diagnostics":

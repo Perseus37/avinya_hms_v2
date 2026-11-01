@@ -77,6 +77,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
       "doctor",
       "nursing",
       "triage",
+      "surgery",
       "pharmacy",
       "diagnostics",
       "billing",
@@ -141,7 +142,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "Doctor Cockpit",
     description: "Access to Doctor Cockpit, longitudinal EMR, CPOE electronic prescription, CDS safety alerts, and clinical discharge signing.",
     defaultWorkspace: "doctor",
-    allowedWorkspaces: ["doctor", "patient-record", "opd-queue", "diagnostics", "adt", "registration"],
+    allowedWorkspaces: ["doctor", "surgery", "patient-record", "opd-queue", "diagnostics", "adt", "registration"],
     permissions: [
       "doctor.cockpit_view",
       "order.cpoe_prescribe",

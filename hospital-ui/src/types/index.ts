@@ -6,6 +6,7 @@ export type WorkspaceId =
   | "doctor"
   | "nursing"
   | "triage"
+  | "surgery"
   | "pharmacy"
   | "diagnostics"
   | "billing"

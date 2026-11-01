@@ -14,6 +14,8 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { printDocument } from "../../utils/printDocument";
 
 interface EmergencyCase {
   id: number;
@@ -35,6 +37,7 @@ interface EmergencyCase {
 
 export const EDTriageBoard: React.FC = () => {
   const { selectPatient } = useActivePatient();
+  const { hospitalProfile } = useHospitalConfig();
   const [cases, setCases] = useState<EmergencyCase[]>([
     {
       id: 101,
@@ -211,6 +214,71 @@ export const EDTriageBoard: React.FC = () => {
     },
   ];
 
+  const handlePrintTriageSlip = (c: EmergencyCase) => {
+    const html = `
+      <div class="thermal-slip">
+        <div class="center bold" style="font-size: 13px;">${hospitalProfile.name.toUpperCase()}</div>
+        <div class="center" style="font-size: 9px; margin-bottom: 4px;">EMERGENCY DEPARTMENT • RAPID TRIAGE SLIP</div>
+        <div class="divider"></div>
+        <div class="center bold" style="font-size: 26px; letter-spacing: 2px; color: ${c.esi === 1 ? "#dc2626" : c.esi === 2 ? "#ea580c" : "#ca8a04"};">
+          ESI LEVEL ${c.esi}
+        </div>
+        <div class="center bold" style="font-size: 10px;">${c.esi === 1 ? "RESUSCITATION (IMMEDIATE)" : c.esi === 2 ? "EMERGENT (<15 MINS)" : "URGENT (<30 MINS)"}</div>
+        <div class="divider"></div>
+        <div><b>Patient:</b> ${c.name.toUpperCase()}</div>
+        <div><b>MRN:</b> ${c.mrn}</div>
+        <div><b>Arrival:</b> ${c.arrival}</div>
+        <div><b>Initial Vitals:</b> ${c.vitals}</div>
+        <div><b>Glasgow Coma Scale:</b> ${c.gcs || 15}/15 (E${c.eyeScore || 4} V${c.verbalScore || 5} M${c.motorScore || 6})</div>
+        <div><b>Chief Complaint:</b> ${c.complaint}</div>
+        <div class="divider"></div>
+        <div class="bold">STAT TRAUMA DIRECTIVES:</div>
+        <div>• 12-Lead ECG & Continuous Cardiac Telemetry</div>
+        <div>• STAT Trauma Panel (CBC, ABG, Electrolytes, Crossmatch)</div>
+        <div>• FAST Ultrasonography / Trauma Bay CT</div>
+        <div class="divider"></div>
+        <div class="center" style="font-size: 9px;">Assigned by Triage Officer • ${new Date().toLocaleTimeString()}</div>
+      </div>
+    `;
+    printDocument(html, { title: `Triage_${c.mrn}`, docType: "THERMAL_TOKEN" });
+  };
+
+  const handlePrintPoliceIntimation = (c: EmergencyCase) => {
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 700px; margin: 0 auto; border: 2px solid #000; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 11px; font-weight: bold; color: #b91c1c; margin-top: 4px;">STATUTORY MEDICO-LEGAL POLICE INTIMATION NOTICE</div>
+          <div style="font-size: 10px; color: #555;">Under Section 39 Code of Criminal Procedure (CrPC) / Statutory Police Notification</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-bottom: 14px; font-family: monospace; font-size: 12px;">
+          <div><b>MLC DOCKET NO:</b> ${c.mlcNumber || "MLC-20261101-9F2B"}</div>
+          <div><b>DATE & TIME:</b> ${new Date().toLocaleString()}</div>
+        </div>
+        <div style="border: 1px solid #999; padding: 12px; font-size: 12px; line-height: 1.6; margin-bottom: 16px;">
+          <div><b>Injured Person Legal Name:</b> ${c.name.toUpperCase()}</div>
+          <div><b>UHID / Hospital MRN:</b> ${c.mrn}</div>
+          <div><b>Jurisdictional Police Station:</b> ${c.policeStation || "Central Police Station, Division B"}</div>
+          <div><b>Investigating Officer / Buckle No:</b> ${c.policeBuckleNo || "PC-4882"}</div>
+          <div style="margin-top: 8px;"><b>Alleged History & Mode of Injury:</b></div>
+          <div style="background: #f5f5f5; border: 1px solid #ddd; padding: 8px; margin-top: 4px; font-style: italic;">
+            ${c.complaint}
+          </div>
+          <div style="margin-top: 8px;"><b>Initial Clinical Findings & Vitals at Arrival:</b> ${c.vitals}</div>
+        </div>
+        <div style="font-size: 10px; color: #444; line-height: 1.5; margin-bottom: 24px;">
+          Certified that the above-named person was brought to this hospital under emergency conditions with alleged injuries specified. 
+          Forensic chain of custody is initiated and toxicological specimens preserved as per statutory requirements.
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 60px; font-size: 11px;">
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Casualty Medical Officer (CMO) Seal & Regn No.</div>
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Police Officer / Constable Acknowledgement</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: `MLC_${c.mlcNumber || c.mrn}`, docType: "CLINICAL_SUMMARY" });
+  };
+
   return (
     <div className="flex-1 flex flex-col bg-slate-950 p-6 overflow-hidden">
       {/* Header */}
@@ -269,7 +337,6 @@ export const EDTriageBoard: React.FC = () => {
       <div className="flex-1 grid grid-cols-5 gap-3 mt-6 overflow-hidden">
         {esiDefinitions.map((col) => {
           const colCases = cases.filter((c) => c.esi === col.level);
-
           return (
             <div
               key={col.level}
@@ -687,7 +754,7 @@ export const EDTriageBoard: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.print()}
+                onClick={() => handlePrintTriageSlip(selectedCaseForPrint)}
                 className="flex items-center gap-1.5"
               >
                 <Printer size={13} /> Print Triage Slip
@@ -756,7 +823,7 @@ export const EDTriageBoard: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.print()}
+                onClick={() => handlePrintPoliceIntimation(selectedCaseForMlc)}
                 className="flex items-center gap-1.5"
               >
                 <Printer size={13} /> Print Police Intimation

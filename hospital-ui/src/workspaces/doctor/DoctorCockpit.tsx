@@ -7,6 +7,8 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Modal } from "../../components/ui/Modal";
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { printDocument } from "../../utils/printDocument";
 import {
   Clock,
   Stethoscope,
@@ -43,6 +45,7 @@ interface PrescribedTest {
 }
 
 export const DoctorCockpit: React.FC = () => {
+  const { hospitalProfile } = useHospitalConfig();
   const [activeTab, setActiveTab] = useState<"consultation" | "history" | "trends">("consultation");
   const [queue, setQueue] = useState<DoctorQueueSummary | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -324,6 +327,73 @@ export const DoctorCockpit: React.FC = () => {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handlePrintPrescriptionSlip = () => {
+    const ptName = patientSummary?.full_name || "Patient";
+    const ptMrn = patientSummary?.mrn || "--";
+    const docName = queue?.doctor_name ? `Dr. ${queue.doctor_name}` : "Treating Consultant";
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 700px; margin: 0 auto; border: 1px solid #333; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 12px; font-weight: bold; color: #0284c7; margin-top: 2px;">OUTPATIENT CLINICAL CONSULTATION & e-PRESCRIPTION SLIP</div>
+          <div style="font-size: 10px; color: #555;">${hospitalProfile.address} • Tel: ${hospitalProfile.phone}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 12px;">
+          <div><b>Patient Name:</b> ${ptName.toUpperCase()}</div>
+          <div><b>UHID / MRN:</b> ${ptMrn}</div>
+          <div><b>Consultant:</b> ${docName}</div>
+          <div><b>Date:</b> ${new Date().toLocaleDateString()}</div>
+        </div>
+        <div style="margin-bottom: 12px; font-size: 12px;">
+          <b>Provisional Diagnosis / ICD-10:</b>
+          <div style="background: #f8fafc; border: 1px solid #cbd5e1; padding: 8px; margin-top: 4px; font-weight: bold; color: #0f172a;">
+            ${selectedIcd10}
+          </div>
+        </div>
+        <div style="margin-bottom: 14px; font-size: 12px;">
+          <b style="font-size: 16px; font-family: serif;">℞ Prescribed Medications:</b>
+          <table style="width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 6px;">
+            <thead>
+              <tr style="background: #f1f5f9; border-bottom: 1px solid #cbd5e1; text-align: left;">
+                <th style="padding: 6px;">Medicine Name & Strength</th>
+                <th style="padding: 6px;">Dosage</th>
+                <th style="padding: 6px;">Frequency</th>
+                <th style="padding: 6px;">Duration</th>
+                <th style="padding: 6px;">Instructions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${medications.map((m) => `
+                <tr style="border-bottom: 1px solid #e2e8f0;">
+                  <td style="padding: 6px; font-weight: bold;">${m.name}</td>
+                  <td style="padding: 6px;">${m.dosage}</td>
+                  <td style="padding: 6px;">${m.frequency}</td>
+                  <td style="padding: 6px;">${m.duration}</td>
+                  <td style="padding: 6px; color: #475569;">${m.instructions}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+        ${diagnosticOrders.length > 0 ? `
+        <div style="margin-bottom: 14px; font-size: 12px;">
+          <b>Diagnostic Investigations Ordered:</b>
+          <div style="padding: 6px 0; font-size: 11px; color: #334155;">
+            ${diagnosticOrders.map((d) => `• ${d.name} (${d.category} - ${d.priority})`).join("<br/>")}
+          </div>
+        </div>
+        ` : ""}
+        <div style="margin-top: 50px; display: flex; justify-content: space-between; font-size: 11px;">
+          <div><b>Follow-up Advice:</b> Review in OPD after completion of medication course or SOS if symptoms worsen.</div>
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">
+            <b>${docName}</b><br/><span style="font-size: 9px; color: #64748b;">Digitally Signed & Authenticated</span>
+          </div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: `Prescription_${ptMrn}`, docType: "CLINICAL_SUMMARY" });
   };
 
   const handleProceedToNextPatient = () => {
@@ -1155,7 +1225,7 @@ export const DoctorCockpit: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.print()}
+                onClick={handlePrintPrescriptionSlip}
                 className="flex items-center gap-1.5"
               >
                 <Printer size={13} /> Print Slip
