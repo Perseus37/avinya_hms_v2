@@ -9,12 +9,49 @@ import {
   RefreshCw,
   User,
   Edit3,
+  Clock,
+  Sparkles,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { patientApi, PatientCreatedResponse } from "../../api/patientApi";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
+
+interface OpdDoctor {
+  id: string;
+  name: string;
+  specialty: string;
+  department: string;
+  roomNumber: string;
+  consultationFee: number;
+  currentWaitMins: number;
+  patientsWaiting: number;
+}
+
+const OPD_DOCTOR_ROSTER: OpdDoctor[] = [
+  { id: "doc-1", name: "Dr. Vikram Seth", specialty: "Interventional Cardiology", department: "Cardiology", roomNumber: "OPD Cabin 204", consultationFee: 800, currentWaitMins: 15, patientsWaiting: 4 },
+  { id: "doc-2", name: "Dr. Rajesh Sharma", specialty: "Internal Medicine", department: "General Medicine", roomNumber: "OPD Cabin 102", consultationFee: 500, currentWaitMins: 10, patientsWaiting: 6 },
+  { id: "doc-3", name: "Dr. Radhika Sen", specialty: "General & Laparoscopic Surgery", department: "General Surgery", roomNumber: "OPD Cabin 210", consultationFee: 800, currentWaitMins: 20, patientsWaiting: 3 },
+  { id: "doc-4", name: "Dr. Sunita Rao", specialty: "Pediatrics & Neonatology", department: "Pediatrics", roomNumber: "OPD Cabin 105", consultationFee: 600, currentWaitMins: 5, patientsWaiting: 2 },
+  { id: "doc-5", name: "Dr. Harish Patel", specialty: "Orthopedics & Joint Replacement", department: "Orthopedics", roomNumber: "OPD Cabin 215", consultationFee: 700, currentWaitMins: 25, patientsWaiting: 5 },
+  { id: "doc-6", name: "Dr. Anjali Nair", specialty: "Obstetrics & Gynecology", department: "Obstetrics & Gynecology", roomNumber: "OPD Cabin 112", consultationFee: 750, currentWaitMins: 12, patientsWaiting: 3 },
+  { id: "doc-7", name: "Dr. Sameer Joshi", specialty: "Critical Care & Pulmonology", department: "Pulmonology", roomNumber: "OPD Cabin 208", consultationFee: 750, currentWaitMins: 18, patientsWaiting: 4 },
+];
+
+interface GeneratedTokenDetails {
+  tokenNumber: number;
+  tokenCode: string;
+  department: string;
+  doctorName: string;
+  roomNumber: string;
+  consultationFee: number;
+  paymentMode: string;
+  priority: string;
+  issuedAt: string;
+  estimatedWaitMins: number;
+  receiptNumber: string;
+}
 
 export const PatientRegistrationWorkspace: React.FC = () => {
   const { selectPatient } = useActivePatient();
@@ -54,9 +91,15 @@ export const PatientRegistrationWorkspace: React.FC = () => {
   const [consentTelehealth, setConsentTelehealth] = useState(true);
   const [consentInsurance, setConsentInsurance] = useState(true);
 
-  // Instant OPD Consultation Token
+  // Instant OPD Consultation Token & Appointment Booking
   const [bookOpdConsult, setBookOpdConsult] = useState(true);
   const [selectedDept, setSelectedDept] = useState("General Medicine");
+  const [selectedDoctorId, setSelectedDoctorId] = useState("doc-2");
+  const [consultationType, setConsultationType] = useState<"NEW" | "FOLLOWUP" | "SECOND_OPINION">("NEW");
+  const [priority, setPriority] = useState<"NORMAL" | "SENIOR_CITIZEN" | "EMERGENCY">("NORMAL");
+  const [paymentMode, setPaymentMode] = useState<"CASH" | "UPI" | "CARD" | "PMJAY">("UPI");
+  const [generatedToken, setGeneratedToken] = useState<GeneratedTokenDetails | null>(null);
+  const [printDocType, setPrintDocType] = useState<"WRISTBAND" | "OPD_TOKEN">("OPD_TOKEN");
 
   // Edit Demographic Profile Modal State
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -225,6 +268,39 @@ export const PatientRegistrationWorkspace: React.FC = () => {
       });
 
       setSuccessPatient(patient);
+
+      if (bookOpdConsult) {
+        const chosenDoc = OPD_DOCTOR_ROSTER.find((d) => d.id === selectedDoctorId) || OPD_DOCTOR_ROSTER[0];
+        const tokenNum = Math.floor(Math.random() * 15) + 10;
+        const deptPrefix = chosenDoc.department.slice(0, 3).toUpperCase();
+        const tokenCode = `${deptPrefix}-${String(tokenNum).padStart(3, "0")}`;
+        const fee = consultationType === "FOLLOWUP" ? 0 : chosenDoc.consultationFee;
+        const priorityLabels = {
+          NORMAL: "Standard Walk-in",
+          SENIOR_CITIZEN: "Senior Citizen (Priority)",
+          EMERGENCY: "Urgent Fast-Track",
+        };
+
+        const tokenDetails: GeneratedTokenDetails = {
+          tokenNumber: tokenNum,
+          tokenCode,
+          department: chosenDoc.department,
+          doctorName: chosenDoc.name,
+          roomNumber: chosenDoc.roomNumber,
+          consultationFee: fee,
+          paymentMode: fee === 0 ? "Complimentary Follow-up" : paymentMode,
+          priority: priorityLabels[priority],
+          issuedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          estimatedWaitMins: chosenDoc.currentWaitMins + 5,
+          receiptNumber: `REC-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`,
+        };
+        setGeneratedToken(tokenDetails);
+        setPrintDocType("OPD_TOKEN");
+      } else {
+        setGeneratedToken(null);
+        setPrintDocType("WRISTBAND");
+      }
+
       setIsSuccessModalOpen(true);
       selectPatient(patient.id);
 
@@ -546,40 +622,154 @@ export const PatientRegistrationWorkspace: React.FC = () => {
             </div>
           </Card>
 
-          {/* Section 4: Fast OPD Token Issuance */}
-          <div className="p-4 rounded-xl bg-sky-950/20 border border-sky-800/60 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                id="book-opd"
-                checked={bookOpdConsult}
-                onChange={(e) => setBookOpdConsult(e.target.checked)}
-                className="h-4 w-4 rounded bg-slate-900 border-slate-700 text-sky-500 focus:ring-sky-500"
-              />
-              <div>
-                <label htmlFor="book-opd" className="text-xs font-bold text-sky-300 cursor-pointer flex items-center gap-1.5">
-                  <Stethoscope size={14} /> Automatically Issue OPD Consultation Token
-                </label>
-                <div className="text-[11px] text-slate-400">
-                  Adds patient directly to today&apos;s doctor queue after registration.
+          {/* Section 4: Fast-Track OPD Consultation & Token Issuance */}
+          <Card className="p-4 bg-sky-950/20 border-sky-800/60 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-sky-900/40">
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  id="book-opd"
+                  checked={bookOpdConsult}
+                  onChange={(e) => setBookOpdConsult(e.target.checked)}
+                  className="h-4 w-4 rounded bg-slate-900 border-slate-700 text-sky-500 focus:ring-sky-500 cursor-pointer"
+                />
+                <div>
+                  <label htmlFor="book-opd" className="text-xs font-bold text-sky-300 cursor-pointer flex items-center gap-1.5">
+                    <Stethoscope size={15} /> Fast-Track: Issue OPD Consultation Token & Book Appointment
+                  </label>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Combines patient registration with instant OPD clinic routing. Avoids redundant navigation between front desk & booking desk.
+                  </p>
                 </div>
               </div>
+
+              {bookOpdConsult && (
+                <span className="px-2.5 py-1 rounded bg-sky-900/40 text-sky-300 border border-sky-700/60 font-mono text-[11px] font-semibold flex items-center gap-1">
+                  <Sparkles size={12} className="text-sky-400" /> Instant Token Generator Active
+                </span>
+              )}
             </div>
 
             {bookOpdConsult && (
-              <select
-                value={selectedDept}
-                onChange={(e) => setSelectedDept(e.target.value)}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200"
-              >
-                <option value="General Medicine">General Medicine</option>
-                <option value="Cardiology">Cardiology</option>
-                <option value="Pediatrics">Pediatrics</option>
-                <option value="Orthopedics">Orthopedics</option>
-                <option value="Obstetrics & Gynecology">Obstetrics & Gynecology</option>
-              </select>
+              <div className="space-y-4 pt-1">
+                {/* Department Selection */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Select Clinical Specialty / Department
+                  </label>
+                  <div className="grid grid-cols-4 gap-2">
+                    {[
+                      "General Medicine",
+                      "Cardiology",
+                      "Orthopedics",
+                      "Pediatrics",
+                      "General Surgery",
+                      "Obstetrics & Gynecology",
+                      "Pulmonology",
+                    ].map((dept) => {
+                      const isSelected = selectedDept === dept;
+                      return (
+                        <button
+                          key={dept}
+                          type="button"
+                          onClick={() => {
+                            setSelectedDept(dept);
+                            const matchingDoc = OPD_DOCTOR_ROSTER.find((d) => d.department === dept);
+                            if (matchingDoc) setSelectedDoctorId(matchingDoc.id);
+                          }}
+                          className={`p-2 rounded-lg text-xs font-semibold text-left transition-all border ${
+                            isSelected
+                              ? "bg-sky-500/20 text-sky-300 border-sky-500/60 shadow-sm"
+                              : "bg-slate-950/80 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700"
+                          }`}
+                        >
+                          {dept}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Attending Doctor Selection */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Select Attending Consultant & Clinic Room
+                  </label>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {OPD_DOCTOR_ROSTER.filter((d) => d.department === selectedDept || selectedDept === "ALL").map((doc) => {
+                      const isSelected = selectedDoctorId === doc.id;
+                      return (
+                        <div
+                          key={doc.id}
+                          onClick={() => setSelectedDoctorId(doc.id)}
+                          className={`p-3 rounded-xl border cursor-pointer transition-all ${
+                            isSelected
+                              ? "bg-sky-950/80 border-sky-400 ring-2 ring-sky-500/40 shadow-md"
+                              : "bg-slate-950 border-slate-800 hover:border-slate-700"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="font-bold text-xs text-slate-100">{doc.name}</span>
+                            <span className="font-mono text-xs font-bold text-emerald-400">₹{doc.consultationFee}</span>
+                          </div>
+                          <div className="text-[11px] text-slate-400">{doc.specialty}</div>
+                          <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono mt-2 pt-1.5 border-t border-slate-800/80">
+                            <span className="text-sky-300 font-semibold">{doc.roomNumber}</span>
+                            <span className="flex items-center gap-1 text-amber-400">
+                              <Clock size={10} /> ~{doc.currentWaitMins}m wait ({doc.patientsWaiting} in queue)
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Consultation Type, Priority, and Payment Details */}
+                <div className="grid grid-cols-3 gap-3 pt-2 border-t border-sky-900/30">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Visit Type</label>
+                    <select
+                      value={consultationType}
+                      onChange={(e) => setConsultationType(e.target.value as any)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+                    >
+                      <option value="NEW">New Consultation</option>
+                      <option value="FOLLOWUP">Follow-up Review (Within 7 Days - Free)</option>
+                      <option value="SECOND_OPINION">Second Clinical Opinion</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Queue Priority</label>
+                    <select
+                      value={priority}
+                      onChange={(e) => setPriority(e.target.value as any)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+                    >
+                      <option value="NORMAL">Normal Walk-in</option>
+                      <option value="SENIOR_CITIZEN">Senior Citizen (Priority Call)</option>
+                      <option value="EMERGENCY">Urgent Fast-Track Triage</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Consultation Fee Payment</label>
+                    <select
+                      value={paymentMode}
+                      onChange={(e) => setPaymentMode(e.target.value as any)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+                    >
+                      <option value="UPI">UPI / Instant QR Code</option>
+                      <option value="CASH">Cash at Front Desk</option>
+                      <option value="CARD">Debit / Credit POS Card</option>
+                      <option value="PMJAY">PMJAY / Ayushman Bharat Cashless</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
             )}
-          </div>
+          </Card>
 
           <div className="flex items-center justify-end gap-3 pt-2">
             <Button
@@ -784,70 +974,199 @@ export const PatientRegistrationWorkspace: React.FC = () => {
         </Modal>
       )}
 
-      {/* Modal: Patient Registered Confirmation & Wristband Print */}
+      {/* Modal: Patient Registered Confirmation, OPD Slip & Wristband Print */}
       {successPatient && (
         <Modal
           isOpen={isSuccessModalOpen}
           onClose={() => setIsSuccessModalOpen(false)}
-          title="Patient Registered Successfully"
+          title="Patient Intake & Registration Confirmed"
         >
           <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3 font-mono text-xs">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                <span className="text-slate-400 uppercase text-[10px]">Universal Hospital Identifier (UHID)</span>
-                <span className="font-bold text-emerald-400 text-sm">{successPatient.mrn}</span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <span className="text-slate-500 text-[10px] block">Patient Name</span>
-                  <span className="text-slate-200 font-semibold">{successPatient.full_name}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 text-[10px] block">Gender & Blood Group</span>
-                  <span className="text-slate-200">
-                    {successPatient.gender} • {successPatient.blood_group || "--"}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-500 text-[10px] block">Mobile</span>
-                  <span className="text-slate-200">{successPatient.phone_number || "--"}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 text-[10px] block">Location</span>
-                  <span className="text-slate-200">
-                    {successPatient.city || "Hyderabad"}, {successPatient.state || "Telangana"}
-                  </span>
-                </div>
-              </div>
-
-              {/* Barcode Strip Preview */}
-              <div className="pt-2 border-t border-slate-800/80 flex flex-col items-center justify-center py-2 bg-white text-slate-950 rounded p-2">
-                <div className="font-bold text-xs uppercase tracking-wider">{successPatient.full_name}</div>
-                <div className="text-[10px] font-mono">{successPatient.mrn} • {successPatient.gender} • {successPatient.blood_group || ""}</div>
-                <div className="h-7 w-48 bg-slate-900 mt-1 flex items-center justify-center text-[10px] text-white font-mono tracking-widest">
-                  ||||| | |||| || ||| | |||
-                </div>
-              </div>
+            {/* View Selector Tabs */}
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+              {generatedToken && (
+                <button
+                  type="button"
+                  onClick={() => setPrintDocType("OPD_TOKEN")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                    printDocType === "OPD_TOKEN"
+                      ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  <Stethoscope size={13} /> OPD Consultation Slip & Receipt
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setPrintDocType("WRISTBAND")}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                  printDocType === "WRISTBAND"
+                    ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <User size={13} /> UHID Card & Barcode Wristband
+              </button>
             </div>
 
-            <div className="flex items-center justify-between pt-2">
+            {/* Document 1: OPD Consultation Slip & Thermal Cashier Receipt (ISOLATED PRINT AREA) */}
+            {printDocType === "OPD_TOKEN" && generatedToken && (
+              <div className="print-area p-5 rounded-xl bg-white text-slate-900 border border-slate-200 shadow-sm font-sans space-y-3">
+                {/* Hospital Header */}
+                <div className="text-center border-b border-slate-200 pb-2.5">
+                  <div className="font-bold text-sm tracking-wide text-slate-900 uppercase">
+                    Avinya Super-Specialty Hospital
+                  </div>
+                  <div className="text-[10px] text-slate-600 font-mono">
+                    Outpatient Department (OPD) Consultation Slip • Token & Cashier Receipt
+                  </div>
+                  <div className="text-[9px] text-slate-500">
+                    Plot 12, Health City, Gachibowli, Hyderabad • Tel: +91 40 8829 0000
+                  </div>
+                </div>
+
+                {/* Hero Token Badge */}
+                <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-center">
+                  <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                    Live OPD Queue Token
+                  </div>
+                  <div className="text-3xl font-black text-sky-700 font-mono my-0.5">
+                    #{generatedToken.tokenNumber}
+                  </div>
+                  <div className="text-xs font-bold text-slate-800 font-mono">
+                    Token ID: {generatedToken.tokenCode}
+                  </div>
+                </div>
+
+                {/* Doctor & Clinic Cabin */}
+                <div className="grid grid-cols-2 gap-2 text-xs border-y border-slate-200 py-2">
+                  <div>
+                    <span className="text-[10px] text-slate-500 block uppercase font-mono">Attending Consultant</span>
+                    <span className="font-bold text-slate-900">{generatedToken.doctorName}</span>
+                    <span className="text-[11px] text-slate-600 block">{generatedToken.department}</span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] text-slate-500 block uppercase font-mono">Consultation Cabin</span>
+                    <span className="font-bold text-sky-700 text-sm">{generatedToken.roomNumber}</span>
+                    <span className="text-[10px] text-amber-700 block font-medium">
+                      ~{generatedToken.estimatedWaitMins} mins est. wait
+                    </span>
+                  </div>
+                </div>
+
+                {/* Patient Information */}
+                <div className="text-xs space-y-1 bg-slate-50 p-2.5 rounded border border-slate-200">
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Patient:</span>
+                    <span className="font-bold text-slate-900">{successPatient.full_name}</span>
+                  </div>
+                  <div className="flex justify-between font-mono text-[11px]">
+                    <span className="text-slate-600">UHID / MRN:</span>
+                    <span className="font-bold text-slate-900">{successPatient.mrn}</span>
+                  </div>
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-slate-600">Gender / Blood:</span>
+                    <span>{successPatient.gender} • {successPatient.blood_group || "O+"}</span>
+                  </div>
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-slate-600">Queue Priority:</span>
+                    <span className="font-semibold text-slate-900">{generatedToken.priority}</span>
+                  </div>
+                </div>
+
+                {/* Cashier Payment Receipt */}
+                <div className="text-[11px] font-mono border-t border-slate-200 pt-2 space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Receipt No:</span>
+                    <span className="text-slate-900 font-semibold">{generatedToken.receiptNumber}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Payment Mode:</span>
+                    <span className="text-slate-900">{generatedToken.paymentMode}</span>
+                  </div>
+                  <div className="flex justify-between text-xs font-bold pt-1 border-t border-slate-200">
+                    <span className="text-slate-900">Total Consultation Fee Paid:</span>
+                    <span className="text-emerald-700 font-mono">₹{generatedToken.consultationFee}.00</span>
+                  </div>
+                </div>
+
+                {/* Thermal Slip Footer */}
+                <div className="text-center text-[9px] text-slate-500 font-mono pt-1">
+                  Issued at {generatedToken.issuedAt} • Please proceed to {generatedToken.roomNumber} waiting lounge.
+                </div>
+              </div>
+            )}
+
+            {/* Document 2: UHID Barcode Wristband / Patient ID Card (ISOLATED PRINT AREA) */}
+            {printDocType === "WRISTBAND" && (
+              <div className="print-area print-wristband p-4 rounded-xl bg-white text-slate-950 border-2 border-dashed border-slate-400 space-y-3 font-sans shadow-sm">
+                <div className="flex items-center justify-between border-b border-slate-300 pb-1.5">
+                  <div>
+                    <div className="font-black text-xs uppercase tracking-wider text-slate-900">
+                      Avinya Healthcare Apex
+                    </div>
+                    <div className="text-[9px] text-slate-600 font-mono">UHID Wristband & Patient ID</div>
+                  </div>
+                  <span className="font-bold text-xs text-sky-800 font-mono bg-sky-50 px-2 py-0.5 rounded border border-sky-300">
+                    {successPatient.mrn}
+                  </span>
+                </div>
+
+                <div className="space-y-1 text-xs">
+                  <div className="font-bold text-sm text-slate-950 uppercase">{successPatient.full_name}</div>
+                  <div className="text-[11px] text-slate-700 font-mono">
+                    {successPatient.gender} • Blood: {successPatient.blood_group || "O+"} • Ph: {successPatient.phone_number || "--"}
+                  </div>
+                  <div className="text-[10px] text-slate-600">
+                    {successPatient.city || "Hyderabad"}, {successPatient.state || "Telangana"}
+                  </div>
+                </div>
+
+                {/* 2D Barcode Strip */}
+                <div className="pt-2 border-t border-slate-300 flex flex-col items-center justify-center">
+                  <div className="h-8 w-56 bg-slate-900 flex items-center justify-center text-[10px] text-white font-mono tracking-widest">
+                    ||||| | |||| || ||| | |||
+                  </div>
+                  <div className="text-[9px] font-mono text-slate-600 mt-1">*{successPatient.mrn}*</div>
+                </div>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-between pt-3 border-t border-slate-800">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => window.print()}
-                className="flex items-center gap-1.5"
+                className="flex items-center gap-1.5 font-semibold"
               >
-                <Printer size={13} /> Print UHID Card / Wristband
+                <Printer size={14} className="text-sky-400" /> Print {printDocType === "OPD_TOKEN" ? "OPD Consultation Slip" : "Wristband"}
               </Button>
 
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setIsSuccessModalOpen(false)}
-              >
-                Done
-              </Button>
+              <div className="flex items-center gap-2">
+                {generatedToken && (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => {
+                      setIsSuccessModalOpen(false);
+                      selectPatient(successPatient.id);
+                    }}
+                    className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold"
+                  >
+                    <Stethoscope size={13} /> Call Doctor Cockpit ({generatedToken.doctorName.split(" ")[1]})
+                  </Button>
+                )}
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsSuccessModalOpen(false)}
+                >
+                  Done
+                </Button>
+              </div>
             </div>
           </div>
         </Modal>

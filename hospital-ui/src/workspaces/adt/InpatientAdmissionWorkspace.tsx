@@ -9,6 +9,14 @@ import {
   Activity,
   ArrowRightLeft,
   LogOut,
+  Search,
+  Filter,
+  CheckCircle2,
+  Building,
+  Layers,
+  LayoutGrid,
+  Table as TableIcon,
+  Sparkles,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
@@ -16,15 +24,167 @@ import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 
-interface AvailableBedOption {
+export type BedOccupancyStatus = "VACANT_CLEAN" | "OCCUPIED" | "HOUSEKEEPING" | "RESERVED";
+
+export interface EnterpriseBed {
   bedId: number;
   bedNumber: string;
   roomNumber: string;
+  tower: string; // e.g. "Main Tower" | "Surgical Wing" | "Trauma Center" | "Women & Child"
+  floor: string; // e.g. "Ground Floor" | "Floor 2" | "Floor 3" | "Floor 4" | "Floor 5"
   wardName: string;
-  dailyTariffRupees: number;
   category: "General" | "Semi-Private" | "Private" | "ICU";
+  status: BedOccupancyStatus;
+  dailyTariffRupees: number;
   features: string[];
+  occupiedBy?: {
+    patientName: string;
+    mrn: string;
+    admittedDays: number;
+    doctor: string;
+  };
 }
+
+export interface MasterPatientRecord {
+  id: number;
+  mrn: string;
+  name: string;
+  gender: "MALE" | "FEMALE" | "OTHER";
+  age: number;
+  bloodGroup: string;
+  phone: string;
+  allergies: string[];
+  activeDiagnosis: string;
+  preferredDoctor: string;
+  insurancePayer: string;
+  insurancePreAuth: number;
+}
+
+const MASTER_PATIENT_DIRECTORY: MasterPatientRecord[] = [
+  {
+    id: 1,
+    mrn: "MRN-2026-0001",
+    name: "Siddharth Verma",
+    gender: "MALE",
+    age: 38,
+    bloodGroup: "B+",
+    phone: "9876543210",
+    allergies: ["Penicillin G", "Sulfa drugs"],
+    activeDiagnosis: "Acute Coronary Syndrome • Unstable Angina (Troponin-T: 0.14 ng/mL)",
+    preferredDoctor: "Dr. Vikram Seth (Cardiology)",
+    insurancePayer: "Star Health Insurance",
+    insurancePreAuth: 150000,
+  },
+  {
+    id: 2,
+    mrn: "MRN-2026-0002",
+    name: "Ananya Deshmukh",
+    gender: "FEMALE",
+    age: 32,
+    bloodGroup: "O+",
+    phone: "9123456780",
+    allergies: ["NSAIDs (Ibuprofen)"],
+    activeDiagnosis: "Severe Dengue with Thrombocytopenia (Platelets: 28,000/μL)",
+    preferredDoctor: "Dr. Sameer Joshi (Critical Care / ICU)",
+    insurancePayer: "HDFC ERGO Health",
+    insurancePreAuth: 300000,
+  },
+  {
+    id: 3,
+    mrn: "MRN-2026-0003",
+    name: "Vikramaditya Singhania",
+    gender: "MALE",
+    age: 64,
+    bloodGroup: "A+",
+    phone: "9811223344",
+    allergies: ["Ciprofloxacin"],
+    activeDiagnosis: "Grade-IV Bilateral Knee Osteoarthritis • Planned Left TKA",
+    preferredDoctor: "Dr. Harish Patel (Orthopedics)",
+    insurancePayer: "Max Bupa / Niva Bupa",
+    insurancePreAuth: 220000,
+  },
+  {
+    id: 4,
+    mrn: "MRN-2026-0004",
+    name: "Meenakshi Sundaram",
+    gender: "FEMALE",
+    age: 45,
+    bloodGroup: "AB+",
+    phone: "9444332211",
+    allergies: [],
+    activeDiagnosis: "Acute Calculous Cholecystitis • Planned Lap Cholecystectomy",
+    preferredDoctor: "Dr. Radhika Sen (General Surgery)",
+    insurancePayer: "Care Health Insurance",
+    insurancePreAuth: 180000,
+  },
+  {
+    id: 5,
+    mrn: "MRN-2026-0005",
+    name: "Rajeshwari Rao",
+    gender: "FEMALE",
+    age: 29,
+    bloodGroup: "O-",
+    phone: "9700112233",
+    allergies: ["Latex"],
+    activeDiagnosis: "High-Risk Primigravida 34 Weeks • Gestational Hypertension",
+    preferredDoctor: "Dr. Anjali Nair (Obstetrics & Gynecology)",
+    insurancePayer: "Star Health Insurance",
+    insurancePreAuth: 140000,
+  },
+  {
+    id: 6,
+    mrn: "MRN-2026-0006",
+    name: "Farhan Qureshi",
+    gender: "MALE",
+    age: 52,
+    bloodGroup: "B-",
+    phone: "9988776655",
+    allergies: ["Contrast Dye"],
+    activeDiagnosis: "Type 2 Diabetic Foot Gangrene with Sepsis",
+    preferredDoctor: "Dr. Rajesh Sharma (General Medicine)",
+    insurancePayer: "ICICI Lombard",
+    insurancePreAuth: 250000,
+  },
+];
+
+// 500+ Bed Scale Campus Database (Sample of operational beds across 4 Towers and 5 Floors)
+const ENTERPRISE_BED_POOL: EnterpriseBed[] = [
+  // Tower A - Main Tower (Floor 2: General Surgical Wards)
+  { bedId: 201, bedNumber: "B-201", roomNumber: "R-201", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "VACANT_CLEAN", features: ["O2 Wall Outlet", "Call Bell"] },
+  { bedId: 202, bedNumber: "B-202", roomNumber: "R-201", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "OCCUPIED", features: ["O2 Wall Outlet", "Call Bell"], occupiedBy: { patientName: "Ramesh Sharma", mrn: "MRN-2026-0091", admittedDays: 3, doctor: "Dr. Radhika Sen" } },
+  { bedId: 203, bedNumber: "B-203", roomNumber: "R-202", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "VACANT_CLEAN", features: ["O2 Wall Outlet", "Call Bell"] },
+  { bedId: 204, bedNumber: "B-204", roomNumber: "R-202", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "HOUSEKEEPING", features: ["O2 Wall Outlet"] },
+
+  // Tower A - Main Tower (Floor 3: Cardiology HDU & Step-Down)
+  { bedId: 205, bedNumber: "HDU-301", roomNumber: "HDU-BAY-1", tower: "Main Tower", floor: "Floor 3", wardName: "Cardiology HDU", dailyTariffRupees: 5500, category: "General", status: "VACANT_CLEAN", features: ["Cardiac Telemetry", "O2 High-Flow", "Defibrillator Stand"] },
+  { bedId: 206, bedNumber: "HDU-302", roomNumber: "HDU-BAY-1", tower: "Main Tower", floor: "Floor 3", wardName: "Cardiology HDU", dailyTariffRupees: 5500, category: "General", status: "OCCUPIED", features: ["Cardiac Telemetry", "O2 High-Flow"], occupiedBy: { patientName: "Kishore Kumar", mrn: "MRN-2026-0082", admittedDays: 2, doctor: "Dr. Vikram Seth" } },
+  { bedId: 207, bedNumber: "SP-301", roomNumber: "R-305", tower: "Main Tower", floor: "Floor 3", wardName: "Semi-Private Cardiology Wing", dailyTariffRupees: 4500, category: "Semi-Private", status: "VACANT_CLEAN", features: ["Air Conditioned", "Attached Bath", "O2 Outlet"] },
+  { bedId: 208, bedNumber: "SP-302", roomNumber: "R-305", tower: "Main Tower", floor: "Floor 3", wardName: "Semi-Private Cardiology Wing", dailyTariffRupees: 4500, category: "Semi-Private", status: "RESERVED", features: ["Air Conditioned", "Attached Bath"] },
+
+  // Tower A - Main Tower (Floor 4: Critical Care ICU & CCU)
+  { bedId: 209, bedNumber: "ICU-401", roomNumber: "ICU-BAY-A", tower: "Main Tower", floor: "Floor 4", wardName: "Intensive Care Unit (ICU)", dailyTariffRupees: 14000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "Invasive Arterial Line", "Cardiac Monitor", "Dialysis Port"] },
+  { bedId: 210, bedNumber: "ICU-402", roomNumber: "ICU-BAY-A", tower: "Main Tower", floor: "Floor 4", wardName: "Intensive Care Unit (ICU)", dailyTariffRupees: 14000, category: "ICU", status: "OCCUPIED", features: ["Ventilator Ready", "Invasive Arterial Line", "Cardiac Monitor"], occupiedBy: { patientName: "Ananya Deshmukh", mrn: "ER-0914", admittedDays: 1, doctor: "Dr. Sameer Joshi" } },
+  { bedId: 211, bedNumber: "ICU-403", roomNumber: "ICU-BAY-A", tower: "Main Tower", floor: "Floor 4", wardName: "Intensive Care Unit (ICU)", dailyTariffRupees: 14000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "Isolation / Negative Pressure", "Cardiac Monitor"] },
+  { bedId: 212, bedNumber: "CCU-404", roomNumber: "CCU-BAY-B", tower: "Main Tower", floor: "Floor 4", wardName: "Coronary Care Unit (CCU)", dailyTariffRupees: 15000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "IABP Support Port", "Cardiac Monitor"] },
+
+  // Tower A - Main Tower (Floor 5: Executive Deluxe Suites)
+  { bedId: 213, bedNumber: "PV-501", roomNumber: "SUITE-501", tower: "Main Tower", floor: "Floor 5", wardName: "Executive Deluxe Suites", dailyTariffRupees: 8500, category: "Private", status: "VACANT_CLEAN", features: ["Attendant Couch", "Smart TV", "Mini Fridge", "Attached Luxury Bath", "O2 Outlet"] },
+  { bedId: 214, bedNumber: "PV-502", roomNumber: "SUITE-502", tower: "Main Tower", floor: "Floor 5", wardName: "Executive Deluxe Suites", dailyTariffRupees: 8500, category: "Private", status: "OCCUPIED", features: ["Attendant Couch", "Smart TV", "Mini Fridge"], occupiedBy: { patientName: "Sunil Mittal", mrn: "MRN-2026-0045", admittedDays: 4, doctor: "Dr. Vikram Seth" } },
+
+  // Tower B - Super-Specialty Surgical Wing (Floor 2: Ortho & Neuro)
+  { bedId: 215, bedNumber: "ORT-201", roomNumber: "R-B201", tower: "Surgical Wing", floor: "Floor 2", wardName: "Orthopedic Post-Op Ward", dailyTariffRupees: 3500, category: "General", status: "VACANT_CLEAN", features: ["Trapeze Bar", "O2 Wall Outlet", "Call Bell"] },
+  { bedId: 216, bedNumber: "ORT-202", roomNumber: "R-B201", tower: "Surgical Wing", floor: "Floor 2", wardName: "Orthopedic Post-Op Ward", dailyTariffRupees: 3500, category: "General", status: "VACANT_CLEAN", features: ["Trapeze Bar", "O2 Wall Outlet"] },
+  { bedId: 217, bedNumber: "NEU-205", roomNumber: "R-B205", tower: "Surgical Wing", floor: "Floor 2", wardName: "Neuro-Spine Special Ward", dailyTariffRupees: 5000, category: "Semi-Private", status: "VACANT_CLEAN", features: ["Air Conditioned", "Specialized Spine Mattress", "O2 Outlet"] },
+
+  // Tower C - Emergency & Trauma Center (Ground Floor)
+  { bedId: 218, bedNumber: "TRM-01", roomNumber: "BAY-RED", tower: "Trauma Center", floor: "Ground Floor", wardName: "Trauma Resuscitation Bay", dailyTariffRupees: 9000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "Rapid Infuser", "Crash Cart", "Cardiac Monitor"] },
+  { bedId: 219, bedNumber: "TRM-02", roomNumber: "BAY-YELLOW", tower: "Trauma Center", floor: "Ground Floor", wardName: "Trauma Observation", dailyTariffRupees: 4000, category: "General", status: "VACANT_CLEAN", features: ["O2 Wall Outlet", "Vital Sign Monitor"] },
+  { bedId: 220, bedNumber: "TRM-03", roomNumber: "BAY-YELLOW", tower: "Trauma Center", floor: "Ground Floor", wardName: "Trauma Observation", dailyTariffRupees: 4000, category: "General", status: "OCCUPIED", features: ["O2 Wall Outlet"], occupiedBy: { patientName: "Aakash Roy", mrn: "ER-0922", admittedDays: 1, doctor: "Dr. Sameer Joshi" } },
+
+  // Tower D - Women & Children Pavilion (Floor 2: Maternity & PICU)
+  { bedId: 221, bedNumber: "MAT-201", roomNumber: "LDR-1", tower: "Women & Child", floor: "Floor 2", wardName: "Maternity & LDR Ward", dailyTariffRupees: 6500, category: "Private", status: "VACANT_CLEAN", features: ["Baby Warmer", "Fetal Doppler Monitor", "Attached Bath"] },
+  { bedId: 222, bedNumber: "PICU-01", roomNumber: "PICU-BAY", tower: "Women & Child", floor: "Floor 2", wardName: "Pediatric ICU (PICU)", dailyTariffRupees: 12000, category: "ICU", status: "VACANT_CLEAN", features: ["Pediatric Ventilator", "Phototherapy Unit", "Cardiac Monitor"] },
+];
 
 interface ActiveAdmissionItem {
   id: number;
@@ -97,24 +257,27 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
     },
   ]);
 
-  // Available Beds Pool
-  const [availableBeds] = useState<AvailableBedOption[]>([
-    { bedId: 201, bedNumber: "B-102", roomNumber: "R-101", wardName: "General Ward 1", dailyTariffRupees: 2500, category: "General", features: ["O2 Wall Outlet", "Call Bell"] },
-    { bedId: 202, bedNumber: "B-103", roomNumber: "R-102", wardName: "General Ward 1", dailyTariffRupees: 2500, category: "General", features: ["O2 Wall Outlet", "Call Bell"] },
-    { bedId: 203, bedNumber: "SP-201", roomNumber: "R-201", wardName: "Semi-Private Ward", dailyTariffRupees: 4500, category: "Semi-Private", features: ["Air Conditioned", "Attached Bath"] },
-    { bedId: 204, bedNumber: "PV-301", roomNumber: "R-301", wardName: "Private Deluxe Suite", dailyTariffRupees: 7500, category: "Private", features: ["Attendant Couch", "Smart TV", "Mini Fridge"] },
-    { bedId: 205, bedNumber: "ICU-05", roomNumber: "ICU-BAY-B", wardName: "Intensive Care Unit", dailyTariffRupees: 12000, category: "ICU", features: ["Ventilator Ready", "Invasive Arterial Line", "Cardiac Monitor"] },
-  ]);
-
+  // Hierarchical Bed Navigator State
+  const [selectedTower, setSelectedTower] = useState<string>("ALL");
+  const [selectedFloor, setSelectedFloor] = useState<string>("ALL");
   const [bedCategoryFilter, setBedCategoryFilter] = useState<"ALL" | "General" | "Semi-Private" | "Private" | "ICU">("ALL");
+  const [selectedStatus, setSelectedStatus] = useState<string>("ALL");
+  const [selectedEquipment, setSelectedEquipment] = useState<string>("ALL");
+  const [bedSearchQuery, setBedSearchQuery] = useState("");
+  const [bedViewMode, setBedViewMode] = useState<"GRID" | "TABLE">("GRID");
+
+  // Patient MPI Search & Auto-Population State
+  const [patientSearchQuery, setPatientSearchQuery] = useState("");
+  const [isPatientDropdownOpen, setIsPatientDropdownOpen] = useState(false);
+  const [selectedPatientRecord, setSelectedPatientRecord] = useState<MasterPatientRecord | null>(MASTER_PATIENT_DIRECTORY[0]);
 
   // Form State
-  const [targetPatientName, setTargetPatientName] = useState(patientSummary?.full_name || "Siddharth Verma");
-  const [targetMrn, setTargetMrn] = useState(patientSummary?.mrn || "MRN-2026-0001");
+  const [targetPatientName, setTargetPatientName] = useState(MASTER_PATIENT_DIRECTORY[0].name);
+  const [targetMrn, setTargetMrn] = useState(MASTER_PATIENT_DIRECTORY[0].mrn);
   const [admissionType, setAdmissionType] = useState<"EMERGENCY" | "ELECTIVE" | "DAYCARE" | "MATERNITY" | "ICU_TRANSFER">("ELECTIVE");
   const [selectedBedId, setSelectedBedId] = useState<number>(201);
-  const [admittingDoctor, setAdmittingDoctor] = useState("Dr. Vikram Seth (Cardiology)");
-  const [admissionDiagnosis, setAdmissionDiagnosis] = useState("Unstable Angina Pectoris • Coronary Angiography Planned");
+  const [admittingDoctor, setAdmittingDoctor] = useState(MASTER_PATIENT_DIRECTORY[0].preferredDoctor);
+  const [admissionDiagnosis, setAdmissionDiagnosis] = useState(MASTER_PATIENT_DIRECTORY[0].activeDiagnosis);
   
   // MLC State
   const [isMlc, setIsMlc] = useState(false);
@@ -123,13 +286,13 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
 
   // Insurance State
   const [hasInsurance, setHasInsurance] = useState(true);
-  const [payerName, setPayerName] = useState("Star Health Insurance");
-  const [preAuthAmount, setPreAuthAmount] = useState("150000");
+  const [payerName, setPayerName] = useState(MASTER_PATIENT_DIRECTORY[0].insurancePayer);
+  const [preAuthAmount, setPreAuthAmount] = useState(MASTER_PATIENT_DIRECTORY[0].insurancePreAuth.toString());
 
   // Bed Transfer State
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [transferringAdmission, setTransferringAdmission] = useState<ActiveAdmissionItem | null>(null);
-  const [transferDestinationBedId, setTransferDestinationBedId] = useState<number>(202);
+  const [transferDestinationBedId, setTransferDestinationBedId] = useState<number>(203);
   const [transferReason, setTransferReason] = useState("Clinical step-down / condition stable");
 
   // Clinical Discharge State
@@ -151,20 +314,72 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
     dischargedAt: string;
   } | null>(null);
 
+  const handleSelectPatient = (p: MasterPatientRecord) => {
+    setSelectedPatientRecord(p);
+    setTargetPatientName(p.name);
+    setTargetMrn(p.mrn);
+    setAdmissionDiagnosis(p.activeDiagnosis);
+    setAdmittingDoctor(p.preferredDoctor);
+    setPayerName(p.insurancePayer);
+    setPreAuthAmount(p.insurancePreAuth.toString());
+    setHasInsurance(p.insurancePreAuth > 0);
+    setIsPatientDropdownOpen(false);
+    setPatientSearchQuery("");
+  };
+
   useEffect(() => {
     if (patientSummary) {
       setTargetPatientName(patientSummary.full_name);
       setTargetMrn(patientSummary.mrn);
+      const match = MASTER_PATIENT_DIRECTORY.find((p) => p.mrn === patientSummary.mrn);
+      if (match) {
+        setSelectedPatientRecord(match);
+        setAdmissionDiagnosis(match.activeDiagnosis);
+        setAdmittingDoctor(match.preferredDoctor);
+        setPayerName(match.insurancePayer);
+        setPreAuthAmount(match.insurancePreAuth.toString());
+      }
     }
   }, [patientSummary]);
+
+  // Filter beds according to 500+ scale hierarchical criteria
+  const filteredBeds = ENTERPRISE_BED_POOL.filter((bed) => {
+    if (selectedTower !== "ALL" && bed.tower !== selectedTower) return false;
+    if (selectedFloor !== "ALL" && bed.floor !== selectedFloor) return false;
+    if (bedCategoryFilter !== "ALL" && bed.category !== bedCategoryFilter) return false;
+    if (selectedStatus !== "ALL" && bed.status !== selectedStatus) return false;
+    if (selectedEquipment !== "ALL") {
+      const hasEq = bed.features.some((f) => f.toLowerCase().includes(selectedEquipment.toLowerCase()));
+      if (!hasEq) return false;
+    }
+    if (bedSearchQuery.trim()) {
+      const q = bedSearchQuery.toLowerCase();
+      const matchBed = bed.bedNumber.toLowerCase().includes(q);
+      const matchRoom = bed.roomNumber.toLowerCase().includes(q);
+      const matchWard = bed.wardName.toLowerCase().includes(q);
+      const matchPatient = bed.occupiedBy?.patientName.toLowerCase().includes(q);
+      if (!matchBed && !matchRoom && !matchWard && !matchPatient) return false;
+    }
+    return true;
+  });
+
+  const vacantBedsCount = ENTERPRISE_BED_POOL.filter((b) => b.status === "VACANT_CLEAN").length;
+  const occupiedBedsCount = ENTERPRISE_BED_POOL.filter((b) => b.status === "OCCUPIED").length;
+  const housekeepingBedsCount = ENTERPRISE_BED_POOL.filter((b) => b.status === "HOUSEKEEPING").length;
+  const reservedBedsCount = ENTERPRISE_BED_POOL.filter((b) => b.status === "RESERVED").length;
 
   const handleAdmissionSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage("");
 
-    const chosenBed = availableBeds.find((b) => b.bedId === selectedBedId);
+    const chosenBed = ENTERPRISE_BED_POOL.find((b) => b.bedId === selectedBedId);
     if (!chosenBed) {
-      setErrorMessage("Please select an available bed from the matrix.");
+      setErrorMessage("Please select a bed from the campus matrix.");
+      return;
+    }
+
+    if (chosenBed.status !== "VACANT_CLEAN") {
+      setErrorMessage(`Bed ${chosenBed.bedNumber} is not ready for admission (Status: ${chosenBed.status}). Please choose an available green vacant bed.`);
       return;
     }
 
@@ -196,7 +411,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
 
   const handleOpenTransfer = (adm: ActiveAdmissionItem) => {
     setTransferringAdmission(adm);
-    const firstOther = availableBeds.find((b) => b.bedNumber !== adm.bedNumber);
+    const firstOther = ENTERPRISE_BED_POOL.find((b) => b.bedNumber !== adm.bedNumber && b.status === "VACANT_CLEAN");
     if (firstOther) {
       setTransferDestinationBedId(firstOther.bedId);
     }
@@ -206,7 +421,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
   const handleExecuteTransfer = (e: React.FormEvent) => {
     e.preventDefault();
     if (!transferringAdmission) return;
-    const destBed = availableBeds.find((b) => b.bedId === transferDestinationBedId);
+    const destBed = ENTERPRISE_BED_POOL.find((b) => b.bedId === transferDestinationBedId);
     if (!destBed) return;
 
     setAdmissions((prev) =>
@@ -273,46 +488,146 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
         )}
 
         <form onSubmit={handleAdmissionSubmit} className="space-y-6 max-w-4xl">
-          {/* Patient Selection Banner */}
-          <Card className="p-4 bg-slate-900/80 border-slate-800 space-y-3">
-            <div className="flex items-center justify-between">
+          {/* Section 1: Patient Search & Auto-Population from Master Patient Index (MPI) */}
+          <Card className="p-4 bg-slate-900/80 border-slate-800 space-y-3 relative">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
               <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                <User size={14} className="text-sky-400" /> Patient For Inpatient Admission
+                <User size={14} className="text-sky-400" /> 1. Patient Identification & MPI Autocomplete
               </span>
-              <span className="text-[11px] font-mono text-sky-400">
-                {patientSummary ? "Active CCOW Context" : "Manual Selection"}
-              </span>
+              <div className="flex items-center gap-2">
+                {patientSummary && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const match = MASTER_PATIENT_DIRECTORY.find((p) => p.mrn === patientSummary.mrn);
+                      if (match) handleSelectPatient(match);
+                      else {
+                        setTargetPatientName(patientSummary.full_name);
+                        setTargetMrn(patientSummary.mrn);
+                      }
+                    }}
+                    className="text-[10px] font-mono bg-sky-500/20 text-sky-400 border border-sky-500/40 px-2 py-0.5 rounded hover:bg-sky-500/30 flex items-center gap-1"
+                  >
+                    <Sparkles size={10} /> Active Patient: {patientSummary.full_name}
+                  </button>
+                )}
+                <span className="text-[11px] font-mono text-emerald-400">Enterprise MPI Linked</span>
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Patient Full Name</label>
+            {/* Live Autocomplete Search Input */}
+            <div className="relative">
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Search Master Patient Index (by Name, MRN / UHID, Mobile, or Diagnosis)
+              </label>
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
                 <input
                   type="text"
-                  required
-                  value={targetPatientName}
-                  onChange={(e) => setTargetPatientName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500 font-semibold"
+                  placeholder="Type to search (e.g., 'Siddharth', '0002', 'Dengue', '9876')..."
+                  value={patientSearchQuery}
+                  onFocus={() => setIsPatientDropdownOpen(true)}
+                  onChange={(e) => {
+                    setPatientSearchQuery(e.target.value);
+                    setIsPatientDropdownOpen(true);
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500 font-mono"
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">UHID / MRN</label>
-                <input
-                  type="text"
-                  required
-                  value={targetMrn}
-                  onChange={(e) => setTargetMrn(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
-                />
-              </div>
+              {/* Autocomplete Dropdown */}
+              {isPatientDropdownOpen && (
+                <div className="absolute left-0 right-0 top-full mt-1 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 max-h-64 overflow-y-auto">
+                  <div className="p-2 border-b border-slate-800 text-[10px] font-mono text-slate-400 uppercase tracking-wider flex justify-between">
+                    <span>Matching MPI Patient Records</span>
+                    <button
+                      type="button"
+                      onClick={() => setIsPatientDropdownOpen(false)}
+                      className="text-slate-400 hover:text-white"
+                    >
+                      Close ✕
+                    </button>
+                  </div>
+                  {MASTER_PATIENT_DIRECTORY.filter((p) => {
+                    if (!patientSearchQuery.trim()) return true;
+                    const q = patientSearchQuery.toLowerCase();
+                    return (
+                      p.name.toLowerCase().includes(q) ||
+                      p.mrn.toLowerCase().includes(q) ||
+                      p.phone.includes(q) ||
+                      p.activeDiagnosis.toLowerCase().includes(q)
+                    );
+                  }).map((p) => (
+                    <div
+                      key={p.id}
+                      onClick={() => handleSelectPatient(p)}
+                      className="p-3 hover:bg-slate-800/80 cursor-pointer border-b border-slate-800/50 last:border-0 transition-colors"
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-bold text-xs text-slate-100 flex items-center gap-1.5">
+                          {p.name}
+                          <span className="font-mono text-[10px] font-normal text-slate-400">
+                            ({p.age}y • {p.gender})
+                          </span>
+                        </span>
+                        <span className="font-mono text-[10px] text-sky-400 bg-sky-950 px-1.5 py-0.5 rounded border border-sky-800">
+                          {p.mrn}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-300 line-clamp-1">{p.activeDiagnosis}</div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono mt-1 pt-1 border-t border-slate-800/40">
+                        <span>Blood: {p.bloodGroup} • TPA: {p.insurancePayer}</span>
+                        <span className="text-emerald-400">Auth: ₹{p.insurancePreAuth.toLocaleString()}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
+
+            {/* Resolved Active Patient Demographics Card */}
+            {selectedPatientRecord && (
+              <div className="p-3 rounded-xl bg-slate-950 border border-emerald-900/50 text-xs space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 size={15} className="text-emerald-400" />
+                    <span className="font-bold text-slate-100">{selectedPatientRecord.name}</span>
+                    <span className="font-mono text-[10px] text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/60">
+                      {selectedPatientRecord.mrn}
+                    </span>
+                  </div>
+                  <span className="text-[11px] font-mono text-slate-400">
+                    {selectedPatientRecord.gender} • {selectedPatientRecord.age} Years • Blood: {selectedPatientRecord.bloodGroup}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div>
+                    <span className="text-slate-500 block">Primary Diagnosis / Indication:</span>
+                    <span className="text-slate-300 font-medium">{selectedPatientRecord.activeDiagnosis}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500 block">TPA Pre-Authorization Status:</span>
+                    <span className="text-emerald-400 font-semibold font-mono">
+                      {selectedPatientRecord.insurancePayer} (Sanctioned: ₹{selectedPatientRecord.insurancePreAuth.toLocaleString()})
+                    </span>
+                  </div>
+                </div>
+
+                {selectedPatientRecord.allergies.length > 0 && (
+                  <div className="text-[10px] text-rose-300 font-mono flex items-center gap-1.5 pt-1 border-t border-slate-900">
+                    <ShieldAlert size={12} className="text-rose-400" />
+                    <span>Documented Allergies: {selectedPatientRecord.allergies.join(", ")}</span>
+                  </div>
+                )}
+              </div>
+            )}
           </Card>
 
-          {/* Clinical Admission Details */}
+          {/* Section 2: Clinical Admission Parameters */}
           <Card className="p-4 bg-slate-900/80 border-slate-800 space-y-4">
             <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-              <Activity size={14} className="text-emerald-400" /> Admission Parameters & Clinical Specialty
+              <Activity size={14} className="text-emerald-400" /> 2. Admission Parameters & Admitting Consultant
             </h2>
 
             <div className="grid grid-cols-2 gap-4">
@@ -343,6 +658,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                   <option value="Dr. Sameer Joshi (Critical Care / ICU)">Dr. Sameer Joshi (Critical Care / ICU)</option>
                   <option value="Dr. Anjali Nair (Obstetrics & Gynecology)">Dr. Anjali Nair (OB/GYN)</option>
                   <option value="Dr. Harish Patel (Orthopedics)">Dr. Harish Patel (Orthopedics)</option>
+                  <option value="Dr. Rajesh Sharma (General Medicine)">Dr. Rajesh Sharma (General Medicine)</option>
                 </select>
               </div>
             </div>
@@ -359,79 +675,340 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
             </div>
           </Card>
 
-          {/* Interactive Bed Matrix Selection */}
+          {/* Section 3: Hierarchical 500+ Bed Scale Campus Matrix */}
           <Card className="p-4 bg-slate-900/80 border-slate-800 space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                <BedDouble size={14} className="text-sky-400" /> Select Target Available Bed
-              </h2>
-              <span className="text-[11px] font-mono text-emerald-400">{availableBeds.length} Vacant Beds Ready</span>
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <div>
+                <h2 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                  <BedDouble size={14} className="text-sky-400" /> 3. Campus Bed Matrix & Allocation (500+ Beds Scale)
+                </h2>
+                <div className="text-[10px] text-slate-400 mt-0.5">
+                  Real-time bed availability across 4 towers, 5 clinical floors, and multiple specialty wards.
+                </div>
+              </div>
+
+              {/* View Mode Toggle */}
+              <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setBedViewMode("GRID")}
+                  className={`px-2.5 py-1 rounded text-xs flex items-center gap-1 font-semibold transition-all ${
+                    bedViewMode === "GRID"
+                      ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  <LayoutGrid size={12} /> Floorplan Grid
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBedViewMode("TABLE")}
+                  className={`px-2.5 py-1 rounded text-xs flex items-center gap-1 font-semibold transition-all ${
+                    bedViewMode === "TABLE"
+                      ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  <TableIcon size={12} /> Census Table
+                </button>
+              </div>
             </div>
 
-            {/* Category Filter Pills */}
-            <div className="flex items-center gap-1.5 pt-1">
-              {(["ALL", "General", "Semi-Private", "Private", "ICU"] as const).map((cat) => {
-                const count = cat === "ALL" ? availableBeds.length : availableBeds.filter((b) => b.category === cat).length;
-                return (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => setBedCategoryFilter(cat)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
-                      bedCategoryFilter === cat
-                        ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
-                        : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
-                    }`}
-                  >
-                    {cat} ({count})
-                  </button>
-                );
-              })}
-            </div>
+            {/* Tower Selection Pills */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-mono text-slate-400 flex items-center gap-1 w-16">
+                  <Building size={12} /> Tower:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { id: "ALL", label: "All Towers (550 Beds)" },
+                    { id: "Main Tower", label: "Main Tower (320 Beds • 88% Occ)" },
+                    { id: "Surgical Wing", label: "Surgical Wing (120 Beds • 75% Occ)" },
+                    { id: "Trauma Center", label: "Trauma Wing (60 Beds • 92% Occ)" },
+                    { id: "Women & Child", label: "Women & Child (50 Beds • 68% Occ)" },
+                  ].map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setSelectedTower(t.id)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                        selectedTower === t.id
+                          ? "bg-sky-600 text-white shadow-sm"
+                          : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-            <div className="grid grid-cols-3 gap-3">
-              {(bedCategoryFilter === "ALL"
-                ? availableBeds
-                : availableBeds.filter((b) => b.category === bedCategoryFilter)
-              ).map((bed) => {
-                const isSelected = selectedBedId === bed.bedId;
-                return (
-                  <div
-                    key={bed.bedId}
-                    onClick={() => setSelectedBedId(bed.bedId)}
-                    className={`p-3 rounded-xl border cursor-pointer transition-all ${
-                      isSelected
-                        ? "bg-sky-950/60 border-sky-400 ring-2 ring-sky-500/50 shadow-lg"
-                        : "bg-slate-950 border-slate-800 hover:border-slate-700"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="font-bold text-xs text-slate-100 font-mono">Bed {bed.bedNumber}</span>
-                      <Badge variant={bed.category === "ICU" ? "danger" : "info"} size="sm">
-                        {bed.category}
-                      </Badge>
-                    </div>
-                    <div className="text-[11px] text-slate-400">{bed.wardName}</div>
-                    <div className="text-[10px] text-slate-500 font-mono mt-0.5">Room: {bed.roomNumber}</div>
+              {/* Floor Selection */}
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-mono text-slate-400 flex items-center gap-1 w-16">
+                  <Layers size={12} /> Floor:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {["ALL", "Ground Floor", "Floor 2", "Floor 3", "Floor 4", "Floor 5"].map((fl) => (
+                    <button
+                      key={fl}
+                      type="button"
+                      onClick={() => setSelectedFloor(fl)}
+                      className={`px-2 py-0.5 rounded text-[10px] font-mono transition-all ${
+                        selectedFloor === fl
+                          ? "bg-sky-500/20 text-sky-300 border border-sky-500/50 font-bold"
+                          : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                      }`}
+                    >
+                      {fl}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-                    {bed.features && bed.features.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {bed.features.map((f, i) => (
-                          <span key={i} className="px-1.5 py-0.5 rounded text-[9px] bg-slate-900 text-slate-400 border border-slate-800 font-mono">
-                            {f}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="mt-2 pt-1.5 border-t border-slate-800 flex justify-between items-center text-[11px] font-mono">
-                      <span className="text-slate-400">Tariff:</span>
-                      <span className="text-emerald-400 font-bold">₹{bed.dailyTariffRupees.toLocaleString()}/day</span>
-                    </div>
+              {/* Status & Category Filters */}
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                {/* Status Filter */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase">Status:</span>
+                  <div className="flex gap-1">
+                    {[
+                      { id: "ALL", label: "All" },
+                      { id: "VACANT_CLEAN", label: `🟢 Vacant (${vacantBedsCount})` },
+                      { id: "OCCUPIED", label: `🔴 Occupied (${occupiedBedsCount})` },
+                      { id: "HOUSEKEEPING", label: `🟡 Clean (${housekeepingBedsCount})` },
+                      { id: "RESERVED", label: `🟣 Res (${reservedBedsCount})` },
+                    ].map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setSelectedStatus(s.id)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-all ${
+                          selectedStatus === s.id
+                            ? "bg-slate-800 text-white border border-slate-600"
+                            : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                        }`}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
                   </div>
-                );
-              })}
+                </div>
+
+                {/* Bed Category Filter */}
+                <div className="flex items-center gap-1.5 justify-end">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase">Category:</span>
+                  <div className="flex gap-1">
+                    {(["ALL", "General", "Semi-Private", "Private", "ICU"] as const).map((cat) => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setBedCategoryFilter(cat)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-all ${
+                          bedCategoryFilter === cat
+                            ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                            : "bg-slate-950 text-slate-400 hover:text-slate-200 border border-slate-800"
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Search & Equipment Sub-Filter Bar */}
+              <div className="flex items-center gap-3 pt-1">
+                <div className="flex-1 relative">
+                  <Search size={12} className="absolute left-2.5 top-2 text-slate-500" />
+                  <input
+                    type="text"
+                    placeholder="Search bed # (e.g. 'ICU-401', 'B-201'), room, ward, or patient..."
+                    value={bedSearchQuery}
+                    onChange={(e) => setBedSearchQuery(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-sky-500"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1 text-[11px] font-mono text-slate-400">
+                  <Filter size={12} />
+                  <select
+                    value={selectedEquipment}
+                    onChange={(e) => setSelectedEquipment(e.target.value)}
+                    className="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-slate-200"
+                  >
+                    <option value="ALL">All Clinical Capabilities</option>
+                    <option value="Ventilator">Ventilator Ready</option>
+                    <option value="Cardiac">Cardiac Telemetry</option>
+                    <option value="O2">O2 Wall Outlet</option>
+                    <option value="Dialysis">Dialysis Port</option>
+                    <option value="Isolation">Negative Pressure Isolation</option>
+                  </select>
+                </div>
+              </div>
             </div>
+
+            {/* View Mode 1: Visual Floorplan Grid */}
+            {bedViewMode === "GRID" && (
+              <div className="grid grid-cols-3 gap-3 pt-2 max-h-96 overflow-y-auto pr-1">
+                {filteredBeds.length === 0 ? (
+                  <div className="col-span-3 py-10 text-center text-slate-500 text-xs font-mono">
+                    No beds matching the selected filter criteria.
+                  </div>
+                ) : (
+                  filteredBeds.map((bed) => {
+                    const isSelected = selectedBedId === bed.bedId;
+                    const isVacant = bed.status === "VACANT_CLEAN";
+                    return (
+                      <div
+                        key={bed.bedId}
+                        onClick={() => {
+                          if (isVacant) setSelectedBedId(bed.bedId);
+                        }}
+                        className={`p-3 rounded-xl border transition-all ${
+                          isVacant
+                            ? isSelected
+                              ? "bg-sky-950/70 border-sky-400 ring-2 ring-sky-500/50 shadow-lg cursor-pointer"
+                              : "bg-slate-950 border-emerald-900/60 hover:border-emerald-500/80 cursor-pointer"
+                            : "bg-slate-950/50 border-slate-800/80 opacity-70 cursor-not-allowed"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`w-2 h-2 rounded-full ${
+                                bed.status === "VACANT_CLEAN"
+                                  ? "bg-emerald-400 animate-pulse"
+                                  : bed.status === "OCCUPIED"
+                                  ? "bg-rose-500"
+                                  : bed.status === "HOUSEKEEPING"
+                                  ? "bg-amber-400"
+                                  : "bg-purple-400"
+                              }`}
+                            />
+                            <span className="font-bold text-xs text-slate-100 font-mono">{bed.bedNumber}</span>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <Badge variant={bed.category === "ICU" ? "danger" : "info"} size="sm">
+                              {bed.category}
+                            </Badge>
+                          </div>
+                        </div>
+
+                        <div className="text-[11px] text-slate-300 font-medium">{bed.wardName}</div>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          {bed.tower} • {bed.floor} • Room {bed.roomNumber}
+                        </div>
+
+                        {bed.occupiedBy ? (
+                          <div className="mt-2 p-1.5 rounded bg-rose-950/40 border border-rose-900/50 text-[10px] text-rose-300">
+                            Occupied: {bed.occupiedBy.patientName} ({bed.occupiedBy.mrn}) • Day {bed.occupiedBy.admittedDays}
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {bed.features.map((f, i) => (
+                              <span
+                                key={i}
+                                className="px-1.5 py-0.5 rounded text-[9px] bg-slate-900 text-slate-300 border border-slate-800 font-mono"
+                              >
+                                {f}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="mt-2 pt-1.5 border-t border-slate-800 flex justify-between items-center text-[10px] font-mono">
+                          <span className="text-slate-400">Tariff:</span>
+                          <span className="text-emerald-400 font-bold">₹{bed.dailyTariffRupees.toLocaleString()}/day</span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+
+            {/* View Mode 2: High-Density Census Table */}
+            {bedViewMode === "TABLE" && (
+              <div className="max-h-96 overflow-y-auto border border-slate-800 rounded-lg">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead className="bg-slate-900 text-slate-400 text-[10px] uppercase sticky top-0">
+                    <tr>
+                      <th className="p-2.5">Bed / Room</th>
+                      <th className="p-2.5">Tower & Floor</th>
+                      <th className="p-2.5">Ward / Specialty</th>
+                      <th className="p-2.5">Category</th>
+                      <th className="p-2.5">Equipment</th>
+                      <th className="p-2.5">Daily Tariff</th>
+                      <th className="p-2.5">Status</th>
+                      <th className="p-2.5 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/80 text-slate-300">
+                    {filteredBeds.map((bed) => {
+                      const isVacant = bed.status === "VACANT_CLEAN";
+                      const isSelected = selectedBedId === bed.bedId;
+                      return (
+                        <tr
+                          key={bed.bedId}
+                          className={`hover:bg-slate-900/60 transition-colors ${
+                            isSelected ? "bg-sky-950/40" : ""
+                          }`}
+                        >
+                          <td className="p-2.5 font-bold text-slate-100">
+                            {bed.bedNumber} ({bed.roomNumber})
+                          </td>
+                          <td className="p-2.5 text-[11px] text-slate-400">
+                            {bed.tower} • {bed.floor}
+                          </td>
+                          <td className="p-2.5 text-[11px] text-slate-300">{bed.wardName}</td>
+                          <td className="p-2.5">
+                            <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-900 border border-slate-800 text-sky-400">
+                              {bed.category}
+                            </span>
+                          </td>
+                          <td className="p-2.5 text-[10px] text-slate-400 max-w-xs truncate">
+                            {bed.features.join(", ")}
+                          </td>
+                          <td className="p-2.5 font-bold text-emerald-400">
+                            ₹{bed.dailyTariffRupees.toLocaleString()}
+                          </td>
+                          <td className="p-2.5">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                isVacant
+                                  ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                                  : bed.status === "OCCUPIED"
+                                  ? "bg-rose-950 text-rose-300 border border-rose-900"
+                                  : "bg-amber-950 text-amber-300 border border-amber-900"
+                              }`}
+                            >
+                              {bed.status}
+                            </span>
+                          </td>
+                          <td className="p-2.5 text-right">
+                            {isVacant ? (
+                              <Button
+                                size="sm"
+                                variant={isSelected ? "primary" : "outline"}
+                                onClick={() => setSelectedBedId(bed.bedId)}
+                                className="text-[11px] py-1 px-2.5"
+                              >
+                                {isSelected ? "Selected ✓" : "Allocate Bed"}
+                              </Button>
+                            ) : (
+                              <span className="text-[10px] text-slate-500">Unavailable</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </Card>
 
           {/* Medico-Legal Case (MLC) Intimation */}
@@ -669,8 +1246,8 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                 onChange={(e) => setTransferDestinationBedId(parseInt(e.target.value, 10))}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200"
               >
-                {availableBeds
-                  .filter((b) => b.bedNumber !== transferringAdmission.bedNumber)
+                {ENTERPRISE_BED_POOL
+                  .filter((b) => b.status === "VACANT_CLEAN" && b.bedNumber !== transferringAdmission.bedNumber)
                   .map((b) => (
                     <option key={b.bedId} value={b.bedId}>
                       {b.bedNumber} — {b.roomNumber} ({b.wardName} - {b.category} • ₹{b.dailyTariffRupees}/day)
@@ -765,7 +1342,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
         </Modal>
       )}
 
-      {/* Modal: Printable Formal Discharge Summary */}
+      {/* Modal: Printable Formal Discharge Summary (ISOLATED PRINT AREA) */}
       {lastDischargedRecord && (
         <Modal
           isOpen={isDischargeSummaryOpen}
@@ -773,47 +1350,83 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
           title="Clinical Discharge Summary Slip"
         >
           <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3 font-mono text-xs">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+            <div className="print-area p-6 rounded-xl bg-white text-slate-900 border border-slate-300 font-sans text-xs space-y-3 shadow-sm">
+              {/* Letterhead */}
+              <div className="text-center border-b border-slate-300 pb-2.5">
+                <div className="font-bold text-sm tracking-wide text-slate-900 uppercase">
+                  Avinya Super-Specialty Hospital
+                </div>
+                <div className="text-[10px] text-slate-600 font-mono">
+                  Clinical Discharge Summary & Post-Hospitalization Care Plan
+                </div>
+                <div className="text-[9px] text-slate-500">
+                  Accredited by NABH & JCI • Health City, Gachibowli, Hyderabad
+                </div>
+              </div>
+
+              {/* Document Reference Header */}
+              <div className="flex items-center justify-between border-b border-slate-200 pb-2 font-mono">
                 <div>
-                  <span className="text-slate-400 text-[10px] uppercase block">Hospital Discharge Document</span>
-                  <span className="font-bold text-emerald-400">DISCHARGE #{lastDischargedRecord.admission.id}</span>
+                  <span className="text-slate-500 text-[10px] uppercase block">Discharge Reference</span>
+                  <span className="font-bold text-slate-900">DISCHARGE #{lastDischargedRecord.admission.id}</span>
                 </div>
                 <div className="text-right">
-                  <span className="text-slate-400 text-[10px] uppercase block">Disposition</span>
-                  <span className="font-bold text-sky-400">{lastDischargedRecord.disposition}</span>
+                  <span className="text-slate-500 text-[10px] uppercase block">Discharge Disposition</span>
+                  <span className="font-bold text-sky-800 bg-sky-50 px-2 py-0.5 rounded border border-sky-300">
+                    {lastDischargedRecord.disposition}
+                  </span>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              {/* Patient Core Grid */}
+              <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded border border-slate-200">
                 <div>
-                  <span className="text-slate-500 text-[10px] block">Patient Name</span>
-                  <span className="text-slate-200 font-semibold">{lastDischargedRecord.admission.patientName}</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">Patient Name</span>
+                  <span className="text-slate-900 font-bold">{lastDischargedRecord.admission.patientName}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 text-[10px] block">UHID / MRN</span>
-                  <span className="text-slate-200">{lastDischargedRecord.admission.mrn}</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">UHID / MRN</span>
+                  <span className="text-slate-900 font-bold">{lastDischargedRecord.admission.mrn}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 text-[10px] block">Admission Ward / Bed</span>
-                  <span className="text-slate-200">{lastDischargedRecord.admission.ward} ({lastDischargedRecord.admission.bedNumber})</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">Inpatient Ward & Bed</span>
+                  <span className="text-slate-800">
+                    {lastDischargedRecord.admission.ward} ({lastDischargedRecord.admission.bedNumber})
+                  </span>
                 </div>
                 <div>
-                  <span className="text-slate-500 text-[10px] block">Discharge Time</span>
-                  <span className="text-slate-200">{lastDischargedRecord.dischargedAt}</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">Discharge Timestamp</span>
+                  <span className="text-slate-800 font-mono">{lastDischargedRecord.dischargedAt}</span>
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-slate-800">
-                <span className="text-slate-400 text-[10px] uppercase block mb-1">Clinical Advice / Course in Hospital</span>
-                <p className="text-slate-200 bg-slate-900 p-2.5 rounded text-[11px] leading-relaxed">
+              {/* Clinical Course */}
+              <div className="pt-2 border-t border-slate-200">
+                <span className="text-slate-700 font-bold text-[11px] uppercase block mb-1">
+                  Hospital Course & Medical Advice on Discharge
+                </span>
+                <p className="text-slate-800 bg-slate-50 p-3 rounded border border-slate-200 text-[11px] leading-relaxed">
                   {lastDischargedRecord.summaryNotes}
                 </p>
               </div>
 
-              <div className="flex items-center justify-between pt-1">
-                <span className="text-slate-400 text-[11px]">Recommended Follow-up:</span>
-                <span className="text-sky-400 font-bold">{lastDischargedRecord.followup}</span>
+              {/* Follow-up instructions */}
+              <div className="flex items-center justify-between p-2.5 rounded bg-emerald-50 border border-emerald-200">
+                <span className="text-emerald-900 font-semibold text-[11px]">Next OPD Review Appointment:</span>
+                <span className="text-emerald-800 font-bold font-mono">{lastDischargedRecord.followup}</span>
+              </div>
+
+              {/* Physician Signature Line */}
+              <div className="pt-6 flex justify-between items-end border-t border-slate-300 text-[10px] font-mono">
+                <div>
+                  <div>Nursing Station Clearance: Completed ✓</div>
+                  <div>Pharmacy Clearance: Settled ✓</div>
+                </div>
+                <div className="text-right">
+                  <div className="border-b border-slate-400 w-44 pb-1 mb-1"></div>
+                  <div className="font-bold text-slate-800">{lastDischargedRecord.admission.admittingDoctor}</div>
+                  <div className="text-slate-500">Authorized Treating Consultant</div>
+                </div>
               </div>
             </div>
 
@@ -824,7 +1437,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                 onClick={() => window.print()}
                 className="flex items-center gap-1.5"
               >
-                <Printer size={13} /> Print Discharge Summary
+                <Printer size={13} className="text-sky-400" /> Print Formal Discharge Summary
               </Button>
               <Button
                 variant="primary"
@@ -838,7 +1451,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
         </Modal>
       )}
 
-      {/* Modal: Inpatient Admission Confirmation & Bed Head Ticket */}
+      {/* Modal: Inpatient Admission Confirmation & Bed Head Ticket (ISOLATED PRINT AREA) */}
       {confirmedAdmission && (
         <Modal
           isOpen={isSuccessModalOpen}
@@ -846,36 +1459,94 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
           title="Inpatient Admission Confirmed & Bed Assigned"
         >
           <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3 font-mono text-xs">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+            <div className="print-area p-6 rounded-xl bg-white text-slate-900 border border-slate-300 font-sans text-xs space-y-3 shadow-sm">
+              {/* Hospital Header */}
+              <div className="text-center border-b border-slate-300 pb-2.5">
+                <div className="font-bold text-sm tracking-wide text-slate-900 uppercase">
+                  Avinya Super-Specialty Hospital
+                </div>
+                <div className="text-[10px] text-slate-600 font-mono">
+                  Inpatient Admission Face Sheet & Bed Head Ticket (BHT)
+                </div>
+                <div className="text-[9px] text-slate-500">
+                  Apollo/Cerner Interoperability Standard • Admission Desk
+                </div>
+              </div>
+
+              {/* Reference Header */}
+              <div className="flex items-center justify-between border-b border-slate-200 pb-2 font-mono">
                 <div>
-                  <span className="text-slate-400 text-[10px] uppercase block">Admission ID</span>
-                  <span className="font-bold text-emerald-400">ADM-{confirmedAdmission.id}</span>
+                  <span className="text-slate-500 text-[10px] uppercase block">Admission Docket</span>
+                  <span className="font-bold text-emerald-800 text-sm">ADM-{confirmedAdmission.id}</span>
                 </div>
                 <div className="text-right">
-                  <span className="text-slate-400 text-[10px] uppercase block">Assigned Bed</span>
-                  <span className="font-bold text-sky-400 text-sm">
-                    {confirmedAdmission.bedNumber} ({confirmedAdmission.roomNumber})
+                  <span className="text-slate-500 text-[10px] uppercase block">Assigned Bed & Room</span>
+                  <span className="font-bold text-sky-800 text-sm bg-sky-50 px-2.5 py-0.5 rounded border border-sky-300">
+                    Bed {confirmedAdmission.bedNumber} ({confirmedAdmission.roomNumber})
                   </span>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              {/* Patient Core Grid */}
+              <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded border border-slate-200">
                 <div>
-                  <span className="text-slate-500 text-[10px] block">Patient Name</span>
-                  <span className="text-slate-200 font-semibold">{confirmedAdmission.patientName}</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">Patient Legal Name</span>
+                  <span className="text-slate-900 font-bold">{confirmedAdmission.patientName}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 text-[10px] block">MRN / UHID</span>
-                  <span className="text-slate-200">{confirmedAdmission.mrn}</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">Universal Hospital ID (UHID)</span>
+                  <span className="text-slate-900 font-bold font-mono">{confirmedAdmission.mrn}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 text-[10px] block">Ward</span>
-                  <span className="text-slate-200">{confirmedAdmission.ward}</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">Clinical Ward & Discipline</span>
+                  <span className="text-slate-800">{confirmedAdmission.ward}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 text-[10px] block">Admitted At</span>
-                  <span className="text-slate-200">{confirmedAdmission.admittedAt}</span>
+                  <span className="text-slate-500 text-[10px] block font-mono">Admitting Consultant</span>
+                  <span className="text-slate-800 font-medium">{confirmedAdmission.admittingDoctor}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] block font-mono">Admission Timestamp</span>
+                  <span className="text-slate-800 font-mono">{confirmedAdmission.admittedAt}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[10px] block font-mono">Billing / TPA Coverage</span>
+                  <span className="text-emerald-800 font-mono">{confirmedAdmission.tpaInsurance || "Self-Pay / Cash"}</span>
+                </div>
+              </div>
+
+              {/* Barcode Strip */}
+              <div className="py-2 border-t border-slate-200 flex flex-col items-center justify-center">
+                <div className="h-8 w-60 bg-slate-900 flex items-center justify-center text-[10px] text-white font-mono tracking-widest">
+                  ||||| | |||| || ||| | |||
+                </div>
+                <div className="text-[9px] font-mono text-slate-600 mt-1">
+                  *ADM-{confirmedAdmission.id}-{confirmedAdmission.mrn}*
+                </div>
+              </div>
+
+              {/* Nurse Intake & Verification Handover Check */}
+              <div className="p-2.5 bg-slate-50 rounded border border-slate-200 text-[10px] font-mono space-y-1">
+                <div className="font-bold text-slate-800 uppercase">Station Nurse Handover Protocol:</div>
+                <div className="flex justify-between">
+                  <span>[✓] Patient Wristband Attached & Verified</span>
+                  <span>[✓] Vital Signs Baseline Logged</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>[✓] Allergy Band Verified</span>
+                  <span>[✓] Attendant Welcome Kit Provided</span>
+                </div>
+              </div>
+
+              {/* Signature section */}
+              <div className="pt-4 flex justify-between items-end border-t border-slate-300 text-[10px] font-mono">
+                <div>
+                  <div className="border-b border-slate-400 w-36 pb-1 mb-1"></div>
+                  <div>ADT Desk Officer Signature</div>
+                </div>
+                <div className="text-right">
+                  <div className="border-b border-slate-400 w-36 pb-1 mb-1"></div>
+                  <div>Patient / Attendant Consent</div>
                 </div>
               </div>
             </div>
@@ -887,7 +1558,7 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                 onClick={() => window.print()}
                 className="flex items-center gap-1.5"
               >
-                <Printer size={13} /> Print Bed Head Ticket (BHT)
+                <Printer size={13} className="text-sky-400" /> Print Bed Head Ticket (BHT)
               </Button>
 
               <Button
