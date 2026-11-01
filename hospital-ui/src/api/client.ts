@@ -98,8 +98,8 @@ export async function apiClient<T>(endpoint: string, options: RequestOptions = {
   }
 
   if (!response.ok) {
-    const errorBody = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(errorBody.detail || `HTTP Error ${response.status}`);
+    const errorBody = await response.json().catch(() => ({ message: response.statusText }));
+    throw new Error(errorBody.message || errorBody.detail || `HTTP Error ${response.status}`);
   }
 
   return response.json() as Promise<T>;
