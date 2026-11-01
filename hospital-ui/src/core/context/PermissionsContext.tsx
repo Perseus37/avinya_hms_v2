@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState } from "react";
-import { WorkspaceId } from "../../types";
+import React, { createContext, useContext, useState, useEffect } from "react";
+import { WorkspaceId, UserProfile } from "../../types";
+import { useAuth } from "./AuthContext";
 
 export type RoleCode =
   | "HOSPITAL_ADMIN"
@@ -217,10 +218,30 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
   },
 };
 
+export function resolveRoleFromUser(user: UserProfile | null): RoleCode {
+  if (!user) return "FRONT_DESK";
+  if (user.is_superuser) return "HOSPITAL_ADMIN";
+
+  const roleCodes = (user.roles || []).map((r) => (r.code || "").toUpperCase());
+  if (roleCodes.some((c) => c.includes("ADMIN") || c.includes("DIRECTOR"))) return "HOSPITAL_ADMIN";
+  if (roleCodes.some((c) => c.includes("DOCTOR") || c.includes("PHYSICIAN") || c.includes("CLINICIAN"))) return "ATTENDING_PHYSICIAN";
+  if (roleCodes.some((c) => c.includes("TRIAGE") || c.includes("EMERGENCY"))) return "TRIAGE_NURSE";
+  if (roleCodes.some((c) => c.includes("NURSE") || c.includes("SISTER"))) return "WARD_NURSE";
+  if (roleCodes.some((c) => c.includes("ADT") || c.includes("ADMISSION"))) return "ADT_OFFICER";
+  if (roleCodes.some((c) => c.includes("BILLING") || c.includes("CASHIER") || c.includes("FINANCE"))) return "BILLING_CLERK";
+  if (roleCodes.some((c) => c.includes("FRONT_DESK") || c.includes("RECEPTION"))) return "FRONT_DESK";
+
+  return "HOSPITAL_ADMIN"; // Fallback safe default
+}
+
 interface PermissionsContextType {
   activeRole: RoleCode;
+  authenticatedRole: RoleCode;
   roleDefinition: RoleDefinition;
+  isSimulating: boolean;
+  isDev: boolean;
   setActiveRole: (role: RoleCode) => void;
+  resetToAuthenticatedRole: () => void;
   hasPermission: (permission: PermissionCode) => boolean;
   hasAnyPermission: (permissions: PermissionCode[]) => boolean;
   hasAllPermissions: (permissions: PermissionCode[]) => boolean;
@@ -230,15 +251,38 @@ interface PermissionsContextType {
 const PermissionsContext = createContext<PermissionsContextType | undefined>(undefined);
 
 export const PermissionsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeRole, setActiveRoleState] = useState<RoleCode>(() => {
-    const saved = localStorage.getItem("avinya_active_role");
-    return (saved as RoleCode) || "HOSPITAL_ADMIN";
+  const { user } = useAuth();
+  const isDev = Boolean(import.meta.env.DEV);
+
+  const authenticatedRole = resolveRoleFromUser(user);
+
+  const [simulatedRole, setSimulatedRoleState] = useState<RoleCode | null>(() => {
+    if (!isDev) return null;
+    const saved = localStorage.getItem("avinya_dev_simulated_role");
+    return (saved as RoleCode) || null;
   });
 
+  // Keep simulated role clean if dev mode toggles
+  useEffect(() => {
+    if (!isDev && simulatedRole) {
+      setSimulatedRoleState(null);
+      localStorage.removeItem("avinya_dev_simulated_role");
+    }
+  }, [isDev, simulatedRole]);
+
   const setActiveRole = (role: RoleCode) => {
-    setActiveRoleState(role);
-    localStorage.setItem("avinya_active_role", role);
+    if (!isDev) return; // In production, role is cryptographically determined by JWT
+    setSimulatedRoleState(role);
+    localStorage.setItem("avinya_dev_simulated_role", role);
   };
+
+  const resetToAuthenticatedRole = () => {
+    setSimulatedRoleState(null);
+    localStorage.removeItem("avinya_dev_simulated_role");
+  };
+
+  const activeRole = isDev && simulatedRole ? simulatedRole : authenticatedRole;
+  const isSimulating = Boolean(isDev && simulatedRole && simulatedRole !== authenticatedRole);
 
   const roleDefinition = ROLE_DEFINITIONS[activeRole] || ROLE_DEFINITIONS.HOSPITAL_ADMIN;
 
@@ -262,8 +306,12 @@ export const PermissionsProvider: React.FC<{ children: React.ReactNode }> = ({ c
     <PermissionsContext.Provider
       value={{
         activeRole,
+        authenticatedRole,
         roleDefinition,
+        isSimulating,
+        isDev,
         setActiveRole,
+        resetToAuthenticatedRole,
         hasPermission,
         hasAnyPermission,
         hasAllPermissions,

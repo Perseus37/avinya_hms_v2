@@ -11,7 +11,7 @@ interface TopNavbarProps {
 
 export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenCommandPalette }) => {
   const { user, logout } = useAuth();
-  const { activeRole, roleDefinition, setActiveRole } = usePermissions();
+  const { activeRole, roleDefinition, isSimulating, isDev, setActiveRole, resetToAuthenticatedRole } = usePermissions();
   const { hospitalProfile } = useHospitalConfig();
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
@@ -60,57 +60,93 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenCommandPalette }) =>
         </button>
       </div>
 
-      {/* User Session, Role Switcher Simulator & Logout */}
+      {/* User Session, Role Badge / Dev Simulator & Logout */}
       <div className="flex items-center gap-3">
-        {/* Role Switcher Simulator Pill */}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setIsRoleMenuOpen(!isRoleMenuOpen)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-sky-800/60 hover:border-sky-500 text-sky-300 text-xs font-semibold transition-all shadow-sm"
+        {/* Production: Read-only Authenticated Role Chip | Dev: Simulator Menu */}
+        {!isDev ? (
+          <div
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-300 text-xs font-semibold shadow-inner"
+            title={`Authenticated Session: ${roleDefinition.label} (Enforced by JWT Claims)`}
           >
-            <Shield size={13} className="text-sky-400" />
+            <Shield size={13} className="text-emerald-400" />
             <span className="hidden sm:inline text-slate-400">Role:</span>
-            <span className="font-bold">{roleDefinition.label}</span>
-            <ChevronDown size={12} className="text-slate-400" />
-          </button>
+            <span className="font-bold text-slate-200">{roleDefinition.label}</span>
+            <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-800">
+              VERIFIED
+            </span>
+          </div>
+        ) : (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsRoleMenuOpen(!isRoleMenuOpen)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 text-xs font-semibold transition-all shadow-sm ${
+                isSimulating
+                  ? "border border-amber-500/80 text-amber-300 shadow-amber-500/10 shadow-lg"
+                  : "border border-slate-700 hover:border-slate-500 text-slate-300"
+              }`}
+              title="Development RBAC Simulator (Dev Mode Only - Demoted in Production)"
+            >
+              <Shield size={13} className={isSimulating ? "text-amber-400" : "text-sky-400"} />
+              <span className="text-[9px] font-mono font-bold uppercase px-1 py-0.2 rounded bg-amber-950 text-amber-400 border border-amber-800/80">
+                DEV SIM
+              </span>
+              <span className="font-bold">{roleDefinition.label}</span>
+              <ChevronDown size={12} className="text-slate-400" />
+            </button>
 
-          {isRoleMenuOpen && (
-            <div className="absolute right-0 top-full mt-2 w-80 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 p-2 space-y-1">
-              <div className="px-2 py-1 text-[10px] font-mono uppercase text-slate-400 font-bold border-b border-slate-800 flex justify-between">
-                <span>Simulate Staff Role & Permissions</span>
-                <span className="text-sky-400">RBAC Active</span>
+            {isRoleMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 w-80 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 p-2 space-y-1">
+                <div className="px-2 py-1 text-[10px] font-mono uppercase text-slate-400 font-bold border-b border-slate-800 flex justify-between items-center">
+                  <span>RBAC Role Simulator (Dev Only)</span>
+                  {isSimulating && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetToAuthenticatedRole();
+                        setIsRoleMenuOpen(false);
+                      }}
+                      className="text-[10px] text-amber-400 hover:text-amber-300 underline font-semibold"
+                    >
+                      Reset to Auth
+                    </button>
+                  )}
+                </div>
+
+                <div className="p-1.5 text-[10px] text-slate-400 bg-slate-950 rounded border border-slate-800/80 leading-relaxed">
+                  In production, staff roles are derived strictly from JWT claims & Active Directory. This switcher is active in local development only.
+                </div>
+
+                {Object.values(ROLE_DEFINITIONS).map((r) => {
+                  const isSelected = activeRole === r.code;
+                  return (
+                    <button
+                      key={r.code}
+                      type="button"
+                      onClick={() => {
+                        setActiveRole(r.code as RoleCode);
+                        setIsRoleMenuOpen(false);
+                      }}
+                      className={`w-full text-left p-2 rounded-lg text-xs transition-all ${
+                        isSelected
+                          ? "bg-amber-500/20 text-amber-200 border border-amber-500/50 font-bold shadow-sm"
+                          : "text-slate-300 hover:bg-slate-800/70 border border-transparent"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-0.5">
+                        <span>{r.label}</span>
+                        <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-950 text-slate-400 border border-slate-800">
+                          {r.badge}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-normal line-clamp-1">{r.description}</div>
+                    </button>
+                  );
+                })}
               </div>
-
-              {Object.values(ROLE_DEFINITIONS).map((r) => {
-                const isSelected = activeRole === r.code;
-                return (
-                  <button
-                    key={r.code}
-                    type="button"
-                    onClick={() => {
-                      setActiveRole(r.code as RoleCode);
-                      setIsRoleMenuOpen(false);
-                    }}
-                    className={`w-full text-left p-2 rounded-lg text-xs transition-all ${
-                      isSelected
-                        ? "bg-sky-500/20 text-sky-200 border border-sky-500/50 font-bold shadow-sm"
-                        : "text-slate-300 hover:bg-slate-800/70 border border-transparent"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-0.5">
-                      <span>{r.label}</span>
-                      <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-950 text-slate-400 border border-slate-800">
-                        {r.badge}
-                      </span>
-                    </div>
-                    <div className="text-[10px] text-slate-400 font-normal line-clamp-1">{r.description}</div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
 
         <button
           onClick={() => setIsHelpOpen(true)}
