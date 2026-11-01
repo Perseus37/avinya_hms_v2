@@ -27,11 +27,25 @@ export default defineConfig(({ mode }) => {
           target: proxyTarget,
           changeOrigin: true,
           secure: false,
+          configure: (proxy) => {
+            proxy.on("proxyReq", (proxyReq, req) => {
+              if (req.headers.host) {
+                proxyReq.setHeader("x-forwarded-host", req.headers.host);
+              }
+            });
+          },
         },
         "/v1": {
           target: proxyTarget,
           changeOrigin: true,
           secure: false,
+          configure: (proxy) => {
+            proxy.on("proxyReq", (proxyReq, req) => {
+              if (req.headers.host) {
+                proxyReq.setHeader("x-forwarded-host", req.headers.host);
+              }
+            });
+          },
         },
       },
     },

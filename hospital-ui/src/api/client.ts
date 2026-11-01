@@ -3,9 +3,15 @@
  * Features automatic tenant resolution, bearer auth injection, and transparent session refresh.
  */
 
-const getTenantSlug = (): string => {
-  const host = window.location.hostname;
+export const getTenantSlug = (): string => {
+  if (typeof window === "undefined") return "default";
+  const host = window.location.hostname.toLowerCase();
   const parts = host.split(".");
+  // Handle *.localhost (e.g. apollo.localhost -> apollo)
+  if (parts.length >= 2 && parts[parts.length - 1] === "localhost" && parts[0] !== "localhost" && parts[0] !== "www") {
+    return parts[0];
+  }
+  // Handle *.domain.com (e.g. apollo.hms.example.com or apollo.example.com)
   if (parts.length >= 3 && parts[0] !== "www") {
     return parts[0];
   }

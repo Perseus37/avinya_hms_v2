@@ -129,9 +129,15 @@ def extract_subdomain_slug(request: Request) -> str:
         return header_override.strip().lower()
 
     # Host subdomain routing (fastest path for production web traffic: e.g. <subdomain>.domain.com)
-    host = request.headers.get("host", "").split(":")[0].strip().lower()
+    raw_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+    host = raw_host.split(",")[0].split(":")[0].strip().lower()
     if host and host != settings.BASE_DOMAIN and host.endswith(f".{settings.BASE_DOMAIN}"):
         slug = host[: -(len(settings.BASE_DOMAIN) + 1)]
+        if slug and "." not in slug:
+            return slug
+    # Localhost development fallback for *.localhost (e.g. apollo.localhost)
+    if host and host != "localhost" and host.endswith(".localhost"):
+        slug = host[: -len(".localhost")]
         if slug and "." not in slug:
             return slug
 

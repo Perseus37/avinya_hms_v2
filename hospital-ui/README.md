@@ -130,3 +130,4 @@ Visiting `http://localhost:8000/app/` serves the built `hospital-ui/dist` bundle
 
 - `Ctrl + K` or `Cmd + K`: Open Patient Quick Search command palette.
 - Workspace switcher on the left sidebar: Select between any of the 7 clinical/operational workspaces.
+

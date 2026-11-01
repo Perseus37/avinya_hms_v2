@@ -1,13 +1,15 @@
 import React, { useState } from "react";
 import { useAuth } from "../../core/context/AuthContext";
+import { getTenantSlug } from "../../api/client";
 import { Activity, ShieldCheck, KeyRound } from "lucide-react";
 import { Button } from "../ui/Button";
 
 export const LoginView: React.FC = () => {
   const { login, verifyMfa, isLoading } = useAuth();
-  const [email, setEmail] = useState("doctor@avinya-hms.local");
-  const [password, setPassword] = useState("DoctorPass123!");
-  const [hospitalSlug, setHospitalSlug] = useState("");
+  const detectedSlug = getTenantSlug();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [hospitalSlug, setHospitalSlug] = useState(detectedSlug !== "default" ? detectedSlug : "");
   const [errorMessage, setErrorMessage] = useState("");
 
   const [mfaToken, setMfaToken] = useState<string | null>(null);
@@ -17,7 +19,8 @@ export const LoginView: React.FC = () => {
     e.preventDefault();
     setErrorMessage("");
     try {
-      const res = await login(email, password, hospitalSlug || undefined);
+      const effectiveSlug = (hospitalSlug || detectedSlug || "").trim() || undefined;
+      const res = await login(email, password, effectiveSlug);
       if (res.mfaRequired && res.mfaToken) {
         setMfaToken(res.mfaToken);
       }
