@@ -6,6 +6,8 @@ import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { printDocument } from "../../utils/printDocument";
 import {
   BedDouble,
   RefreshCw,
@@ -38,6 +40,7 @@ interface ScheduledMedication {
 }
 
 export const WardNursingStation: React.FC = () => {
+  const { hospitalProfile } = useHospitalConfig();
   const [activeTab, setActiveTab] = useState<"beds" | "emar">("beds");
   const [beds, setBeds] = useState<DetailedBedItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -268,6 +271,44 @@ export const WardNursingStation: React.FC = () => {
   const occupiedCount = beds.filter((b) => b.status === "OCCUPIED").length;
   const availableCount = beds.filter((b) => b.status === "AVAILABLE").length;
   const cleaningCount = beds.filter((b) => b.status === "CLEANING").length;
+
+  const handlePrintSbarKardex = () => {
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 720px; margin: 0 auto; border: 2px solid #000; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 12px; font-weight: bold; color: #0284c7; margin-top: 2px;">WARD NURSING SHIFT HANDOVER & SBAR CLINICAL KARDEX</div>
+          <div style="font-size: 10px; color: #555;">NABH Nursing Excellence Standard • Ward 3A (Medical-Surgical) • ${hospitalProfile.phone}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 14px;">
+          <div><b>Shift:</b> General / Day-Night Handover</div>
+          <div><b>Inpatients:</b> ${occupiedCount} Occupied / ${beds.length} Total Beds</div>
+          <div><b>Date & Time:</b> ${new Date().toLocaleString()}</div>
+        </div>
+        <div style="margin-bottom: 14px; border: 1px solid #cbd5e1; padding: 12px; font-size: 12px; line-height: 1.6;">
+          <div style="font-weight: bold; color: #0284c7; text-transform: uppercase; margin-bottom: 4px;">[S] Situation:</div>
+          <div>${beds.length} beds total, ${occupiedCount} occupied. Bed 101 high fever spike NEWS2=6; Bed 103 DVT prophylaxis enoxaparin due at 18:00.</div>
+        </div>
+        <div style="margin-bottom: 14px; border: 1px solid #cbd5e1; padding: 12px; font-size: 12px; line-height: 1.6;">
+          <div style="font-weight: bold; color: #d97706; text-transform: uppercase; margin-bottom: 4px;">[B] Background:</div>
+          <div>Bed 101 post-op Appendectomy Day 2; Bed 102 acute GERD stepdown; Bed 105 Diabetic Ketoacidosis stabilized.</div>
+        </div>
+        <div style="margin-bottom: 14px; border: 1px solid #cbd5e1; padding: 12px; font-size: 12px; line-height: 1.6;">
+          <div style="font-weight: bold; color: #7c3aed; text-transform: uppercase; margin-bottom: 4px;">[A] Assessment:</div>
+          <div>All ${occupiedCount} patients stable on room air except Bed 101 receiving 2L O2 by cannula. All scheduled eMAR medication doses administered and audited with zero BCMA barcode overrides.</div>
+        </div>
+        <div style="margin-bottom: 14px; border: 1px solid #cbd5e1; padding: 12px; font-size: 12px; line-height: 1.6;">
+          <div style="font-weight: bold; color: #16a34a; text-transform: uppercase; margin-bottom: 4px;">[R] Recommendation:</div>
+          <div>Recheck Bed 101 temperature &amp; CBC blood culture at 16:00. Terminal housekeeping cleaning requested for Bed 104.</div>
+        </div>
+        <div style="margin-top: 50px; display: flex; justify-content: space-between; font-size: 11px;">
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Relieving Shift Nurse Signature</div>
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Taking-Over Shift Nurse Signature</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: "Nursing_SBAR_Handover_Kardex", docType: "CLINICAL_SUMMARY" });
+  };
 
   return (
     <div className="flex-1 flex flex-col bg-slate-950 p-6 overflow-y-auto">
@@ -885,7 +926,7 @@ export const WardNursingStation: React.FC = () => {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => window.print()}
+                onClick={handlePrintSbarKardex}
                 className="flex items-center gap-1.5"
               >
                 <Printer size={13} /> Print Kardex

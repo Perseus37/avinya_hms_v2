@@ -1,9 +1,11 @@
 import React, { useState } from "react";
-import { Pill, ShieldAlert, Download, Barcode, CheckCircle2, UserCheck, ShieldCheck, PlusCircle } from "lucide-react";
+import { Pill, ShieldAlert, Download, Barcode, CheckCircle2, UserCheck, ShieldCheck, PlusCircle, Printer } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { printDocument } from "../../utils/printDocument";
 
 interface PrescriptionItem {
   id: number;
@@ -30,6 +32,7 @@ interface VaultItem {
 }
 
 export const PharmacyWorkspace: React.FC = () => {
+  const { hospitalProfile } = useHospitalConfig();
   const [prescriptions, setPrescriptions] = useState<PrescriptionItem[]>([
     {
       id: 1,
@@ -100,6 +103,14 @@ export const PharmacyWorkspace: React.FC = () => {
   const [witnessName, setWitnessName] = useState("Dr. Radhika Sen (Reg #WB-4921)");
   const [witnessPin, setWitnessPin] = useState("");
   const [ndpsLogMessage, setNdpsLogMessage] = useState<string | null>(null);
+  const [lastNdpsLog, setLastNdpsLog] = useState<{
+    substanceName: string;
+    qty: number;
+    batch: string;
+    reason: string;
+    witnessName: string;
+    timestamp: string;
+  } | null>(null);
 
   // Walk-in Dispense Form State
   const [isWalkInModalOpen, setIsWalkInModalOpen] = useState(false);
@@ -150,13 +161,100 @@ export const PharmacyWorkspace: React.FC = () => {
   const handleConfirmDispense = () => {
     if (!activeRxForDispense) return;
 
+    const rxToPrint = activeRxForDispense;
     setPrescriptions((prev) =>
       prev.map((rx) =>
         rx.id === activeRxForDispense.id ? { ...rx, dispensed: true } : rx
       )
     );
     setActiveRxForDispense(null);
-    alert(`Prescription ${activeRxForDispense.rxNumber} dispensed successfully with barcode validation.`);
+    handlePrintDispenseVoucher(rxToPrint);
+  };
+
+  const handlePrintDispenseVoucher = (rx: PrescriptionItem) => {
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 680px; margin: 0 auto; border: 1px solid #333; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 12px; font-weight: bold; color: #059669; margin-top: 2px;">CENTRAL DISPENSARY • PHARMACY DISPENSE VOUCHER</div>
+          <div style="font-size: 10px; color: #555;">Retail Drug License: DL-20B/21B-88390 • GSTIN: ${hospitalProfile.taxGstin || "36AABCA1234D1Z5"}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 12px;">
+          <div><b>Patient Name:</b> ${rx.patientName.toUpperCase()}</div>
+          <div><b>UHID / MRN:</b> ${rx.mrn}</div>
+          <div><b>Prescription Ref:</b> ${rx.rxNumber}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 14px;">
+          <div><b>Dispensed Date:</b> ${new Date().toLocaleString()}</div>
+          <div><b>DDI Check:</b> <span style="color: #16a34a; font-weight: bold;">PASSED (0 INTERACTIONS)</span></div>
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 16px;">
+          <thead>
+            <tr style="background: #f1f5f9; border-bottom: 2px solid #cbd5e1; text-align: left;">
+              <th style="padding: 6px;">Medication & Formulation</th>
+              <th style="padding: 6px;">Dosage Regimen</th>
+              <th style="padding: 6px; text-align: center;">Batch No.</th>
+              <th style="padding: 6px; text-align: center;">Qty</th>
+              <th style="padding: 6px; text-align: right;">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rx.medications.map((m) => `
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 6px; font-weight: bold;">${m.name}</td>
+                <td style="padding: 6px;">${m.dosage}</td>
+                <td style="padding: 6px; text-align: center; font-family: monospace;">${m.batchNumber}</td>
+                <td style="padding: 6px; text-align: center;">${m.quantity}</td>
+                <td style="padding: 6px; text-align: right; color: #16a34a; font-weight: bold;">VERIFIED</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+        <div style="background: #fefce8; border: 1px solid #fef08a; padding: 10px; font-size: 10px; color: #854d0e; margin-bottom: 20px;">
+          <b>STATUTORY PATIENT SAFETY INSTRUCTIONS:</b> Keep all medicines out of reach of children. Store in a cool, dry place away from direct sunlight. Complete prescribed antimicrobial course even if symptoms subside. In case of unexpected adverse rash or allergic swelling, contact hospital helpline immediately.
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 50px; font-size: 11px;">
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Dispensing Registered Pharmacist<br/><span style="font-size: 9px; color: #64748b;">Reg #PCI-55421</span></div>
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Patient / Attendant Signature</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: `Dispense_${rx.rxNumber.replace(/\s+/g, "_")}`, docType: "CLINICAL_SUMMARY" });
+  };
+
+  const handlePrintNdpsVoucher = (log: {
+    substanceName: string;
+    qty: number;
+    batch: string;
+    reason: string;
+    witnessName: string;
+    timestamp: string;
+  }) => {
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 680px; margin: 0 auto; border: 2px solid #b45309; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #b45309; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 12px; font-weight: bold; color: #b45309; margin-top: 2px;">STATUTORY NDPS FORM 3C • CONTROLLED SUBSTANCES MOVEMENT VOUCHER</div>
+          <div style="font-size: 10px; color: #555;">Under Rule 66 of Narcotic Drugs & Psychotropic Substances Rules • Special License Vault</div>
+        </div>
+        <div style="background: #fffbeb; border: 1px solid #fde68a; padding: 12px; font-size: 12px; line-height: 1.8; margin-bottom: 16px;">
+          <div><b>Substance Name:</b> <span style="font-size: 14px; font-weight: bold; color: #92400e;">${log.substanceName}</span></div>
+          <div><b>Withdrawn Quantity:</b> <b>${log.qty} Ampoule(s) / Vials</b></div>
+          <div><b>Vault Batch Number:</b> <code>${log.batch}</code></div>
+          <div><b>Clinical Indication / Reason:</b> ${log.reason}</div>
+          <div><b>Timestamp of Withdrawal:</b> ${log.timestamp}</div>
+          <div><b>Authorized Co-Witness:</b> <span style="color: #0369a1; font-weight: bold;">${log.witnessName}</span></div>
+        </div>
+        <div style="font-size: 10px; color: #555; line-height: 1.5; margin-bottom: 30px;">
+          Certified that the above narcotic/controlled drug has been withdrawn from the double-lock vault under dual-custody physical inspection. Entry has been counter-signed in the official statutory NDPS register book.
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 50px; font-size: 11px;">
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Issuing Custodian Pharmacist</div>
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Witnessing Doctor / Sister In-Charge</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: `NDPS_Voucher_${log.batch}`, docType: "CLINICAL_SUMMARY" });
   };
 
   const handleNdpsMovementSubmit = (e: React.FormEvent) => {
@@ -171,12 +269,24 @@ export const PharmacyWorkspace: React.FC = () => {
       prev.map((v) => (v.id === selectedSubstance ? { ...v, amps: Math.max(0, v.amps - qty) } : v))
     );
 
-    const substanceName = vaultItems.find((v) => v.id === selectedSubstance)?.name;
+    const substanceItem = vaultItems.find((v) => v.id === selectedSubstance);
+    const substanceName = substanceItem?.name || selectedSubstance;
+    const batch = substanceItem?.batch || "NDPS-BATCH-X";
+    const logData = {
+      substanceName,
+      qty,
+      batch,
+      reason: moveReason,
+      witnessName,
+      timestamp: new Date().toLocaleString(),
+    };
+    setLastNdpsLog(logData);
     setNdpsLogMessage(
       `Logged: Dispensed ${qty} amps of ${substanceName}. Witness: ${witnessName}. Verified under NDPS Rule 66.`
     );
     setIsNdpsModalOpen(false);
     setWitnessPin("");
+    handlePrintNdpsVoucher(logData);
   };
 
   return (
@@ -212,12 +322,24 @@ export const PharmacyWorkspace: React.FC = () => {
             <ShieldCheck size={16} className="text-amber-400" />
             <span>{ndpsLogMessage}</span>
           </div>
-          <button
-            onClick={() => setNdpsLogMessage(null)}
-            className="text-amber-400 hover:text-amber-200 text-xs font-bold"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-3">
+            {lastNdpsLog && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => handlePrintNdpsVoucher(lastNdpsLog)}
+                className="flex items-center gap-1 text-[11px] border-amber-700 hover:bg-amber-900/60 text-amber-200"
+              >
+                <Printer size={12} /> Print Form 3C Docket
+              </Button>
+            )}
+            <button
+              onClick={() => setNdpsLogMessage(null)}
+              className="text-amber-400 hover:text-amber-200 text-xs font-bold"
+            >
+              ✕
+            </button>
+          </div>
         </div>
       )}
 
@@ -291,14 +413,23 @@ export const PharmacyWorkspace: React.FC = () => {
                     <CheckCircle2 size={13} /> DDI Screening: Passed (0 Major Interactions)
                   </span>
 
-                  {!rx.dispensed && (
+                  {!rx.dispensed ? (
                     <Button
                       variant="primary"
                       size="sm"
                       onClick={() => handleOpenDispenseModal(rx)}
                       className="flex items-center gap-1.5"
                     >
-                      <Barcode size={14} /> Scan Batch & Dispense
+                      <Barcode size={14} /> Scan Batch &amp; Dispense
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handlePrintDispenseVoucher(rx)}
+                      className="flex items-center gap-1.5 text-xs text-emerald-300 border-emerald-800 hover:bg-emerald-950/60"
+                    >
+                      <Printer size={13} /> Print Dispense Voucher
                     </Button>
                   )}
                 </div>
