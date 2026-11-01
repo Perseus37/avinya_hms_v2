@@ -4,9 +4,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port 5174",
+    "dev": "vite --host 0.0.0.0 --port 5174",
     "build": "tsc && vite build",
-    "preview": "vite preview --port 4174"
+    "preview": "vite preview --host 0.0.0.0 --port 4174",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -25,4 +26,3 @@
     "vite": "^6.0.1"
   }
 }
-

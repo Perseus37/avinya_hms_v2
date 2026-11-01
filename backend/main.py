@@ -7,11 +7,13 @@ import secrets
 import time
 import uuid
 
+from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response, FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST
 from backend.core.metrics import (
     HTTP_REQUESTS_TOTAL,
@@ -382,6 +384,37 @@ for target in (v1_app, app):
     )
     
 app.mount("/v1", v1_app)
+
+# -----------------------------------------------------------------------------
+# Hospital Management System (HMS) Clinical Workspace SPA Serving
+# -----------------------------------------------------------------------------
+HOSPITAL_UI_DIST = Path(__file__).resolve().parent.parent / "hospital-ui" / "dist"
+if (HOSPITAL_UI_DIST / "assets").is_dir():
+    app.mount("/app/assets", StaticFiles(directory=str(HOSPITAL_UI_DIST / "assets")), name="hospital_ui_assets")
+
+
+@app.get("/app", include_in_schema=False)
+def redirect_to_app_slash():
+    """Ensure trailing slash so relative assets resolve properly."""
+    return RedirectResponse(url="/app/")
+
+
+@app.get("/app/", include_in_schema=False)
+@app.get("/app/{full_path:path}", include_in_schema=False)
+async def serve_hospital_ui_spa(full_path: str = ""):
+    """Serves the compiled React Clinical Workspace SPA with client-side fallback."""
+    index_file = HOSPITAL_UI_DIST / "index.html"
+    if full_path:
+        target = (HOSPITAL_UI_DIST / full_path).resolve()
+        if target.is_file() and target.is_relative_to(HOSPITAL_UI_DIST):
+            return FileResponse(target)
+    if index_file.is_file():
+        return FileResponse(index_file)
+    return HTMLResponse(
+        "<!doctype html><html><body><h1>Avinya HMS Clinical Platform (UI not built)</h1>"
+        "<p>Run <code>npm run build</code> in <code>hospital-ui/</code>.</p></body></html>",
+        status_code=200,
+    )
 
 
 @app.get("/", include_in_schema=False)

@@ -190,6 +190,24 @@ services:
       api:
         condition: service_healthy
 
+  hospital-ui:
+    build:
+      context: ./hospital-ui
+      dockerfile: Dockerfile
+      target: development
+    image: avinya-hospital-ui:dev
+    restart: unless-stopped
+    environment:
+      VITE_API_PROXY_TARGET: "http://api:${API_PORT:-8000}"
+    ports:
+      - "127.0.0.1:${UI_PORT:-5174}:5174"
+    volumes:
+      - ./hospital-ui:/app
+      - /app/node_modules
+    depends_on:
+      api:
+        condition: service_healthy
+
   backup-sidecar:
     image: avinya-hms-api:latest
     restart: unless-stopped
