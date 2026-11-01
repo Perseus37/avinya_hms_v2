@@ -18,6 +18,8 @@ import { BloodBankWorkspace } from "../../workspaces/bloodbank/BloodBankWorkspac
 import { PharmacyWorkspace } from "../../workspaces/pharmacy/PharmacyWorkspace";
 import { DiagnosticsWorkspace } from "../../workspaces/diagnostics/DiagnosticsWorkspace";
 import { CashierCounterWorkspace } from "../../workspaces/billing/CashierCounterWorkspace";
+import { InfectionControlWorkspace } from "../../workspaces/infection/InfectionControlWorkspace";
+import { BiomedicalWorkspace } from "../../workspaces/biomedical/BiomedicalWorkspace";
 import { AdminWorkspace } from "../../workspaces/admin/AdminWorkspace";
 import { MyWorkDrawer } from "./MyWorkDrawer";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
@@ -97,6 +99,10 @@ export const AppShell: React.FC = () => {
         return <DiagnosticsWorkspace />;
       case "billing":
         return <CashierCounterWorkspace />;
+      case "infection-control":
+        return <InfectionControlWorkspace />;
+      case "biomedical":
+        return <BiomedicalWorkspace />;
       case "admin":
         return <AdminWorkspace onSelectWorkspace={setActiveWorkspace} />;
       default:

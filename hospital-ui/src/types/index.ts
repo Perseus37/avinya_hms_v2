@@ -11,6 +11,8 @@ export type WorkspaceId =
   | "pharmacy"
   | "diagnostics"
   | "billing"
+  | "infection-control"
+  | "biomedical"
   | "admin";
 
 export interface UserProfile {

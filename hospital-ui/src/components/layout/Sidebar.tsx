@@ -15,6 +15,8 @@ import {
   Clock,
   Scissors,
   Droplet,
+  ShieldAlert,
+  Wrench,
 } from "lucide-react";
 import { WorkspaceId } from "../../types";
 import { usePermissions } from "../../core/context/PermissionsContext";
@@ -48,6 +50,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: "blood-bank", label: "Blood Bank", icon: Droplet, shortcut: "Alt+B", badge: "Live" },
     { id: "pharmacy", label: "Pharmacy & NDPS", icon: Pill, shortcut: "Alt+6" },
     { id: "diagnostics", label: "Diagnostics & LIS", icon: Microscope, shortcut: "Alt+7" },
+    { id: "infection-control", label: "Infection & ASP", icon: ShieldAlert, shortcut: "Alt+I", badge: "HAI" },
+    { id: "biomedical", label: "Biomedical & BME", icon: Wrench, shortcut: "Alt+M", badge: "Assets" },
     { id: "billing", label: "Cashier Billing", icon: CreditCard, shortcut: "Alt+8" },
     { id: "admin", label: "Executive HUD", icon: ShieldCheck, shortcut: "Alt+9" },
   ];
