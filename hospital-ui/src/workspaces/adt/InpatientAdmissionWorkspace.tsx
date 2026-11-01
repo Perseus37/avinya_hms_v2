@@ -23,27 +23,8 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
-
-export type BedOccupancyStatus = "VACANT_CLEAN" | "OCCUPIED" | "HOUSEKEEPING" | "RESERVED";
-
-export interface EnterpriseBed {
-  bedId: number;
-  bedNumber: string;
-  roomNumber: string;
-  tower: string; // e.g. "Main Tower" | "Surgical Wing" | "Trauma Center" | "Women & Child"
-  floor: string; // e.g. "Ground Floor" | "Floor 2" | "Floor 3" | "Floor 4" | "Floor 5"
-  wardName: string;
-  category: "General" | "Semi-Private" | "Private" | "ICU";
-  status: BedOccupancyStatus;
-  dailyTariffRupees: number;
-  features: string[];
-  occupiedBy?: {
-    patientName: string;
-    mrn: string;
-    admittedDays: number;
-    doctor: string;
-  };
-}
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { PermissionGate } from "../../components/auth/PermissionGate";
 
 export interface MasterPatientRecord {
   id: number;
@@ -147,45 +128,6 @@ const MASTER_PATIENT_DIRECTORY: MasterPatientRecord[] = [
   },
 ];
 
-// 500+ Bed Scale Campus Database (Sample of operational beds across 4 Towers and 5 Floors)
-const ENTERPRISE_BED_POOL: EnterpriseBed[] = [
-  // Tower A - Main Tower (Floor 2: General Surgical Wards)
-  { bedId: 201, bedNumber: "B-201", roomNumber: "R-201", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "VACANT_CLEAN", features: ["O2 Wall Outlet", "Call Bell"] },
-  { bedId: 202, bedNumber: "B-202", roomNumber: "R-201", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "OCCUPIED", features: ["O2 Wall Outlet", "Call Bell"], occupiedBy: { patientName: "Ramesh Sharma", mrn: "MRN-2026-0091", admittedDays: 3, doctor: "Dr. Radhika Sen" } },
-  { bedId: 203, bedNumber: "B-203", roomNumber: "R-202", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "VACANT_CLEAN", features: ["O2 Wall Outlet", "Call Bell"] },
-  { bedId: 204, bedNumber: "B-204", roomNumber: "R-202", tower: "Main Tower", floor: "Floor 2", wardName: "General Surgical Ward 2A", dailyTariffRupees: 2500, category: "General", status: "HOUSEKEEPING", features: ["O2 Wall Outlet"] },
-
-  // Tower A - Main Tower (Floor 3: Cardiology HDU & Step-Down)
-  { bedId: 205, bedNumber: "HDU-301", roomNumber: "HDU-BAY-1", tower: "Main Tower", floor: "Floor 3", wardName: "Cardiology HDU", dailyTariffRupees: 5500, category: "General", status: "VACANT_CLEAN", features: ["Cardiac Telemetry", "O2 High-Flow", "Defibrillator Stand"] },
-  { bedId: 206, bedNumber: "HDU-302", roomNumber: "HDU-BAY-1", tower: "Main Tower", floor: "Floor 3", wardName: "Cardiology HDU", dailyTariffRupees: 5500, category: "General", status: "OCCUPIED", features: ["Cardiac Telemetry", "O2 High-Flow"], occupiedBy: { patientName: "Kishore Kumar", mrn: "MRN-2026-0082", admittedDays: 2, doctor: "Dr. Vikram Seth" } },
-  { bedId: 207, bedNumber: "SP-301", roomNumber: "R-305", tower: "Main Tower", floor: "Floor 3", wardName: "Semi-Private Cardiology Wing", dailyTariffRupees: 4500, category: "Semi-Private", status: "VACANT_CLEAN", features: ["Air Conditioned", "Attached Bath", "O2 Outlet"] },
-  { bedId: 208, bedNumber: "SP-302", roomNumber: "R-305", tower: "Main Tower", floor: "Floor 3", wardName: "Semi-Private Cardiology Wing", dailyTariffRupees: 4500, category: "Semi-Private", status: "RESERVED", features: ["Air Conditioned", "Attached Bath"] },
-
-  // Tower A - Main Tower (Floor 4: Critical Care ICU & CCU)
-  { bedId: 209, bedNumber: "ICU-401", roomNumber: "ICU-BAY-A", tower: "Main Tower", floor: "Floor 4", wardName: "Intensive Care Unit (ICU)", dailyTariffRupees: 14000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "Invasive Arterial Line", "Cardiac Monitor", "Dialysis Port"] },
-  { bedId: 210, bedNumber: "ICU-402", roomNumber: "ICU-BAY-A", tower: "Main Tower", floor: "Floor 4", wardName: "Intensive Care Unit (ICU)", dailyTariffRupees: 14000, category: "ICU", status: "OCCUPIED", features: ["Ventilator Ready", "Invasive Arterial Line", "Cardiac Monitor"], occupiedBy: { patientName: "Ananya Deshmukh", mrn: "ER-0914", admittedDays: 1, doctor: "Dr. Sameer Joshi" } },
-  { bedId: 211, bedNumber: "ICU-403", roomNumber: "ICU-BAY-A", tower: "Main Tower", floor: "Floor 4", wardName: "Intensive Care Unit (ICU)", dailyTariffRupees: 14000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "Isolation / Negative Pressure", "Cardiac Monitor"] },
-  { bedId: 212, bedNumber: "CCU-404", roomNumber: "CCU-BAY-B", tower: "Main Tower", floor: "Floor 4", wardName: "Coronary Care Unit (CCU)", dailyTariffRupees: 15000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "IABP Support Port", "Cardiac Monitor"] },
-
-  // Tower A - Main Tower (Floor 5: Executive Deluxe Suites)
-  { bedId: 213, bedNumber: "PV-501", roomNumber: "SUITE-501", tower: "Main Tower", floor: "Floor 5", wardName: "Executive Deluxe Suites", dailyTariffRupees: 8500, category: "Private", status: "VACANT_CLEAN", features: ["Attendant Couch", "Smart TV", "Mini Fridge", "Attached Luxury Bath", "O2 Outlet"] },
-  { bedId: 214, bedNumber: "PV-502", roomNumber: "SUITE-502", tower: "Main Tower", floor: "Floor 5", wardName: "Executive Deluxe Suites", dailyTariffRupees: 8500, category: "Private", status: "OCCUPIED", features: ["Attendant Couch", "Smart TV", "Mini Fridge"], occupiedBy: { patientName: "Sunil Mittal", mrn: "MRN-2026-0045", admittedDays: 4, doctor: "Dr. Vikram Seth" } },
-
-  // Tower B - Super-Specialty Surgical Wing (Floor 2: Ortho & Neuro)
-  { bedId: 215, bedNumber: "ORT-201", roomNumber: "R-B201", tower: "Surgical Wing", floor: "Floor 2", wardName: "Orthopedic Post-Op Ward", dailyTariffRupees: 3500, category: "General", status: "VACANT_CLEAN", features: ["Trapeze Bar", "O2 Wall Outlet", "Call Bell"] },
-  { bedId: 216, bedNumber: "ORT-202", roomNumber: "R-B201", tower: "Surgical Wing", floor: "Floor 2", wardName: "Orthopedic Post-Op Ward", dailyTariffRupees: 3500, category: "General", status: "VACANT_CLEAN", features: ["Trapeze Bar", "O2 Wall Outlet"] },
-  { bedId: 217, bedNumber: "NEU-205", roomNumber: "R-B205", tower: "Surgical Wing", floor: "Floor 2", wardName: "Neuro-Spine Special Ward", dailyTariffRupees: 5000, category: "Semi-Private", status: "VACANT_CLEAN", features: ["Air Conditioned", "Specialized Spine Mattress", "O2 Outlet"] },
-
-  // Tower C - Emergency & Trauma Center (Ground Floor)
-  { bedId: 218, bedNumber: "TRM-01", roomNumber: "BAY-RED", tower: "Trauma Center", floor: "Ground Floor", wardName: "Trauma Resuscitation Bay", dailyTariffRupees: 9000, category: "ICU", status: "VACANT_CLEAN", features: ["Ventilator Ready", "Rapid Infuser", "Crash Cart", "Cardiac Monitor"] },
-  { bedId: 219, bedNumber: "TRM-02", roomNumber: "BAY-YELLOW", tower: "Trauma Center", floor: "Ground Floor", wardName: "Trauma Observation", dailyTariffRupees: 4000, category: "General", status: "VACANT_CLEAN", features: ["O2 Wall Outlet", "Vital Sign Monitor"] },
-  { bedId: 220, bedNumber: "TRM-03", roomNumber: "BAY-YELLOW", tower: "Trauma Center", floor: "Ground Floor", wardName: "Trauma Observation", dailyTariffRupees: 4000, category: "General", status: "OCCUPIED", features: ["O2 Wall Outlet"], occupiedBy: { patientName: "Aakash Roy", mrn: "ER-0922", admittedDays: 1, doctor: "Dr. Sameer Joshi" } },
-
-  // Tower D - Women & Children Pavilion (Floor 2: Maternity & PICU)
-  { bedId: 221, bedNumber: "MAT-201", roomNumber: "LDR-1", tower: "Women & Child", floor: "Floor 2", wardName: "Maternity & LDR Ward", dailyTariffRupees: 6500, category: "Private", status: "VACANT_CLEAN", features: ["Baby Warmer", "Fetal Doppler Monitor", "Attached Bath"] },
-  { bedId: 222, bedNumber: "PICU-01", roomNumber: "PICU-BAY", tower: "Women & Child", floor: "Floor 2", wardName: "Pediatric ICU (PICU)", dailyTariffRupees: 12000, category: "ICU", status: "VACANT_CLEAN", features: ["Pediatric Ventilator", "Phototherapy Unit", "Cardiac Monitor"] },
-];
-
 interface ActiveAdmissionItem {
   id: number;
   mrn: string;
@@ -209,6 +151,7 @@ interface ActiveAdmissionItem {
 
 export const InpatientAdmissionWorkspace: React.FC = () => {
   const { patientSummary } = useActivePatient();
+  const { beds: ENTERPRISE_BED_POOL, hospitalProfile } = useHospitalConfig();
   const [errorMessage, setErrorMessage] = useState("");
   const [isSuccessModalOpen, setIsSuccessModalOpen] = useState(false);
   const [confirmedAdmission, setConfirmedAdmission] = useState<ActiveAdmissionItem | null>(null);
@@ -1099,14 +1042,23 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
           </Card>
 
           <div className="flex items-center justify-end gap-3 pt-2">
-            <Button
-              type="submit"
-              variant="primary"
-              size="lg"
-              className="flex items-center gap-2 font-bold px-6"
+            <PermissionGate
+              permission="bed.allocate"
+              fallback={
+                <div className="p-3 rounded-lg bg-amber-950/40 border border-amber-800/60 text-xs text-amber-300 font-mono">
+                  🔒 Action Locked: Your current staff role does not possess &apos;bed.allocate&apos; authorization.
+                </div>
+              }
             >
-              <DoorOpen size={16} /> Confirm Admission & Lock Bed
-            </Button>
+              <Button
+                type="submit"
+                variant="primary"
+                size="lg"
+                className="flex items-center gap-2 font-bold px-6"
+              >
+                <DoorOpen size={16} /> Confirm Admission & Lock Bed
+              </Button>
+            </PermissionGate>
           </div>
         </form>
       </div>
@@ -1354,13 +1306,13 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
               {/* Letterhead */}
               <div className="text-center border-b border-slate-300 pb-2.5">
                 <div className="font-bold text-sm tracking-wide text-slate-900 uppercase">
-                  Avinya Super-Specialty Hospital
+                  {hospitalProfile.name}
                 </div>
                 <div className="text-[10px] text-slate-600 font-mono">
                   Clinical Discharge Summary & Post-Hospitalization Care Plan
                 </div>
                 <div className="text-[9px] text-slate-500">
-                  Accredited by NABH & JCI • Health City, Gachibowli, Hyderabad
+                  {hospitalProfile.accreditation} • {hospitalProfile.address}
                 </div>
               </div>
 
@@ -1463,13 +1415,13 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
               {/* Hospital Header */}
               <div className="text-center border-b border-slate-300 pb-2.5">
                 <div className="font-bold text-sm tracking-wide text-slate-900 uppercase">
-                  Avinya Super-Specialty Hospital
+                  {hospitalProfile.name}
                 </div>
                 <div className="text-[10px] text-slate-600 font-mono">
                   Inpatient Admission Face Sheet & Bed Head Ticket (BHT)
                 </div>
                 <div className="text-[9px] text-slate-500">
-                  Apollo/Cerner Interoperability Standard • Admission Desk
+                  {hospitalProfile.accreditation} • Tel: {hospitalProfile.phone}
                 </div>
               </div>
 

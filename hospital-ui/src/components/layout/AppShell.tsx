@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { WorkspaceId } from "../../types";
+import { usePermissions } from "../../core/context/PermissionsContext";
 import { TopNavbar } from "./TopNavbar";
 import { Sidebar } from "./Sidebar";
 import { PatientSafetyBanner } from "../clinical/PatientSafetyBanner";
@@ -16,8 +17,16 @@ import { CashierCounterWorkspace } from "../../workspaces/billing/CashierCounter
 import { AdminWorkspace } from "../../workspaces/admin/AdminWorkspace";
 
 export const AppShell: React.FC = () => {
-  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>("registration");
+  const { isWorkspaceAllowed, roleDefinition } = usePermissions();
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>(roleDefinition.defaultWorkspace);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+
+  // If active role changes and current workspace is not allowed, route to role's default workspace
+  useEffect(() => {
+    if (!isWorkspaceAllowed(activeWorkspace)) {
+      setActiveWorkspace(roleDefinition.defaultWorkspace);
+    }
+  }, [roleDefinition, activeWorkspace]);
 
   // Global Keyboard Listener for Cmd+K / Ctrl+K and Alt+1..9
   useEffect(() => {

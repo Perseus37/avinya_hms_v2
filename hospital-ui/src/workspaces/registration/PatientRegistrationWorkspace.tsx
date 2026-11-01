@@ -17,27 +17,8 @@ import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { patientApi, PatientCreatedResponse } from "../../api/patientApi";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
-
-interface OpdDoctor {
-  id: string;
-  name: string;
-  specialty: string;
-  department: string;
-  roomNumber: string;
-  consultationFee: number;
-  currentWaitMins: number;
-  patientsWaiting: number;
-}
-
-const OPD_DOCTOR_ROSTER: OpdDoctor[] = [
-  { id: "doc-1", name: "Dr. Vikram Seth", specialty: "Interventional Cardiology", department: "Cardiology", roomNumber: "OPD Cabin 204", consultationFee: 800, currentWaitMins: 15, patientsWaiting: 4 },
-  { id: "doc-2", name: "Dr. Rajesh Sharma", specialty: "Internal Medicine", department: "General Medicine", roomNumber: "OPD Cabin 102", consultationFee: 500, currentWaitMins: 10, patientsWaiting: 6 },
-  { id: "doc-3", name: "Dr. Radhika Sen", specialty: "General & Laparoscopic Surgery", department: "General Surgery", roomNumber: "OPD Cabin 210", consultationFee: 800, currentWaitMins: 20, patientsWaiting: 3 },
-  { id: "doc-4", name: "Dr. Sunita Rao", specialty: "Pediatrics & Neonatology", department: "Pediatrics", roomNumber: "OPD Cabin 105", consultationFee: 600, currentWaitMins: 5, patientsWaiting: 2 },
-  { id: "doc-5", name: "Dr. Harish Patel", specialty: "Orthopedics & Joint Replacement", department: "Orthopedics", roomNumber: "OPD Cabin 215", consultationFee: 700, currentWaitMins: 25, patientsWaiting: 5 },
-  { id: "doc-6", name: "Dr. Anjali Nair", specialty: "Obstetrics & Gynecology", department: "Obstetrics & Gynecology", roomNumber: "OPD Cabin 112", consultationFee: 750, currentWaitMins: 12, patientsWaiting: 3 },
-  { id: "doc-7", name: "Dr. Sameer Joshi", specialty: "Critical Care & Pulmonology", department: "Pulmonology", roomNumber: "OPD Cabin 208", consultationFee: 750, currentWaitMins: 18, patientsWaiting: 4 },
-];
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { PermissionGate } from "../../components/auth/PermissionGate";
 
 interface GeneratedTokenDetails {
   tokenNumber: number;
@@ -55,6 +36,7 @@ interface GeneratedTokenDetails {
 
 export const PatientRegistrationWorkspace: React.FC = () => {
   const { selectPatient } = useActivePatient();
+  const { doctors: OPD_DOCTOR_ROSTER, hospitalProfile, departments } = useHospitalConfig();
   const [isLoading, setIsLoading] = useState(false);
   const [successPatient, setSuccessPatient] = useState<PatientCreatedResponse | null>(null);
   const [isSuccessModalOpen, setIsSuccessModalOpen] = useState(false);
@@ -658,15 +640,7 @@ export const PatientRegistrationWorkspace: React.FC = () => {
                     Select Clinical Specialty / Department
                   </label>
                   <div className="grid grid-cols-4 gap-2">
-                    {[
-                      "General Medicine",
-                      "Cardiology",
-                      "Orthopedics",
-                      "Pediatrics",
-                      "General Surgery",
-                      "Obstetrics & Gynecology",
-                      "Pulmonology",
-                    ].map((dept) => {
+                    {departments.map((dept) => {
                       const isSelected = selectedDept === dept;
                       return (
                         <button
@@ -772,15 +746,24 @@ export const PatientRegistrationWorkspace: React.FC = () => {
           </Card>
 
           <div className="flex items-center justify-end gap-3 pt-2">
-            <Button
-              type="submit"
-              variant="primary"
-              size="lg"
-              disabled={isLoading}
-              className="flex items-center gap-2 font-bold px-6"
+            <PermissionGate
+              permission="patient.register"
+              fallback={
+                <div className="p-3 rounded-lg bg-amber-950/40 border border-amber-800/60 text-xs text-amber-300 font-mono">
+                  🔒 Action Locked: Active staff role does not possess &apos;patient.register&apos; authorization.
+                </div>
+              }
             >
-              <UserPlus size={16} /> {isLoading ? "Registering Patient..." : "Register Patient & Generate UHID"}
-            </Button>
+              <Button
+                type="submit"
+                variant="primary"
+                size="lg"
+                disabled={isLoading}
+                className="flex items-center gap-2 font-bold px-6"
+              >
+                <UserPlus size={16} /> {isLoading ? "Registering Patient..." : "Register Patient & Generate UHID"}
+              </Button>
+            </PermissionGate>
           </div>
         </form>
       </div>
@@ -1016,13 +999,13 @@ export const PatientRegistrationWorkspace: React.FC = () => {
                 {/* Hospital Header */}
                 <div className="text-center border-b border-slate-200 pb-2.5">
                   <div className="font-bold text-sm tracking-wide text-slate-900 uppercase">
-                    Avinya Super-Specialty Hospital
+                    {hospitalProfile.name}
                   </div>
                   <div className="text-[10px] text-slate-600 font-mono">
                     Outpatient Department (OPD) Consultation Slip • Token & Cashier Receipt
                   </div>
                   <div className="text-[9px] text-slate-500">
-                    Plot 12, Health City, Gachibowli, Hyderabad • Tel: +91 40 8829 0000
+                    {hospitalProfile.address} • Tel: {hospitalProfile.phone}
                   </div>
                 </div>
 

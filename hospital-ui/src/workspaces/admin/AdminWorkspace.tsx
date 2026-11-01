@@ -8,6 +8,7 @@ import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { Badge } from "../../components/ui/Badge";
 import { WorkspaceId } from "../../types";
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
 import {
   Database,
   Download,
@@ -31,6 +32,12 @@ import {
   Users,
   BarChart3,
   Search,
+  Settings,
+  Plus,
+  Trash2,
+  RotateCcw,
+  Building,
+  CheckCircle2,
 } from "lucide-react";
 
 interface AdminWorkspaceProps {
@@ -38,7 +45,48 @@ interface AdminWorkspaceProps {
 }
 
 export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspace }) => {
-  const [activeTab, setActiveTab] = useState<"overview" | "metrics" | "registers">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "metrics" | "registers" | "customization">("overview");
+  const [customSubTab, setCustomSubTab] = useState<"facility" | "doctors" | "branding" | "policies">("facility");
+
+  const {
+    hospitalProfile,
+    policies,
+    doctors,
+    beds,
+    updateHospitalProfile,
+    updatePolicies,
+    addBed,
+    deleteBed,
+    addDoctor,
+    deleteDoctor,
+    resetToDefaultCatalog,
+  } = useHospitalConfig();
+
+  // Custom Bed Creation Form State
+  const [newBedNumber, setNewBedNumber] = useState("");
+  const [newRoomNumber, setNewRoomNumber] = useState("");
+  const [newTower, setNewTower] = useState("Main Tower");
+  const [newFloor, setNewFloor] = useState("Floor 2");
+  const [newWardName, setNewWardName] = useState("General Surgical Ward 2A");
+  const [newCategory, setNewCategory] = useState<"General" | "Semi-Private" | "Private" | "ICU">("General");
+  const [newTariff, setNewTariff] = useState("2500");
+  const [newFeatures, setNewFeatures] = useState("O2 Wall Outlet, Call Bell");
+  const [bedSuccessMsg, setBedSuccessMsg] = useState("");
+
+  // Custom Doctor Creation Form State
+  const [newDocName, setNewDocName] = useState("");
+  const [newDocSpecialty, setNewDocSpecialty] = useState("");
+  const [newDocDept, setNewDocDept] = useState("General Medicine");
+  const [newDocRoom, setNewDocRoom] = useState("OPD Cabin 104");
+  const [newDocFee, setNewDocFee] = useState("600");
+  const [docSuccessMsg, setDocSuccessMsg] = useState("");
+
+  // Hospital Profile Edit State
+  const [editHospName, setEditHospName] = useState(hospitalProfile.name);
+  const [editHospAddress, setEditHospAddress] = useState(hospitalProfile.address);
+  const [editHospPhone, setEditHospPhone] = useState(hospitalProfile.phone);
+  const [editHospAccreditation, setEditHospAccreditation] = useState(hospitalProfile.accreditation);
+  const [profileSavedMsg, setProfileSavedMsg] = useState("");
 
   // Metrics Catalog Filters
   const [metricSearch, setMetricSearch] = useState("");
@@ -343,6 +391,18 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
           }`}
         >
           <FileText size={14} /> Statutory Registers &amp; DPDP Ledger
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("customization")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "customization"
+              ? "bg-sky-500/10 text-sky-400 border border-sky-500/30"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+          }`}
+        >
+          <Settings size={14} /> Hospital Master &amp; Facility Builder
         </button>
       </div>
 
@@ -798,6 +858,600 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
               </div>
             </Card>
           </div>
+        </div>
+      )}
+
+      {/* TAB 4: HOSPITAL MASTER & FACILITY BUILDER */}
+      {activeTab === "customization" && (
+        <div className="space-y-6 mt-6">
+          {/* Sub-tab navigation */}
+          <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+            <button
+              type="button"
+              onClick={() => setCustomSubTab("facility")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                customSubTab === "facility"
+                  ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Building size={14} /> Campus Facility &amp; Bed Builder ({beds.length} Beds)
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCustomSubTab("doctors")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                customSubTab === "doctors"
+                  ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Stethoscope size={14} /> Doctor Roster &amp; OPD Pricing ({doctors.length} Doctors)
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCustomSubTab("branding")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                customSubTab === "branding"
+                  ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <ShieldCheck size={14} /> Hospital Identity &amp; Print Letterhead
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCustomSubTab("policies")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                customSubTab === "policies"
+                  ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Settings size={14} /> Workflow &amp; Policy Rules
+            </button>
+
+            <div className="flex-1 text-right">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (confirm("Reset hospital facility configuration to factory defaults?")) {
+                    resetToDefaultCatalog();
+                  }
+                }}
+                className="text-xs text-rose-400 hover:bg-rose-950 flex items-center gap-1 ml-auto"
+              >
+                <RotateCcw size={12} /> Reset to Defaults
+              </Button>
+            </div>
+          </div>
+
+          {/* Sub-tab 1: Facility & Bed Inventory Builder */}
+          {customSubTab === "facility" && (
+            <div className="space-y-6">
+              {/* Form: Add Operational Bed */}
+              <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                  <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                    <Plus size={14} className="text-emerald-400" /> Add New Operational Bed to Campus Matrix
+                  </h3>
+                  {bedSuccessMsg && (
+                    <span className="text-xs text-emerald-400 font-mono flex items-center gap-1">
+                      <CheckCircle2 size={12} /> {bedSuccessMsg}
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-4 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Bed Number *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. B-305, ICU-12"
+                      value={newBedNumber}
+                      onChange={(e) => setNewBedNumber(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Room Number *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. R-305, BAY-A"
+                      value={newRoomNumber}
+                      onChange={(e) => setNewRoomNumber(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Building / Tower *</label>
+                    <select
+                      value={newTower}
+                      onChange={(e) => setNewTower(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                    >
+                      <option value="Main Tower">Main Tower</option>
+                      <option value="Surgical Wing">Surgical Wing</option>
+                      <option value="Trauma Center">Trauma Center</option>
+                      <option value="Women & Child">Women &amp; Child Pavilion</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Floor *</label>
+                    <select
+                      value={newFloor}
+                      onChange={(e) => setNewFloor(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                    >
+                      <option value="Ground Floor">Ground Floor</option>
+                      <option value="Floor 2">Floor 2</option>
+                      <option value="Floor 3">Floor 3</option>
+                      <option value="Floor 4">Floor 4</option>
+                      <option value="Floor 5">Floor 5</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Ward Name *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Cardiology HDU, Surgical Step-Down"
+                      value={newWardName}
+                      onChange={(e) => setNewWardName(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Category *</label>
+                    <select
+                      value={newCategory}
+                      onChange={(e) => setNewCategory(e.target.value as any)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                    >
+                      <option value="General">General</option>
+                      <option value="Semi-Private">Semi-Private</option>
+                      <option value="Private">Private</option>
+                      <option value="ICU">ICU</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Daily Tariff (₹) *</label>
+                    <input
+                      type="number"
+                      placeholder="e.g. 3500"
+                      value={newTariff}
+                      onChange={(e) => setNewTariff(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] text-slate-400 mb-1">Features / Equipment Tags (comma separated)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Ventilator Ready, Cardiac Telemetry, O2 Wall Outlet"
+                    value={newFeatures}
+                    onChange={(e) => setNewFeatures(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                  />
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => {
+                      if (!newBedNumber.trim() || !newRoomNumber.trim()) {
+                        alert("Bed Number and Room Number are required.");
+                        return;
+                      }
+                      const feats = newFeatures.split(",").map((s) => s.trim()).filter(Boolean);
+                      addBed({
+                        bedNumber: newBedNumber.trim(),
+                        roomNumber: newRoomNumber.trim(),
+                        tower: newTower,
+                        floor: newFloor,
+                        wardName: newWardName.trim() || "General Ward",
+                        category: newCategory,
+                        status: "VACANT_CLEAN",
+                        dailyTariffRupees: parseInt(newTariff || "2500", 10),
+                        features: feats,
+                      });
+                      setNewBedNumber("");
+                      setNewRoomNumber("");
+                      setBedSuccessMsg("Bed successfully added to campus inventory!");
+                      setTimeout(() => setBedSuccessMsg(""), 3000);
+                    }}
+                    className="flex items-center gap-1.5"
+                  >
+                    <Plus size={13} /> Add Bed to Campus Matrix
+                  </Button>
+                </div>
+              </Card>
+
+              {/* Table: Configured Beds Inventory */}
+              <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                  <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                    Configured Campus Beds ({beds.length} Total Registered)
+                  </h3>
+                  <span className="text-[11px] font-mono text-slate-400">
+                    Live Beds dynamically ingested by Inpatient Admission ADT
+                  </span>
+                </div>
+
+                <div className="max-h-96 overflow-y-auto">
+                  <table className="w-full text-left text-xs font-mono">
+                    <thead className="bg-slate-950 text-slate-400 text-[10px] uppercase sticky top-0">
+                      <tr>
+                        <th className="p-2">Bed / Room</th>
+                        <th className="p-2">Tower &amp; Floor</th>
+                        <th className="p-2">Ward Name</th>
+                        <th className="p-2">Category</th>
+                        <th className="p-2">Daily Tariff</th>
+                        <th className="p-2">Features</th>
+                        <th className="p-2">Status</th>
+                        <th className="p-2 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/80 text-slate-300">
+                      {beds.map((b) => (
+                        <tr key={b.bedId} className="hover:bg-slate-950/60">
+                          <td className="p-2 font-bold text-slate-100">
+                            {b.bedNumber} ({b.roomNumber})
+                          </td>
+                          <td className="p-2 text-[11px] text-slate-400">
+                            {b.tower} • {b.floor}
+                          </td>
+                          <td className="p-2 text-slate-200">{b.wardName}</td>
+                          <td className="p-2">
+                            <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-950 border border-slate-800 text-sky-400">
+                              {b.category}
+                            </span>
+                          </td>
+                          <td className="p-2 font-bold text-emerald-400">₹{b.dailyTariffRupees.toLocaleString()}</td>
+                          <td className="p-2 text-[10px] text-slate-400 max-w-xs truncate">
+                            {b.features.join(", ")}
+                          </td>
+                          <td className="p-2">
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[10px] ${
+                                b.status === "VACANT_CLEAN"
+                                  ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                                  : "bg-rose-950 text-rose-300 border border-rose-900"
+                              }`}
+                            >
+                              {b.status}
+                            </span>
+                          </td>
+                          <td className="p-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => deleteBed(b.bedId)}
+                              title="Delete Bed from Facility"
+                              className="text-rose-400 hover:text-rose-300 p-1 hover:bg-slate-800 rounded transition-colors"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {/* Sub-tab 2: Doctor Roster & OPD Clinic Pricing */}
+          {customSubTab === "doctors" && (
+            <div className="space-y-6">
+              {/* Form: Add Consultant */}
+              <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                  <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                    <Plus size={14} className="text-emerald-400" /> Add Doctor to Clinic Roster
+                  </h3>
+                  {docSuccessMsg && (
+                    <span className="text-xs text-emerald-400 font-mono flex items-center gap-1">
+                      <CheckCircle2 size={12} /> {docSuccessMsg}
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Doctor Legal Name *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Dr. Priya Nair, MD"
+                      value={newDocName}
+                      onChange={(e) => setNewDocName(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Clinical Specialty *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Endocrinology & Diabetology"
+                      value={newDocSpecialty}
+                      onChange={(e) => setNewDocSpecialty(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Department *</label>
+                    <select
+                      value={newDocDept}
+                      onChange={(e) => setNewDocDept(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                    >
+                      <option value="General Medicine">General Medicine</option>
+                      <option value="Cardiology">Cardiology</option>
+                      <option value="General Surgery">General Surgery</option>
+                      <option value="Pediatrics">Pediatrics</option>
+                      <option value="Orthopedics">Orthopedics</option>
+                      <option value="Obstetrics & Gynecology">Obstetrics &amp; Gynecology</option>
+                      <option value="Pulmonology">Pulmonology</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Consultation Cabin / Room *</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. OPD Cabin 205"
+                      value={newDocRoom}
+                      onChange={(e) => setNewDocRoom(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Consultation Fee (₹) *</label>
+                    <input
+                      type="number"
+                      placeholder="e.g. 700"
+                      value={newDocFee}
+                      onChange={(e) => setNewDocFee(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => {
+                      if (!newDocName.trim() || !newDocSpecialty.trim()) {
+                        alert("Doctor Name and Specialty are required.");
+                        return;
+                      }
+                      addDoctor({
+                        name: newDocName.trim(),
+                        specialty: newDocSpecialty.trim(),
+                        department: newDocDept,
+                        roomNumber: newDocRoom.trim() || "OPD Cabin 101",
+                        consultationFee: parseInt(newDocFee || "500", 10),
+                        currentWaitMins: 10,
+                        patientsWaiting: 0,
+                        isActive: true,
+                      });
+                      setNewDocName("");
+                      setNewDocSpecialty("");
+                      setDocSuccessMsg("Doctor successfully added to live roster!");
+                      setTimeout(() => setDocSuccessMsg(""), 3000);
+                    }}
+                    className="flex items-center gap-1.5"
+                  >
+                    <Plus size={13} /> Add Doctor to Live Clinic Roster
+                  </Button>
+                </div>
+              </Card>
+
+              {/* Table: Configured Doctors */}
+              <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                  <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                    Active Doctor Roster ({doctors.length} Consultants Configured)
+                  </h3>
+                  <span className="text-[11px] font-mono text-slate-400">
+                    Live consultants auto-populated during Front Desk Patient Registration
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs font-mono">
+                    <thead className="bg-slate-950 text-slate-400 text-[10px] uppercase">
+                      <tr>
+                        <th className="p-2">Doctor Name</th>
+                        <th className="p-2">Specialty</th>
+                        <th className="p-2">Department</th>
+                        <th className="p-2">Cabin Room</th>
+                        <th className="p-2">Consultation Fee</th>
+                        <th className="p-2 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/80 text-slate-300">
+                      {doctors.map((d) => (
+                        <tr key={d.id} className="hover:bg-slate-950/60">
+                          <td className="p-2 font-bold text-slate-100">{d.name}</td>
+                          <td className="p-2 text-slate-300">{d.specialty}</td>
+                          <td className="p-2 text-sky-400">{d.department}</td>
+                          <td className="p-2 text-amber-300">{d.roomNumber}</td>
+                          <td className="p-2 font-bold text-emerald-400">₹{d.consultationFee}.00</td>
+                          <td className="p-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => deleteDoctor(d.id)}
+                              title="Remove Doctor from Roster"
+                              className="text-rose-400 hover:text-rose-300 p-1 hover:bg-slate-800 rounded transition-colors"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
+          )}
+
+          {/* Sub-tab 3: Hospital Identity & Branding */}
+          {customSubTab === "branding" && (
+            <Card className="p-5 bg-slate-900 border-slate-800 space-y-4 max-w-3xl">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                  <ShieldCheck size={14} className="text-sky-400" /> Hospital Identity &amp; Letterhead Metadata
+                </h3>
+                {profileSavedMsg && (
+                  <span className="text-xs text-emerald-400 font-mono flex items-center gap-1">
+                    <CheckCircle2 size={12} /> {profileSavedMsg}
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Hospital Official Legal Name
+                  </label>
+                  <input
+                    type="text"
+                    value={editHospName}
+                    onChange={(e) => setEditHospName(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-100 font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Registered Physical Address (Printed on Invoices &amp; Slips)
+                  </label>
+                  <input
+                    type="text"
+                    value={editHospAddress}
+                    onChange={(e) => setEditHospAddress(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Main Landline Phone</label>
+                    <input
+                      type="text"
+                      value={editHospPhone}
+                      onChange={(e) => setEditHospPhone(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Accreditation String</label>
+                    <input
+                      type="text"
+                      value={editHospAccreditation}
+                      onChange={(e) => setEditHospAccreditation(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-3 border-t border-slate-800">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => {
+                      updateHospitalProfile({
+                        name: editHospName,
+                        address: editHospAddress,
+                        phone: editHospPhone,
+                        accreditation: editHospAccreditation,
+                      });
+                      setProfileSavedMsg("Hospital Profile & Print Letterhead Updated!");
+                      setTimeout(() => setProfileSavedMsg(""), 3000);
+                    }}
+                    className="flex items-center gap-1.5"
+                  >
+                    <CheckCircle2 size={13} /> Save Hospital Profile &amp; Letterhead
+                  </Button>
+                </div>
+              </div>
+            </Card>
+          )}
+
+          {/* Sub-tab 4: Workflow & Policy Rules */}
+          {customSubTab === "policies" && (
+            <Card className="p-5 bg-slate-900 border-slate-800 space-y-4 max-w-2xl">
+              <div className="pb-2 border-b border-slate-800">
+                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                  <Settings size={14} className="text-amber-400" /> Hospital Operational Policies &amp; Consent Rules
+                </h3>
+              </div>
+
+              <div className="space-y-3 text-xs">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800">
+                  <div>
+                    <div className="font-semibold text-slate-200">Require Upfront Payment for OPD Queue Token</div>
+                    <div className="text-[11px] text-slate-400">Tokens will not enter doctor queue until cashier records receipt.</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={policies.requireUpfrontPaymentForToken}
+                    onChange={(e) => updatePolicies({ requireUpfrontPaymentForToken: e.target.checked })}
+                    className="h-4 w-4 rounded bg-slate-900 border-slate-700 text-sky-500"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800">
+                  <div>
+                    <div className="font-semibold text-slate-200">Enforce Statutory DPDP Act 2023 Consent</div>
+                    <div className="text-[11px] text-slate-400">Requires explicit checkbox consent grants before MRN generation.</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={policies.enforceDpdpConsent}
+                    onChange={(e) => updatePolicies({ enforceDpdpConsent: e.target.checked })}
+                    className="h-4 w-4 rounded bg-slate-900 border-slate-700 text-sky-500"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800">
+                  <div>
+                    <div className="font-semibold text-slate-200">Automated MLC Police Intimation Certificate</div>
+                    <div className="text-[11px] text-slate-400">Generates formal Section 39 CrPC intimation upon tagging any admission as MLC.</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={policies.autoAlertMlcToPolice}
+                    onChange={(e) => updatePolicies({ autoAlertMlcToPolice: e.target.checked })}
+                    className="h-4 w-4 rounded bg-slate-900 border-slate-700 text-sky-500"
+                  />
+                </div>
+              </div>
+            </Card>
+          )}
         </div>
       )}
 

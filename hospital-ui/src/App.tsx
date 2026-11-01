@@ -1,6 +1,8 @@
 import React from "react";
 import { AuthProvider, useAuth } from "./core/context/AuthContext";
 import { ActivePatientProvider } from "./core/context/ActivePatientContext";
+import { PermissionsProvider } from "./core/context/PermissionsContext";
+import { HospitalConfigProvider } from "./core/context/HospitalConfigContext";
 import { AppShell } from "./components/layout/AppShell";
 import { LoginView } from "./components/auth/LoginView";
 
@@ -21,9 +23,13 @@ const RootApp: React.FC = () => {
   }
 
   return (
-    <ActivePatientProvider>
-      <AppShell />
-    </ActivePatientProvider>
+    <HospitalConfigProvider>
+      <PermissionsProvider>
+        <ActivePatientProvider>
+          <AppShell />
+        </ActivePatientProvider>
+      </PermissionsProvider>
+    </HospitalConfigProvider>
   );
 };
 
