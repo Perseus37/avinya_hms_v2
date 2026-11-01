@@ -37,7 +37,7 @@ interface GeneratedTokenDetails {
 
 export const PatientRegistrationWorkspace: React.FC = () => {
   const { selectPatient } = useActivePatient();
-  const { doctors: OPD_DOCTOR_ROSTER, hospitalProfile, departments } = useHospitalConfig();
+  const { doctors: OPD_DOCTOR_ROSTER, hospitalProfile, departments, printTemplates, policies } = useHospitalConfig();
   const [isLoading, setIsLoading] = useState(false);
   const [successPatient, setSuccessPatient] = useState<PatientCreatedResponse | null>(null);
   const [isSuccessModalOpen, setIsSuccessModalOpen] = useState(false);
@@ -257,7 +257,11 @@ export const PatientRegistrationWorkspace: React.FC = () => {
         const tokenNum = Math.floor(Math.random() * 15) + 10;
         const deptPrefix = chosenDoc.department.slice(0, 3).toUpperCase();
         const tokenCode = `${deptPrefix}-${String(tokenNum).padStart(3, "0")}`;
-        const fee = consultationType === "FOLLOWUP" ? 0 : chosenDoc.consultationFee;
+        let fee = chosenDoc.consultationFee;
+        if (consultationType === "FOLLOWUP") {
+          const discount = chosenDoc.revisitDiscountPercent ?? 100;
+          fee = Math.round(chosenDoc.consultationFee * (1 - discount / 100));
+        }
         const priorityLabels = {
           NORMAL: "Standard Walk-in",
           SENIOR_CITIZEN: "Senior Citizen (Priority)",
@@ -271,7 +275,7 @@ export const PatientRegistrationWorkspace: React.FC = () => {
           doctorName: chosenDoc.name,
           roomNumber: chosenDoc.roomNumber,
           consultationFee: fee,
-          paymentMode: fee === 0 ? "Complimentary Follow-up" : paymentMode,
+          paymentMode: fee === 0 ? "Complimentary Follow-up (Waived)" : paymentMode,
           priority: priorityLabels[priority],
           issuedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           estimatedWaitMins: chosenDoc.currentWaitMins + 5,
@@ -313,44 +317,52 @@ export const PatientRegistrationWorkspace: React.FC = () => {
   const handlePrintDocument = () => {
     if (!successPatient) return;
     if (printDocType === "OPD_TOKEN" && generatedToken) {
+      const template = printTemplates.thermalToken;
       const html = `
         <div class="thermal-slip">
-          <div class="center bold" style="font-size: 13px;">${hospitalProfile.name.toUpperCase()}</div>
-          <div class="center" style="font-size: 9px; margin-bottom: 4px;">OPD CONSULTATION TOKEN & RECEIPT</div>
+          <div class="center bold" style="font-size: 13px;">${(template.headerTitle || hospitalProfile.name).toUpperCase()}</div>
+          ${template.subHeader ? `<div class="center" style="font-size: 9px; margin-bottom: 4px;">${template.subHeader}</div>` : ""}
           <div class="divider"></div>
           <div class="center bold" style="font-size: 24px; letter-spacing: 2px;">${generatedToken.tokenCode}</div>
           <div class="center" style="font-size: 10px;">Token #${generatedToken.tokenNumber} • Room ${generatedToken.roomNumber}</div>
           <div class="divider"></div>
           <div><b>Doctor:</b> ${generatedToken.doctorName}</div>
           <div><b>Specialty:</b> ${generatedToken.department}</div>
-          <div><b>Est. Wait:</b> ~${generatedToken.estimatedWaitMins} mins</div>
+          ${template.showEstimatedWait ? `<div><b>Est. Wait:</b> ~${generatedToken.estimatedWaitMins} mins</div>` : ""}
           <div class="divider"></div>
           <div><b>Patient:</b> ${successPatient.full_name.toUpperCase()}</div>
           <div><b>UHID:</b> ${successPatient.mrn}</div>
           <div><b>Age/Gender:</b> ${successPatient.gender} | ${successPatient.blood_group || "O+"}</div>
           <div><b>Priority:</b> ${generatedToken.priority}</div>
+          ${template.showCashierReceipt ? `
           <div class="divider"></div>
           <div><b>Receipt No:</b> ${generatedToken.receiptNumber}</div>
           <div><b>Payment Mode:</b> ${generatedToken.paymentMode}</div>
           <div class="bold" style="font-size: 12px; margin-top: 2px;">Fee Paid: ₹${generatedToken.consultationFee}.00</div>
+          ` : ""}
           <div class="divider"></div>
           <div class="center" style="font-size: 9px;">Issued: ${generatedToken.issuedAt}</div>
-          <div class="center" style="font-size: 8px;">Please proceed to waiting lounge. Valid today only.</div>
+          <div class="center" style="font-size: 8px;">${template.footerNotice}</div>
         </div>
       `;
       printDocument(html, { title: `OPD_Token_${generatedToken.tokenCode}`, docType: "THERMAL_TOKEN" });
     } else {
+      const template = printTemplates.wristband;
       const html = `
         <div class="wristband-slip">
           <div>
-            <div class="bold" style="font-size: 12px;">${hospitalProfile.name.toUpperCase()}</div>
+            <div class="bold" style="font-size: 12px;">${(template.hospitalName || hospitalProfile.name).toUpperCase()}</div>
             <div class="bold" style="font-size: 14px; margin-top: 2px;">${successPatient.full_name.toUpperCase()}</div>
-            <div style="font-size: 10px;">${successPatient.gender} • Blood: ${successPatient.blood_group || "O+"}</div>
+            <div style="font-size: 10px;">${successPatient.gender} ${template.showBloodGroup ? `• Blood: ${successPatient.blood_group || "O+"}` : ""}</div>
             <div style="font-size: 9px;">Ph: ${successPatient.phone_number || "--"}</div>
+            ${template.showAllergyWarning ? `<div style="font-size: 8px; color: #dc2626; font-weight: bold; margin-top: 2px;">ALLERGIES: NKDA / VERIFY AT BEDSIDE</div>` : ""}
           </div>
           <div class="center">
             <div class="barcode-box">||||| | |||| || ||| | |||</div>
             <div class="bold" style="font-size: 13px;">${successPatient.mrn}</div>
+            ${template.showEmergencyPhone && emergencyPhone ? `
+              <div style="font-size: 8px;">ICE: ${emergencyPhone}</div>
+            ` : ""}
           </div>
         </div>
       `;
@@ -735,7 +747,12 @@ export const PatientRegistrationWorkspace: React.FC = () => {
                             <span className="font-bold text-xs text-slate-100">{doc.name}</span>
                             <span className="font-mono text-xs font-bold text-emerald-400">₹{doc.consultationFee}</span>
                           </div>
-                          <div className="text-[11px] text-slate-400">{doc.specialty}</div>
+                          <div className="flex items-center justify-between text-[11px] text-slate-400">
+                            <span>{doc.specialty}</span>
+                            <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950/50 px-1.5 py-0.5 rounded border border-emerald-800/50">
+                              {doc.revisitFreeWindowDays ?? 7}d Free Follow-up
+                            </span>
+                          </div>
                           <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono mt-2 pt-1.5 border-t border-slate-800/80">
                             <span className="text-sky-300 font-semibold">{doc.roomNumber}</span>
                             <span className="flex items-center gap-1 text-amber-400">
@@ -749,47 +766,70 @@ export const PatientRegistrationWorkspace: React.FC = () => {
                 </div>
 
                 {/* Consultation Type, Priority, and Payment Details */}
-                <div className="grid grid-cols-3 gap-3 pt-2 border-t border-sky-900/30">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">Visit Type</label>
-                    <select
-                      value={consultationType}
-                      onChange={(e) => setConsultationType(e.target.value as any)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
-                    >
-                      <option value="NEW">New Consultation</option>
-                      <option value="FOLLOWUP">Follow-up Review (Within 7 Days - Free)</option>
-                      <option value="SECOND_OPINION">Second Clinical Opinion</option>
-                    </select>
-                  </div>
+                {(() => {
+                  const selectedDoc = OPD_DOCTOR_ROSTER.find((d) => d.id === selectedDoctorId) || OPD_DOCTOR_ROSTER[0];
+                  const docRevisitWindow = policies?.allowDoctorSpecificRevisitRules ? (selectedDoc?.revisitFreeWindowDays ?? policies.defaultRevisitFreeDays) : (policies?.defaultRevisitFreeDays ?? 7);
+                  const docDiscount = selectedDoc?.revisitDiscountPercent ?? 100;
+                  return (
+                    <>
+                      <div className="grid grid-cols-3 gap-3 pt-2 border-t border-sky-900/30">
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-300 mb-1">Visit Type</label>
+                          <select
+                            value={consultationType}
+                            onChange={(e) => setConsultationType(e.target.value as any)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+                          >
+                            <option value="NEW">New Consultation</option>
+                            <option value="FOLLOWUP">Follow-up Review ({docRevisitWindow}d Window - {docDiscount === 100 ? "Free" : `${docDiscount}% Waived`})</option>
+                            <option value="SECOND_OPINION">Second Clinical Opinion</option>
+                          </select>
+                        </div>
 
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">Queue Priority</label>
-                    <select
-                      value={priority}
-                      onChange={(e) => setPriority(e.target.value as any)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
-                    >
-                      <option value="NORMAL">Normal Walk-in</option>
-                      <option value="SENIOR_CITIZEN">Senior Citizen (Priority Call)</option>
-                      <option value="EMERGENCY">Urgent Fast-Track Triage</option>
-                    </select>
-                  </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-300 mb-1">Queue Priority</label>
+                          <select
+                            value={priority}
+                            onChange={(e) => setPriority(e.target.value as any)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+                          >
+                            <option value="NORMAL">Normal Walk-in</option>
+                            <option value="SENIOR_CITIZEN">Senior Citizen (Priority Call)</option>
+                            <option value="EMERGENCY">Urgent Fast-Track Triage</option>
+                          </select>
+                        </div>
 
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">Consultation Fee Payment</label>
-                    <select
-                      value={paymentMode}
-                      onChange={(e) => setPaymentMode(e.target.value as any)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
-                    >
-                      <option value="UPI">UPI / Instant QR Code</option>
-                      <option value="CASH">Cash at Front Desk</option>
-                      <option value="CARD">Debit / Credit POS Card</option>
-                      <option value="PMJAY">PMJAY / Ayushman Bharat Cashless</option>
-                    </select>
-                  </div>
-                </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-300 mb-1">Consultation Fee Payment</label>
+                          <select
+                            value={paymentMode}
+                            onChange={(e) => setPaymentMode(e.target.value as any)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
+                          >
+                            <option value="UPI">UPI / Instant QR Code</option>
+                            <option value="CASH">Cash at Front Desk</option>
+                            <option value="CARD">Debit / Credit POS Card</option>
+                            <option value="PMJAY">PMJAY / Ayushman Bharat Cashless</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {consultationType === "FOLLOWUP" && (
+                        <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-xs text-emerald-300 flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <Sparkles size={13} className="text-emerald-400" />
+                            <span>
+                              <strong>{selectedDoc?.name} Policy:</strong> Free follow-up eligible within <strong>{docRevisitWindow} days</strong> ({selectedDoc?.revisitMaxFreeVisits ?? 1} visit allowed).
+                            </span>
+                          </span>
+                          <span className="font-mono font-bold text-emerald-300 bg-emerald-900/50 px-2 py-0.5 rounded border border-emerald-700/60">
+                            Fee: ₹{Math.round((selectedDoc?.consultationFee || 0) * (1 - docDiscount / 100))}.00
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             )}
           </Card>

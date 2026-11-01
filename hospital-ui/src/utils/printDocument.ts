@@ -119,3 +119,4 @@ export function printDocument(htmlContent: string, options: PrintDocumentOptions
   `);
   printWindow.document.close();
 }
+

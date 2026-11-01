@@ -33,6 +33,9 @@ export interface OpdDoctor {
   currentWaitMins: number;
   patientsWaiting: number;
   isActive: boolean;
+  revisitFreeWindowDays: number;
+  revisitMaxFreeVisits: number;
+  revisitDiscountPercent: number;
 }
 
 export interface HospitalProfile {
@@ -51,6 +54,46 @@ export interface HospitalPolicies {
   autoAlertMlcToPolice: boolean;
   allowTariffOverride: boolean;
   defaultBedView: "GRID" | "TABLE";
+  defaultRevisitFreeDays: number;
+  allowDoctorSpecificRevisitRules: boolean;
+  enforceRevisitWindowExpiry: boolean;
+}
+
+export interface PrintTemplatesConfig {
+  thermalToken: {
+    headerTitle: string;
+    subHeader: string;
+    showEstimatedWait: boolean;
+    showCashierReceipt: boolean;
+    showBarcode: boolean;
+    footerNotice: string;
+  };
+  wristband: {
+    hospitalName: string;
+    wristbandType: "ADULT_STANDARD" | "PEDIATRIC" | "BARCODE_ONLY";
+    showBloodGroup: boolean;
+    showEmergencyPhone: boolean;
+    showAllergyWarning: boolean;
+    barcodeFormat: "CODE128" | "QR";
+  };
+  bedHeadTicket: {
+    hospitalTitle: string;
+    subTitle: string;
+    showFinancialInfo: boolean;
+    showNurseChecklist: boolean;
+    showSignatureBlock: boolean;
+    customSealText: string;
+  };
+  dischargeSummary: {
+    hospitalHeader: string;
+    subTitle: string;
+    showMedicationReconciliation: boolean;
+    showDietaryInstructions: boolean;
+    showWarningSigns: boolean;
+    showDoctorSealBlock: boolean;
+    showSuperintendentSign: boolean;
+    disclaimerText: string;
+  };
 }
 
 const DEFAULT_PROFILE: HospitalProfile = {
@@ -69,16 +112,56 @@ const DEFAULT_POLICIES: HospitalPolicies = {
   autoAlertMlcToPolice: true,
   allowTariffOverride: false,
   defaultBedView: "GRID",
+  defaultRevisitFreeDays: 7,
+  allowDoctorSpecificRevisitRules: true,
+  enforceRevisitWindowExpiry: true,
+};
+
+export const DEFAULT_PRINT_TEMPLATES: PrintTemplatesConfig = {
+  thermalToken: {
+    headerTitle: "AVINYA HEALTHCARE APEX",
+    subHeader: "OPD CONSULTATION TOKEN & RECEIPT",
+    showEstimatedWait: true,
+    showCashierReceipt: true,
+    showBarcode: true,
+    footerNotice: "Please proceed to waiting lounge. Valid today only.",
+  },
+  wristband: {
+    hospitalName: "AVINYA HEALTHCARE APEX",
+    wristbandType: "ADULT_STANDARD",
+    showBloodGroup: true,
+    showEmergencyPhone: true,
+    showAllergyWarning: true,
+    barcodeFormat: "CODE128",
+  },
+  bedHeadTicket: {
+    hospitalTitle: "AVINYA SUPER-SPECIALTY APEX HOSPITAL",
+    subTitle: "INPATIENT ADMISSION FACE SHEET & BED HEAD TICKET (BHT)",
+    showFinancialInfo: true,
+    showNurseChecklist: true,
+    showSignatureBlock: true,
+    customSealText: "Accredited by NABH & JCI • Apex Multi-Specialty Care",
+  },
+  dischargeSummary: {
+    hospitalHeader: "AVINYA SUPER-SPECIALTY APEX HOSPITAL",
+    subTitle: "FORMAL STATUTORY INPATIENT DISCHARGE SUMMARY",
+    showMedicationReconciliation: true,
+    showDietaryInstructions: true,
+    showWarningSigns: true,
+    showDoctorSealBlock: true,
+    showSuperintendentSign: true,
+    disclaimerText: "This is a computer-generated statutory clinical discharge summary under NABH Clinical Standards.",
+  },
 };
 
 const DEFAULT_DOCTORS: OpdDoctor[] = [
-  { id: "doc-1", name: "Dr. Vikram Seth", specialty: "Interventional Cardiology", department: "Cardiology", roomNumber: "OPD Cabin 204", consultationFee: 800, currentWaitMins: 15, patientsWaiting: 4, isActive: true },
-  { id: "doc-2", name: "Dr. Rajesh Sharma", specialty: "Internal Medicine", department: "General Medicine", roomNumber: "OPD Cabin 102", consultationFee: 500, currentWaitMins: 10, patientsWaiting: 6, isActive: true },
-  { id: "doc-3", name: "Dr. Radhika Sen", specialty: "General & Laparoscopic Surgery", department: "General Surgery", roomNumber: "OPD Cabin 210", consultationFee: 800, currentWaitMins: 20, patientsWaiting: 3, isActive: true },
-  { id: "doc-4", name: "Dr. Sunita Rao", specialty: "Pediatrics & Neonatology", department: "Pediatrics", roomNumber: "OPD Cabin 105", consultationFee: 600, currentWaitMins: 5, patientsWaiting: 2, isActive: true },
-  { id: "doc-5", name: "Dr. Harish Patel", specialty: "Orthopedics & Joint Replacement", department: "Orthopedics", roomNumber: "OPD Cabin 215", consultationFee: 700, currentWaitMins: 25, patientsWaiting: 5, isActive: true },
-  { id: "doc-6", name: "Dr. Anjali Nair", specialty: "Obstetrics & Gynecology", department: "Obstetrics & Gynecology", roomNumber: "OPD Cabin 112", consultationFee: 750, currentWaitMins: 12, patientsWaiting: 3, isActive: true },
-  { id: "doc-7", name: "Dr. Sameer Joshi", specialty: "Critical Care & Pulmonology", department: "Pulmonology", roomNumber: "OPD Cabin 208", consultationFee: 750, currentWaitMins: 18, patientsWaiting: 4, isActive: true },
+  { id: "doc-1", name: "Dr. Vikram Seth", specialty: "Interventional Cardiology", department: "Cardiology", roomNumber: "OPD Cabin 204", consultationFee: 800, currentWaitMins: 15, patientsWaiting: 4, isActive: true, revisitFreeWindowDays: 7, revisitMaxFreeVisits: 1, revisitDiscountPercent: 100 },
+  { id: "doc-2", name: "Dr. Rajesh Sharma", specialty: "Internal Medicine", department: "General Medicine", roomNumber: "OPD Cabin 102", consultationFee: 500, currentWaitMins: 10, patientsWaiting: 6, isActive: true, revisitFreeWindowDays: 10, revisitMaxFreeVisits: 1, revisitDiscountPercent: 100 },
+  { id: "doc-3", name: "Dr. Radhika Sen", specialty: "General & Laparoscopic Surgery", department: "General Surgery", roomNumber: "OPD Cabin 210", consultationFee: 800, currentWaitMins: 20, patientsWaiting: 3, isActive: true, revisitFreeWindowDays: 14, revisitMaxFreeVisits: 2, revisitDiscountPercent: 100 },
+  { id: "doc-4", name: "Dr. Sunita Rao", specialty: "Pediatrics & Neonatology", department: "Pediatrics", roomNumber: "OPD Cabin 105", consultationFee: 600, currentWaitMins: 5, patientsWaiting: 2, isActive: true, revisitFreeWindowDays: 7, revisitMaxFreeVisits: 1, revisitDiscountPercent: 100 },
+  { id: "doc-5", name: "Dr. Harish Patel", specialty: "Orthopedics & Joint Replacement", department: "Orthopedics", roomNumber: "OPD Cabin 215", consultationFee: 700, currentWaitMins: 25, patientsWaiting: 5, isActive: true, revisitFreeWindowDays: 10, revisitMaxFreeVisits: 1, revisitDiscountPercent: 100 },
+  { id: "doc-6", name: "Dr. Anjali Nair", specialty: "Obstetrics & Gynecology", department: "Obstetrics & Gynecology", roomNumber: "OPD Cabin 112", consultationFee: 750, currentWaitMins: 12, patientsWaiting: 3, isActive: true, revisitFreeWindowDays: 7, revisitMaxFreeVisits: 1, revisitDiscountPercent: 100 },
+  { id: "doc-7", name: "Dr. Sameer Joshi", specialty: "Critical Care & Pulmonology", department: "Pulmonology", roomNumber: "OPD Cabin 208", consultationFee: 750, currentWaitMins: 18, patientsWaiting: 4, isActive: true, revisitFreeWindowDays: 7, revisitMaxFreeVisits: 1, revisitDiscountPercent: 100 },
 ];
 
 const DEFAULT_BEDS: EnterpriseBed[] = generateEnterprise500Beds();
@@ -88,11 +171,13 @@ interface HospitalConfigContextType {
   policies: HospitalPolicies;
   doctors: OpdDoctor[];
   beds: EnterpriseBed[];
+  printTemplates: PrintTemplatesConfig;
   towers: string[];
   floors: string[];
   departments: string[];
   updateHospitalProfile: (profile: Partial<HospitalProfile>) => void;
   updatePolicies: (policies: Partial<HospitalPolicies>) => void;
+  updatePrintTemplates: (templates: Partial<PrintTemplatesConfig>) => void;
   addBed: (bed: Omit<EnterpriseBed, "bedId">) => void;
   updateBed: (bedId: number, partial: Partial<EnterpriseBed>) => void;
   deleteBed: (bedId: number) => void;
@@ -109,6 +194,7 @@ const STORAGE_KEYS = {
   POLICIES: "avinya_hospital_policies",
   DOCTORS: "avinya_hospital_doctors",
   BEDS: "avinya_hospital_beds",
+  PRINT_TEMPLATES: "avinya_hospital_print_templates",
 };
 
 export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -152,6 +238,15 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
     }
   });
 
+  const [printTemplates, setPrintTemplates] = useState<PrintTemplatesConfig>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.PRINT_TEMPLATES);
+      return saved ? JSON.parse(saved) : DEFAULT_PRINT_TEMPLATES;
+    } catch {
+      return DEFAULT_PRINT_TEMPLATES;
+    }
+  });
+
   // Save to localStorage whenever state changes
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(hospitalProfile));
@@ -169,12 +264,20 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
     localStorage.setItem(STORAGE_KEYS.BEDS, JSON.stringify(beds));
   }, [beds]);
 
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.PRINT_TEMPLATES, JSON.stringify(printTemplates));
+  }, [printTemplates]);
+
   const updateHospitalProfile = (partial: Partial<HospitalProfile>) => {
     setHospitalProfile((prev) => ({ ...prev, ...partial }));
   };
 
   const updatePolicies = (partial: Partial<HospitalPolicies>) => {
     setPolicies((prev) => ({ ...prev, ...partial }));
+  };
+
+  const updatePrintTemplates = (partial: Partial<PrintTemplatesConfig>) => {
+    setPrintTemplates((prev) => ({ ...prev, ...partial }));
   };
 
   const addBed = (bed: Omit<EnterpriseBed, "bedId">) => {
@@ -210,10 +313,12 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
     setPolicies(DEFAULT_POLICIES);
     setDoctors(DEFAULT_DOCTORS);
     setBeds(DEFAULT_BEDS);
+    setPrintTemplates(DEFAULT_PRINT_TEMPLATES);
     localStorage.removeItem(STORAGE_KEYS.PROFILE);
     localStorage.removeItem(STORAGE_KEYS.POLICIES);
     localStorage.removeItem(STORAGE_KEYS.DOCTORS);
     localStorage.removeItem(STORAGE_KEYS.BEDS);
+    localStorage.removeItem(STORAGE_KEYS.PRINT_TEMPLATES);
   };
 
   // Derive unique towers, floors, and departments from configured dataset
@@ -228,11 +333,13 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
         policies,
         doctors,
         beds,
+        printTemplates,
         towers,
         floors,
         departments,
         updateHospitalProfile,
         updatePolicies,
+        updatePrintTemplates,
         addBed,
         updateBed,
         deleteBed,

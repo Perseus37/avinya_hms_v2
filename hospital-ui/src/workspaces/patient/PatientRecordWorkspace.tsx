@@ -13,8 +13,14 @@ import {
   Heart,
   Printer,
   FileCheck,
+  RotateCcw,
+  CheckCircle2,
+  Sparkles,
+  AlertCircle,
 } from "lucide-react";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { printDocument } from "../../utils/printDocument";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -31,8 +37,10 @@ type PatientRecordTab =
 
 export const PatientRecordWorkspace: React.FC = () => {
   const { patientSummary: activePatient } = useActivePatient();
+  const { doctors, policies, hospitalProfile, printTemplates } = useHospitalConfig();
   const [activeTab, setActiveTab] = useState<PatientRecordTab>("overview");
   const [timelineFilter, setTimelineFilter] = useState<"ALL" | "CLINICAL" | "LAB" | "MED" | "BILLING">("ALL");
+  const [bookedRevisitDoctor, setBookedRevisitDoctor] = useState<string | null>(null);
 
   if (!activePatient) {
     return (
@@ -57,7 +65,111 @@ export const PatientRecordWorkspace: React.FC = () => {
     );
   }
 
-  // Sample structured timeline data for active patient
+  // Doctor-Specific Revisit & Follow-up Status Tracking
+  const getFreeWindow = (docId: string, fallbackDays: number) => {
+    const doc = doctors.find((d) => d.id === docId);
+    return policies.allowDoctorSpecificRevisitRules
+      ? (doc?.revisitFreeWindowDays || fallbackDays)
+      : (policies.defaultRevisitFreeDays || fallbackDays);
+  };
+
+  const doc1Window = getFreeWindow("doc-1", 7);
+  const doc2Window = getFreeWindow("doc-2", 10);
+  const doc3Window = getFreeWindow("doc-3", 14);
+
+  const doctorRevisitRecords = [
+    {
+      doctorId: "doc-1",
+      doctorName: "Dr. Vikram Seth",
+      specialty: "Interventional Cardiology",
+      lastVisitDate: "28-Oct-2026",
+      daysElapsed: 4,
+      freeWindowDays: doc1Window,
+      maxFreeVisits: doctors.find((d) => d.id === "doc-1")?.revisitMaxFreeVisits || 1,
+      standardFee: doctors.find((d) => d.id === "doc-1")?.consultationFee || 800,
+      isFreeRevisitEligible: 4 <= doc1Window,
+      daysRemaining: Math.max(0, doc1Window - 4),
+    },
+    {
+      doctorId: "doc-2",
+      doctorName: "Dr. Rajesh Sharma",
+      specialty: "Internal Medicine",
+      lastVisitDate: "14-Oct-2026",
+      daysElapsed: 18,
+      freeWindowDays: doc2Window,
+      maxFreeVisits: doctors.find((d) => d.id === "doc-2")?.revisitMaxFreeVisits || 1,
+      standardFee: doctors.find((d) => d.id === "doc-2")?.consultationFee || 500,
+      isFreeRevisitEligible: 18 <= doc2Window,
+      daysRemaining: Math.max(0, doc2Window - 18),
+    },
+    {
+      doctorId: "doc-3",
+      doctorName: "Dr. Radhika Sen",
+      specialty: "General Surgery",
+      lastVisitDate: "20-Oct-2026",
+      daysElapsed: 12,
+      freeWindowDays: doc3Window,
+      maxFreeVisits: doctors.find((d) => d.id === "doc-3")?.revisitMaxFreeVisits || 2,
+      standardFee: doctors.find((d) => d.id === "doc-3")?.consultationFee || 800,
+      isFreeRevisitEligible: 12 <= doc3Window,
+      daysRemaining: Math.max(0, doc3Window - 12),
+    },
+  ];
+
+  const handlePrintWristband = () => {
+    const html = `
+      <div class="wristband-slip">
+        <div>
+          <div class="bold" style="font-size: 12px;">${printTemplates.wristband.hospitalName.toUpperCase()}</div>
+          <div class="bold" style="font-size: 14px; margin-top: 2px;">${activePatient.full_name.toUpperCase()}</div>
+          <div style="font-size: 10px;">${activePatient.gender} ${printTemplates.wristband.showBloodGroup && activePatient.blood_group ? `• Blood: ${activePatient.blood_group}` : ""}</div>
+          ${printTemplates.wristband.showEmergencyPhone && activePatient.phone_number ? `<div style="font-size: 9px;">Ph: ${activePatient.phone_number}</div>` : ""}
+          ${printTemplates.wristband.showAllergyWarning ? `<div style="font-size: 9px; color: red; font-weight: bold;">ALLERGIES: PENICILLIN G</div>` : ""}
+        </div>
+        <div class="center">
+          <div class="barcode-box">||||| | |||| || ||| | |||</div>
+          <div class="bold" style="font-size: 13px;">${activePatient.mrn}</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: `Wristband_${activePatient.mrn}`, docType: "WRISTBAND" });
+  };
+
+  const handlePrintChartSummary = () => {
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 720px; margin: 0 auto; border: 1px solid #333; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 14px;">
+          <h2 style="margin: 0; font-size: 18px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 11px; font-weight: bold; color: #555;">PATIENT 360 COMPREHENSIVE CLINICAL CHART</div>
+          <div style="font-size: 10px; color: #777;">${hospitalProfile.accreditation} • Phone: ${hospitalProfile.phone}</div>
+        </div>
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ddd; padding-bottom: 8px; font-size: 12px; margin-bottom: 12px;">
+          <div><b>Patient:</b> ${activePatient.full_name} (${activePatient.gender} • ${activePatient.age_years || 42}y)</div>
+          <div><b>UHID:</b> ${activePatient.mrn}</div>
+          <div><b>Blood Group:</b> ${activePatient.blood_group || "O+"}</div>
+        </div>
+        <div style="margin-bottom: 12px; font-size: 12px;">
+          <b>Active Problem List (ICD-10):</b>
+          <div style="padding: 6px 0;">1. Angina pectoris (I20.9) • 2. Essential hypertension (I10)</div>
+        </div>
+        <div style="margin-bottom: 12px; font-size: 12px;">
+          <b>Hemodynamics Baseline:</b>
+          <div style="padding: 6px 0;">BP: 148/92 mmHg • HR: 88 bpm • SpO2: 97% • NEWS2 Score: 1 (Low Risk)</div>
+        </div>
+        <div style="margin-bottom: 12px; font-size: 12px;">
+          <b>Critical Allergies:</b>
+          <div style="color: red; font-weight: bold;">Severe Penicillin Anaphylaxis • Sulfa Drugs</div>
+        </div>
+        <div style="margin-top: 30px; font-size: 11px; border-top: 1px solid #ccc; padding-top: 8px; display: flex; justify-content: space-between;">
+          <div>Generated on: ${new Date().toLocaleString()}</div>
+          <div>Avinya Clinical OS Record</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, { title: `Chart_Summary_${activePatient.mrn}`, docType: "CLINICAL_SUMMARY" });
+  };
+
+  // Sample structured timeline data for active patient with revisit tagging
   const timelineEvents = [
     {
       id: "ev-1",
@@ -166,7 +278,7 @@ export const PatientRecordWorkspace: React.FC = () => {
         {/* Quick Action Tools */}
         <div className="flex items-center gap-2">
           <Button
-            onClick={() => window.print()}
+            onClick={handlePrintWristband}
             variant="outline"
             className="flex items-center gap-1.5 text-xs text-slate-300 border-slate-700"
           >
@@ -174,7 +286,7 @@ export const PatientRecordWorkspace: React.FC = () => {
             <span>Print Wristband</span>
           </Button>
           <Button
-            onClick={() => window.print()}
+            onClick={handlePrintChartSummary}
             variant="outline"
             className="flex items-center gap-1.5 text-xs text-slate-300 border-slate-700"
           >
@@ -217,7 +329,7 @@ export const PatientRecordWorkspace: React.FC = () => {
 
       {/* 3. Tab Content Area */}
       <div className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-6">
-        {/* TAB 1: PATIENT 360 OVERVIEW */}
+        {/* TAB 1: PATIENT 360 OVERVIEW (INTEGRATED CLINICAL SNAPSHOT + LONGITUDINAL TIMELINE) */}
         {activeTab === "overview" && (
           <div className="space-y-6 max-w-7xl mx-auto">
             {/* Active Clinical Alert Strip */}
@@ -233,91 +345,276 @@ export const PatientRecordWorkspace: React.FC = () => {
               </Badge>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Active Care & Admission Card */}
-              <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                    <Heart size={14} className="text-rose-400" /> Active Encounter
-                  </span>
-                  <Badge variant="success">INPATIENT ADMITTED</Badge>
+            {/* Doctor-Tied Revisit & Free Follow-up Tracking Radar */}
+            <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                <div>
+                  <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                    <RotateCcw size={14} className="text-purple-400" /> Doctor Revisit &amp; Follow-up Policy Tracking
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Hospital Revisit Policy: Treating doctors configure individual free follow-up windows. Consultations within limit are 100% free.
+                  </p>
                 </div>
-                <div className="space-y-1.5 text-xs">
-                  <div className="flex justify-between text-slate-400">
-                    <span>Admitted Ward:</span>
-                    <span className="font-semibold text-slate-200">Coronary Care Unit (CCU)</span>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>Bed Number:</span>
-                    <span className="font-mono font-bold text-sky-400">Bed CCU-204</span>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>Attending Consultant:</span>
-                    <span className="font-semibold text-slate-200">Dr. Ramesh Gupta (MD, DM)</span>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>Admission Date:</span>
-                    <span className="font-mono text-slate-300">01-Nov-2026 (Day 1)</span>
-                  </div>
-                  <div className="flex justify-between text-slate-400">
-                    <span>Primary Payer:</span>
-                    <span className="text-emerald-400 font-semibold">Star Health (Cashless Pre-Auth)</span>
-                  </div>
-                </div>
-              </Card>
+                <Badge variant="purple" className="text-[10px] font-mono">
+                  Doctor-Specific Rules Active
+                </Badge>
+              </div>
 
-              {/* Hemodynamic Vitals Card */}
-              <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                    <Activity size={14} className="text-sky-400" /> Latest Hemodynamics
-                  </span>
-                  <Badge variant="info">NEWS2: 1 (LOW)</Badge>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="p-2 rounded bg-slate-950 border border-slate-800">
-                    <div className="text-[10px] text-slate-400 uppercase">Blood Pressure</div>
-                    <div className="text-sm font-bold text-slate-100 font-mono">148/92 mmHg</div>
-                  </div>
-                  <div className="p-2 rounded bg-slate-950 border border-slate-800">
-                    <div className="text-[10px] text-slate-400 uppercase">Heart Rate</div>
-                    <div className="text-sm font-bold text-slate-100 font-mono">88 bpm</div>
-                  </div>
-                  <div className="p-2 rounded bg-slate-950 border border-slate-800">
-                    <div className="text-[10px] text-slate-400 uppercase">SpO2 (Room Air)</div>
-                    <div className="text-sm font-bold text-emerald-400 font-mono">97%</div>
-                  </div>
-                  <div className="p-2 rounded bg-slate-950 border border-slate-800">
-                    <div className="text-[10px] text-slate-400 uppercase">Temperature</div>
-                    <div className="text-sm font-bold text-slate-100 font-mono">98.4 °F</div>
-                  </div>
-                </div>
-              </Card>
-
-              {/* Active Diagnoses Card */}
-              <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                  <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                    <Stethoscope size={14} className="text-amber-400" /> Problem List (ICD-10)
-                  </span>
-                  <span className="text-[10px] text-slate-400">3 Diagnoses</span>
-                </div>
-                <div className="space-y-2 text-xs">
-                  <div className="p-2 rounded bg-slate-950 border border-slate-800 flex items-start justify-between">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {doctorRevisitRecords.map((rec) => (
+                  <div
+                    key={rec.doctorId}
+                    className={`p-3 rounded-xl border flex flex-col justify-between transition-all ${
+                      rec.isFreeRevisitEligible
+                        ? "bg-purple-950/20 border-purple-800/60 ring-1 ring-purple-500/20"
+                        : "bg-slate-950/60 border-slate-800/80 opacity-80"
+                    }`}
+                  >
                     <div>
-                      <div className="font-semibold text-slate-200">Angina pectoris, unspecified</div>
-                      <div className="text-[10px] font-mono text-slate-400">ICD-10: I20.9 • Acute (01-Nov-2026)</div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-bold text-xs text-slate-100">{rec.doctorName}</span>
+                        <span className="text-[10px] font-mono text-slate-400">{rec.specialty}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 mb-2">
+                        Last Consultation: <span className="text-slate-200 font-mono">{rec.lastVisitDate}</span> ({rec.daysElapsed} days ago)
+                      </div>
+
+                      {rec.isFreeRevisitEligible ? (
+                        <div className="p-2 rounded bg-purple-900/30 border border-purple-700/50 text-[11px] space-y-1">
+                          <div className="flex items-center gap-1 text-emerald-400 font-bold">
+                            <Sparkles size={12} /> Free Revisit Eligible ({rec.daysRemaining} days left)
+                          </div>
+                          <div className="text-slate-300 text-[10px]">
+                            Window: {rec.freeWindowDays} days • Fee: <span className="line-through text-slate-500 font-mono">₹{rec.standardFee}</span> <span className="text-emerald-400 font-bold font-mono">₹0.00 (100% Free)</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-2 rounded bg-slate-900/60 border border-slate-800 text-[11px] space-y-1">
+                          <div className="flex items-center gap-1 text-rose-400 font-semibold">
+                            <AlertCircle size={12} /> Revisit Window Expired
+                          </div>
+                          <div className="text-slate-400 text-[10px]">
+                            Window was {rec.freeWindowDays} days • Next consult: <span className="text-slate-200 font-bold font-mono">₹{rec.standardFee}.00</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <Badge variant="warning">Primary</Badge>
-                  </div>
-                  <div className="p-2 rounded bg-slate-950 border border-slate-800 flex items-start justify-between">
-                    <div>
-                      <div className="font-semibold text-slate-200">Essential (primary) hypertension</div>
-                      <div className="text-[10px] font-mono text-slate-400">ICD-10: I10 • Chronic (2024)</div>
+
+                    <div className="mt-3 pt-2 border-t border-slate-800/60 flex items-center justify-between">
+                      {rec.isFreeRevisitEligible ? (
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          onClick={() => {
+                            setBookedRevisitDoctor(rec.doctorName);
+                            setTimeout(() => setBookedRevisitDoctor(null), 3500);
+                          }}
+                          className="w-full text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center justify-center gap-1"
+                        >
+                          <Sparkles size={12} /> Issue Free Revisit Token (₹0)
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="w-full text-xs text-slate-300 border-slate-700 hover:bg-slate-800"
+                        >
+                          Book Standard Consultation
+                        </Button>
+                      )}
                     </div>
                   </div>
+                ))}
+              </div>
+
+              {bookedRevisitDoctor && (
+                <div className="p-2.5 rounded bg-emerald-950/80 border border-emerald-700 text-xs text-emerald-300 font-mono flex items-center gap-2">
+                  <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
+                  <span>
+                    <strong>Free Follow-Up Revisit Token Issued:</strong> Scheduled with {bookedRevisitDoctor}. Doctor's revisit rule applied: Fee waived to ₹0.00!
+                  </span>
                 </div>
-              </Card>
+              )}
+            </Card>
+
+            {/* 2-Column Clinical Command Layout: Left = Tracked State, Right = Longitudinal Timeline */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* LEFT COLUMN: Clinical Tracked Snapshots (7 cols) */}
+              <div className="lg:col-span-7 space-y-4">
+                {/* Active Care & Admission Card */}
+                <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Heart size={14} className="text-rose-400" /> Active Clinical Encounter
+                    </span>
+                    <Badge variant="success">INPATIENT ADMITTED</Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <span className="text-slate-400 block text-[10px]">Admitted Ward:</span>
+                      <span className="font-semibold text-slate-100">Coronary Care Unit (CCU)</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px]">Assigned Bed:</span>
+                      <span className="font-mono font-bold text-sky-400">Bed CCU-204 (Room R-CCU-102)</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px]">Treating Consultant:</span>
+                      <span className="font-semibold text-slate-100">Dr. Vikram Seth (Interventional Cardiology)</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[10px]">Admission Date &amp; LOS:</span>
+                      <span className="font-mono text-slate-200">01-Nov-2026 (Day 1)</span>
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Hemodynamic Vitals & NEWS2 Score Card */}
+                <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Activity size={14} className="text-sky-400" /> Hemodynamics &amp; Early Warning Score
+                    </span>
+                    <Badge variant="info">NEWS2: 1 (LOW RISK)</Badge>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2 text-xs">
+                    <div className="p-2 rounded bg-slate-950 border border-slate-800">
+                      <div className="text-[10px] text-slate-400 uppercase">BP</div>
+                      <div className="text-sm font-bold text-slate-100 font-mono">148/92</div>
+                    </div>
+                    <div className="p-2 rounded bg-slate-950 border border-slate-800">
+                      <div className="text-[10px] text-slate-400 uppercase">Pulse</div>
+                      <div className="text-sm font-bold text-slate-100 font-mono">88 bpm</div>
+                    </div>
+                    <div className="p-2 rounded bg-slate-950 border border-slate-800">
+                      <div className="text-[10px] text-slate-400 uppercase">SpO2</div>
+                      <div className="text-sm font-bold text-emerald-400 font-mono">97%</div>
+                    </div>
+                    <div className="p-2 rounded bg-slate-950 border border-slate-800">
+                      <div className="text-[10px] text-slate-400 uppercase">Temp</div>
+                      <div className="text-sm font-bold text-slate-100 font-mono">98.4 °F</div>
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Problem List (ICD-10) */}
+                <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Stethoscope size={14} className="text-amber-400" /> Active Problem List &amp; Diagnoses
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-mono">ICD-10 Codified</span>
+                  </div>
+                  <div className="space-y-2 text-xs">
+                    <div className="p-2 rounded bg-slate-950 border border-slate-800 flex items-start justify-between">
+                      <div>
+                        <div className="font-semibold text-slate-200">Angina pectoris, unspecified (I20.9)</div>
+                        <div className="text-[10px] font-mono text-slate-400">Onset: 01-Nov-2026 • Acute Presentation</div>
+                      </div>
+                      <Badge variant="warning">Primary</Badge>
+                    </div>
+                    <div className="p-2 rounded bg-slate-950 border border-slate-800 flex items-start justify-between">
+                      <div>
+                        <div className="font-semibold text-slate-200">Essential (primary) hypertension (I10)</div>
+                        <div className="text-[10px] font-mono text-slate-400">Onset: 14-Jan-2024 • Chronic Condition</div>
+                      </div>
+                      <Badge variant="neutral">Chronic</Badge>
+                    </div>
+                  </div>
+                </Card>
+
+                {/* Active Medications & CPOE Orders Summary */}
+                <div className="grid grid-cols-2 gap-4">
+                  <Card className="p-3 bg-slate-900 border-slate-800 space-y-2">
+                    <div className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1">
+                      <Pill size={12} className="text-emerald-400" /> Active Medications
+                    </div>
+                    <div className="space-y-1.5 text-[11px] font-mono">
+                      <div className="p-1.5 rounded bg-slate-950 border border-slate-800">
+                        <div className="font-bold text-slate-200">Tab. Aspirin 75mg</div>
+                        <div className="text-[10px] text-slate-400">1-0-0 • Post Meals • Dr. Seth</div>
+                      </div>
+                      <div className="p-1.5 rounded bg-slate-950 border border-slate-800">
+                        <div className="font-bold text-slate-200">Tab. Atorvastatin 40mg</div>
+                        <div className="text-[10px] text-slate-400">0-0-1 • Bedtime • Dr. Seth</div>
+                      </div>
+                    </div>
+                  </Card>
+
+                  <Card className="p-3 bg-slate-900 border-slate-800 space-y-2">
+                    <div className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1">
+                      <FileText size={12} className="text-indigo-400" /> CPOE Lab Results
+                    </div>
+                    <div className="space-y-1.5 text-[11px] font-mono">
+                      <div className="p-1.5 rounded bg-rose-950/30 border border-rose-900/60">
+                        <div className="font-bold text-rose-300">Serum Troponin-I: 0.12 ng/mL</div>
+                        <div className="text-[10px] text-rose-400">CRITICAL HIGH (Ref &lt; 0.04)</div>
+                      </div>
+                      <div className="p-1.5 rounded bg-slate-950 border border-slate-800">
+                        <div className="font-bold text-slate-200">Complete Blood Count (CBC)</div>
+                        <div className="text-[10px] text-emerald-400">Normal Range • Verified</div>
+                      </div>
+                    </div>
+                  </Card>
+                </div>
+              </div>
+
+              {/* RIGHT COLUMN: Embedded Longitudinal Patient Care Timeline (5 cols) */}
+              <div className="lg:col-span-5 space-y-4">
+                <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <div className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                      <Clock size={14} className="text-sky-400" /> Patient Care Timeline
+                    </div>
+                    <div className="flex gap-1 bg-slate-950 p-1 rounded border border-slate-800 text-[10px]">
+                      {(["ALL", "CLINICAL", "LAB", "MED", "BILLING"] as const).map((filter) => (
+                        <button
+                          key={filter}
+                          type="button"
+                          onClick={() => setTimelineFilter(filter)}
+                          className={`px-1.5 py-0.5 rounded font-semibold transition-all ${
+                            timelineFilter === filter
+                              ? "bg-sky-500 text-slate-950 font-bold"
+                              : "text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          {filter}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* High-Density Timeline Stream */}
+                  <div className="space-y-3 max-h-[640px] overflow-y-auto pr-1">
+                    {filteredEvents.map((ev) => {
+                      const EvIcon = ev.icon;
+                      return (
+                        <div
+                          key={ev.id}
+                          className="p-2.5 rounded-lg bg-slate-950 border border-slate-800/80 hover:border-slate-700 transition-colors space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="font-bold text-slate-200 flex items-center gap-1.5">
+                              <EvIcon size={12} className="text-sky-400" /> {ev.title}
+                            </span>
+                            <span className="font-mono text-[10px] text-slate-400">{ev.timestamp}</span>
+                          </div>
+
+                          <div className="text-[11px] text-slate-300 leading-relaxed">{ev.details}</div>
+
+                          <div className="flex items-center justify-between pt-1 border-t border-slate-900 text-[10px] text-slate-500 font-mono">
+                            <span>Actor: {ev.actor}</span>
+                            <Badge variant={ev.category === "CLINICAL" ? "info" : "neutral"} size="sm">
+                              {ev.category}
+                            </Badge>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Card>
+              </div>
             </div>
           </div>
         )}

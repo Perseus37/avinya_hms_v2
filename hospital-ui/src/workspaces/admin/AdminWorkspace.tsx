@@ -38,6 +38,7 @@ import {
   RotateCcw,
   Building,
   CheckCircle2,
+  Printer,
 } from "lucide-react";
 
 interface AdminWorkspaceProps {
@@ -46,21 +47,56 @@ interface AdminWorkspaceProps {
 
 export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspace }) => {
   const [activeTab, setActiveTab] = useState<"overview" | "metrics" | "registers" | "customization">("overview");
-  const [customSubTab, setCustomSubTab] = useState<"facility" | "doctors" | "branding" | "policies">("facility");
+  const [customSubTab, setCustomSubTab] = useState<"facility" | "doctors" | "branding" | "policies" | "printTemplates">("facility");
+  const [activeDocTemplate, setActiveDocTemplate] = useState<"thermal" | "wristband" | "bht" | "discharge">("thermal");
 
   const {
     hospitalProfile,
     policies,
     doctors,
     beds,
+    printTemplates,
     updateHospitalProfile,
     updatePolicies,
+    updatePrintTemplates,
     addBed,
     deleteBed,
     addDoctor,
     deleteDoctor,
     resetToDefaultCatalog,
   } = useHospitalConfig();
+
+  // Print Templates Local Form State
+  const [thermalTitle, setThermalTitle] = useState(printTemplates.thermalToken.headerTitle);
+  const [thermalSubHeader, setThermalSubHeader] = useState(printTemplates.thermalToken.subHeader);
+  const [thermalShowWait, setThermalShowWait] = useState(printTemplates.thermalToken.showEstimatedWait);
+  const [thermalShowReceipt, setThermalShowReceipt] = useState(printTemplates.thermalToken.showCashierReceipt);
+  const [thermalShowBarcode, setThermalShowBarcode] = useState(printTemplates.thermalToken.showBarcode);
+  const [thermalFooter, setThermalFooter] = useState(printTemplates.thermalToken.footerNotice);
+
+  const [wristbandName, setWristbandName] = useState(printTemplates.wristband.hospitalName);
+  const [wristbandType, setWristbandType] = useState<"ADULT_STANDARD" | "PEDIATRIC" | "BARCODE_ONLY">(printTemplates.wristband.wristbandType);
+  const [wristbandBlood, setWristbandBlood] = useState(printTemplates.wristband.showBloodGroup);
+  const [wristbandPhone, setWristbandPhone] = useState(printTemplates.wristband.showEmergencyPhone);
+  const [wristbandAllergy, setWristbandAllergy] = useState(printTemplates.wristband.showAllergyWarning);
+  const [wristbandBarcode, setWristbandBarcode] = useState<"CODE128" | "QR">(printTemplates.wristband.barcodeFormat);
+
+  const [bhtTitle, setBhtTitle] = useState(printTemplates.bedHeadTicket.hospitalTitle);
+  const [bhtSubTitle, setBhtSubTitle] = useState(printTemplates.bedHeadTicket.subTitle);
+  const [bhtFinancial, setBhtFinancial] = useState(printTemplates.bedHeadTicket.showFinancialInfo);
+  const [bhtNurseChecklist, setBhtNurseChecklist] = useState(printTemplates.bedHeadTicket.showNurseChecklist);
+  const [bhtSignatures, setBhtSignatures] = useState(printTemplates.bedHeadTicket.showSignatureBlock);
+  const [bhtSeal, setBhtSeal] = useState(printTemplates.bedHeadTicket.customSealText);
+
+  const [dischargeHeader, setDischargeHeader] = useState(printTemplates.dischargeSummary.hospitalHeader);
+  const [dischargeSubTitle, setDischargeSubTitle] = useState(printTemplates.dischargeSummary.subTitle);
+  const [dischargeMeds, setDischargeMeds] = useState(printTemplates.dischargeSummary.showMedicationReconciliation);
+  const [dischargeDiet, setDischargeDiet] = useState(printTemplates.dischargeSummary.showDietaryInstructions);
+  const [dischargeWarnings, setDischargeWarnings] = useState(printTemplates.dischargeSummary.showWarningSigns);
+  const [dischargeSeal, setDischargeSeal] = useState(printTemplates.dischargeSummary.showDoctorSealBlock);
+  const [dischargeSuperintendent, setDischargeSuperintendent] = useState(printTemplates.dischargeSummary.showSuperintendentSign);
+  const [dischargeDisclaimer, setDischargeDisclaimer] = useState(printTemplates.dischargeSummary.disclaimerText);
+  const [templateSavedMsg, setTemplateSavedMsg] = useState("");
 
   // Custom Bed Creation Form State
   const [newBedNumber, setNewBedNumber] = useState("");
@@ -73,12 +109,15 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
   const [newFeatures, setNewFeatures] = useState("O2 Wall Outlet, Call Bell");
   const [bedSuccessMsg, setBedSuccessMsg] = useState("");
 
-  // Custom Doctor Creation Form State
+  // Custom Doctor Creation Form State with Revisit Rules
   const [newDocName, setNewDocName] = useState("");
   const [newDocSpecialty, setNewDocSpecialty] = useState("");
   const [newDocDept, setNewDocDept] = useState("General Medicine");
   const [newDocRoom, setNewDocRoom] = useState("OPD Cabin 104");
   const [newDocFee, setNewDocFee] = useState("600");
+  const [newDocRevisitDays, setNewDocRevisitDays] = useState("7");
+  const [newDocMaxFreeVisits, setNewDocMaxFreeVisits] = useState("1");
+  const [newDocDiscountPct, setNewDocDiscountPct] = useState("100");
   const [docSuccessMsg, setDocSuccessMsg] = useState("");
 
   // Hospital Profile Edit State
@@ -914,6 +953,18 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
               <Settings size={14} /> Workflow &amp; Policy Rules
             </button>
 
+            <button
+              type="button"
+              onClick={() => setCustomSubTab("printTemplates")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                customSubTab === "printTemplates"
+                  ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Printer size={14} /> Statutory Print Layouts &amp; Templates
+            </button>
+
             <div className="flex-1 text-right">
               <Button
                 size="sm"
@@ -1212,9 +1263,9 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-4 gap-3">
                   <div>
-                    <label className="block text-[11px] text-slate-400 mb-1">Consultation Cabin / Room *</label>
+                    <label className="block text-[11px] text-slate-400 mb-1">Cabin Room *</label>
                     <input
                       type="text"
                       placeholder="e.g. OPD Cabin 205"
@@ -1231,6 +1282,39 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                       placeholder="e.g. 700"
                       value={newDocFee}
                       onChange={(e) => setNewDocFee(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Free Revisit Window (Days)</label>
+                    <input
+                      type="number"
+                      placeholder="7"
+                      value={newDocRevisitDays}
+                      onChange={(e) => setNewDocRevisitDays(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Max Free Follow-ups</label>
+                    <input
+                      type="number"
+                      placeholder="1"
+                      value={newDocMaxFreeVisits}
+                      onChange={(e) => setNewDocMaxFreeVisits(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Fee Waived (%)</label>
+                    <input
+                      type="number"
+                      placeholder="100"
+                      value={newDocDiscountPct}
+                      onChange={(e) => setNewDocDiscountPct(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
                     />
                   </div>
@@ -1254,6 +1338,9 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                         currentWaitMins: 10,
                         patientsWaiting: 0,
                         isActive: true,
+                        revisitFreeWindowDays: parseInt(newDocRevisitDays || "7", 10),
+                        revisitMaxFreeVisits: parseInt(newDocMaxFreeVisits || "1", 10),
+                        revisitDiscountPercent: parseInt(newDocDiscountPct || "100", 10),
                       });
                       setNewDocName("");
                       setNewDocSpecialty("");
@@ -1287,6 +1374,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                         <th className="p-2">Department</th>
                         <th className="p-2">Cabin Room</th>
                         <th className="p-2">Consultation Fee</th>
+                        <th className="p-2">Revisit / Follow-up Policy</th>
                         <th className="p-2 text-right">Action</th>
                       </tr>
                     </thead>
@@ -1298,6 +1386,11 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                           <td className="p-2 text-sky-400">{d.department}</td>
                           <td className="p-2 text-amber-300">{d.roomNumber}</td>
                           <td className="p-2 font-bold text-emerald-400">₹{d.consultationFee}.00</td>
+                          <td className="p-2">
+                            <span className="px-2 py-0.5 rounded text-[10px] bg-purple-950 text-purple-300 border border-purple-800 font-semibold">
+                              {d.revisitFreeWindowDays || 7} Days Free ({d.revisitMaxFreeVisits || 1} Revisit)
+                            </span>
+                          </td>
                           <td className="p-2 text-right">
                             <button
                               type="button"
@@ -1449,8 +1542,591 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                     className="h-4 w-4 rounded bg-slate-900 border-slate-700 text-sky-500"
                   />
                 </div>
+
+                <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
+                  <div className="font-semibold text-slate-200">Hospital Default Free Follow-up Revisit Period (Days)</div>
+                  <div className="text-[11px] text-slate-400">Baseline number of days within which a patient is eligible for free follow-up consults across OPD.</div>
+                  <input
+                    type="number"
+                    value={policies.defaultRevisitFreeDays || 7}
+                    onChange={(e) => updatePolicies({ defaultRevisitFreeDays: parseInt(e.target.value || "7", 10) })}
+                    className="w-32 bg-slate-900 border border-slate-700 rounded p-1.5 text-xs text-sky-400 font-mono"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between p-3 rounded-lg bg-slate-950 border border-slate-800">
+                  <div>
+                    <div className="font-semibold text-slate-200">Allow Doctor-Specific Revisit Limit Overrides</div>
+                    <div className="text-[11px] text-slate-400">Permits individual specialists (e.g. surgeons, cardiologists) to configure custom revisit windows beyond the hospital baseline.</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={policies.allowDoctorSpecificRevisitRules}
+                    onChange={(e) => updatePolicies({ allowDoctorSpecificRevisitRules: e.target.checked })}
+                    className="h-4 w-4 rounded bg-slate-900 border-slate-700 text-sky-500"
+                  />
+                </div>
               </div>
             </Card>
+          )}
+
+          {/* Sub-tab 5: Statutory Print Layouts & Templates Studio */}
+          {customSubTab === "printTemplates" && (
+            <div className="space-y-6">
+              {/* Document Selector Pills */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {[
+                    { id: "thermal", label: "80mm Thermal Receipt (OPD Token)" },
+                    { id: "wristband", label: "Patient ID Wristband (Barcode Strip)" },
+                    { id: "bht", label: "A4 Bed Head Ticket (BHT Face Sheet)" },
+                    { id: "discharge", label: "A4 Statutory Discharge Summary" },
+                  ].map((doc) => (
+                    <button
+                      key={doc.id}
+                      type="button"
+                      onClick={() => setActiveDocTemplate(doc.id as any)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                        activeDocTemplate === doc.id
+                          ? "bg-sky-600 text-white shadow"
+                          : "bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800"
+                      }`}
+                    >
+                      {doc.label}
+                    </button>
+                  ))}
+                </div>
+
+                {templateSavedMsg && (
+                  <span className="text-xs text-emerald-400 font-mono flex items-center gap-1">
+                    <CheckCircle2 size={13} /> {templateSavedMsg}
+                  </span>
+                )}
+              </div>
+
+              {/* Template Editor Grid: Left = Controls, Right = Live Visual Preview */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* 1. Thermal Receipt Form & Preview */}
+                {activeDocTemplate === "thermal" && (
+                  <>
+                    <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                      <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                        <Printer size={14} className="text-sky-400" /> Configure 80mm Thermal Receipt
+                      </h4>
+                      <div className="space-y-3 text-xs">
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Header Title (Hospital Branding)</label>
+                          <input
+                            type="text"
+                            value={thermalTitle}
+                            onChange={(e) => setThermalTitle(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-100 font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Sub-Header Slogan</label>
+                          <input
+                            type="text"
+                            value={thermalSubHeader}
+                            onChange={(e) => setThermalSubHeader(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                          />
+                        </div>
+                        <div className="space-y-2 pt-1 border-t border-slate-800">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={thermalShowWait}
+                              onChange={(e) => setThermalShowWait(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Show Estimated Wait Time (Live Queue SLA)</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={thermalShowReceipt}
+                              onChange={(e) => setThermalShowReceipt(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Include Cashier Fee &amp; Payment Receipt Details</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={thermalShowBarcode}
+                              onChange={(e) => setThermalShowBarcode(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Print 2D Barcode Strip on Thermal Slip</span>
+                          </label>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Footer Notice / Instructions</label>
+                          <input
+                            type="text"
+                            value={thermalFooter}
+                            onChange={(e) => setThermalFooter(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                          />
+                        </div>
+                        <div className="pt-2">
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => {
+                              updatePrintTemplates({
+                                thermalToken: {
+                                  headerTitle: thermalTitle,
+                                  subHeader: thermalSubHeader,
+                                  showEstimatedWait: thermalShowWait,
+                                  showCashierReceipt: thermalShowReceipt,
+                                  showBarcode: thermalShowBarcode,
+                                  footerNotice: thermalFooter,
+                                },
+                              });
+                              setTemplateSavedMsg("80mm Thermal Receipt Template Saved!");
+                              setTimeout(() => setTemplateSavedMsg(""), 3000);
+                            }}
+                          >
+                            Save Thermal Layout
+                          </Button>
+                        </div>
+                      </div>
+                    </Card>
+
+                    {/* Live Preview */}
+                    <Card className="p-4 bg-slate-950 border-slate-800 flex flex-col items-center justify-center">
+                      <div className="text-[10px] font-mono text-slate-400 mb-2 uppercase tracking-wider">Live Thermal Preview (80mm)</div>
+                      <div className="w-72 bg-white text-slate-950 p-4 border border-slate-400 rounded-sm font-mono text-xs space-y-2 shadow-2xl">
+                        <div className="text-center font-black text-sm uppercase">{thermalTitle}</div>
+                        <div className="text-center text-[10px] text-slate-600">{thermalSubHeader}</div>
+                        <div className="border-t border-dashed border-slate-400 pt-1 text-center font-black text-2xl tracking-widest">
+                          CARDIO-14
+                        </div>
+                        <div className="text-center text-[10px]">Token #14 • Room Cabin 204</div>
+                        <div className="border-t border-dashed border-slate-400 pt-1 space-y-0.5 text-[11px]">
+                          <div><b>Doctor:</b> Dr. Vikram Seth</div>
+                          <div><b>Specialty:</b> Cardiology</div>
+                          {thermalShowWait && <div><b>Est. Wait:</b> ~15 mins</div>}
+                          <div><b>Patient:</b> RAMESH SHARMA</div>
+                          <div><b>UHID:</b> MRN-2026-0091</div>
+                        </div>
+                        {thermalShowReceipt && (
+                          <div className="border-t border-dashed border-slate-400 pt-1 space-y-0.5 text-[10px]">
+                            <div><b>Receipt:</b> RCPT-2026-0914</div>
+                            <div><b>Mode:</b> UPI • <b>Fee Paid:</b> ₹800.00</div>
+                          </div>
+                        )}
+                        {thermalShowBarcode && (
+                          <div className="border-t border-dashed border-slate-400 pt-2 text-center">
+                            <div className="bg-slate-900 text-white text-[9px] py-1 tracking-widest font-mono">|||| | |||| ||| |||</div>
+                          </div>
+                        )}
+                        <div className="border-t border-dashed border-slate-400 pt-1 text-center text-[9px] text-slate-600">
+                          {thermalFooter}
+                        </div>
+                      </div>
+                    </Card>
+                  </>
+                )}
+
+                {/* 2. Patient ID Wristband Form & Preview */}
+                {activeDocTemplate === "wristband" && (
+                  <>
+                    <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                      <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                        <Printer size={14} className="text-sky-400" /> Configure Patient Wristband
+                      </h4>
+                      <div className="space-y-3 text-xs">
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Hospital / Clinic Name</label>
+                          <input
+                            type="text"
+                            value={wristbandName}
+                            onChange={(e) => setWristbandName(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-100 font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Wristband Size / Dimension</label>
+                          <select
+                            value={wristbandType}
+                            onChange={(e) => setWristbandType(e.target.value as any)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                          >
+                            <option value="ADULT_STANDARD">Adult Standard (280mm x 25mm)</option>
+                            <option value="PEDIATRIC">Pediatric / Infant (180mm x 20mm)</option>
+                            <option value="BARCODE_ONLY">Barcode Only Strip</option>
+                          </select>
+                        </div>
+                        <div className="space-y-2 pt-1 border-t border-slate-800">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={wristbandBlood}
+                              onChange={(e) => setWristbandBlood(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Show Blood Group prominently on Wristband</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={wristbandPhone}
+                              onChange={(e) => setWristbandPhone(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Show Contact Phone Number</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={wristbandAllergy}
+                              onChange={(e) => setWristbandAllergy(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Print Critical Allergy Alert Tag (e.g. Red Highlight)</span>
+                          </label>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Barcode Standard</label>
+                          <select
+                            value={wristbandBarcode}
+                            onChange={(e) => setWristbandBarcode(e.target.value as any)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                          >
+                            <option value="CODE128">Linear Barcode (Code 128)</option>
+                            <option value="QR">2D Matrix / QR Code</option>
+                          </select>
+                        </div>
+                        <div className="pt-2">
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => {
+                              updatePrintTemplates({
+                                wristband: {
+                                  hospitalName: wristbandName,
+                                  wristbandType: wristbandType,
+                                  showBloodGroup: wristbandBlood,
+                                  showEmergencyPhone: wristbandPhone,
+                                  showAllergyWarning: wristbandAllergy,
+                                  barcodeFormat: wristbandBarcode,
+                                },
+                              });
+                              setTemplateSavedMsg("Patient Wristband Template Saved!");
+                              setTimeout(() => setTemplateSavedMsg(""), 3000);
+                            }}
+                          >
+                            Save Wristband Layout
+                          </Button>
+                        </div>
+                      </div>
+                    </Card>
+
+                    {/* Wristband Preview */}
+                    <Card className="p-4 bg-slate-950 border-slate-800 flex flex-col items-center justify-center">
+                      <div className="text-[10px] font-mono text-slate-400 mb-2 uppercase tracking-wider">Live Wristband Preview</div>
+                      <div className="w-full max-w-md bg-white text-slate-950 p-3 border-2 border-dashed border-slate-800 rounded-lg flex items-center justify-between shadow-2xl">
+                        <div>
+                          <div className="font-black text-xs uppercase">{wristbandName}</div>
+                          <div className="font-bold text-sm uppercase mt-0.5">SIDDHARTH VERMA</div>
+                          <div className="text-[10px] text-slate-600 font-mono">
+                            MALE • 38y {wristbandBlood && "• Blood: B+"}
+                          </div>
+                          {wristbandPhone && <div className="text-[9px] text-slate-500 font-mono">Ph: 9876543210</div>}
+                          {wristbandAllergy && (
+                            <div className="text-[9px] font-bold text-rose-700 bg-rose-50 px-1 py-0.5 rounded border border-rose-300 mt-1 inline-block">
+                              ALLERGIES: PENICILLIN G
+                            </div>
+                          )}
+                        </div>
+                        <div className="text-center font-mono">
+                          <div className="bg-slate-900 text-white text-[9px] px-3 py-1.5 tracking-widest font-black">
+                            ||||| | |||| ||
+                          </div>
+                          <div className="text-[10px] font-bold mt-0.5">MRN-2026-0001</div>
+                        </div>
+                      </div>
+                    </Card>
+                  </>
+                )}
+
+                {/* 3. A4 Bed Head Ticket (BHT) Form & Preview */}
+                {activeDocTemplate === "bht" && (
+                  <>
+                    <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                      <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                        <Printer size={14} className="text-sky-400" /> Configure Bed Head Ticket (BHT Face Sheet)
+                      </h4>
+                      <div className="space-y-3 text-xs">
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Hospital Title</label>
+                          <input
+                            type="text"
+                            value={bhtTitle}
+                            onChange={(e) => setBhtTitle(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-100 font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Docket Sub-Title</label>
+                          <input
+                            type="text"
+                            value={bhtSubTitle}
+                            onChange={(e) => setBhtSubTitle(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                          />
+                        </div>
+                        <div className="space-y-2 pt-1 border-t border-slate-800">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={bhtFinancial}
+                              onChange={(e) => setBhtFinancial(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Show Financial Classification &amp; TPA Pre-Auth</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={bhtNurseChecklist}
+                              onChange={(e) => setBhtNurseChecklist(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Include Station Nurse Intake Handover Checklist</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={bhtSignatures}
+                              onChange={(e) => setBhtSignatures(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Print Formal ADT Officer &amp; Guardian Signature Lines</span>
+                          </label>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Custom Seal / Accreditation Text</label>
+                          <input
+                            type="text"
+                            value={bhtSeal}
+                            onChange={(e) => setBhtSeal(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                          />
+                        </div>
+                        <div className="pt-2">
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => {
+                              updatePrintTemplates({
+                                bedHeadTicket: {
+                                  hospitalTitle: bhtTitle,
+                                  subTitle: bhtSubTitle,
+                                  showFinancialInfo: bhtFinancial,
+                                  showNurseChecklist: bhtNurseChecklist,
+                                  showSignatureBlock: bhtSignatures,
+                                  customSealText: bhtSeal,
+                                },
+                              });
+                              setTemplateSavedMsg("Bed Head Ticket Template Saved!");
+                              setTimeout(() => setTemplateSavedMsg(""), 3000);
+                            }}
+                          >
+                            Save BHT Layout
+                          </Button>
+                        </div>
+                      </div>
+                    </Card>
+
+                    {/* BHT Preview */}
+                    <Card className="p-4 bg-slate-950 border-slate-800 flex flex-col items-center justify-center">
+                      <div className="text-[10px] font-mono text-slate-400 mb-2 uppercase tracking-wider">Live BHT Face Sheet Preview</div>
+                      <div className="w-full max-w-sm bg-white text-slate-950 p-4 border border-slate-300 rounded text-[11px] font-sans space-y-2 shadow-2xl">
+                        <div className="text-center border-b pb-1">
+                          <div className="font-bold text-xs uppercase">{bhtTitle}</div>
+                          <div className="text-[9px] text-slate-600 font-mono">{bhtSubTitle}</div>
+                          <div className="text-[8px] text-slate-500">{bhtSeal}</div>
+                        </div>
+                        <div className="flex justify-between font-mono text-[10px]">
+                          <div><b>DOCKET:</b> ADM-101</div>
+                          <div><b>BED:</b> B-101 (R-101)</div>
+                        </div>
+                        <div className="bg-slate-50 p-2 rounded border border-slate-200 text-[10px] space-y-0.5">
+                          <div><b>Patient:</b> SIDDHARTH VERMA (38y • MALE)</div>
+                          <div><b>MRN:</b> MRN-2026-0001</div>
+                          <div><b>Ward:</b> General Inpatient Ward 2A</div>
+                          <div><b>Consultant:</b> Dr. Vikram Seth</div>
+                          {bhtFinancial && <div><b>TPA:</b> Star Health Insurance (Auth: ₹1,50,000)</div>}
+                        </div>
+                        {bhtNurseChecklist && (
+                          <div className="p-1.5 bg-slate-50 rounded border text-[9px] font-mono">
+                            <div>[✓] Wristband Verified • [✓] Vitals Logged • [✓] Allergy Band Checked</div>
+                          </div>
+                        )}
+                        {bhtSignatures && (
+                          <div className="pt-4 flex justify-between text-[9px] border-t">
+                            <div>ADT Officer Signature</div>
+                            <div>Guardian Signature</div>
+                          </div>
+                        )}
+                      </div>
+                    </Card>
+                  </>
+                )}
+
+                {/* 4. A4 Discharge Summary Form & Preview */}
+                {activeDocTemplate === "discharge" && (
+                  <>
+                    <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                      <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                        <Printer size={14} className="text-sky-400" /> Configure Discharge Summary Template
+                      </h4>
+                      <div className="space-y-3 text-xs">
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Header Title</label>
+                          <input
+                            type="text"
+                            value={dischargeHeader}
+                            onChange={(e) => setDischargeHeader(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-100 font-bold"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Document Sub-Title</label>
+                          <input
+                            type="text"
+                            value={dischargeSubTitle}
+                            onChange={(e) => setDischargeSubTitle(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                          />
+                        </div>
+                        <div className="space-y-2 pt-1 border-t border-slate-800">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={dischargeMeds}
+                              onChange={(e) => setDischargeMeds(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Include Medication Reconciliation Table</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={dischargeDiet}
+                              onChange={(e) => setDischargeDiet(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Include Dietary &amp; Activity Instructions</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={dischargeWarnings}
+                              onChange={(e) => setDischargeWarnings(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Include Red-Flag Warning Signs (Emergency Protocols)</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={dischargeSeal}
+                              onChange={(e) => setDischargeSeal(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Include Treating Consultant Seal Block</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={dischargeSuperintendent}
+                              onChange={(e) => setDischargeSuperintendent(e.target.checked)}
+                              className="rounded bg-slate-900 border-slate-700 text-sky-500"
+                            />
+                            <span className="text-slate-300">Include Medical Superintendent Counter-Sign Line</span>
+                          </label>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Legal Disclaimer / NABH Notice</label>
+                          <input
+                            type="text"
+                            value={dischargeDisclaimer}
+                            onChange={(e) => setDischargeDisclaimer(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                          />
+                        </div>
+                        <div className="pt-2">
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => {
+                              updatePrintTemplates({
+                                dischargeSummary: {
+                                  hospitalHeader: dischargeHeader,
+                                  subTitle: dischargeSubTitle,
+                                  showMedicationReconciliation: dischargeMeds,
+                                  showDietaryInstructions: dischargeDiet,
+                                  showWarningSigns: dischargeWarnings,
+                                  showDoctorSealBlock: dischargeSeal,
+                                  showSuperintendentSign: dischargeSuperintendent,
+                                  disclaimerText: dischargeDisclaimer,
+                                },
+                              });
+                              setTemplateSavedMsg("Discharge Summary Template Saved!");
+                              setTimeout(() => setTemplateSavedMsg(""), 3000);
+                            }}
+                          >
+                            Save Discharge Template
+                          </Button>
+                        </div>
+                      </div>
+                    </Card>
+
+                    {/* Discharge Preview */}
+                    <Card className="p-4 bg-slate-950 border-slate-800 flex flex-col items-center justify-center">
+                      <div className="text-[10px] font-mono text-slate-400 mb-2 uppercase tracking-wider">Live Discharge Summary Preview</div>
+                      <div className="w-full max-w-sm bg-white text-slate-950 p-4 border border-slate-300 rounded text-[11px] font-sans space-y-2 shadow-2xl">
+                        <div className="text-center border-b pb-1">
+                          <div className="font-bold text-xs uppercase">{dischargeHeader}</div>
+                          <div className="text-[9px] text-slate-700 font-bold">{dischargeSubTitle}</div>
+                        </div>
+                        <div className="flex justify-between text-[10px] border-b pb-1">
+                          <div><b>Patient:</b> SIDDHARTH VERMA</div>
+                          <div><b>UHID:</b> MRN-2026-0001</div>
+                        </div>
+                        <div className="text-[10px] space-y-1">
+                          <div><b>Diagnosis:</b> Acute Coronary Syndrome • Unstable Angina</div>
+                          <div><b>Clinical Course:</b> Patient hemodynamically stable. Nil acute chest pain.</div>
+                          {dischargeMeds && (
+                            <div className="bg-slate-50 p-1.5 rounded border text-[9px]">
+                              <b>Medications:</b> Tab. Aspirin 75mg OD • Tab. Atorvastatin 40mg HS
+                            </div>
+                          )}
+                          {dischargeDiet && (
+                            <div className="text-[9px] text-slate-700"><b>Diet:</b> Low salt, low fat cardiac diet.</div>
+                          )}
+                          {dischargeWarnings && (
+                            <div className="text-[9px] text-rose-700 font-bold"><b>Warning Signs:</b> In case of recurrence of chest pain, call emergency immediately.</div>
+                          )}
+                        </div>
+                        <div className="pt-4 flex justify-between text-[9px] border-t">
+                          {dischargeSeal && <div>Treating Consultant Seal</div>}
+                          {dischargeSuperintendent && <div>Medical Superintendent</div>}
+                        </div>
+                        <div className="text-[8px] text-slate-500 text-center pt-1 border-t">
+                          {dischargeDisclaimer}
+                        </div>
+                      </div>
+                    </Card>
+                  </>
+                )}
+              </div>
+            </div>
           )}
         </div>
       )}
