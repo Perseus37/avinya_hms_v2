@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { registersApi } from "../../api/registersApi";
 import { analyticsApi, ExecutiveCommandCenterData } from "../../api/analyticsApi";
+import { METRIC_DOMAINS, SAMPLE_METRIC_CATALOG } from "../../data/metricCatalog";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
@@ -27,6 +28,8 @@ import {
   Activity,
   ArrowUpRight,
   Users,
+  BarChart3,
+  Search,
 } from "lucide-react";
 
 interface AdminWorkspaceProps {
@@ -34,6 +37,24 @@ interface AdminWorkspaceProps {
 }
 
 export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspace }) => {
+  const [activeTab, setActiveTab] = useState<"overview" | "metrics" | "registers">("overview");
+
+  // Metrics Catalog Filters
+  const [metricSearch, setMetricSearch] = useState("");
+  const [selectedDomainId, setSelectedDomainId] = useState<number | "ALL">("ALL");
+  const [selectedCategory, setSelectedCategory] = useState<string>("ALL");
+
+  const filteredMetrics = SAMPLE_METRIC_CATALOG.filter((m) => {
+    const matchesDomain = selectedDomainId === "ALL" || m.domainId === selectedDomainId;
+    const matchesCategory = selectedCategory === "ALL" || m.category === selectedCategory;
+    const matchesSearch =
+      !metricSearch.trim() ||
+      m.name.toLowerCase().includes(metricSearch.toLowerCase()) ||
+      m.description.toLowerCase().includes(metricSearch.toLowerCase()) ||
+      m.formula.toLowerCase().includes(metricSearch.toLowerCase()) ||
+      m.domainName.toLowerCase().includes(metricSearch.toLowerCase());
+    return matchesDomain && matchesCategory && matchesSearch;
+  });
 
   const [inventory, setInventory] = useState<{
     tenant_id: number;
@@ -268,7 +289,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
             Executive Command Center & Statutory Registers HUD
           </h1>
           <p className="text-xs text-slate-400 mt-1 font-mono">
-            Tenant ID: #{inventory?.tenant_id || 1} • Live Database Footprint & Statutory Regulatory Exports
+            Tenant ID: #{inventory?.tenant_id || 1} • Live Database Footprint &amp; Statutory Regulatory Exports
           </p>
         </div>
 
@@ -285,321 +306,490 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
         </div>
       </div>
 
-      {/* 1. Real-Time Hospital Operational KPIs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
-        <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Users size={14} className="text-sky-400" /> Today&apos;s OPD Consults
-            </span>
-            <Badge variant="info" size="sm">Live</Badge>
-          </div>
-          <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold font-mono text-slate-100">
-              {liveMetrics ? liveMetrics.opd_funnel.total_appointments : 142}
-            </span>
-            <span className="text-xs text-emerald-400 font-mono flex items-center">
-              <TrendingUp size={12} className="mr-0.5" /> +12% vs avg
-            </span>
-          </div>
-          <div className="text-[11px] text-slate-500 font-mono">
-            {liveMetrics
-              ? `Completed: ${liveMetrics.opd_funnel.status_breakdown["COMPLETED"] || 0} • Sched: ${liveMetrics.opd_funnel.status_breakdown["SCHEDULED"] || 0}`
-              : "General Med: 54 • Cardio: 38 • Ortho: 50"}
-          </div>
-        </Card>
+      {/* Workspace Sub-Tabs */}
+      <div className="flex items-center gap-2 mt-4 pb-2 border-b border-slate-800">
+        <button
+          type="button"
+          onClick={() => setActiveTab("overview")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "overview"
+              ? "bg-sky-500/10 text-sky-400 border border-sky-500/30"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+          }`}
+        >
+          <Activity size={14} /> Executive Cockpit &amp; Launchpad
+        </button>
 
-        <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <BedDouble size={14} className="text-emerald-400" /> Bed Occupancy (BOR)
-            </span>
-            <Badge variant="success" size="sm">
-              {liveMetrics
-                ? `${liveMetrics.bed_census.overall_occupancy_rate_pct.toFixed(1)}%`
-                : "87.5%"}
-            </Badge>
-          </div>
-          <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold font-mono text-slate-100">
-              {liveMetrics
-                ? `${liveMetrics.bed_census.status_breakdown["OCCUPIED"] || 0} / ${liveMetrics.bed_census.total_beds}`
-                : "105 / 120"}
-            </span>
-            <span className="text-xs text-slate-400 font-mono">
-              {liveMetrics
-                ? `${liveMetrics.bed_census.status_breakdown["AVAILABLE"] || 0} Available`
-                : "15 Available"}
-            </span>
-          </div>
-          <div className="text-[11px] text-slate-500 font-mono">
-            Turnovers: {liveMetrics?.bed_census.bed_turnover_events_count ?? 6} • Ward: 88%
-          </div>
-        </Card>
+        <button
+          type="button"
+          onClick={() => setActiveTab("metrics")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "metrics"
+              ? "bg-sky-500/10 text-sky-400 border border-sky-500/30"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+          }`}
+        >
+          <BarChart3 size={14} /> Enterprise 700+ Metrics &amp; Cube Explorer
+        </button>
 
-        <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Siren size={14} className="text-rose-400" /> Emergency Trauma (ESI-1/2)
-            </span>
-            <Badge variant="danger" size="sm">Priority</Badge>
-          </div>
-          <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold font-mono text-rose-400">
-              {liveMetrics
-                ? `${liveMetrics.encounters_and_ipd_alos.active_encounters_by_type["ER"] || 3} Cases`
-                : "3 Cases"}
-            </span>
-            <span className="text-xs text-rose-400 font-mono">Avg Triage: 4m</span>
-          </div>
-          <div className="text-[11px] text-slate-500 font-mono">RTA Poly-Trauma • Acute STEMI • Stroke</div>
-        </Card>
-
-        <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-              <CreditCard size={14} className="text-amber-400" /> Today&apos;s Gross Collections
-            </span>
-            <Badge variant="warning" size="sm">Audited</Badge>
-          </div>
-          <div className="flex items-baseline justify-between">
-            <span className="text-2xl font-bold font-mono text-emerald-400">
-              ₹
-              {liveMetrics
-                ? (liveMetrics.unit_economics.total_net_billed_paise / 100).toLocaleString("en-IN")
-                : "3,48,650"}
-            </span>
-            <span className="text-xs text-slate-400 font-mono">94 Receipts</span>
-          </div>
-          <div className="text-[11px] text-slate-500 font-mono">UPI: 48% • Card: 32% • Cash: 20%</div>
-        </Card>
+        <button
+          type="button"
+          onClick={() => setActiveTab("registers")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "registers"
+              ? "bg-sky-500/10 text-sky-400 border border-sky-500/30"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+          }`}
+        >
+          <FileText size={14} /> Statutory Registers &amp; DPDP Ledger
+        </button>
       </div>
 
-      {/* 2. Departmental Quick Intake Launchpad */}
-      <div className="mt-6">
-        <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 mb-3">
-          <Activity size={16} className="text-sky-400" />
-          Clinical &amp; Operational Intake Launchpad
-        </h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            {
-              id: "registration" as WorkspaceId,
-              title: "Patient Registration",
-              desc: "New UHID, PIN lookup, DPDP consent",
-              icon: UserPlus,
-              color: "text-sky-400",
-            },
-            {
-              id: "adt" as WorkspaceId,
-              title: "Inpatient Bed ADT",
-              desc: "Admit, transfer bed, discharge summary",
-              icon: DoorOpen,
-              color: "text-emerald-400",
-            },
-            {
-              id: "doctor" as WorkspaceId,
-              title: "Doctor Cockpit",
-              desc: "SOAP consult, CPOE e-Rx, lab orders",
-              icon: Stethoscope,
-              color: "text-purple-400",
-            },
-            {
-              id: "nursing" as WorkspaceId,
-              title: "Ward Nursing Station",
-              desc: "NEWS2 early warning, vitals, MAR",
-              icon: BedDouble,
-              color: "text-teal-400",
-            },
-            {
-              id: "triage" as WorkspaceId,
-              title: "Emergency Triage",
-              desc: "ESI 1-5 triage, GCS score, trauma MLC",
-              icon: Siren,
-              color: "text-rose-400",
-            },
-            {
-              id: "pharmacy" as WorkspaceId,
-              title: "Pharmacy & NDPS",
-              desc: "Barcode dispensing, Schedule H1 ledger",
-              icon: Pill,
-              color: "text-emerald-400",
-            },
-            {
-              id: "diagnostics" as WorkspaceId,
-              title: "Diagnostics & LIS",
-              desc: "Accessioning, panic callouts, reports",
-              icon: Microscope,
-              color: "text-indigo-400",
-            },
-            {
-              id: "billing" as WorkspaceId,
-              title: "Cashier Billing Counter",
-              desc: "Shift reconciliations, split tender, tax invoice",
-              icon: CreditCard,
-              color: "text-amber-400",
-            },
-          ].map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => onSelectWorkspace && onSelectWorkspace(item.id)}
-                className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-sky-500/50 hover:bg-slate-800/80 transition-all text-left group flex flex-col justify-between"
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <div className={`p-2 rounded-lg bg-slate-950 border border-slate-800 ${item.color}`}>
-                    <Icon size={18} />
-                  </div>
-                  <ArrowUpRight
-                    size={14}
-                    className="text-slate-600 group-hover:text-sky-400 transition-colors"
-                  />
-                </div>
-                <div>
-                  <div className="text-xs font-bold text-slate-200 group-hover:text-white transition-colors">
-                    {item.title}
-                  </div>
-                  <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">
-                    {item.desc}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Database Footprint Live Overview */}
-      <div className="mt-6">
-        <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 mb-3">
-          <Database size={16} className="text-emerald-400" />
-          Live Table Record Inventory (Total Records: {inventory?.total_hospital_records.toLocaleString() || "0"})
-        </h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-          {inventory?.tables ? (
-            Object.entries(inventory.tables).map(([table, count]) => (
-              <Card key={table} className="p-3 bg-slate-900 border-slate-800 text-center">
-                <div className="text-[11px] text-slate-400 font-mono truncate" title={table}>
-                  {table}
-                </div>
-                <div className="text-lg font-bold font-mono text-slate-100 mt-1">
-                  {count.toLocaleString()}
-                </div>
-              </Card>
-            ))
-          ) : (
-            <div className="col-span-full py-8 text-center text-slate-500 text-xs">
-              Loading table record footprint...
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Statutory Hospital Operational Registers */}
-      <div className="mt-8">
-        <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 mb-4">
-          <Layers size={16} className="text-sky-400" />
-          Statutory Hospital Operational Registers (1-Click CSV Stream)
-        </h2>
-
-        <div className="space-y-3">
-          {registers.map((reg) => (
-            <Card
-              key={reg.code}
-              className="p-4 bg-slate-900 border-slate-800 flex items-center justify-between hover:border-slate-700 transition-colors"
-            >
-              <div className="flex items-start gap-4">
-                <div className="p-2 rounded-lg bg-sky-950/60 border border-sky-800/60 text-sky-400 mt-0.5">
-                  <FileText size={18} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-slate-200 text-sm">{reg.name}</span>
-                    <span className="font-mono text-xs text-sky-400 bg-sky-950 px-1.5 py-0.2 rounded border border-sky-900/60">
-                      {reg.code}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 mt-1 max-w-2xl">{reg.description}</p>
-                </div>
+      {/* TAB 1: EXECUTIVE COCKPIT & LAUNCHPAD */}
+      {activeTab === "overview" && (
+        <div className="space-y-6">
+          {/* 1. Real-Time Hospital Operational KPIs */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+            <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Users size={14} className="text-sky-400" /> Today&apos;s OPD Consults
+                </span>
+                <Badge variant="info" size="sm">Live</Badge>
               </div>
-
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-mono text-slate-500 mr-2">{reg.format}</span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={isPreviewLoading}
-                  onClick={() => handlePreviewRegister(reg)}
-                  className="flex items-center gap-1.5 text-xs"
-                >
-                  <Eye size={13} className={isPreviewLoading ? "animate-spin" : ""} /> Preview
-                </Button>
-
-                <a
-                  href={reg.endpoint}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-sky-500 hover:bg-sky-400 text-slate-950 transition-colors"
-                >
-                  <Download size={13} /> Download CSV
-                </a>
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-bold font-mono text-slate-100">
+                  {liveMetrics ? liveMetrics.opd_funnel.total_appointments : 142}
+                </span>
+                <span className="text-xs text-emerald-400 font-mono flex items-center">
+                  <TrendingUp size={12} className="mr-0.5" /> +12% vs avg
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 font-mono">
+                {liveMetrics
+                  ? `Completed: ${liveMetrics.opd_funnel.status_breakdown["COMPLETED"] || 0} • Sched: ${liveMetrics.opd_funnel.status_breakdown["SCHEDULED"] || 0}`
+                  : "General Med: 54 • Cardio: 38 • Ortho: 50"}
               </div>
             </Card>
-          ))}
-        </div>
-      </div>
 
-      {/* DPDP Digital Personal Data Protection Act Compliance Ledger */}
-      <div className="mt-8 pb-8">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-            <Lock size={16} className="text-amber-400" />
-            DPDP Digital Personal Data Protection Act — Consent Audit Ledger
-          </h2>
-          <Badge variant="neutral" size="sm" className="font-mono">
-            SHA-256 Tamper Evident
-          </Badge>
-        </div>
+            <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <BedDouble size={14} className="text-emerald-400" /> Bed Occupancy (BOR)
+                </span>
+                <Badge variant="success" size="sm">
+                  {liveMetrics
+                    ? `${liveMetrics.bed_census.overall_occupancy_rate_pct.toFixed(1)}%`
+                    : "87.5%"}
+                </Badge>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-bold font-mono text-slate-100">
+                  {liveMetrics
+                    ? `${liveMetrics.bed_census.status_breakdown["OCCUPIED"] || 0} / ${liveMetrics.bed_census.total_beds}`
+                    : "105 / 120"}
+                </span>
+                <span className="text-xs text-slate-400 font-mono">
+                  {liveMetrics
+                    ? `${liveMetrics.bed_census.status_breakdown["AVAILABLE"] || 0} Available`
+                    : "15 Available"}
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 font-mono">
+                Turnovers: {liveMetrics?.bed_census.bed_turnover_events_count ?? 6} • Ward: 88%
+              </div>
+            </Card>
 
-        <Card className="p-4 bg-slate-900 border-slate-800">
-          <div className="text-xs text-slate-400 mb-3">
-            Real-time immutable audit trace of data fiduciary consent grants, purposes, and patient withdrawal requests under Section 6 of DPDP Act 2023.
+            <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Siren size={14} className="text-rose-400" /> Emergency Trauma (ESI-1/2)
+                </span>
+                <Badge variant="danger" size="sm">Priority</Badge>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-bold font-mono text-rose-400">
+                  {liveMetrics
+                    ? `${liveMetrics.encounters_and_ipd_alos.active_encounters_by_type["ER"] || 3} Cases`
+                    : "3 Cases"}
+                </span>
+                <span className="text-xs text-rose-400 font-mono">Avg Triage: 4m</span>
+              </div>
+              <div className="text-[11px] text-slate-500 font-mono">RTA Poly-Trauma • Acute STEMI • Stroke</div>
+            </Card>
+
+            <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <CreditCard size={14} className="text-amber-400" /> Today&apos;s Gross Collections
+                </span>
+                <Badge variant="warning" size="sm">Audited</Badge>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-bold font-mono text-emerald-400">
+                  ₹
+                  {liveMetrics
+                    ? (liveMetrics.unit_economics.total_net_billed_paise / 100).toLocaleString("en-IN")
+                    : "3,48,650"}
+                </span>
+                <span className="text-xs text-slate-400 font-mono">94 Receipts</span>
+              </div>
+              <div className="text-[11px] text-slate-500 font-mono">UPI: 48% • Card: 32% • Cash: 20%</div>
+            </Card>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs font-mono">
-              <thead>
-                <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase">
-                  <th className="pb-2">Consent ID</th>
-                  <th className="pb-2">Data Principal (Patient)</th>
-                  <th className="pb-2">Specified Purpose</th>
-                  <th className="pb-2">Status</th>
-                  <th className="pb-2">Timestamp (UTC)</th>
-                  <th className="pb-2">Integrity Proof</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                {dpdpConsents.map((c) => (
-                  <tr key={c.id} className="text-slate-300">
-                    <td className="py-2.5 text-sky-400 font-bold">{c.id}</td>
-                    <td className="py-2.5">{c.patient}</td>
-                    <td className="py-2.5">{c.purpose}</td>
-                    <td className="py-2.5">
-                      <Badge variant={c.status === "ACTIVE" ? "success" : "danger"} size="sm">
-                        {c.status}
-                      </Badge>
-                    </td>
-                    <td className="py-2.5 text-slate-400">{c.timestamp}</td>
-                    <td className="py-2.5 text-slate-500">{c.hash}</td>
-                  </tr>
+          {/* 2. Departmental Quick Intake Launchpad */}
+          <div className="mt-6">
+            <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 mb-3">
+              <Activity size={16} className="text-sky-400" />
+              Clinical &amp; Operational Intake Launchpad
+            </h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                {
+                  id: "registration" as WorkspaceId,
+                  title: "Patient Registration",
+                  desc: "New UHID, PIN lookup, DPDP consent",
+                  icon: UserPlus,
+                  color: "text-sky-400",
+                },
+                {
+                  id: "adt" as WorkspaceId,
+                  title: "Inpatient Bed ADT",
+                  desc: "Admit, transfer bed, discharge summary",
+                  icon: DoorOpen,
+                  color: "text-emerald-400",
+                },
+                {
+                  id: "doctor" as WorkspaceId,
+                  title: "Doctor Cockpit",
+                  desc: "SOAP consult, CPOE e-Rx, lab orders",
+                  icon: Stethoscope,
+                  color: "text-purple-400",
+                },
+                {
+                  id: "nursing" as WorkspaceId,
+                  title: "Ward Nursing Station",
+                  desc: "NEWS2 early warning, vitals, MAR",
+                  icon: BedDouble,
+                  color: "text-teal-400",
+                },
+                {
+                  id: "triage" as WorkspaceId,
+                  title: "Emergency Triage",
+                  desc: "ESI 1-5 triage, GCS score, trauma MLC",
+                  icon: Siren,
+                  color: "text-rose-400",
+                },
+                {
+                  id: "pharmacy" as WorkspaceId,
+                  title: "Pharmacy & NDPS",
+                  desc: "Barcode dispensing, Schedule H1 ledger",
+                  icon: Pill,
+                  color: "text-emerald-400",
+                },
+                {
+                  id: "diagnostics" as WorkspaceId,
+                  title: "Diagnostics & LIS",
+                  desc: "Accessioning, panic callouts, reports",
+                  icon: Microscope,
+                  color: "text-indigo-400",
+                },
+                {
+                  id: "billing" as WorkspaceId,
+                  title: "Cashier Billing Counter",
+                  desc: "Shift reconciliations, split tender, tax invoice",
+                  icon: CreditCard,
+                  color: "text-amber-400",
+                },
+              ].map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => onSelectWorkspace && onSelectWorkspace(item.id)}
+                    className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-sky-500/50 hover:bg-slate-800/80 transition-all text-left group flex flex-col justify-between"
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className={`p-2 rounded-lg bg-slate-950 border border-slate-800 ${item.color}`}>
+                        <Icon size={18} />
+                      </div>
+                      <ArrowUpRight
+                        size={14}
+                        className="text-slate-600 group-hover:text-sky-400 transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-slate-200 group-hover:text-white transition-colors">
+                        {item.title}
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5 leading-snug">
+                        {item.desc}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Database Footprint Live Overview */}
+          <div className="mt-6">
+            <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 mb-3">
+              <Database size={16} className="text-emerald-400" />
+              Live Table Record Inventory (Total Records: {inventory?.total_hospital_records.toLocaleString() || "0"})
+            </h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              {inventory?.tables ? (
+                Object.entries(inventory.tables).map(([table, count]) => (
+                  <Card key={table} className="p-3 bg-slate-900 border-slate-800 text-center">
+                    <div className="text-[11px] text-slate-400 font-mono truncate" title={table}>
+                      {table}
+                    </div>
+                    <div className="text-lg font-bold font-mono text-slate-100 mt-1">
+                      {count.toLocaleString()}
+                    </div>
+                  </Card>
+                ))
+              ) : (
+                <div className="col-span-full py-8 text-center text-slate-500 text-xs">
+                  Loading table record footprint...
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: ENTERPRISE 700+ METRICS & OLAP CUBE EXPLORER */}
+      {activeTab === "metrics" && (
+        <div className="space-y-6 mt-6">
+          {/* OLAP Cube Coordinates Banner */}
+          <Card className="p-4 bg-slate-900 border-sky-500/40 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-1.5">
+                <BarChart3 size={15} /> 11-Dimensional OLAP Cube Coordinates
+              </span>
+              <Badge variant="info" size="sm">700+ Metrics Baseline</Badge>
+            </div>
+            <p className="text-xs text-slate-300 font-mono">
+              Time × Branch × Department × Specialty × Doctor × Ward × Service × Payer × Patient Type × Encounter Type × Shift
+            </p>
+            <div className="text-[11px] text-slate-500">
+              Query any clinical, operational, financial, or quality metric across all institutional dimensions with zero-waterfall aggregation.
+            </div>
+          </Card>
+
+          {/* Search & Domain Filter Toolbar */}
+          <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+            <div className="relative flex-1">
+              <Search size={14} className="absolute left-3 top-3 text-slate-500" />
+              <input
+                type="text"
+                value={metricSearch}
+                onChange={(e) => setMetricSearch(e.target.value)}
+                placeholder="Search by metric name, formula, code, or description (e.g. BOR, AR Days, ALOS)..."
+                className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedDomainId}
+                onChange={(e) => setSelectedDomainId(e.target.value === "ALL" ? "ALL" : parseInt(e.target.value, 10))}
+                className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
+              >
+                <option value="ALL">All 32 Hospital Domains ({METRIC_DOMAINS.reduce((acc, d) => acc + d.count, 0)} KPIs)</option>
+                {METRIC_DOMAINS.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.id}. {d.name} ({d.count} metrics)
+                  </option>
                 ))}
-              </tbody>
-            </table>
+              </select>
+
+              <select
+                value={selectedCategory}
+                onChange={(e) => setSelectedCategory(e.target.value)}
+                className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
+              >
+                <option value="ALL">All Categories</option>
+                <option value="Clinical">Clinical</option>
+                <option value="Financial">Financial</option>
+                <option value="Operational">Operational</option>
+                <option value="Quality">Quality</option>
+                <option value="Governance">Governance</option>
+                <option value="Infrastructure">Infrastructure</option>
+              </select>
+            </div>
           </div>
-        </Card>
-      </div>
+
+          {/* Metric Explorer Table */}
+          <Card className="p-4 bg-slate-900 border-slate-800">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs font-mono">
+                <thead>
+                  <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase">
+                    <th className="pb-2.5">ID &amp; Name</th>
+                    <th className="pb-2.5">Domain</th>
+                    <th className="pb-2.5">Category</th>
+                    <th className="pb-2.5">Definition &amp; Formula</th>
+                    <th className="pb-2.5 text-right">Target Benchmark</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/50">
+                  {filteredMetrics.map((m) => (
+                    <tr key={m.id} className="text-slate-300 hover:bg-slate-800/40">
+                      <td className="py-3">
+                        <span className="font-bold text-sky-400 block">{m.name}</span>
+                        <span className="text-[10px] text-slate-500 font-mono">{m.id}</span>
+                      </td>
+                      <td className="py-3">
+                        <span className="text-slate-200">{m.domainName}</span>
+                      </td>
+                      <td className="py-3">
+                        <Badge
+                          variant={
+                            m.category === "Financial"
+                              ? "warning"
+                              : m.category === "Clinical"
+                              ? "info"
+                              : m.category === "Quality"
+                              ? "danger"
+                              : "neutral"
+                          }
+                          size="sm"
+                        >
+                          {m.category}
+                        </Badge>
+                      </td>
+                      <td className="py-3 max-w-md">
+                        <div className="text-slate-300 font-sans text-xs mb-1">{m.description}</div>
+                        <code className="text-[10px] text-emerald-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800 block truncate" title={m.formula}>
+                          {m.formula}
+                        </code>
+                      </td>
+                      <td className="py-3 text-right">
+                        <span className="text-emerald-400 font-bold block">{m.targetBenchmark || "--"}</span>
+                        <span className="text-[10px] text-slate-500">Unit: {m.unit}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* TAB 3: STATUTORY REGISTERS & DPDP AUDIT LEDGER */}
+      {activeTab === "registers" && (
+        <div className="space-y-6 mt-6">
+          {/* Statutory Hospital Operational Registers */}
+          <div>
+            <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 mb-4">
+              <Layers size={16} className="text-sky-400" />
+              Statutory Hospital Operational Registers (1-Click CSV Stream)
+            </h2>
+
+            <div className="space-y-3">
+              {registers.map((reg) => (
+                <Card
+                  key={reg.code}
+                  className="p-4 bg-slate-900 border-slate-800 flex items-center justify-between hover:border-slate-700 transition-colors"
+                >
+                  <div className="flex items-start gap-4">
+                    <div className="p-2 rounded-lg bg-sky-950/60 border border-sky-800/60 text-sky-400 mt-0.5">
+                      <FileText size={18} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-slate-200 text-sm">{reg.name}</span>
+                        <span className="font-mono text-xs text-sky-400 bg-sky-950 px-1.5 py-0.2 rounded border border-sky-900/60">
+                          {reg.code}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1 max-w-2xl">{reg.description}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-mono text-slate-500 mr-2">{reg.format}</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={isPreviewLoading}
+                      onClick={() => handlePreviewRegister(reg)}
+                      className="flex items-center gap-1.5 text-xs"
+                    >
+                      <Eye size={13} className={isPreviewLoading ? "animate-spin" : ""} /> Preview
+                    </Button>
+
+                    <a
+                      href={reg.endpoint}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-sky-500 hover:bg-sky-400 text-slate-950 transition-colors"
+                    >
+                      <Download size={13} /> Download CSV
+                    </a>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </div>
+
+          {/* DPDP Digital Personal Data Protection Act Compliance Ledger */}
+          <div className="mt-8 pb-8">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                <Lock size={16} className="text-amber-400" />
+                DPDP Digital Personal Data Protection Act — Consent Audit Ledger
+              </h2>
+              <Badge variant="neutral" size="sm" className="font-mono">
+                SHA-256 Tamper Evident
+              </Badge>
+            </div>
+
+            <Card className="p-4 bg-slate-900 border-slate-800">
+              <div className="text-xs text-slate-400 mb-3">
+                Real-time immutable audit trace of data fiduciary consent grants, purposes, and patient withdrawal requests under Section 6 of DPDP Act 2023.
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400 text-[11px] uppercase">
+                      <th className="pb-2">Consent ID</th>
+                      <th className="pb-2">Data Principal (Patient)</th>
+                      <th className="pb-2">Specified Purpose</th>
+                      <th className="pb-2">Status</th>
+                      <th className="pb-2">Timestamp (UTC)</th>
+                      <th className="pb-2">Integrity Proof</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {dpdpConsents.map((c) => (
+                      <tr key={c.id} className="text-slate-300">
+                        <td className="py-2.5 text-sky-400 font-bold">{c.id}</td>
+                        <td className="py-2.5">{c.patient}</td>
+                        <td className="py-2.5">{c.purpose}</td>
+                        <td className="py-2.5">
+                          <Badge variant={c.status === "ACTIVE" ? "success" : "danger"} size="sm">
+                            {c.status}
+                          </Badge>
+                        </td>
+                        <td className="py-2.5 text-slate-400">{c.timestamp}</td>
+                        <td className="py-2.5 text-slate-500">{c.hash}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
 
       {/* Modal: Register Preview */}
       {activePreviewRegister && (
