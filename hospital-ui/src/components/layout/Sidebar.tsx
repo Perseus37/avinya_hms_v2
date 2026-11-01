@@ -26,17 +26,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
     id: WorkspaceId;
     label: string;
     icon: LucideIcon;
+    shortcut: string;
     badge?: string;
   }> = [
-    { id: "registration", label: "Patient Intake", icon: UserPlus, badge: "New" },
-    { id: "adt", label: "Inpatient ADT", icon: DoorOpen },
-    { id: "doctor", label: "Doctor Cockpit", icon: Stethoscope },
-    { id: "nursing", label: "Ward Nursing", icon: BedDouble },
-    { id: "triage", label: "ED Triage", icon: Siren, badge: "Trauma" },
-    { id: "pharmacy", label: "Pharmacy & NDPS", icon: Pill },
-    { id: "diagnostics", label: "Diagnostics & LIS", icon: Microscope },
-    { id: "billing", label: "Cashier Billing", icon: CreditCard },
-    { id: "admin", label: "Executive HUD", icon: ShieldCheck },
+    { id: "registration", label: "Patient Intake", icon: UserPlus, shortcut: "Alt+1", badge: "New" },
+    { id: "adt", label: "Inpatient ADT", icon: DoorOpen, shortcut: "Alt+2" },
+    { id: "doctor", label: "Doctor Cockpit", icon: Stethoscope, shortcut: "Alt+3" },
+    { id: "nursing", label: "Ward Nursing", icon: BedDouble, shortcut: "Alt+4" },
+    { id: "triage", label: "ED Triage", icon: Siren, shortcut: "Alt+5", badge: "Trauma" },
+    { id: "pharmacy", label: "Pharmacy & NDPS", icon: Pill, shortcut: "Alt+6" },
+    { id: "diagnostics", label: "Diagnostics & LIS", icon: Microscope, shortcut: "Alt+7" },
+    { id: "billing", label: "Cashier Billing", icon: CreditCard, shortcut: "Alt+8" },
+    { id: "admin", label: "Executive HUD", icon: ShieldCheck, shortcut: "Alt+9" },
   ];
 
   return (
@@ -63,11 +64,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Icon size={17} className={isActive ? "text-sky-400" : "text-slate-400"} />
                 <span>{item.label}</span>
               </div>
-              {item.badge && (
-                <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-rose-950 text-rose-400 border border-rose-900/60">
-                  {item.badge}
+              <div className="flex items-center gap-1.5">
+                {item.badge && (
+                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.2 rounded bg-rose-950 text-rose-400 border border-rose-900/60">
+                    {item.badge}
+                  </span>
+                )}
+                <span className="text-[9px] font-mono text-slate-600 opacity-60 group-hover:opacity-100">
+                  {item.shortcut}
                 </span>
-              )}
+              </div>
             </button>
           );
         })}

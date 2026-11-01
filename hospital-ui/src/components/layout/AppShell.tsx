@@ -19,12 +19,32 @@ export const AppShell: React.FC = () => {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>("registration");
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
 
-  // Global Keyboard Listener for Cmd+K / Ctrl+K
+  // Global Keyboard Listener for Cmd+K / Ctrl+K and Alt+1..9
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setIsCommandPaletteOpen((prev) => !prev);
+      }
+
+      // Fast workspace switching via Alt+1..9
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        const workspaceOrder: WorkspaceId[] = [
+          "registration",
+          "adt",
+          "doctor",
+          "nursing",
+          "triage",
+          "pharmacy",
+          "diagnostics",
+          "billing",
+          "admin",
+        ];
+        const num = parseInt(e.key, 10);
+        if (num >= 1 && num <= workspaceOrder.length) {
+          e.preventDefault();
+          setActiveWorkspace(workspaceOrder[num - 1]);
+        }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
