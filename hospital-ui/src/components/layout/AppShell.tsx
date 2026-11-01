@@ -5,6 +5,8 @@ import { Sidebar } from "./Sidebar";
 import { PatientSafetyBanner } from "../clinical/PatientSafetyBanner";
 import { CommandPalette } from "../clinical/CommandPalette";
 
+import { PatientRegistrationWorkspace } from "../../workspaces/registration/PatientRegistrationWorkspace";
+import { InpatientAdmissionWorkspace } from "../../workspaces/adt/InpatientAdmissionWorkspace";
 import { DoctorCockpit } from "../../workspaces/doctor/DoctorCockpit";
 import { WardNursingStation } from "../../workspaces/nursing/WardNursingStation";
 import { EDTriageBoard } from "../../workspaces/triage/EDTriageBoard";
@@ -14,7 +16,7 @@ import { CashierCounterWorkspace } from "../../workspaces/billing/CashierCounter
 import { AdminWorkspace } from "../../workspaces/admin/AdminWorkspace";
 
 export const AppShell: React.FC = () => {
-  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>("doctor");
+  const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>("registration");
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
 
   // Global Keyboard Listener for Cmd+K / Ctrl+K
@@ -31,6 +33,10 @@ export const AppShell: React.FC = () => {
 
   const renderActiveWorkspace = () => {
     switch (activeWorkspace) {
+      case "registration":
+        return <PatientRegistrationWorkspace />;
+      case "adt":
+        return <InpatientAdmissionWorkspace />;
       case "doctor":
         return <DoctorCockpit />;
       case "nursing":
@@ -46,7 +52,7 @@ export const AppShell: React.FC = () => {
       case "admin":
         return <AdminWorkspace />;
       default:
-        return <DoctorCockpit />;
+        return <PatientRegistrationWorkspace />;
     }
   };
 

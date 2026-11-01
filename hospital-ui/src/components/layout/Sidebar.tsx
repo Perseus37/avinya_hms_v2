@@ -1,6 +1,8 @@
 import React from "react";
 import {
   LucideIcon,
+  UserPlus,
+  DoorOpen,
   Stethoscope,
   BedDouble,
   Siren,
@@ -26,6 +28,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     icon: LucideIcon;
     badge?: string;
   }> = [
+    { id: "registration", label: "Patient Intake", icon: UserPlus, badge: "New" },
+    { id: "adt", label: "Inpatient ADT", icon: DoorOpen },
     { id: "doctor", label: "Doctor Cockpit", icon: Stethoscope },
     { id: "nursing", label: "Ward Nursing", icon: BedDouble },
     { id: "triage", label: "ED Triage", icon: Siren, badge: "Trauma" },

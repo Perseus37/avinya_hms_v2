@@ -1,11 +1,13 @@
 export type WorkspaceId =
-  | "admin"
+  | "registration"
+  | "adt"
   | "doctor"
-  | "triage"
   | "nursing"
+  | "triage"
   | "pharmacy"
   | "diagnostics"
-  | "billing";
+  | "billing"
+  | "admin";
 
 export interface UserProfile {
   id: number;

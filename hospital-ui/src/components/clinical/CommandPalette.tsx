@@ -54,6 +54,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   if (!isOpen) return null;
 
   const workspaces: Array<{ id: WorkspaceId; label: string; shortcut: string }> = [
+    { id: "registration", label: "Patient Registration & Front Desk Intake", shortcut: "R" },
+    { id: "adt", label: "Inpatient Admission & Bed Allocation (ADT)", shortcut: "I" },
     { id: "doctor", label: "Doctor Clinical Cockpit (OPD)", shortcut: "D" },
     { id: "nursing", label: "Ward Nursing & Bed Board", shortcut: "N" },
     { id: "triage", label: "Emergency & ED Triage Board", shortcut: "E" },
