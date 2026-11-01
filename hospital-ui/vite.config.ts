@@ -1,0 +1,32 @@
+import { defineConfig, loadEnv } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { resolve } from "node:path";
+
+export default defineConfig(({ mode }) => {
+  const rootEnv = loadEnv(mode, "..", "");
+  const proxyTarget = process.env.VITE_API_PROXY_TARGET || rootEnv.VITE_API_PROXY_TARGET || "http://127.0.0.1:8000";
+
+  return {
+    plugins: [react(), tailwindcss()],
+    resolve: {
+      alias: {
+        "@": resolve(__dirname, "./src"),
+      },
+    },
+    server: {
+      port: 5174,
+      proxy: {
+        "/api": {
+          target: proxyTarget,
+          changeOrigin: true,
+        },
+        "/v1": {
+          target: proxyTarget,
+          changeOrigin: true,
+        },
+      },
+    },
+  };
+});
+
