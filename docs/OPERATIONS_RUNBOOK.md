@@ -441,7 +441,31 @@ is set. Set it for every scheduled backup if tenant logos, favicons, invoice
 documents, or other uploaded files must be recoverable. The encrypted snapshot
 contains `attachments.tar.gz.gpg`; restore it to a separate staging directory
 and verify tenant paths and file permissions before any controlled recovery.
+
 Do not assume a successful database restore also restores uploaded files.
+
+To inspect orphaned tenant branding files and abandoned upload staging files,
+run the reconciliation utility from the repository root or the application
+container. It is read-only by default and protects both logo and favicon
+references, including assets for inactive tenants:
+
+```sh
+python -m backend.scripts.reconcile_branding_assets --grace-hours 48
+```
+
+Review the candidate list and skipped-tenant warnings before explicitly
+enabling deletion:
+
+```sh
+python -m backend.scripts.reconcile_branding_assets --grace-hours 48 --execute
+```
+
+The utility only considers server-generated branding asset filenames under
+`<tenant>/branding-assets`; it does not delete unknown files, directories,
+symlinks, or files newer than the grace period. A tenant with malformed branding
+JSON is skipped entirely because its references cannot be trusted. Run it
+against the same persistent attachment mount used by the API. Start with a
+dry-run and retain the output in the maintenance record.
 
 The invoice path now has a durable audit of authorized download requests; it
 records that a response was initiated, not that the client received every
