@@ -289,5 +289,6 @@ The frontend workspaces communicate directly with backend domain services in [`b
 | **Infection Control (HICC)** | Ward cross-contamination of MDR pathogens (CRE, MRSA) | **Statutory Isolation Precaution Door Placards:** Color-coded bedside/door warning signs (Contact, Droplet, Airborne) enforcing strict barrier PPE, hand hygiene, and dedicated equipment before patient room entry. |
 | **Operating Theatre (OT)** | Retained foreign objects & untracked implanted prostheses | **RSI Count Deficit Lock & UDI Implant Cards:** Active closure halt with emergency C-arm fluoroscopy trigger on count mismatch, plus statutory UDI implant identification cards with MRI safety parameters. |
 | **Doctor Cockpit** | Disjointed OPD-to-IPD admission pathways & manual sick leave disputes | **IPD Bed Requisition & Statutory Medical Certificates:** 1-click issuance of Form ADT-01 bed booking orders (Emergency STAT/High-Acuity) with pre-transfer care directives, plus NMC-compliant statutory sick leave certificates. |
+| **Biomedical Engineering** | Inadvertent patient connection to broken/uncalibrated life support | **Physical Lockout Tagout (LOTO) Danger Placards:** Instant Form BME-LOTO-01 hazard notices tagged to defective assets prohibiting patient use under NABH FMS.6/OSHA. |
 
 

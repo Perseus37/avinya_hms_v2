@@ -487,6 +487,9 @@ To eliminate hospital-floor pain points and compliance risks, Avinya HMS systema
     - **Inpatient (IPD) Admission Advice & Bed Requisition:** 1-click issuance of Form ADT-01 transmitting prioritized bed booking orders (Emergency STAT, High-Acuity 2h, Elective Planned) to the central ADT desk with target bed class (ICU, HDU, Private AC, General Ward) and STAT initial care directives.
     - **Statutory Medical Fitness & Sickness Certificate:** Generates National Medical Commission (NMC) compliant medical certificates specifying diagnosis, personal identification marks, recommended convalescence days, and expected return to duty dates.
 
+11. **Biomedical Engineering & Clinical Equipment Safety ([`BiomedicalWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/biomedical/BiomedicalWorkspace.tsx)):**
+    - **Lockout Tagout (LOTO) Danger Placards:** Generates statutory physical warning placards (Form BME-LOTO-01) under NABH FMS.6 and OSHA standards for any medical device undergoing breakdown or failing electrical safety thresholds, prohibiting patient connection until certified recalibration.
+
 ---
 
 ## 5. Comprehensive AI Audit Scorecard & Evaluation

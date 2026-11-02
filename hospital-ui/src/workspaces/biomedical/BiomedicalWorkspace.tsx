@@ -290,6 +290,55 @@ export const BiomedicalWorkspace: React.FC = () => {
     });
   };
 
+  const handlePrintLockoutPlacard = (ticket: BreakdownTicket) => {
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 650px; margin: 0 auto; border: 6px solid #dc2626; padding: 24px; text-align: center; background: #fff;">
+        <div style="background: #dc2626; color: #fff; padding: 16px; border-radius: 6px; margin-bottom: 20px;">
+          <h1 style="margin: 0; font-size: 32px; font-weight: 900; letter-spacing: 2px;">⚠️ DANGER</h1>
+          <div style="font-size: 20px; font-weight: 800; margin-top: 4px; text-transform: uppercase;">
+            DO NOT OPERATE • OUT OF SERVICE
+          </div>
+          <div style="font-size: 11px; margin-top: 4px;">STATUTORY BIOMEDICAL LOCKOUT TAGOUT (LOTO) • FORM BME-LOTO-01</div>
+        </div>
+
+        <div style="border: 2px dashed #dc2626; background: #fef2f2; padding: 16px; border-radius: 8px; margin-bottom: 20px; text-align: left;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px;">
+            <div><b>Asset Tag:</b> <span style="font-family: monospace; font-size: 14px; font-weight: bold; color: #b91c1c;">${ticket.assetTag}</span></div>
+            <div><b>Ticket No:</b> <span style="font-family: monospace; font-size: 13px;">${ticket.id}</span></div>
+            <div><b>Equipment:</b> <b>${ticket.assetName}</b></div>
+            <div><b>Ward Location:</b> <b>${ticket.location}</b></div>
+          </div>
+          <div style="margin-top: 10px; font-size: 12px; color: #991b1b; border-top: 1px solid #fecaca; padding-top: 8px;">
+            <b>Failure / Safety Hazard:</b> ${ticket.issueDescription}
+          </div>
+        </div>
+
+        <div style="background: #fffbeb; border: 1px solid #fde68a; padding: 12px; border-radius: 6px; font-size: 11px; color: #92400e; margin-bottom: 24px; text-align: left; line-height: 1.5;">
+          <b>CRITICAL PATIENT SAFETY DIRECTIVE:</b><br/>
+          This medical device has been locked out due to mechanical/electrical malfunction. Under NABH Hospital Safety Standard FMS.6, connecting this device to any patient is strictly prohibited. Only authorized Biomedical Engineering personnel may remove this tag following certified re-calibration.
+        </div>
+
+        <div style="display: flex; justify-content: space-between; font-size: 11px; border-top: 2px solid #000; padding-top: 10px; text-align: left;">
+          <div>
+            <b>Tagged Date:</b> ${ticket.reportTimestamp}<br/>
+            <b>Reported By:</b> ${ticket.reportedBy}
+          </div>
+          <div style="text-align: right;">
+            <b>Assigned Lead Engineer:</b> ${ticket.assignedEngineer}<br/>
+            <b>Biomedical Control Room:</b> Ext. 108 / +91 40 8829 0108
+          </div>
+        </div>
+      </div>
+    `;
+
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(html, {
+      title: `LOTO_${ticket.assetTag}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
+  };
+
   const filteredAssets = assets.filter((a) => {
     const matchesQuery =
       a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -609,10 +658,18 @@ export const BiomedicalWorkspace: React.FC = () => {
                   {ticket.status !== "RESOLVED" && (
                     <div className="mt-3 pt-3 border-t border-slate-800 flex items-center justify-end gap-2">
                       <Button
+                        onClick={() => handlePrintLockoutPlacard(ticket)}
+                        variant="outline"
+                        className="text-xs py-1 px-2.5 border-rose-800 text-rose-300 hover:bg-rose-950/50 flex items-center gap-1 font-semibold"
+                        title="Print Physical Equipment Out-of-Service / Lockout Placard"
+                      >
+                        <ShieldAlert size={12} /> Print Lockout Placard
+                      </Button>
+                      <Button
                         onClick={() => handleResolveTicket(ticket.id, ticket.assetTag)}
                         className="text-xs py-1 px-3 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold flex items-center gap-1"
                       >
-                        <CheckCircle2 size={13} /> Complete Repair & Recalibrate (Return to Service)
+                        <CheckCircle2 size={13} /> Complete Repair &amp; Recalibrate (Return to Service)
                       </Button>
                     </div>
                   )}
