@@ -933,7 +933,17 @@ export const CashierCounterWorkspace: React.FC = () => {
                       {hospitalProfile.taxGstin && hospitalProfile.accreditation ? " • " : ""}
                       {hospitalProfile.accreditation || ""}
                     </div>
-                  )}                  <span className="text-slate-500 block">Patient Name:</span>
+                  )}
+                </div>
+                <div className="text-right">
+                  <div className="text-emerald-400 font-bold">{lastSettledInvoice.invoiceNumber}</div>
+                  <div className="text-[10px] text-slate-500">{new Date().toLocaleString()}</div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div>
+                  <span className="text-slate-500 block">Patient Name:</span>
                   <span className="text-slate-200 font-semibold">{lastSettledInvoice.patientName}</span>
                 </div>
                 <div>
