@@ -254,7 +254,7 @@ export const CashierCounterWorkspace: React.FC = () => {
         <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
           <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
           <div style="font-size: 12px; font-weight: bold; color: #333; margin-top: 2px;">STATUTORY GST TAX INVOICE & CASHIER SETTLEMENT RECEIPT</div>
-          <div style="font-size: 10px; color: #555;">${hospitalProfile.address} • GSTIN: ${hospitalProfile.taxGstin || "36AABCA1234D1Z5"}</div>
+          ${hospitalProfile.address || hospitalProfile.taxGstin ? `<div style="font-size: 10px; color: #555;">${hospitalProfile.address}${hospitalProfile.address && hospitalProfile.taxGstin ? " • " : ""}${hospitalProfile.taxGstin ? `GSTIN: ${hospitalProfile.taxGstin}` : ""}</div>` : ""}
         </div>
         <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 12px;">
           <div><b>Patient Legal Name:</b> ${lastSettledInvoice.patientName.toUpperCase()}</div>
