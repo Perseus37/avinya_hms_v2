@@ -1,14 +1,14 @@
 import React, { useState } from "react";
 import { useAuth } from "../../core/context/AuthContext";
 import { getTenantSlug } from "../../api/client";
-import { authApi } from "../../api/authApi";
+import { authApi } from "../../api/authApi";\nimport { useTenantBranding } from "../../core/context/TenantBrandingContext";
 import { Activity, ShieldCheck, KeyRound, Unlock, Key, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { Button } from "../ui/Button";
 
 type AuthMode = "login" | "unlock" | "forgot_password";
 
 export const LoginView: React.FC = () => {
-  const { login, verifyMfa, isLoading } = useAuth();
+  const { login, verifyMfa, isLoading } = useAuth();\n  const { branding } = useTenantBranding();
   const detectedSlug = getTenantSlug();
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [email, setEmail] = useState("");
