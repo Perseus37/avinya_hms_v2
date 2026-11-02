@@ -556,3 +556,47 @@ def test_brand_asset_reconciliation_enforces_minimum_grace_period(tmp_path):
     with pytest.raises(ValueError, match="at least 24"):
         reconcile_branding_assets(tmp_path, [tenant], grace_hours=1, execute=True)
 
+
+
+def test_brand_asset_upload_rejects_symlinked_tenant_storage(
+    client, superuser_headers, monkeypatch, tmp_path
+):
+    from backend.core.config import settings
+
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (storage_root / "default").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(settings, "ATTACHMENTS_STORAGE_DIR", str(storage_root))
+
+    response = client.post(
+        "/api/ui/tenant-branding/assets?kind=logo",
+        headers=superuser_headers,
+        files={"file": ("logo.png", b"\\x89PNG\\r\\n\\x1a\\nsynthetic", "image/png")},
+    )
+
+    assert response.status_code == 503
+    assert not list(outside.rglob("*"))
+
+
+def test_brand_asset_download_rejects_symlinked_asset(
+    client, superuser_headers, monkeypatch, tmp_path
+):
+    from backend.core.config import settings
+
+    storage_root = tmp_path / "storage"
+    asset_dir = storage_root / "default" / "branding-assets"
+    asset_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"\\x89PNG\\r\\n\\x1a\\nprivate")
+    asset_id = "a" * 32 + ".png"
+    (asset_dir / asset_id).symlink_to(outside)
+    monkeypatch.setattr(settings, "ATTACHMENTS_STORAGE_DIR", str(storage_root))
+
+    response = client.get(
+        f"/api/ui/tenant-branding/assets/{asset_id}",
+        headers=superuser_headers,
+    )
+
+    assert response.status_code == 404
