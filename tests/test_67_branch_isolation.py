@@ -2,8 +2,6 @@ import jwt
 
 from backend.core.config import settings
 
-from backend.core.config import settings
-
 
 def test_access_token_branch_claim_must_match_resolved_tenant(
     client, superuser_headers, multi_tenant_env
