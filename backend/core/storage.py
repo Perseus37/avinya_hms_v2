@@ -1,0 +1,76 @@
+"""Tenant-scoped filesystem primitives for private application documents.
+
+This module deliberately handles filesystem boundaries only. Callers remain
+responsible for authorization, content validation, malware scanning, audit,
+and deciding whether a resource may be served publicly.
+"""
+import os
+import re
+from pathlib import Path
+
+_COMPONENT = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+
+class StoragePathError(ValueError):
+    """A tenant storage path is invalid, unavailable, or escapes its boundary."""
+
+
+def tenant_storage_directory(
+    storage_root: str | Path,
+    tenant_slug: str,
+    namespace: str,
+    *,
+    create: bool = False,
+) -> Path:
+    """Resolve one tenant namespace and reject symlinked tenant/namespace paths."""
+    if not _COMPONENT.fullmatch(tenant_slug) or not _COMPONENT.fullmatch(namespace):
+        raise StoragePathError("Tenant storage path component is invalid.")
+
+    try:
+        root = Path(storage_root).resolve()
+        tenant_dir = root / tenant_slug
+        namespace_dir = tenant_dir / namespace
+
+        if create:
+            tenant_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if tenant_dir.is_symlink() or tenant_dir.resolve() != tenant_dir:
+            raise StoragePathError("Tenant storage directory is not a safe directory.")
+        if not tenant_dir.is_dir():
+            raise StoragePathError("Tenant storage directory does not exist.")
+
+        if create:
+            os.chmod(tenant_dir, 0o700)
+            namespace_dir.mkdir(exist_ok=True, mode=0o700)
+        if namespace_dir.is_symlink() or namespace_dir.resolve() != namespace_dir:
+            raise StoragePathError("Tenant storage namespace is not a safe directory.")
+        if not namespace_dir.is_dir():
+            raise StoragePathError("Tenant storage namespace does not exist.")
+        if create:
+            os.chmod(namespace_dir, 0o700)
+
+        namespace_dir.relative_to(tenant_dir)
+        tenant_dir.relative_to(root)
+        return namespace_dir
+    except StoragePathError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise StoragePathError("Tenant storage directory is unavailable.") from exc
+
+
+def resolve_tenant_storage_file(directory: str | Path, filename: str) -> Path:
+    """Resolve a single child file, rejecting traversal and symlink escapes."""
+    base = Path(directory)
+    if not filename or filename in {".", ".."} or Path(filename).name != filename:
+        raise StoragePathError("Storage filename is invalid.")
+
+    try:
+        canonical_base = base.resolve()
+        candidate = base / filename
+        if candidate.is_symlink() or candidate.resolve() != canonical_base / filename:
+            raise StoragePathError("Storage file is not a safe file.")
+        candidate.resolve().relative_to(canonical_base)
+        return candidate
+    except StoragePathError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise StoragePathError("Storage file is outside its tenant directory.") from exc
