@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, user_has_permission, validate_pagination
-from backend.core.export import stream_csv_response
+from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User
 from backend.domains.patients.models import Patient
 from backend.domains.diagnostics.models import (
@@ -367,7 +367,7 @@ def list_diagnostic_orders(
         ]
 
         def row_generator():
-            for item in query.all():
+            for item in chunked_query_fetcher(query, chunk_size=250):
                 p = item.patient
                 doc = item.ordering_doctor
                 st_val = item.status.value if hasattr(item.status, "value") else str(item.status)

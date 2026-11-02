@@ -2,14 +2,14 @@ import secrets
 
 from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, BackgroundTasks, Response, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import select
 from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination
-from backend.core.export import stream_csv_response
+from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User
 from backend.domains.procurement.models import (
     VendorMaster, PurchaseOrder, PurchaseOrderItem, POStatusEnum,
@@ -181,7 +181,7 @@ def list_goods_receipt_notes(
         ]
 
         def row_generator():
-            for item in query.all():
+            for item in chunked_query_fetcher(query, chunk_size=250):
                 po = item.purchase_order
                 vendor = po.vendor if po else None
                 yield {

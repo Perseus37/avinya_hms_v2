@@ -18,8 +18,32 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Query
 
 
+def sanitize_spreadsheet_cell(val: str) -> str:
+    """Neutralizes spreadsheet formula injection (CSV/Excel DDE injection).
+
+    If text begins with =, +, -, @, \t, or \r, prefix with a single quote (')
+    so that spreadsheet processors (Excel, Calc, Google Sheets) treat it strictly
+    as text literal rather than executable formula/macro.
+    Valid signed numeric strings (e.g. '-42', '+3.14', '-0.05') are preserved.
+    """
+    if not val:
+        return val
+
+    stripped = val.strip()
+    if stripped.startswith(("-", "+")):
+        try:
+            float(stripped)
+            return val
+        except ValueError:
+            pass
+
+    if val[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return f"'{val}"
+    return val
+
+
 def format_export_cell(val: Any) -> str:
-    """Formats Python types into clean, human-readable tabular text for CSV/Excel."""
+    """Formats Python types into clean, human-readable tabular text for CSV/Excel with formula injection neutralization."""
     if val is None:
         return ""
     if isinstance(val, bool):
@@ -28,9 +52,11 @@ def format_export_cell(val: Any) -> str:
         return val.isoformat()
     if isinstance(val, Decimal):
         return f"{val:.2f}"
+    if isinstance(val, (int, float)):
+        return str(val)
     if isinstance(val, (dict, list)):
-        return json.dumps(val, ensure_ascii=False)
-    return str(val)
+        return sanitize_spreadsheet_cell(json.dumps(val, ensure_ascii=False))
+    return sanitize_spreadsheet_cell(str(val))
 
 
 def generate_csv_chunks(
@@ -131,19 +157,31 @@ def stream_jsonl_response(
 def chunked_query_fetcher(
     query: Query,
     chunk_size: int = 500,
+    max_rows: Optional[int] = None,
 ) -> Generator[Any, None, None]:
-    """
-    Safely iterates through an ORM query in batches without loading all results into RAM.
-    Uses offset/limit windowing or yield_per where supported.
+    """Safely iterates through an ORM query in batches without loading all results into RAM.
+
+    Uses offset/limit windowing with an optional max_rows safety ceiling.
     """
     offset = 0
+    total_yielded = 0
     while True:
-        batch = query.offset(offset).limit(chunk_size).all()
+        limit = chunk_size
+        if max_rows is not None:
+            remaining = max_rows - total_yielded
+            if remaining <= 0:
+                break
+            limit = min(limit, remaining)
+
+        batch = query.offset(offset).limit(limit).all()
         if not batch:
             break
         for item in batch:
             yield item
-        if len(batch) < chunk_size:
+            total_yielded += 1
+            if max_rows is not None and total_yielded >= max_rows:
+                return
+        if len(batch) < limit:
             break
-        offset += chunk_size
+        offset += len(batch)
 

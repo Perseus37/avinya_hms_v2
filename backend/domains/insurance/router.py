@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination
-from backend.core.export import stream_csv_response
+from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.schemas.common import PaginatedResponse
 from backend.domains.billing.models import Invoice, InvoiceStatusEnum, PaymentMethodEnum, PaymentReceipt
 from backend.domains.diagnostics.models import ServiceCatalog
@@ -696,7 +696,7 @@ def list_insurance_claims(
         ]
 
         def row_generator():
-            for item in query.all():
+            for item in chunked_query_fetcher(query, chunk_size=250):
                 patient = item.invoice.patient if item.invoice else None
                 provider = item.policy.provider if item.policy else None
                 yield {

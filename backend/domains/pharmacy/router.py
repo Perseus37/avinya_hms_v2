@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend.core.database import get_db
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination
-from backend.core.export import stream_csv_response
+from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.core.date_ranges import resolve_record_date_window
 from backend.domains.billing.models import Invoice, InvoiceLineItem, InvoiceStatusEnum, PaymentMethodEnum, RefundVoucher
 from backend.domains.billing.rcm_services import recalculate_invoice_totals
@@ -216,7 +216,7 @@ def list_inventory_batches(
         ]
 
         def row_generator():
-            for item in query.all():
+            for item in chunked_query_fetcher(query, chunk_size=250):
                 med = item.medication
                 total_val_paise = item.stock_quantity * item.unit_price_paise
                 yield {

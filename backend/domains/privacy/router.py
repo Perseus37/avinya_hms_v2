@@ -1,12 +1,12 @@
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from backend.core.config import settings
 from backend.core.database import get_db, resolve_tenant_context
@@ -922,7 +922,7 @@ def record_patient_consent(
 # DPDP ACT 2023: PATIENT DATA RIGHTS LIFECYCLE (M-03)
 # =========================================================================
 
-DataRightsType = Literal["ACCESS", "CORRECTION", "ERASURE", "GRIEVANCE", "NOMINATION"]
+DataRightsType = Literal["ACCESS", "CORRECTION", "ERASURE", "GRIEVANCE", "NOMINATION", "PORTABILITY"]
 DataRightsStatus = Literal["SUBMITTED", "IN_REVIEW", "FULFILLED", "REJECTED"]
 
 
@@ -1116,17 +1116,48 @@ def get_patient_data_access_summary(
 
 @router.get(
     "/data-rights/patients/{patient_id}/export-dossier",
-    dependencies=[Depends(RequirePermission("privacy:read"))],
 )
 def export_patient_dpdp_dossier(
     patient_id: int,
     request: Request,
+    request_id: Optional[int] = Query(None, description="Verified DPDP Section 11 patient data rights request ID"),
     db: Session = Depends(get_db),
+    actor: User = Depends(RequirePermission("privacy:read")),
 ):
-    """Generates an exportable comprehensive DPDP Section 11 data portability electronic dossier."""
+    """Generates an exportable comprehensive DPDP Section 11 data portability electronic dossier tied to a verified request."""
     patient = db.get(Patient, patient_id)
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found.")
+
+    # Validate verified data-rights request
+    req: Optional[PatientDataRightsRequest] = None
+    if request_id is not None:
+        req = db.get(PatientDataRightsRequest, request_id)
+        if not req or req.patient_id != patient.id:
+            raise HTTPException(status_code=404, detail="Data rights request not found for this patient.")
+        if req.status == "REJECTED":
+            raise HTTPException(status_code=400, detail="Cannot export dossier for a REJECTED data rights request.")
+    else:
+        req = db.execute(
+            select(PatientDataRightsRequest)
+            .where(
+                PatientDataRightsRequest.patient_id == patient_id,
+                PatientDataRightsRequest.status.in_(["SUBMITTED", "IN_REVIEW", "IN_PROGRESS", "FULFILLED", "VERIFIED"]),
+            )
+            .order_by(PatientDataRightsRequest.created_at.desc())
+        ).scalars().first()
+
+    if not req:
+        raise HTTPException(
+            status_code=400,
+            detail="A verified DPDP Section 11 data-rights request is required to generate this dossier.",
+        )
+
+    # Mark request fulfilled if in progress or submitted
+    if req.status in ("SUBMITTED", "IN_REVIEW", "IN_PROGRESS"):
+        req.status = "FULFILLED"
+        req.fulfilled_at = datetime.now(timezone.utc)
+        req.handled_by_user_id = actor.id
 
     tenant = resolve_tenant_context(request)
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -1135,12 +1166,17 @@ def export_patient_dpdp_dossier(
     from backend.domains.patients.models import PatientAllergy
     from backend.domains.clinical.models import PatientComorbidity, ClinicalNote, EncounterVital, EncounterDiagnosis
     from backend.domains.encounters.models import PatientEncounter, InpatientAdmission
-    from backend.domains.pharmacy.models import Prescription
-    from backend.domains.diagnostics.models import DiagnosticOrder
+    from backend.domains.pharmacy.models import Prescription, PrescriptionItem
+    from backend.domains.diagnostics.models import DiagnosticOrder, DiagnosticTask
     from backend.domains.surgery.models import SurgicalSchedule
     from backend.domains.billing.models import Invoice
 
-    allergies = db.query(PatientAllergy).filter(PatientAllergy.patient_id == patient_id).all()
+    allergies = (
+        db.query(PatientAllergy)
+        .options(joinedload(PatientAllergy.allergy))
+        .filter(PatientAllergy.patient_id == patient_id)
+        .all()
+    )
     comorbidities = db.query(PatientComorbidity).filter(PatientComorbidity.patient_id == patient_id).all()
 
     # 2. Encounters & Admissions
@@ -1152,13 +1188,32 @@ def export_patient_dpdp_dossier(
     # 3. Clinical Notes, Vitals & Diagnoses
     notes = db.query(ClinicalNote).filter(ClinicalNote.encounter_id.in_(encounter_ids)).all() if encounter_ids else []
     vitals = db.query(EncounterVital).filter(EncounterVital.encounter_id.in_(encounter_ids)).all() if encounter_ids else []
-    diagnoses = db.query(EncounterDiagnosis).filter(EncounterDiagnosis.encounter_id.in_(encounter_ids)).all() if encounter_ids else []
+    diagnoses = (
+        db.query(EncounterDiagnosis)
+        .options(joinedload(EncounterDiagnosis.diagnosis))
+        .filter(EncounterDiagnosis.encounter_id.in_(encounter_ids))
+        .all()
+        if encounter_ids
+        else []
+    )
 
     # 4. Prescriptions
-    prescriptions = db.query(Prescription).filter(Prescription.encounter_id.in_(encounter_ids)).all() if encounter_ids else []
+    prescriptions = (
+        db.query(Prescription)
+        .options(joinedload(Prescription.items).joinedload(PrescriptionItem.medication))
+        .filter(Prescription.encounter_id.in_(encounter_ids))
+        .all()
+        if encounter_ids
+        else []
+    )
 
     # 5. Diagnostics
-    diagnostic_orders = db.query(DiagnosticOrder).filter(DiagnosticOrder.patient_id == patient_id).all()
+    diagnostic_orders = (
+        db.query(DiagnosticOrder)
+        .options(joinedload(DiagnosticOrder.tasks).joinedload(DiagnosticTask.service))
+        .filter(DiagnosticOrder.patient_id == patient_id)
+        .all()
+    )
 
     # 6. Surgeries
     surgeries = db.query(SurgicalSchedule).filter(SurgicalSchedule.patient_id == patient_id).all()
@@ -1175,6 +1230,7 @@ def export_patient_dpdp_dossier(
             "hospital_name": tenant.hospital_name,
             "patient_id": patient.id,
             "mrn": patient.mrn,
+            "data_rights_request_id": req.id,
             "exported_at": now_iso,
             "compliance_framework": "DPDP Act 2023 Section 11 (Right to Data Portability & Access)",
         },
@@ -1191,8 +1247,12 @@ def export_patient_dpdp_dossier(
         "allergies": [
             {
                 "id": a.id,
-                "allergen": a.allergen_name if hasattr(a, "allergen_name") else getattr(a, "allergy_name", ""),
+                "allergen": a.allergy.name if getattr(a, "allergy", None) else getattr(a, "allergen_name", getattr(a, "allergy_name", "")),
+                "allergy_code": a.allergy.code if getattr(a, "allergy", None) else "",
+                "allergen_type": a.allergy.category.value if getattr(a, "allergy", None) and hasattr(a.allergy.category, "value") else str(getattr(a.allergy, "category", "")) if getattr(a, "allergy", None) else "",
                 "severity": a.severity.value if hasattr(a.severity, "value") else str(a.severity) if hasattr(a, "severity") else "UNKNOWN",
+                "reaction": a.reaction_description or getattr(a, "reaction", "") or "",
+                "is_active": getattr(a, "is_active", True),
                 "recorded_at": a.created_at.isoformat() if hasattr(a, "created_at") and a.created_at else None,
             }
             for a in allergies
@@ -1253,6 +1313,10 @@ def export_patient_dpdp_dossier(
                 "id": d.id,
                 "encounter_id": d.encounter_id,
                 "diagnosis_type": d.diagnosis_type.value if hasattr(d.diagnosis_type, "value") else str(d.diagnosis_type),
+                "icd10_code": getattr(d.diagnosis, "icd10_code", getattr(d.diagnosis, "code", "")) if getattr(d, "diagnosis", None) else "",
+                "condition_name": getattr(d.diagnosis, "short_description", getattr(d.diagnosis, "name", "")) if getattr(d, "diagnosis", None) else "",
+                "description": getattr(d.diagnosis, "full_description", "") if getattr(d, "diagnosis", None) else "",
+                "clinical_remarks": d.clinical_remarks or "",
                 "created_at": d.created_at.isoformat() if d.created_at else None,
             }
             for d in diagnoses
@@ -1262,6 +1326,20 @@ def export_patient_dpdp_dossier(
                 "id": rx.id,
                 "encounter_id": rx.encounter_id,
                 "status": rx.status.value if hasattr(rx.status, "value") else str(rx.status),
+                "clinical_notes": rx.clinical_notes or "",
+                "items": [
+                    {
+                        "id": it.id,
+                        "medication_name": it.medication.generic_name if getattr(it, "medication", None) else "",
+                        "brand_name": it.medication.brand_name if getattr(it, "medication", None) else "",
+                        "strength": it.medication.strength if getattr(it, "medication", None) else "",
+                        "form": it.medication.form.value if getattr(it, "medication", None) and hasattr(it.medication.form, "value") else str(getattr(it.medication, "form", "")) if getattr(it, "medication", None) else "",
+                        "dosage_instruction": it.dosage_instruction,
+                        "requested_quantity": it.requested_quantity,
+                        "dispensed_quantity": it.dispensed_quantity,
+                    }
+                    for it in getattr(rx, "items", [])
+                ],
                 "created_at": rx.created_at.isoformat() if rx.created_at else None,
             }
             for rx in prescriptions
@@ -1269,9 +1347,23 @@ def export_patient_dpdp_dossier(
         "diagnostics": [
             {
                 "id": o.id,
-                "urgency": o.urgency.value if hasattr(o.urgency, "value") else str(o.urgency),
                 "status": o.status.value if hasattr(o.status, "value") else str(o.status),
+                "clinical_notes": o.clinical_notes or "",
                 "ordered_at": o.created_at.isoformat() if o.created_at else None,
+                "investigations": [
+                    {
+                        "id": t.id,
+                        "service_code": t.service.code if getattr(t, "service", None) else "",
+                        "service_name": t.service.name if getattr(t, "service", None) else "",
+                        "loinc_code": getattr(t.service, "loinc_code", "") if getattr(t, "service", None) else "",
+                        "status": t.status.value if hasattr(t.status, "value") else str(t.status),
+                        "result_value": t.result_value or "",
+                        "result_notes": t.result_notes or "",
+                        "is_critical_panic": t.is_critical_panic,
+                        "delta_check_flag": t.delta_check_flag or "",
+                    }
+                    for t in getattr(o, "tasks", [])
+                ],
             }
             for o in diagnostic_orders
         ],
@@ -1306,6 +1398,19 @@ def export_patient_dpdp_dossier(
             for c in consents
         ],
     }
+
+    # Record tamper-evident PrivacyDecisionAudit
+    db.add(
+        PrivacyDecisionAudit(
+            actor_user_id=actor.id,
+            data_use_point="privacy.data_rights.export_dossier",
+            purpose_code="DPDP_SECTION_11_PORTABILITY",
+            mode="ENFORCE",
+            result="ALLOW",
+            reason_code=f"Exported DPDP Section 11 portability dossier for patient_id={patient.id} tied to request_id={req.id}",
+        )
+    )
+    db.commit()
 
     # Compute bundle integrity hash
     raw_bytes = json.dumps(bundle, sort_keys=True, default=str).encode("utf-8")

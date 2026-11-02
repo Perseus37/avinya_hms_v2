@@ -1,6 +1,5 @@
 """Tests for Phase 1 & 2: Universal Streaming Data Export Engine, Historical Registers, and Query Filters."""
 
-import io
 from datetime import datetime, timezone
 from decimal import Decimal
 from fastapi import FastAPI
@@ -265,12 +264,36 @@ def test_dpdp_patient_data_portability_dossier(client, superuser_headers):
     assert create_res.status_code == 201
     patient_id = create_res.json()["id"]
 
-    # 2. Export patient dossier
-    res = client.get(f"/v1/api/privacy/data-rights/patients/{patient_id}/export-dossier", headers=superuser_headers)
+    # 1b. Verify that exporting without a verified data-rights request fails with 400 (N-98)
+    no_req_res = client.get(f"/v1/api/privacy/data-rights/patients/{patient_id}/export-dossier", headers=superuser_headers)
+    assert no_req_res.status_code == 400
+    err_msg = no_req_res.json().get("message") or no_req_res.json().get("detail", "")
+    assert "verified DPDP Section 11 data-rights request is required" in err_msg
+
+    # 1c. Submit a valid DPDP Section 11 data portability request
+    req_res = client.post(
+        "/v1/api/privacy/data-rights/requests",
+        headers=superuser_headers,
+        json={
+            "patient_id": patient_id,
+            "request_type": "PORTABILITY",
+            "sla_days": 30,
+            "details": {"reason": "Patient requested DPDP portability dossier"},
+        },
+    )
+    assert req_res.status_code == 201
+    request_id = req_res.json()["id"]
+
+    # 2. Export patient dossier tied to verified request
+    res = client.get(
+        f"/v1/api/privacy/data-rights/patients/{patient_id}/export-dossier?request_id={request_id}",
+        headers=superuser_headers,
+    )
     assert res.status_code == 200
     data = res.json()
     assert "export_metadata" in data
     assert "bundle_integrity_sha256" in data["export_metadata"]
+    assert data["export_metadata"]["data_rights_request_id"] == request_id
     assert "patient_profile" in data
     assert data["patient_profile"]["id"] == patient_id
     assert "allergies" in data

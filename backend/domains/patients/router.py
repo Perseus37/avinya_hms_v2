@@ -11,7 +11,7 @@ from backend.control_plane.models import GlobalPatientPointer
 from backend.core.database import get_control_db, get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination
-from backend.core.export import stream_csv_response
+from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User
 from backend.domains.patients.models import (
     AllergyMaster,
@@ -188,6 +188,19 @@ def list_patients(
     query = query.order_by(Patient.id.desc())
 
     if export_format and export_format.lower() == "csv":
+        from backend.domains.privacy.models import PrivacyDecisionAudit
+        db.add(
+            PrivacyDecisionAudit(
+                actor_user_id=actor.id,
+                data_use_point="patients.export.csv",
+                purpose_code="BULK_DATA_EXPORT",
+                mode="ENFORCE",
+                result="ALLOW",
+                reason_code="AUTHORIZED_PATIENT_REGISTRY_EXPORT",
+            )
+        )
+        db.commit()
+
         fieldnames = [
             "id",
             "mrn",
@@ -200,18 +213,33 @@ def list_patients(
             "created_at",
         ]
 
+        can_view_pii = bool(getattr(actor, "is_superuser", False))
+
         def row_generator():
-            for item in query.all():
+            for item in chunked_query_fetcher(query, chunk_size=250):
                 dob_str = item.date_of_birth.strftime("%Y-%m-%d") if item.date_of_birth else ""
                 gender_str = item.gender.value if hasattr(item.gender, "value") else str(item.gender or "")
+                
+                phone = item.phone_number or ""
+                if phone and not can_view_pii and len(phone) >= 7:
+                    phone = f"{phone[:3]}****{phone[-4:]}"
+                elif phone and not can_view_pii:
+                    phone = "****"
+
+                abha = item.abha_number or ""
+                if abha and not can_view_pii and len(abha) >= 6:
+                    abha = f"{abha[:2]}****{abha[-4:]}"
+                elif abha and not can_view_pii:
+                    abha = "****"
+
                 yield {
                     "id": item.id,
                     "mrn": item.mrn,
                     "full_name": item.full_name,
                     "gender": gender_str,
                     "date_of_birth": dob_str,
-                    "phone_number": item.phone_number or "",
-                    "abha_number": item.abha_number or "",
+                    "phone_number": phone,
+                    "abha_number": abha,
                     "is_active": item.is_active,
                     "created_at": item.created_at,
                 }

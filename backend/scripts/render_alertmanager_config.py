@@ -42,12 +42,7 @@ def render_alertmanager_config(
     if "@" not in smtp_from:
         smtp_from = "alerts@avinya-hms.local"
 
-    # 3. Resolve SMTP recipient email for on-call alerting (N-90)
-    email_to = get_val("ALERT_EMAIL_TO", "") or get_val("SMTP_TO", "oncall@avinya-hms.local")
-    if "@" not in email_to:
-        email_to = "oncall@avinya-hms.local"
-
-    # 4. Resolve webhook URLs
+    # 3. Resolve webhook URLs and guard production
     default_webhook = get_val("ALERT_DEFAULT_WEBHOOK_URL", DUMMY_WEBHOOK_DEFAULT)
     if is_prod and default_webhook == DUMMY_WEBHOOK_DEFAULT:
         raise ValueError(
@@ -73,6 +68,23 @@ def render_alertmanager_config(
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ValueError(f"Invalid URL for {name}: '{url}'. Must have http or https scheme and valid host.")
+
+    # 4. Resolve SMTP recipient email for on-call alerting (N-90, N-99)
+    raw_email_to = get_val("ALERT_EMAIL_TO", "") or get_val("SMTP_TO", "")
+    if is_prod:
+        if (
+            not raw_email_to
+            or "@" not in raw_email_to
+            or raw_email_to.strip().endswith("@avinya-hms.local")
+            or raw_email_to.strip() == "oncall@avinya-hms.local"
+        ):
+            raise ValueError(
+                f"Production Alertmanager requires a valid on-call recipient email configured via "
+                f"ALERT_EMAIL_TO or SMTP_TO. Missing, malformed, or placeholder '{raw_email_to}' is prohibited."
+            )
+        email_to = raw_email_to.strip()
+    else:
+        email_to = raw_email_to.strip() if (raw_email_to and "@" in raw_email_to) else "oncall@avinya-hms.local"
 
     # Substitute variables
     substitutions = {

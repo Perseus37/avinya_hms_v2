@@ -8,7 +8,7 @@ from backend.domains.policies.router import get_or_create_policy
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.dependencies import RequirePermission, validate_pagination
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.export import stream_csv_response
+from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.encounters.models import Appointment, AppointmentStatusEnum, AppointmentStatusHistory, AppointmentWaitlistEntry, AppointmentWaitlistHistory, AppointmentWaitlistStatusEnum, DoctorLeave, PatientEncounter, ServiceDemandReasonEnum, ServiceDemandRequest, ServiceDemandStatusEnum, ServiceDemandStatusHistory
 from backend.domains.identity.models import DoctorProfile, User
 from backend.domains.patients.models import Patient
@@ -230,10 +230,10 @@ def list_appointments(
         ]
 
         def row_generator():
-            for item in query.options(
+            for item in chunked_query_fetcher(query.options(
                 joinedload(Appointment.patient),
                 joinedload(Appointment.doctor),
-            ).all():
+            ), chunk_size=250):
                 p = item.patient
                 doc = item.doctor
                 status_str = item.status.value if hasattr(item.status, "value") else str(item.status)

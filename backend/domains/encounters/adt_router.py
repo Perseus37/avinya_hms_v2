@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination
-from backend.core.export import stream_csv_response
+from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.billing.models import Invoice, InvoiceStatusEnum
 from backend.domains.encounters.models import AdmissionTypeEnum, BedTransferLog, EncounterStatusEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter, DischargeDispositionEnum
 from backend.domains.facility.models import Bed, BedStatusEnum, PhysicalRoom
@@ -255,7 +255,7 @@ def list_admissions(
         ]
 
         def row_generator():
-            for item in query.all():
+            for item in chunked_query_fetcher(query, chunk_size=250):
                 enc = item.encounter
                 p = enc.patient if enc else None
                 b = item.current_bed

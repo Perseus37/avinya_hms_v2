@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission, validate_pagination
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.export import stream_csv_response
+from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.billing.models import Invoice, InvoiceLineItem, InvoiceStatusEnum, PaymentReceipt, DepositStatusEnum, PatientDeposit, PaymentMethodEnum, RefundVoucher
 from backend.domains.diagnostics.models import ServiceCatalog
 from backend.domains.encounters.models import PatientEncounter
@@ -116,7 +116,7 @@ def list_invoices(
         ]
 
         def row_generator():
-            for item in query.options(joinedload(Invoice.patient)).all():
+            for item in chunked_query_fetcher(query.options(joinedload(Invoice.patient)), chunk_size=250):
                 p = item.patient
                 bal_paise = item.net_amount_paise - item.amount_paid_paise
                 yield {
