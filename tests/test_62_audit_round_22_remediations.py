@@ -32,10 +32,12 @@ def test_n91_redis_container_user_and_service_capabilities():
     proxy_svc = compose["services"]["docker-proxy"]
     assert "/run" in proxy_svc.get("tmpfs", []), "docker-proxy must have /run tmpfs mount"
 
-    # clamav SETUID/SETGID capability preservation
+    # clamav SETUID/SETGID/CHOWN/DAC_OVERRIDE capability preservation
     clamav_svc = compose["services"]["clamav"]
     assert "SETUID" in clamav_svc.get("cap_add", [])
     assert "SETGID" in clamav_svc.get("cap_add", [])
+    assert "CHOWN" in clamav_svc.get("cap_add", [])
+    assert "DAC_OVERRIDE" in clamav_svc.get("cap_add", [])
 
 
 def test_n90_alertmanager_email_delivery_and_production_guard(tmp_path):
