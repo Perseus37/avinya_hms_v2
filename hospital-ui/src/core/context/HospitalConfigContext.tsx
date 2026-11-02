@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useEffect, useRef } from "r
 import { generateEnterprise500Beds } from "../../data/enterpriseBeds";
 import { uiApi } from "../../api/uiApi";
 import { HardwarePrinterBackendConfig } from "../../types";
+import { getTenantSlug } from "../../api/client";
+import { useTenantBranding } from "./TenantBrandingContext";
 
 export type BedCategory = "General" | "Semi-Private" | "Private" | "ICU";
 export type BedOccupancyStatus = "VACANT_CLEAN" | "OCCUPIED" | "HOUSEKEEPING" | "RESERVED";
@@ -146,13 +148,13 @@ export interface PrintTemplatesConfig {
 }
 
 const DEFAULT_PROFILE: HospitalProfile = {
-  name: "Avinya Super-Specialty Apex Hospital",
-  subdomain: "apollo-indraprastha",
-  address: "Plot 12, Health City, Gachibowli, Hyderabad, Telangana 500032",
-  phone: "+91 40 8829 0000",
-  emergencyPhone: "1066 / +91 40 8829 0911",
-  accreditation: "Accredited by NABH, NABL & JCI • Apex Multi-Specialty Care",
-  taxGstin: "36AABCA1234D1Z5",
+  name: "Healthcare",
+  subdomain: getTenantSlug(),
+  address: "",
+  phone: "",
+  emergencyPhone: "",
+  accreditation: "",
+  taxGstin: "",
 };
 
 const DEFAULT_POLICIES: HospitalPolicies = {
@@ -168,7 +170,7 @@ const DEFAULT_POLICIES: HospitalPolicies = {
 
 export const DEFAULT_PRINT_TEMPLATES: PrintTemplatesConfig = {
   thermalToken: {
-    headerTitle: "AVINYA HEALTHCARE APEX",
+    headerTitle: "",
     subHeader: "OPD CONSULTATION TOKEN & RECEIPT",
     rollWidth: "80mm",
     showEstimatedWait: true,
@@ -177,7 +179,7 @@ export const DEFAULT_PRINT_TEMPLATES: PrintTemplatesConfig = {
     footerNotice: "Please proceed to waiting lounge. Valid today only.",
   },
   wristband: {
-    hospitalName: "AVINYA HEALTHCARE APEX",
+    hospitalName: "",
     preset: "ADULT_STANDARD_280x25",
     widthMm: 280,
     heightMm: 25,
@@ -191,15 +193,15 @@ export const DEFAULT_PRINT_TEMPLATES: PrintTemplatesConfig = {
     barcodeFormat: "CODE128",
   },
   bedHeadTicket: {
-    hospitalTitle: "AVINYA SUPER-SPECIALTY APEX HOSPITAL",
+    hospitalTitle: "",
     subTitle: "INPATIENT ADMISSION FACE SHEET & BED HEAD TICKET (BHT)",
     showFinancialInfo: true,
     showNurseChecklist: true,
     showSignatureBlock: true,
-    customSealText: "Accredited by NABH & JCI • Apex Multi-Specialty Care",
+    customSealText: "",
   },
   dischargeSummary: {
-    hospitalHeader: "AVINYA SUPER-SPECIALTY APEX HOSPITAL",
+    hospitalHeader: "",
     subTitle: "FORMAL STATUTORY INPATIENT DISCHARGE SUMMARY",
     showMedicationReconciliation: true,
     showDietaryInstructions: true,
@@ -360,13 +362,14 @@ interface HospitalConfigContextType {
 
 const HospitalConfigContext = createContext<HospitalConfigContextType | undefined>(undefined);
 
+const tenantStoragePrefix = `tenant:${getTenantSlug()}:`;
 const STORAGE_KEYS = {
-  PROFILE: "avinya_hospital_profile",
-  POLICIES: "avinya_hospital_policies",
-  DOCTORS: "avinya_hospital_doctors",
-  BEDS: "avinya_hospital_beds",
-  PRINT_TEMPLATES: "avinya_hospital_print_templates",
-  PRINTERS: "avinya_hospital_printers",
+  PROFILE: `${tenantStoragePrefix}hospital_profile`,
+  POLICIES: `${tenantStoragePrefix}hospital_policies`,
+  DOCTORS: `${tenantStoragePrefix}hospital_doctors`,
+  BEDS: `${tenantStoragePrefix}hospital_beds`,
+  PRINT_TEMPLATES: `${tenantStoragePrefix}hospital_print_templates`,
+  PRINTERS: `${tenantStoragePrefix}hospital_printers`,
 };
 
 export function toBackendPrinter(device: HospitalPrinterDevice): HardwarePrinterBackendConfig {
@@ -420,6 +423,7 @@ export function fromBackendPrinter(config: HardwarePrinterBackendConfig): Hospit
 }
 
 export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { branding } = useTenantBranding();
   const [hospitalProfile, setHospitalProfile] = useState<HospitalProfile>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.PROFILE);
@@ -477,6 +481,15 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
       return DEFAULT_PRINTERS;
     }
   });
+
+  useEffect(() => {
+    if (!branding) return;
+    setHospitalProfile((current) => ({
+      ...current,
+      name: branding.hospital_name || branding.display_name || current.name,
+      subdomain: branding.tenant_slug,
+    }));
+  }, [branding]);
 
   // Save to localStorage whenever state changes
   useEffect(() => {
