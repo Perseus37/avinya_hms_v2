@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 import jwt
 
 from backend.core.config import settings
