@@ -227,3 +227,79 @@ def test_brand_asset_upload_fails_closed_when_malware_scanner_is_unavailable(
     assert response.status_code == 503
     asset_directory = tmp_path / "default" / "branding-assets"
     assert not asset_directory.exists() or list(asset_directory.iterdir()) == []
+
+
+def test_replacing_brand_asset_removes_only_the_unreferenced_previous_file(
+    client, multi_tenant_env, superuser_headers, monkeypatch, tmp_path
+):
+    from pathlib import Path
+
+    monkeypatch.setattr("backend.domains.ui.router.settings.ATTACHMENTS_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr("backend.domains.ui.router.scan_file_with_clamav", lambda path: None)
+    headers = superuser_headers
+    first = b"\x89PNG\r\n\x1a\nfirst-image"
+    second = b"\x89PNG\r\n\x1a\nsecond-image"
+
+    first_response = client.post(
+        "/api/ui/tenant-branding/assets?kind=logo",
+        headers=headers,
+        files={"file": ("first.png", first, "image/png")},
+    )
+    assert first_response.status_code == 200, first_response.text
+    first_url = first_response.json()["asset_url"]
+    first_path = Path(tmp_path / "default" / "branding-assets" / first_url.rsplit("/", 1)[-1])
+    assert first_path.is_file()
+
+    second_response = client.post(
+        "/api/ui/tenant-branding/assets?kind=logo",
+        headers=headers,
+        files={"file": ("second.png", second, "image/png")},
+    )
+    assert second_response.status_code == 200, second_response.text
+    second_url = second_response.json()["asset_url"]
+    second_path = Path(tmp_path / "default" / "branding-assets" / second_url.rsplit("/", 1)[-1])
+
+    assert second_path.is_file()
+    assert not first_path.exists()
+    with multi_tenant_env["control_session_factory"]() as db:
+        tenant = db.query(TenantRegistry).filter_by(subdomain_slug="default").one()
+        assert json.loads(tenant.ui_branding_json)["logo_url"] == second_url
+
+
+def test_replacing_logo_retains_previous_asset_when_favicon_still_uses_it(
+    client, multi_tenant_env, superuser_headers, monkeypatch, tmp_path
+):
+    from pathlib import Path
+
+    monkeypatch.setattr("backend.domains.ui.router.settings.ATTACHMENTS_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr("backend.domains.ui.router.scan_file_with_clamav", lambda path: None)
+    first = client.post(
+        "/api/ui/tenant-branding/assets?kind=logo",
+        headers=superuser_headers,
+        files={"file": ("shared.png", b"\x89PNG\r\n\x1a\nshared-image", "image/png")},
+    )
+    assert first.status_code == 200, first.text
+    shared_url = first.json()["asset_url"]
+
+    with multi_tenant_env["control_session_factory"]() as db:
+        tenant = db.query(TenantRegistry).filter_by(subdomain_slug="default").one()
+        branding = json.loads(tenant.ui_branding_json)
+        branding["favicon_url"] = shared_url
+        tenant.ui_branding_json = json.dumps(branding)
+        db.commit()
+
+    replacement = client.post(
+        "/api/ui/tenant-branding/assets?kind=logo",
+        headers=superuser_headers,
+        files={"file": ("replacement.png", b"\x89PNG\r\n\x1a\nreplacement-image", "image/png")},
+    )
+    assert replacement.status_code == 200, replacement.text
+
+    shared_path = Path(tmp_path / "default" / "branding-assets" / shared_url.rsplit("/", 1)[-1])
+    assert shared_path.is_file()
+    with multi_tenant_env["control_session_factory"]() as db:
+        tenant = db.query(TenantRegistry).filter_by(subdomain_slug="default").one()
+        branding = json.loads(tenant.ui_branding_json)
+        assert branding["favicon_url"] == shared_url
+        assert branding["logo_url"] == replacement.json()["asset_url"]
+
