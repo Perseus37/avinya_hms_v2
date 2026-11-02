@@ -124,8 +124,10 @@ def stage_and_publish_upload(
 
     total_bytes = 0
     header = bytearray()
+    staged_created = False
     try:
         with temporary.open("xb") as output:
+            staged_created = True
             os.chmod(temporary, 0o600)
             while chunk := source.read(chunk_size):
                 total_bytes += len(chunk)
@@ -144,8 +146,9 @@ def stage_and_publish_upload(
         os.replace(temporary, destination)
         return total_bytes
     except Exception:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if staged_created:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise
