@@ -7,14 +7,19 @@ and clinical cockpit summaries to eliminate frontend waterfall requests.
 
 from datetime import date, datetime, timezone
 import json
+import os
 import re
+import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from backend.core.config import settings
 from backend.core.database import get_control_db, get_db, resolve_tenant_context
 from backend.core.dependencies import RequirePermission, get_current_user, get_redis
 from backend.domains.clinical.models import (
@@ -36,6 +41,7 @@ from backend.domains.billing.models import PaymentReceipt, PaymentMethodEnum
 from backend.domains.pharmacy.models import Prescription
 from backend.domains.diagnostics.models import DiagnosticOrder
 from backend.control_plane.models import ControlPlaneAuditLog, TenantRegistry
+from backend.domains.procurement.documents import scan_file_with_clamav
 
 router = APIRouter(prefix="/api/ui", tags=["Clinical & Operational UI Aggregates"])
 
@@ -190,6 +196,130 @@ def update_tenant_branding(
         secondary_color=branding.get("secondary_color", "#0F172A"),
         accent_color=branding.get("accent_color", "#0D9488"),
         tagline=branding.get("tagline"),
+    )
+
+
+_BRAND_ASSET_SIGNATURES = {
+    ".png": (b"\\x89PNG\\r\\n\\x1a\\n", "image/png"),
+    ".jpg": (b"\\xff\\xd8\\xff", "image/jpeg"),
+    ".jpeg": (b"\\xff\\xd8\\xff", "image/jpeg"),
+    ".webp": (b"RIFF", "image/webp"),
+}
+_BRAND_ASSET_ID = re.compile(r"^[0-9a-f]{32}\\.(png|jpg|jpeg|webp)$")
+
+
+@router.post(
+    "/tenant-branding/assets",
+    dependencies=[Depends(RequirePermission("config:write"))],
+)
+def upload_tenant_brand_asset(
+    request: Request,
+    kind: str = Query(..., pattern=r"^(logo|favicon)$"),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    control_db: Session = Depends(get_control_db),
+):
+    """Store a tenant-isolated raster brand asset after signature and malware checks."""
+    tenant_context = resolve_tenant_context(request)
+    tenant = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.subdomain_slug == tenant_context.subdomain_slug,
+            TenantRegistry.is_active == True,
+        )
+    ).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant configuration not found.")
+
+    suffix = Path(file.filename or "").suffix.lower()
+    signature_info = _BRAND_ASSET_SIGNATURES.get(suffix)
+    if signature_info is None:
+        raise HTTPException(status_code=415, detail="Brand assets must be PNG, JPEG, or WebP images.")
+
+    signature, media_type = signature_info
+    tenant_root = (Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
+                   / tenant_context.subdomain_slug / "branding-assets")
+    tenant_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(tenant_root.parent, 0o700)
+    os.chmod(tenant_root, 0o700)
+
+    asset_id = f"{uuid.uuid4().hex}{suffix}"
+    temporary = tenant_root / f".{asset_id}.part"
+    destination = tenant_root / asset_id
+    total_bytes = 0
+    header = bytearray()
+    try:
+        with temporary.open("xb") as output:
+            os.chmod(temporary, 0o600)
+            while chunk := file.file.read(1024 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > settings.MAX_ATTACHMENT_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="Brand asset exceeds the configured upload limit.")
+                if len(header) < len(signature):
+                    header.extend(chunk[:len(signature) - len(header)])
+                output.write(chunk)
+
+        if total_bytes == 0 or not header.startswith(signature):
+            raise HTTPException(status_code=415, detail="Image content does not match its file type.")
+        if suffix == ".webp":
+            with temporary.open("rb") as image_file:
+                image_file.seek(8)
+                if image_file.read(4) != b"WEBP":
+                    raise HTTPException(status_code=415, detail="Image content does not match its file type.")
+
+        scan_file_with_clamav(temporary)
+        os.replace(temporary, destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    finally:
+        file.file.close()
+
+    asset_url = f"/api/ui/tenant-branding/assets/{asset_id}"
+    try:
+        try:
+            branding = json.loads(tenant.ui_branding_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            branding = {}
+        if not isinstance(branding, dict):
+            branding = {}
+        branding["logo_url" if kind == "logo" else "favicon_url"] = asset_url
+        tenant.ui_branding_json = json.dumps(branding)
+        control_db.add(tenant)
+        control_db.add(ControlPlaneAuditLog(
+            action="TENANT_BRAND_ASSET_UPLOADED",
+            target_slug=tenant.subdomain_slug,
+            actor=current_user.email,
+            details=f"Uploaded tenant {kind} image ({media_type}, {total_bytes} bytes).",
+        ))
+        control_db.commit()
+    except Exception:
+        destination.unlink(missing_ok=True)
+        control_db.rollback()
+        raise
+
+    return {"asset_url": asset_url, "kind": kind, "size_bytes": total_bytes}
+
+
+@router.get("/tenant-branding/assets/{asset_id}")
+def get_tenant_brand_asset(request: Request, asset_id: str):
+    """Serve only a tenant's own validated brand asset; no shared static path is exposed."""
+    if not _BRAND_ASSET_ID.fullmatch(asset_id):
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    tenant_context = resolve_tenant_context(request)
+    tenant_root = (Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
+                   / tenant_context.subdomain_slug / "branding-assets").resolve()
+    asset_path = (tenant_root / asset_id).resolve()
+    try:
+        asset_path.relative_to(tenant_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
+    if not asset_path.is_file():
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    media_type = _BRAND_ASSET_SIGNATURES[asset_path.suffix.lower()][1]
+    return FileResponse(
+        asset_path,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff"},
     )
 
 
