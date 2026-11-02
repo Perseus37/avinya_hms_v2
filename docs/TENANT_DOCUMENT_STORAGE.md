@@ -1,0 +1,64 @@
+# Tenant Document Storage Architecture
+
+## Purpose
+
+Provide one tenant-scoped storage boundary for files that belong to a hospital tenant while keeping each feature responsible for its own authorization, validation, malware scanning, audit records, and retention policy.
+
+The current implementation is filesystem-backed through `ATTACHMENTS_STORAGE_DIR`. This document describes the implemented boundary and the rules future document workflows must preserve.
+
+## Current storage namespaces
+
+| Resource | Tenant namespace | Read policy | Write policy |
+| --- | --- | --- | --- |
+| Tenant logo/favicon | `branding-assets` | Public, resolved tenant only; required by login bootstrap | `config:write` |
+| Procurement invoice | `procurement-invoices` | Authenticated, permission-gated; download is audited | Procurement upload permission and vendor validation |
+
+Clinical records, lab reports, prescriptions, patient attachments, and other private documents must not be exposed through the public branding route or a static web-server directory.
+
+## Shared filesystem primitives
+
+`backend/core/storage.py` currently provides:
+
+- `tenant_storage_directory(root, tenant_slug, namespace, create=...)`: validates tenant and namespace components, creates directories with restrictive permissions when requested, and rejects symlinked tenant or namespace directories.
+- `resolve_tenant_storage_file(directory, filename)`: permits only a single child filename and rejects traversal and symlinked files.
+
+The utility intentionally does not decide whether a caller is authorized to read or write a document. It does not perform content validation, malware scanning, audit logging, database metadata persistence, or cleanup. Feature code must continue to enforce those controls.
+
+## Required upload lifecycle
+
+1. Resolve the active tenant from the authenticated request context. Never accept a tenant slug from an upload form as the authority for tenant ownership.
+2. Authorize the feature operation and validate the related business record.
+3. Use a feature-specific namespace under the tenant directory.
+4. Generate an opaque server-side identifier; never use the submitted filename as the storage key.
+5. Stream with a configured byte limit and validate file signatures. Treat MIME headers and extensions as untrusted hints.
+6. Stage the file with restrictive permissions, scan it, and publish it atomically only after a clean scanner verdict.
+7. Persist the tenant-relative key and required audit event. If persistence fails, remove the newly published file best-effort and retain enough logs for orphan reconciliation.
+8. Keep private files outside public static mounts.
+
+## Required download lifecycle
+
+1. Resolve tenant context from the request and load the document metadata from that tenant's database.
+2. Apply the feature's read permission and verify the related record belongs to the same tenant.
+3. Resolve the stored tenant-relative key through the shared storage boundary.
+4. Record the authorized download event where required by policy.
+5. Return a controlled content type, safe content disposition, and `X-Content-Type-Options: nosniff`. Do not expose raw filesystem paths.
+
+Branding is the deliberate exception to authenticated reads: only opaque raster assets referenced by the resolved tenant's branding configuration are served publicly. The endpoint remains tenant-scoped and does not accept arbitrary paths.
+
+## Operational requirements
+
+- Production must mount durable private storage at the configured `ATTACHMENTS_STORAGE_DIR`; container writable layers are not durable storage.
+- The API and worker identities need only the permissions required for their storage operations. Keep tenant directories at `0700` and staged files at `0600` on POSIX filesystems.
+- Backup and restore procedures must treat the attachment tree as a separate recovery component from PostgreSQL. A database restore without the corresponding files can leave valid metadata pointing to missing content.
+- Run branding orphan reconciliation only against the same persistent mount used by the application.
+- Monitor free space, inode usage, scanner availability, upload failures, and backup freshness.
+
+## Object storage migration boundary
+
+An S3-compatible backend is not implemented yet. When introduced, it should sit behind a storage adapter with the same tenant-relative key and authorization contract. Use private buckets, server-side encryption, TLS, short-lived signed downloads only after application authorization, lifecycle/retention controls, and an explicit malware-scanning/quarantine workflow. Do not make a bucket public to simplify branding: public branding should remain an application-controlled, tenant-resolved read.
+
+## Known limitations
+
+- The shared helper centralizes path and symlink checks, but path-based filesystem operations are not a complete defense against a hostile local process racing directory replacement. Production storage mounts must not be writable by untrusted local users. A hardened object-store adapter or descriptor-relative filesystem implementation may be warranted for deployments with that threat model.
+- Branding and procurement still own their respective streaming, validation, scan, and publish logic. Those operations should be consolidated only after their feature-specific contracts are covered by regression tests.
+- No general clinical-document upload/download API or document retention engine is claimed by this implementation.
