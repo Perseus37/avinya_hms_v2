@@ -4,7 +4,7 @@ import { ActivePatientProvider } from "./core/context/ActivePatientContext";
 import { PermissionsProvider } from "./core/context/PermissionsContext";
 import { HospitalConfigProvider } from "./core/context/HospitalConfigContext";
 import { AppShell } from "./components/layout/AppShell";
-import { LoginView } from "./components/auth/LoginView";
+import { LoginView } from "./components/auth/LoginView";\nimport { TenantBrandingProvider } from "./core/context/TenantBrandingContext";
 
 const RootApp: React.FC = () => {
   const { isAuthenticated, isLoading } = useAuth();
