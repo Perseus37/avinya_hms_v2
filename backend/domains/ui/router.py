@@ -153,6 +153,8 @@ def update_tenant_branding(
 
     branding = payload.model_dump()
     branding["display_name"] = branding["display_name"].strip()
+    if len(branding["display_name"]) < 2:
+        raise HTTPException(status_code=422, detail="Display name must contain at least two characters.")
     if branding["tagline"] is not None:
         branding["tagline"] = branding["tagline"].strip() or None
 
