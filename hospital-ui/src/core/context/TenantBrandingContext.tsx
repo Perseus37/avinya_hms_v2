@@ -34,6 +34,8 @@ export const TenantBrandingProvider: React.FC<{ children: React.ReactNode }> = (
         document.head.appendChild(link);
       }
       link.href = config.favicon_url;
+    } else {
+      document.querySelector<HTMLLinkElement>('link[rel="icon"]')?.remove();
     }
   };
 
