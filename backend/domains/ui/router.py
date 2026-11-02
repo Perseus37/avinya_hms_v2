@@ -35,7 +35,7 @@ from backend.domains.patients.models import Patient, PatientAllergy
 from backend.domains.billing.models import PaymentReceipt, PaymentMethodEnum
 from backend.domains.pharmacy.models import Prescription
 from backend.domains.diagnostics.models import DiagnosticOrder
-from backend.control_plane.models import TenantRegistry
+from backend.control_plane.models import ControlPlaneAuditLog, TenantRegistry
 
 router = APIRouter(prefix="/api/ui", tags=["Clinical & Operational UI Aggregates"])
 
@@ -128,6 +128,7 @@ def get_tenant_branding(
 def update_tenant_branding(
     payload: TenantBrandingUpdate,
     request: Request,
+    current_user: User = Depends(get_current_user),
     control_db: Session = Depends(get_control_db),
 ):
     """Update the allowlisted branding configuration for the resolved tenant."""
@@ -160,6 +161,14 @@ def update_tenant_branding(
 
     tenant.ui_branding_json = json.dumps(branding)
     control_db.add(tenant)
+    control_db.add(
+        ControlPlaneAuditLog(
+            action="TENANT_BRANDING_UPDATED",
+            target_slug=tenant.subdomain_slug,
+            actor=current_user.email,
+            details="Updated tenant display identity, logo, favicon, and theme configuration.",
+        )
+    )
     control_db.commit()
     control_db.refresh(tenant)
 
