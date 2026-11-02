@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import { Search, LogOut, Activity, User, HelpCircle, Keyboard, ChevronDown, ShieldCheck, CheckSquare, Building2 } from "lucide-react";
+import { Search, LogOut, Activity, User, HelpCircle, Keyboard, ChevronDown, ShieldCheck, CheckSquare } from "lucide-react";
 import { useAuth } from "../../core/context/AuthContext";
 import { usePermissions, ROLE_DEFINITIONS, RoleCode } from "../../core/context/PermissionsContext";
-import { useHospitalConfig } from "../../core/context/HospitalConfigContext";\nimport { useTenantBranding } from "../../core/context/TenantBrandingContext";
+import { useTenantBranding } from "../../core/context/TenantBrandingContext";
 import { Modal } from "../ui/Modal";
 
 interface TopNavbarProps {
@@ -13,23 +13,21 @@ interface TopNavbarProps {
 export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenCommandPalette, onOpenTasks }) => {
   const { user, logout } = useAuth();
   const { activeRole, roleDefinition, isSimulating, isDev, setActiveRole, resetToAuthenticatedRole } = usePermissions();
-  const { hospitalProfile } = useHospitalConfig();\n  const { branding } = useTenantBranding();
+  const { branding } = useTenantBranding();
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
 
   return (
     <header className="h-16 shrink-0 bg-white border-b border-slate-200 px-5 flex items-center gap-5 select-none">
       <div className="flex items-center gap-3 min-w-[235px]">
-        <div className="h-8 w-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-sm">
-          <Activity size={17} />
-        </div>
-        <div>
-          <div className="text-sm font-bold tracking-tight text-slate-950">AVINYA</div>
-          <div className="text-[9px] font-semibold uppercase tracking-[0.14em] text-slate-400">Hospital Management</div>
-        </div>
-        <div className="hidden lg:flex items-center gap-2 ml-2 pl-3 border-l border-slate-200 text-xs text-slate-600">
-          <Building2 size={14} className="text-slate-400" />
-          <span className="font-medium truncate max-w-[150px]">{hospitalProfile.name}</span>
+        {branding?.logo_url ? (
+          <img src={branding.logo_url} alt="" className="h-8 w-8 rounded-lg object-contain" />
+        ) : (
+          <div className="h-8 w-8 rounded-lg bg-[var(--tenant-primary,#2563eb)] flex items-center justify-center text-white shadow-sm"><Activity size={17} /></div>
+        )}
+        <div className="min-w-0">
+          <div className="text-sm font-bold tracking-tight text-slate-950 truncate max-w-[210px]">{branding?.display_name || branding?.hospital_name || "Healthcare"}</div>
+          {branding?.tagline && <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-slate-400 truncate max-w-[210px]">{branding.tagline}</div>}
         </div>
       </div>
 
