@@ -117,7 +117,7 @@ def _dispatch_welcome_email(to_email: str, data: dict) -> tuple[bool, Optional[s
     try:
         send_email(
             to_email,
-            f"Avinya HMS provisioned: {data['hospital_name']}",
+            f"Welcome to {data['hospital_name']}",
             (
             f"Hospital Name : {data['hospital_name']}\n"
             f"Branch Code   : {data['branch_code']}\n"
