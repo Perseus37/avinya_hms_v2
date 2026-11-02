@@ -472,6 +472,13 @@ To eliminate hospital-floor pain points and compliance risks, Avinya HMS systema
    - **24-Hour Bedside Fluid Balance (I/O):** Monitors hourly intake (IV + Oral) versus output (Urine + Drains), computing cumulative net balances to detect fluid overload or dehydration risks.
    - **STAT Code Blue Activation:** 1-click bedside cardiac arrest trigger broadcasting active bed locations with high-visibility siren banners and response team timers.
 
+7. **Emergency Department & Trauma Resuscitation ([`EDTriageBoard.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/triage/EDTriageBoard.tsx)):**
+   - **MCI Code Orange Disaster Intake:** Mass Casualty Incident 1-click batch intake generating anonymous START triage profiles (Immediate Red, Delayed Yellow, Walking Wounded Green), trauma bay pre-reservations, and automated Section 39 CrPC Medico-Legal Case (MLC) police notification records.
+   - **Door-to-Device Velocity Timers:** Live real-time countdown badges on emergency case cards tracking hyper-acute clinical targets: Door-to-Balloon for STEMI Cath Lab (target 90 mins), Door-to-Needle for Acute Ischemic Stroke thrombolysis (target 45 mins), and Sepsis Hour-1 bundle compliance.
+
+8. **Infection Prevention & Control ([`InfectionControlWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/infection/InfectionControlWorkspace.tsx)):**
+   - **Statutory Isolation Precaution Door Placards:** High-visibility, color-coded room entrance signs (Contact Precautions - Red, Droplet - Blue, Airborne - Yellow) generated for confirmed MDR pathogens (CRE, MRSA, Pan-Drug Resistant Acinetobacter) enforcing mandatory PPE, dedicated diagnostic equipment, and visitor restrictions under NABH/CDC guidelines.
+
 ---
 
 ## 5. Comprehensive AI Audit Scorecard & Evaluation

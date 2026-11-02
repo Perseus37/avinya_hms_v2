@@ -9,6 +9,9 @@ import {
   ShieldAlert,
   Printer,
   Tag,
+  Flame,
+  Zap,
+  Timer,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
@@ -35,11 +38,19 @@ interface EmergencyCase {
   policeStation?: string;
   policeBuckleNo?: string;
   assignedZone?: string;
+  doorToDevice?: {
+    protocol: "STEMI_CATH_LAB" | "STROKE_THROMBOLYSIS" | "SEPSIS_BUNDLE";
+    targetMinutes: number;
+    elapsedMinutes: number;
+  };
 }
 
 export const EDTriageBoard: React.FC = () => {
   const { selectPatient } = useActivePatient();
   const { hospitalProfile, printTemplates, getPrinterForCategory } = useHospitalConfig();
+  const [isMciModalOpen, setIsMciModalOpen] = useState(false);
+  const [mciIncidentType, setMciIncidentType] = useState("HIGHWAY_BUS_COLLISION");
+
   const [cases, setCases] = useState<EmergencyCase[]>([
     {
       id: 101,
@@ -57,19 +68,29 @@ export const EDTriageBoard: React.FC = () => {
       mlcNumber: "MLC-20261101-9F2B",
       policeStation: "Central Police Station, Division B",
       policeBuckleNo: "PC-4882",
+      doorToDevice: {
+        protocol: "STEMI_CATH_LAB",
+        targetMinutes: 90,
+        elapsedMinutes: 16,
+      },
     },
     {
       id: 102,
       name: "Ananya Deshmukh",
       mrn: "ER-0914",
       arrival: "12m ago",
-      complaint: "Severe crushing chest pain radiating to left arm",
-      vitals: "BP 160/95, HR 105, SpO2 93%",
+      complaint: "Acute onset facial droop & hemiparesis (NIHSS 14)",
+      vitals: "BP 175/100, HR 88, SpO2 96%",
       esi: 2,
       gcs: 15,
       eyeScore: 4,
       verbalScore: 5,
       motorScore: 6,
+      doorToDevice: {
+        protocol: "STROKE_THROMBOLYSIS",
+        targetMinutes: 45,
+        elapsedMinutes: 24,
+      },
     },
     {
       id: 103,
@@ -176,6 +197,65 @@ export const EDTriageBoard: React.FC = () => {
 
   const dischargeOrTransferCase = (caseId: number) => {
     setCases((prev) => prev.filter((c) => c.id !== caseId));
+  };
+
+  const handleGenerateMciIntake = () => {
+    const disasterPrefix = `MCI-${Date.now().toString().slice(-4)}`;
+    const newMciCases: EmergencyCase[] = [
+      {
+        id: Date.now() + 1,
+        name: `DISASTER VICTIM #${disasterPrefix}-01 (RED)`,
+        mrn: `MCI-${disasterPrefix}-01`,
+        arrival: "Just now",
+        complaint: "MCI Blast/Crush: Tension Pneumothorax & Hemorrhagic Shock",
+        vitals: "BP 70/40, HR 135, SpO2 82%",
+        esi: 1,
+        assignedZone: "Trauma Resuscitation Bay 1",
+        isMlc: true,
+        mlcNumber: `MLC-${disasterPrefix}-01`,
+        doorToDevice: { protocol: "STEMI_CATH_LAB", targetMinutes: 90, elapsedMinutes: 4 },
+      },
+      {
+        id: Date.now() + 2,
+        name: `DISASTER VICTIM #${disasterPrefix}-02 (RED)`,
+        mrn: `MCI-${disasterPrefix}-02`,
+        arrival: "Just now",
+        complaint: "MCI Penetrating Trauma: Acute Hemoperitoneum",
+        vitals: "BP 85/50, HR 122, SpO2 91%",
+        esi: 1,
+        assignedZone: "Trauma Resuscitation Bay 2",
+        isMlc: true,
+        mlcNumber: `MLC-${disasterPrefix}-02`,
+      },
+      {
+        id: Date.now() + 3,
+        name: `DISASTER VICTIM #${disasterPrefix}-03 (YELLOW)`,
+        mrn: `MCI-${disasterPrefix}-03`,
+        arrival: "Just now",
+        complaint: "MCI Bilateral Femur Fractures: Splinted & Hemodynamically Stable",
+        vitals: "BP 125/82, HR 96, SpO2 96%",
+        esi: 2,
+        assignedZone: "ED Acute Bay 3",
+        isMlc: true,
+        mlcNumber: `MLC-${disasterPrefix}-03`,
+      },
+      {
+        id: Date.now() + 4,
+        name: `DISASTER VICTIM #${disasterPrefix}-04 (GREEN)`,
+        mrn: `MCI-${disasterPrefix}-04`,
+        arrival: "Just now",
+        complaint: "MCI Walking Wounded: Superficial Lacerations & Minor Concussion",
+        vitals: "BP 130/84, HR 88, SpO2 99%",
+        esi: 3,
+        assignedZone: "ED Minor Procedure Bay 1",
+        isMlc: true,
+        mlcNumber: `MLC-${disasterPrefix}-04`,
+      },
+    ];
+
+    setCases((prev) => [...newMciCases, ...prev]);
+    setIsRedAlertActive(true);
+    setIsMciModalOpen(false);
   };
 
   const esiDefinitions = [
@@ -340,6 +420,16 @@ export const EDTriageBoard: React.FC = () => {
 
         <div className="flex items-center gap-3">
           <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setIsMciModalOpen(true)}
+            className="flex items-center gap-2 font-mono border-amber-600/80 text-amber-300 hover:bg-amber-950/40"
+          >
+            <Flame size={14} className="text-amber-400" />
+            MCI Code Orange Intake
+          </Button>
+
+          <Button
             variant={isRedAlertActive ? "danger" : "outline"}
             size="sm"
             onClick={() => setIsRedAlertActive(!isRedAlertActive)}
@@ -429,6 +519,29 @@ export const EDTriageBoard: React.FC = () => {
                           <span className="font-mono text-amber-400">GCS {c.gcs}/15</span>
                         )}
                       </div>
+
+                      {c.doorToDevice && (
+                        <div className="flex items-center justify-between px-2 py-1 bg-amber-950/30 border border-amber-800/60 rounded text-[10px] text-amber-300 font-mono mb-2">
+                          <span className="flex items-center gap-1 font-semibold">
+                            <Zap size={11} className="text-amber-400 animate-pulse" />
+                            {c.doorToDevice.protocol === "STEMI_CATH_LAB"
+                              ? "Door-to-Balloon"
+                              : c.doorToDevice.protocol === "STROKE_THROMBOLYSIS"
+                              ? "Door-to-Needle"
+                              : "Sepsis-1hr"}
+                          </span>
+                          <span
+                            className={`font-bold flex items-center gap-0.5 ${
+                              c.doorToDevice.elapsedMinutes > c.doorToDevice.targetMinutes
+                                ? "text-rose-400"
+                                : "text-emerald-400"
+                            }`}
+                          >
+                            <Timer size={10} />
+                            {c.doorToDevice.elapsedMinutes}m / {c.doorToDevice.targetMinutes}m
+                          </span>
+                        </div>
+                      )}
 
                       <div className="flex items-center justify-between pt-1 border-t border-slate-800/50">
                         <div className="flex items-center gap-1">
@@ -895,6 +1008,61 @@ export const EDTriageBoard: React.FC = () => {
               </Button>
               <Button variant="primary" size="sm" onClick={() => setSelectedCaseForMlc(null)}>
                 Close Record
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {/* Modal: Mass Casualty Incident (MCI Code Orange) Activation */}
+      {isMciModalOpen && (
+        <Modal
+          isOpen={true}
+          onClose={() => setIsMciModalOpen(false)}
+          title="Hospital Disaster Management Protocol: Mass Casualty Intake (Code Orange)"
+        >
+          <div className="space-y-4">
+            <div className="p-3 bg-amber-950/40 border border-amber-600/70 rounded-lg text-amber-200 text-xs">
+              <div className="font-bold flex items-center gap-2 mb-1 text-sm text-amber-300">
+                <Flame size={16} /> Mass Casualty Incident (MCI) Code Orange
+              </div>
+              Activating disaster intake creates rapid anonymized trauma intake dockets (START Triage: Red, Yellow, Green), assigns designated resuscitation bays, and broadcasts immediate alerts to Anesthesia, Blood Bank, and General Surgery.
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Disaster Event / Incident Type
+              </label>
+              <select
+                value={mciIncidentType}
+                onChange={(e) => setMciIncidentType(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500 font-mono"
+              >
+                <option value="HIGHWAY_BUS_COLLISION">Highway Multi-Vehicle Collision (RTA)</option>
+                <option value="INDUSTRIAL_BOILER_BLAST">Industrial Boiler Explosion / Fire</option>
+                <option value="BUILDING_COLLAPSE">Structural Collapse / Earthquake</option>
+                <option value="TRAIN_DERAILMENT">Railway Incident / Derailment</option>
+              </select>
+            </div>
+
+            <div className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-xs space-y-1.5 font-mono text-slate-400">
+              <div className="text-slate-300 font-bold">Automatic Protocol Execution:</div>
+              <div>• 4 Rapid Anonymous Disaster Profiles with START ESI tags</div>
+              <div>• Automatic Statutory MLC Registry Docket Generation</div>
+              <div>• STAT Code Red Trauma Resuscitation Bays 1 &amp; 2 pre-reservation</div>
+              <div>• Blood Bank O-Negative emergency stock check notification</div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <Button variant="outline" size="sm" onClick={() => setIsMciModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={handleGenerateMciIntake}
+                className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold"
+              >
+                <Flame size={14} /> Deploy MCI Intake Batch
               </Button>
             </div>
           </div>

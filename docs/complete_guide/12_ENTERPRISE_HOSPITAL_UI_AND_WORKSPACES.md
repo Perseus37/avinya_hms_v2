@@ -285,5 +285,7 @@ The frontend workspaces communicate directly with backend domain services in [`b
 | **Diagnostics Lab** | Hemolyzed or clotted tubes discarded without nurse recollection | **Pre-Analytical Specimen Rejection Workflow:** Flags codified NABL rejection reasons (`HEMOLYZED`, `CLOTTED_EDTA`, `QNS`) and triggers 1-click STAT recollection tube label re-print. |
 | **Pharmacy** | Look-Alike / Sound-Alike (LASA) dispensing medication errors | **Tall Man Lettering & LASA Risk Banners:** ISMP-codified Tall Man strings (`hydrALAZINE` vs `hydrOXYzine`, `metFORMIN` vs `metOPROLOL`) with forced double-check confirmation. |
 | **Ward Nursing Station** | Fluid overload in renal/cardiac patients & delayed arrest alerting | **24-Hour Bedside Fluid Balance (I/O) & STAT Code Blue:** Tracks hourly IV/Oral vs Urine/Drain with cumulative net balance, plus 1-click bedside Code Blue cardiac arrest broadcast. |
+| **Emergency Department** | Mass casualty influx overwhelm & missed hyper-acute intervention windows | **MCI Code Orange Intake & Door-to-Device Timers:** 1-click batch disaster intake (START Red/Yellow/Green), automated Section 39 CrPC MLC police intimation notices, and Door-to-Balloon/Door-to-Needle countdown timers. |
+| **Infection Control (HICC)** | Ward cross-contamination of MDR pathogens (CRE, MRSA) | **Statutory Isolation Precaution Door Placards:** Color-coded bedside/door warning signs (Contact, Droplet, Airborne) enforcing strict barrier PPE, hand hygiene, and dedicated equipment before patient room entry. |
 
 

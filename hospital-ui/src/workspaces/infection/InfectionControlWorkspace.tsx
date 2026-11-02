@@ -318,6 +318,71 @@ export const InfectionControlWorkspace: React.FC = () => {
     });
   };
 
+  const handlePrintIsolationPlacard = (item: HaiSurveillanceCase) => {
+    const isContact = item.isolationStatus === "CONTACT_ISOLATION";
+    const isAirborne = item.isolationStatus === "AIRBORNE";
+    const headerColor = isContact ? "#dc2626" : isAirborne ? "#ca8a04" : "#0284c7";
+    const headerBg = isContact ? "#fef2f2" : isAirborne ? "#fefce8" : "#f0f9ff";
+
+    const placardHtml = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 750px; margin: 0 auto; border: 4px solid ${headerColor}; padding: 24px; text-align: center; background: #ffffff;">
+        <div style="background: ${headerColor}; color: #ffffff; padding: 14px; border-radius: 6px; margin-bottom: 20px;">
+          <h1 style="margin: 0; font-size: 28px; font-weight: 900; letter-spacing: 2px;">🛑 STOP! PRECAUTIONS REQUIRED</h1>
+          <div style="font-size: 14px; font-weight: bold; margin-top: 4px; text-transform: uppercase;">
+            ${hospitalProfile.name} • INFECTION PREVENTION & CONTROL (HICC)
+          </div>
+        </div>
+
+        <div style="border: 2px dashed ${headerColor}; background: ${headerBg}; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
+          <div style="font-size: 22px; font-weight: 900; color: ${headerColor}; text-transform: uppercase; margin-bottom: 6px;">
+            ${item.isolationStatus.replace(/_/g, " ")}
+          </div>
+          <div style="font-size: 14px; font-weight: bold; color: #1e293b;">
+            LOCATION: ${item.wardLocation.toUpperCase()} • PATIENT: ${item.patientName.toUpperCase()} (${item.mrn})
+          </div>
+          ${item.mdrClassification ? `<div style="font-size: 12px; font-weight: bold; color: #b91c1c; margin-top: 4px; font-family: monospace;">TAG: ${item.mdrClassification} (${item.isolatedPathogen || "MDR Pathogen"})</div>` : ""}
+        </div>
+
+        <div style="text-align: left; margin-bottom: 24px;">
+          <h3 style="font-size: 14px; font-weight: 800; color: #0f172a; border-bottom: 2px solid #0f172a; padding-bottom: 6px; text-transform: uppercase; margin-bottom: 12px;">
+            MANDATORY PROTOCOL PRIOR TO ROOM ENTRY:
+          </h3>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12px;">
+            <div style="border: 1px solid #cbd5e1; padding: 10px; border-radius: 6px;">
+              <strong>1. HAND HYGIENE:</strong><br />
+              Perform 6-step alcohol rub or soap & water wash before entering and immediately upon exiting.
+            </div>
+            <div style="border: 1px solid #cbd5e1; padding: 10px; border-radius: 6px;">
+              <strong>2. PERSONAL PROTECTIVE EQUIPMENT:</strong><br />
+              ${isContact ? "Wear clean disposable gown and non-sterile gloves for all patient / environmental contact." : isAirborne ? "Fit-tested N95 / FFP2 respirator mandatory before entering room." : "Surgical mask and eye shield mandatory within 2 meters."}
+            </div>
+            <div style="border: 1px solid #cbd5e1; padding: 10px; border-radius: 6px;">
+              <strong>3. DEDICATED EQUIPMENT:</strong><br />
+              Use dedicated stethoscope, BP cuff, and thermometer. Terminal bleach disinfection required before leaving.
+            </div>
+            <div style="border: 1px solid #cbd5e1; padding: 10px; border-radius: 6px;">
+              <strong>4. VISITOR RESTRICTION:</strong><br />
+              Visitors must report to Nursing Station before entering. Maximum 1 visitor with full barrier PPE.
+            </div>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; border-top: 1px solid #e2e8f0; padding-top: 14px; font-size: 11px; color: #64748b;">
+          <div><b>POSTED DATE:</b> ${item.detectionDate}</div>
+          <div><b>AUTHORIZED BY:</b> Hospital Infection Control Officer</div>
+          <div><b>FORM:</b> HICC-PL-02</div>
+        </div>
+      </div>
+    `;
+
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(placardHtml, {
+      docType: "CLINICAL_SUMMARY",
+      title: `Isolation_Placard_${item.wardLocation.replace(/[^a-zA-Z0-9]/g, "_")}`,
+      printerDevice: a4Printer,
+    });
+  };
+
   const filteredCases = haiCases.filter((c) => {
     const matchesQuery =
       c.patientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -547,13 +612,23 @@ export const InfectionControlWorkspace: React.FC = () => {
                     <span className="text-[10px] text-slate-400 font-mono">
                       Consultant: {item.attendingPhysician}
                     </span>
-                    <Button
-                      onClick={() => handlePrintHaiReport(item)}
-                      variant="outline"
-                      className="text-xs py-1 px-2.5 flex items-center gap-1.5 border-rose-800 text-rose-300 bg-rose-950/40 hover:bg-rose-900/60 font-semibold"
-                    >
-                      <Printer size={12} /> Print Statutory Dossier
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        onClick={() => handlePrintIsolationPlacard(item)}
+                        variant="outline"
+                        className="text-xs py-1 px-2 flex items-center gap-1 border-amber-800 text-amber-300 bg-amber-950/40 hover:bg-amber-900/60 font-semibold"
+                        title="Print Door / Bedside Isolation Precaution Placard"
+                      >
+                        <ShieldAlert size={12} /> Door Placard
+                      </Button>
+                      <Button
+                        onClick={() => handlePrintHaiReport(item)}
+                        variant="outline"
+                        className="text-xs py-1 px-2.5 flex items-center gap-1.5 border-rose-800 text-rose-300 bg-rose-950/40 hover:bg-rose-900/60 font-semibold"
+                      >
+                        <Printer size={12} /> Dossier
+                      </Button>
+                    </div>
                   </div>
                 </Card>
               ))}
