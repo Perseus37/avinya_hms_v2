@@ -86,7 +86,12 @@ def test_invoice_document_is_persisted_and_authorized_download_is_tenant_scoped(
     assert download.status_code == 200
     assert download.content == content
     assert download.headers["content-type"] == "application/pdf"
+    assert download.headers["cache-control"] == "private, no-store, max-age=0"
+    assert download.headers["pragma"] == "no-cache"
+    assert download.headers["expires"] == "0"
     assert download.headers["x-content-type-options"] == "nosniff"
+    assert download.headers["x-download-options"] == "noopen"
+    assert download.headers["cross-origin-resource-policy"] == "same-origin"
     assert "vendor-invoice-" in download.headers["content-disposition"]
 
     engine = multi_tenant_env["tenant_engines"]["hms_default"]
