@@ -5,12 +5,14 @@ interface TenantBrandingContextValue {
   branding: TenantBranding | null;
   isLoading: boolean;
   error: string | null;
+  updateBranding: (branding: Omit<TenantBranding, "tenant_slug" | "hospital_name">) => Promise<void>;
 }
 
 const TenantBrandingContext = createContext<TenantBrandingContextValue>({
   branding: null,
   isLoading: true,
   error: null,
+  updateBranding: async () => {},
 });
 
 export const TenantBrandingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -18,25 +20,34 @@ export const TenantBrandingProvider: React.FC<{ children: React.ReactNode }> = (
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const applyBranding = (config: TenantBranding) => {
+    setBranding(config);
+    document.title = config.display_name || config.hospital_name || "Healthcare";
+    document.documentElement.style.setProperty("--tenant-primary", config.primary_color);
+    document.documentElement.style.setProperty("--tenant-secondary", config.secondary_color);
+    document.documentElement.style.setProperty("--tenant-accent", config.accent_color);
+    if (config.favicon_url) {
+      let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+      if (!link) {
+        link = document.createElement("link");
+        link.rel = "icon";
+        document.head.appendChild(link);
+      }
+      link.href = config.favicon_url;
+    }
+  };
+
+  const updateBranding = async (values: Omit<TenantBranding, "tenant_slug" | "hospital_name">) => {
+    const updated = await uiApi.updateTenantBranding(values);
+    applyBranding(updated);
+  };
+
   useEffect(() => {
     let active = true;
     uiApi.getTenantBranding()
       .then((config) => {
         if (!active) return;
-        setBranding(config);
-        document.title = config.display_name || config.hospital_name || "Healthcare";
-        document.documentElement.style.setProperty("--tenant-primary", config.primary_color);
-        document.documentElement.style.setProperty("--tenant-secondary", config.secondary_color);
-        document.documentElement.style.setProperty("--tenant-accent", config.accent_color);
-        if (config.favicon_url) {
-          let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-          if (!link) {
-            link = document.createElement("link");
-            link.rel = "icon";
-            document.head.appendChild(link);
-          }
-          link.href = config.favicon_url;
-        }
+        applyBranding(config);
       })
       .catch((err: unknown) => {
         if (!active) return;
@@ -49,7 +60,7 @@ export const TenantBrandingProvider: React.FC<{ children: React.ReactNode }> = (
   }, []);
 
   return (
-    <TenantBrandingContext.Provider value={{ branding, isLoading, error }}>
+    <TenantBrandingContext.Provider value={{ branding, isLoading, error, updateBranding }}>
       {children}
     </TenantBrandingContext.Provider>
   );
