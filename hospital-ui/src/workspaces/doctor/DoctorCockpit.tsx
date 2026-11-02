@@ -24,6 +24,8 @@ import {
   History,
   Activity,
   ShieldAlert,
+  Building2,
+  Award,
 } from "lucide-react";
 
 interface PrescribedMedication {
@@ -106,6 +108,19 @@ export const DoctorCockpit: React.FC = () => {
   const [isAddTestModalOpen, setIsAddTestModalOpen] = useState(false);
   const [isSummarySlipOpen, setIsSummarySlipOpen] = useState(false);
   const [orderSetToast, setOrderSetToast] = useState<string | null>(null);
+
+  // Inpatient Admission Advice State
+  const [isAdmissionAdviceModalOpen, setIsAdmissionAdviceModalOpen] = useState(false);
+  const [admittingDept, setAdmittingDept] = useState("Cardiology");
+  const [admittingPriority, setAdmittingPriority] = useState<"EMERGENCY_STAT" | "HIGH_ACUITY_2H" | "ELECTIVE_PLANNED">("EMERGENCY_STAT");
+  const [admittingBedCategory, setAdmittingBedCategory] = useState<"ICU" | "HDU" | "SINGLE_PRIVATE" | "GENERAL_WARD">("ICU");
+  const [admittingDirectives, setAdmittingDirectives] = useState("NPO (Nil By Mouth). Secure 18G IV access. Continuous cardiac telemetry & SpO2 monitoring. STAT cardiology registrar review upon bed arrival.");
+
+  // Statutory Medical Certificate State
+  const [isMedicalCertModalOpen, setIsMedicalCertModalOpen] = useState(false);
+  const [certRestDays, setCertRestDays] = useState("5");
+  const [certDiagnosis, setCertDiagnosis] = useState("Acute Bronchitis with Bronchospasm");
+  const [certIdentificationMark, setCertIdentificationMark] = useState("Mole on right cheek");
 
   // Add Drug Form State
   const [drugName, setDrugName] = useState("Azithromycin 500mg Tablet");
@@ -397,6 +412,118 @@ export const DoctorCockpit: React.FC = () => {
     printDocument(html, { title: `Prescription_${ptMrn}`, docType: "CLINICAL_SUMMARY", printerDevice: a4Printer });
   };
 
+  const handlePrintAdmissionAdvice = () => {
+    const ptName = patientSummary?.full_name || "Patient";
+    const ptMrn = patientSummary?.mrn || "--";
+    const docName = queue?.doctor_name ? `Dr. ${queue.doctor_name}` : "Treating Consultant";
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 700px; margin: 0 auto; border: 2px solid #000; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 12px; font-weight: bold; color: #b91c1c; margin-top: 2px;">
+            STATUTORY INPATIENT ADMISSION ADVICE & BED BOOKING REQUISITION
+          </div>
+          <div style="font-size: 10px; color: #555;">Form ADT-01 • Priority Bed Allocation Order • Hospital Central Admitting Office</div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 12px;">
+          <div><b>Patient Name:</b> ${ptName.toUpperCase()}</div>
+          <div><b>UHID / MRN:</b> ${ptMrn}</div>
+          <div><b>Age / Gender:</b> ${patientSummary?.age_years || "--"}Y / ${patientSummary?.gender || "--"}</div>
+          <div><b>Date & Time:</b> ${new Date().toLocaleString()}</div>
+        </div>
+
+        <div style="border: 2px solid ${admittingPriority === "EMERGENCY_STAT" ? "#dc2626" : "#0284c7"}; background: ${admittingPriority === "EMERGENCY_STAT" ? "#fef2f2" : "#f0f9ff"}; padding: 12px; border-radius: 6px; margin-bottom: 14px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span style="font-size: 14px; font-weight: 800; color: ${admittingPriority === "EMERGENCY_STAT" ? "#b91c1c" : "#0369a1"};">
+              ADMISSION PRIORITY: ${admittingPriority.replace(/_/g, " ")}
+            </span>
+            <span style="font-size: 12px; font-weight: bold; padding: 4px 8px; background: #fff; border: 1px solid #999; border-radius: 4px;">
+              REQUESTED BED CLASS: ${admittingBedCategory.replace(/_/g, " ")}
+            </span>
+          </div>
+          <div style="font-size: 11px; color: #334155;">
+            <b>Admitting Specialty:</b> ${admittingDept} • <b>Treating Consultant:</b> ${docName}
+          </div>
+        </div>
+
+        <div style="margin-bottom: 14px; font-size: 12px; border: 1px solid #cbd5e1; padding: 10px; border-radius: 6px;">
+          <b>Provisional Admitting Diagnosis:</b>
+          <div style="font-weight: bold; color: #0f172a; margin-top: 4px;">${selectedIcd10}</div>
+        </div>
+
+        <div style="margin-bottom: 20px; font-size: 12px; border: 1px solid #cbd5e1; padding: 10px; border-radius: 6px; background: #fafafa;">
+          <b>Initial Care Plan & STAT Directives Prior to Bed Transfer:</b>
+          <div style="font-family: monospace; font-size: 11px; margin-top: 6px; line-height: 1.6; color: #1e293b;">
+            ${admittingDirectives}
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; margin-top: 60px; font-size: 11px;">
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Treating Consultant Seal & Signature</div>
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Central ADT Desk Bed Allocation Stamp</div>
+        </div>
+      </div>
+    `;
+
+    printDocument(html, {
+      title: `Admission_Advice_${ptMrn}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
+    setIsAdmissionAdviceModalOpen(false);
+  };
+
+  const handlePrintMedicalCertificate = () => {
+    const ptName = patientSummary?.full_name || "Patient";
+    const ptMrn = patientSummary?.mrn || "--";
+    const docName = queue?.doctor_name ? `Dr. ${queue.doctor_name}` : "Treating Consultant";
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 680px; margin: 0 auto; border: 2px solid #000; padding: 28px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 20px;">
+          <h2 style="margin: 0; font-size: 22px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 12px; font-weight: bold; color: #0284c7; margin-top: 2px;">
+            STATUTORY MEDICAL CERTIFICATE / SICKNESS & REST ADVICE
+          </div>
+          <div style="font-size: 10px; color: #555;">Issued under National Medical Commission (NMC) Code of Medical Ethics Regulations</div>
+        </div>
+
+        <div style="font-size: 12px; line-height: 2; margin-bottom: 24px; text-align: justify;">
+          This is to certify that <b>${ptName.toUpperCase()}</b> (UHID: <b>${ptMrn}</b>), aged <b>${patientSummary?.age_years || "--"}</b> years, Gender: <b>${patientSummary?.gender || "--"}</b>, having personal identification mark: <i>${certIdentificationMark}</i>, was examined by me in the Outpatient Department on <b>${new Date().toLocaleDateString()}</b>.
+          <br /><br />
+          The patient is suffering from <b>${certDiagnosis}</b> and in my professional clinical opinion, absence from work / educational duty is essential for recovery. 
+          <br />
+          I therefore recommend medical bed rest and convalescence for a period of <b>${certRestDays} days</b>, commencing from <b>${new Date().toLocaleDateString()}</b>.
+          <br />
+          The patient is provisionally expected to be fit to resume normal duties on <b>${new Date(Date.now() + parseInt(certRestDays, 10) * 86400000).toLocaleDateString()}</b>, subject to clinical re-evaluation.
+        </div>
+
+        <div style="display: flex; justify-content: space-between; margin-top: 80px; font-size: 11px;">
+          <div>
+            <div><b>Place:</b> ${hospitalProfile.address || "Hospital Outpatient Clinic"}</div>
+            <div><b>Date:</b> ${new Date().toLocaleDateString()}</div>
+          </div>
+          <div style="border-top: 1px solid #000; width: 240px; text-align: center; padding-top: 4px;">
+            <b>${docName}</b><br />
+            Consultant Physician / Surgeon<br />
+            State Medical Council Regn No. 49204/MC
+          </div>
+        </div>
+      </div>
+    `;
+
+    printDocument(html, {
+      title: `Medical_Certificate_${ptMrn}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
+    setIsMedicalCertModalOpen(false);
+  };
+
   const handleProceedToNextPatient = () => {
     if (!queue) return;
     const nextWaiting = queue.appointments.find(
@@ -580,7 +707,23 @@ export const DoctorCockpit: React.FC = () => {
                   MRN: {patientSummary.mrn} • Age: {patientSummary.age_years}y • Gender: {patientSummary.gender} • Blood Group: {patientSummary.blood_group || "Unknown"}
                 </p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsAdmissionAdviceModalOpen(true)}
+                  className="flex items-center gap-1.5 text-amber-300 border-amber-700/80 hover:bg-amber-950/40"
+                >
+                  <Building2 size={14} className="text-amber-400" /> IPD Bed Order
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsMedicalCertModalOpen(true)}
+                  className="flex items-center gap-1.5 text-sky-300 border-sky-700/80 hover:bg-sky-950/40"
+                >
+                  <Award size={14} className="text-sky-400" /> Medical Certificate
+                </Button>
                 <Button variant="primary" size="sm" onClick={handleFinalizeEncounter} className="flex items-center gap-1.5">
                   <FileText size={14} /> Finalize &amp; Sign Slip
                 </Button>
@@ -1250,6 +1393,170 @@ export const DoctorCockpit: React.FC = () => {
                   {isSubmitting ? "Signing & Broadcasting..." : "Sign & Finalize Encounter"}
                 </Button>
               </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {/* Modal: Inpatient Admission Advice & Bed Booking Order */}
+      {isAdmissionAdviceModalOpen && (
+        <Modal
+          isOpen={true}
+          onClose={() => setIsAdmissionAdviceModalOpen(false)}
+          title="Direct Inpatient (IPD) Admission Advice & Bed Requisition"
+        >
+          <div className="space-y-4">
+            <div className="p-3 bg-amber-950/40 border border-amber-600/70 rounded-lg text-amber-200 text-xs">
+              <div className="font-bold flex items-center gap-2 mb-1 text-sm text-amber-300">
+                <Building2 size={16} /> IPD Bed Booking &amp; Triage Escalation
+              </div>
+              Directs the central ADT desk to allocate an inpatient bed, alerting Nursing and Medical Records to open an IP admission file.
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Admitting Specialty</label>
+                <select
+                  value={admittingDept}
+                  onChange={(e) => setAdmittingDept(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
+                >
+                  <option value="Cardiology">Cardiology</option>
+                  <option value="Internal Medicine">Internal Medicine</option>
+                  <option value="General Surgery">General Surgery</option>
+                  <option value="Orthopedics">Orthopedics</option>
+                  <option value="Pulmonology">Pulmonology</option>
+                  <option value="Neurology">Neurology</option>
+                  <option value="Pediatrics">Pediatrics</option>
+                  <option value="OBG / Gynecology">OBG / Gynecology</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Acuity Priority</label>
+                <select
+                  value={admittingPriority}
+                  onChange={(e) => setAdmittingPriority(e.target.value as any)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
+                >
+                  <option value="EMERGENCY_STAT">🔴 EMERGENCY STAT (Immediate Bed)</option>
+                  <option value="HIGH_ACUITY_2H">🟡 High Acuity (Bed within 2 Hours)</option>
+                  <option value="ELECTIVE_PLANNED">🟢 Elective Same-Day Planned</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Requested Bed Class / Unit</label>
+              <select
+                value={admittingBedCategory}
+                onChange={(e) => setAdmittingBedCategory(e.target.value as any)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
+              >
+                <option value="ICU">Intensive Care Unit (ICU) — Continuous Critical Monitoring</option>
+                <option value="HDU">High Dependency Unit (HDU) — Stepdown Monitored</option>
+                <option value="SINGLE_PRIVATE">Single Private Room (Air Conditioned)</option>
+                <option value="GENERAL_WARD">Multi-Bed General Ward (Standard Care)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">STAT Directives &amp; Initial Ward Orders</label>
+              <textarea
+                rows={3}
+                value={admittingDirectives}
+                onChange={(e) => setAdmittingDirectives(e.target.value)}
+                placeholder="e.g. NPO, secure 18G IV line, oxygen 4L/min, continuous SpO2/ECG telemetry..."
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono"
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+              <Button variant="outline" size="sm" onClick={() => setIsAdmissionAdviceModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={handlePrintAdmissionAdvice}
+                className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold"
+              >
+                <Printer size={13} /> Transmit Order &amp; Print Slip
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal: Statutory Medical Certificate / Sickness Advice */}
+      {isMedicalCertModalOpen && (
+        <Modal
+          isOpen={true}
+          onClose={() => setIsMedicalCertModalOpen(false)}
+          title="National Medical Commission (NMC) Statutory Medical Certificate"
+        >
+          <div className="space-y-4">
+            <div className="p-3 bg-sky-950/40 border border-sky-600/70 rounded-lg text-sky-200 text-xs">
+              <div className="font-bold flex items-center gap-2 mb-1 text-sm text-sky-300">
+                <Award size={16} /> Official Medical Certificate of Illness &amp; Rest
+              </div>
+              Generates a legally binding medical certificate specifying diagnosis, personal identification marks, recommended convalescence days, and expected return to duty date.
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">Clinical Diagnosis</label>
+              <input
+                type="text"
+                required
+                value={certDiagnosis}
+                onChange={(e) => setCertDiagnosis(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Personal Identification Mark</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Scar on left forearm / Mole on right cheek"
+                  value={certIdentificationMark}
+                  onChange={(e) => setCertIdentificationMark(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Recommended Rest (Days)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="60"
+                  required
+                  value={certRestDays}
+                  onChange={(e) => setCertRestDays(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono"
+                />
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 text-xs font-mono text-slate-400">
+              <div>Expected Resume Duty: <strong className="text-emerald-400">{new Date(Date.now() + (parseInt(certRestDays, 10) || 1) * 86400000).toLocaleDateString()}</strong></div>
+              <div>Certifying Consultant: <strong className="text-slate-200">Dr. {queue?.doctor_name || "Doctor"} (Regn: 49204/MC)</strong></div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+              <Button variant="outline" size="sm" onClick={() => setIsMedicalCertModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handlePrintMedicalCertificate}
+                className="flex items-center gap-1.5"
+              >
+                <Printer size={13} /> Print Medical Certificate
+              </Button>
             </div>
           </div>
         </Modal>

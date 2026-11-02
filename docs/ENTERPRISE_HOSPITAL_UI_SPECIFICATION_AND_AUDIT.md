@@ -483,6 +483,10 @@ To eliminate hospital-floor pain points and compliance risks, Avinya HMS systema
    - **Retained Surgical Item (RSI) Emergency Protocol:** Active count discrepancy alert blocking wound closure whenever laparotomy sponges or surgical needles/sharps fail reconciliation, mandating cavity re-exploration and STAT portable C-Arm plain fluoroscopy.
    - **UDI Medical Device & Implant Identification Card:** Complies with medical device vigilance regulations (FDA/CDSCO) by generating statutory implant cards with UDI barcodes, manufacturer lot numbers, and MR-conditional safety instructions for implanted prostheses and stents.
 
+10. **Doctor Outpatient Consultation Cockpit ([`DoctorCockpit.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/doctor/DoctorCockpit.tsx)):**
+    - **Inpatient (IPD) Admission Advice & Bed Requisition:** 1-click issuance of Form ADT-01 transmitting prioritized bed booking orders (Emergency STAT, High-Acuity 2h, Elective Planned) to the central ADT desk with target bed class (ICU, HDU, Private AC, General Ward) and STAT initial care directives.
+    - **Statutory Medical Fitness & Sickness Certificate:** Generates National Medical Commission (NMC) compliant medical certificates specifying diagnosis, personal identification marks, recommended convalescence days, and expected return to duty dates.
+
 ---
 
 ## 5. Comprehensive AI Audit Scorecard & Evaluation
