@@ -926,8 +926,8 @@ export const CashierCounterWorkspace: React.FC = () => {
             <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 font-mono text-xs">
               <div className="flex justify-between border-b border-slate-800 pb-2">
                 <div>
-                  <span className="font-bold text-slate-100 text-sm">AVINYA HEALTHCARE LTD.</span>
-                  <div className="text-[10px] text-slate-400">GSTIN: 36AAAAA0000A1Z5 • NABH Accredited</div>
+                  <span className="font-bold text-slate-100 text-sm">{hospitalProfile.name || "HEALTHCARE FACILITY"}</span>
+                  {(hospitalProfile.taxGstin || hospitalProfile.accreditation) && (\n                    <div className="text-[10px] text-slate-400">\n                      {hospitalProfile.taxGstin ? `GSTIN: ${hospitalProfile.taxGstin}` : ""}\n                      {hospitalProfile.taxGstin && hospitalProfile.accreditation ? " • " : ""}\n                      {hospitalProfile.accreditation || ""}\n                    </div>\n                  )}
                 </div>
                 <div className="text-right">
                   <div className="text-emerald-400 font-bold">{lastSettledInvoice.invoiceNumber}</div>
