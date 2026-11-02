@@ -446,7 +446,7 @@ Do not assume a successful database restore also restores uploaded files.
 
 To inspect orphaned tenant branding files and abandoned upload staging files,
 run the reconciliation utility from the repository root or the application
-container. It is read-only by default and protects both logo and favicon
+container. The enforced minimum grace period is 24 hours. It is read-only by default and protects both logo and favicon
 references, including assets for inactive tenants:
 
 ```sh
