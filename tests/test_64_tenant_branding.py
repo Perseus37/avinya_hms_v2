@@ -146,3 +146,62 @@ def test_existing_tenant_admin_role_receives_branding_permission(multi_tenant_en
         permission_codes = {permission.code for permission in admin_role.permissions}
         assert "config:write" in permission_codes
         assert db.query(Permission).filter_by(code="config:write").one()
+
+
+def test_brand_asset_upload_is_tenant_scoped_and_audited(
+    client, multi_tenant_env, superuser_headers, apollo_admin_headers, monkeypatch, tmp_path
+):
+    import json
+    from backend.control_plane.models import ControlPlaneAuditLog, TenantRegistry
+
+    monkeypatch.setattr("backend.domains.ui.router.settings.ATTACHMENTS_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr("backend.domains.ui.router.scan_file_with_clamav", lambda path: None)
+    image_bytes = b"\\x89PNG\\r\\n\\x1a\\n" + b"test-image-data"
+
+    upload = client.post(
+        "/api/ui/tenant-branding/assets?kind=logo",
+        headers=superuser_headers,
+        files={"file": ("tenant-logo.png", image_bytes, "image/png")},
+    )
+    assert upload.status_code == 200, upload.text
+    asset_url = upload.json()["asset_url"]
+    assert asset_url.startswith("/api/ui/tenant-branding/assets/")
+
+    same_tenant = client.get(asset_url, headers=superuser_headers)
+    assert same_tenant.status_code == 200
+    assert same_tenant.headers["content-type"] == "image/png"
+    assert same_tenant.content == image_bytes
+
+    other_tenant = client.get(asset_url, headers=apollo_admin_headers)
+    assert other_tenant.status_code == 404
+
+    with multi_tenant_env["control_session_factory"]() as db:
+        tenant = db.query(TenantRegistry).filter_by(subdomain_slug="default").one()
+        branding = json.loads(tenant.ui_branding_json)
+        assert branding["logo_url"] == asset_url
+        audit = db.query(ControlPlaneAuditLog).filter_by(
+            action="TENANT_BRAND_ASSET_UPLOADED",
+            target_slug="default",
+        ).one()
+        assert "logo image" in audit.details
+
+
+def test_brand_asset_upload_rejects_mismatched_file_signature(
+    client, superuser_headers, monkeypatch, tmp_path
+):
+    monkeypatch.setattr("backend.domains.ui.router.settings.ATTACHMENTS_STORAGE_DIR", str(tmp_path))
+    response = client.post(
+        "/api/ui/tenant-branding/assets?kind=favicon",
+        headers=superuser_headers,
+        files={"file": ("fake.png", b"not-a-png", "image/png")},
+    )
+    assert response.status_code == 415
+
+
+def test_brand_asset_upload_rejects_svg_active_content(client, superuser_headers):
+    response = client.post(
+        "/api/ui/tenant-branding/assets?kind=logo",
+        headers=superuser_headers,
+        files={"file": ("logo.svg", b"<svg></svg>", "image/svg+xml")},
+    )
+    assert response.status_code == 415
