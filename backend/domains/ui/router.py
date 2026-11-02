@@ -21,6 +21,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
+from backend.core.storage import (
+    StoragePathError,
+    resolve_tenant_storage_file,
+    tenant_storage_directory,
+)
 from backend.core.database import get_control_db, get_db, resolve_tenant_context
 from backend.core.dependencies import RequirePermission, get_current_user, get_redis
 from backend.domains.clinical.models import (
@@ -223,15 +228,15 @@ def _delete_tenant_brand_asset(tenant_slug: str, asset_id: str) -> None:
     """Delete one validated asset inside its tenant directory; never follow path escapes."""
     if not _BRAND_ASSET_ID.fullmatch(asset_id):
         return
-    storage_root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-    tenant_directory = (storage_root / tenant_slug).resolve()
-    tenant_root = (tenant_directory / "branding-assets").resolve()
     try:
-        tenant_directory.relative_to(storage_root)
-        tenant_root.relative_to(tenant_directory)
-        asset_path = (tenant_root / asset_id).resolve()
-        asset_path.relative_to(tenant_root)
-    except ValueError:
+        tenant_root = tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_slug,
+            "branding-assets",
+            create=False,
+        )
+        asset_path = resolve_tenant_storage_file(tenant_root, asset_id)
+    except StoragePathError:
         return
     try:
         if asset_path.is_file():
@@ -275,25 +280,13 @@ def upload_tenant_brand_asset(
     if not re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}$", tenant_context.subdomain_slug):
         raise HTTPException(status_code=404, detail="Brand asset not found.")
     try:
-        storage_root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-        tenant_directory = (storage_root / tenant_context.subdomain_slug).resolve()
-        tenant_directory.relative_to(storage_root)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
-    except OSError as exc:
-        logger.error("Tenant brand asset storage path is unavailable.", exc_info=True)
-        raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
-
-    try:
-        tenant_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(tenant_directory, 0o700)
-        tenant_root = (tenant_directory / "branding-assets").resolve()
-        tenant_root.relative_to(tenant_directory)
-        tenant_root.mkdir(exist_ok=True, mode=0o700)
-        os.chmod(tenant_root, 0o700)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
-    except OSError as exc:
+        tenant_root = tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_context.subdomain_slug,
+            "branding-assets",
+            create=True,
+        )
+    except StoragePathError as exc:
         logger.error("Unable to prepare tenant brand asset storage.", exc_info=True)
         raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
 
@@ -389,21 +382,15 @@ def get_tenant_brand_asset(request: Request, asset_id: str):
     tenant_context = resolve_tenant_context(request)
     if not re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}$", tenant_context.subdomain_slug):
         raise HTTPException(status_code=404, detail="Brand asset not found.")
-    storage_root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-    tenant_directory = (storage_root / tenant_context.subdomain_slug).resolve()
     try:
-        tenant_directory.relative_to(storage_root)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
-    tenant_root = (tenant_directory / "branding-assets").resolve()
-    try:
-        tenant_root.relative_to(tenant_directory)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
-    asset_path = (tenant_root / asset_id).resolve()
-    try:
-        asset_path.relative_to(tenant_root)
-    except ValueError as exc:
+        tenant_root = tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_context.subdomain_slug,
+            "branding-assets",
+            create=False,
+        )
+        asset_path = resolve_tenant_storage_file(tenant_root, asset_id)
+    except StoragePathError as exc:
         raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
     if not asset_path.is_file():
         raise HTTPException(status_code=404, detail="Brand asset not found.")
