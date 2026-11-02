@@ -429,3 +429,120 @@ def test_brand_asset_upload_returns_503_when_storage_directory_is_unavailable(
     assert response.json()["message"] == "Brand asset storage is unavailable."
     assert list(tmp_path.iterdir()) == []
 
+def test_brand_asset_reconciliation_dry_run_preserves_referenced_and_recent_files(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from backend.scripts.reconcile_branding_assets import reconcile_branding_assets
+
+    asset_dir = tmp_path / "default" / "branding-assets"
+    asset_dir.mkdir(parents=True)
+    referenced_id = "a" * 32 + ".png"
+    orphan_id = "b" * 32 + ".png"
+    recent_id = "c" * 32 + ".png"
+    for asset_id in (referenced_id, orphan_id, recent_id):
+        (asset_dir / asset_id).write_bytes(b"image")
+    old_time = (datetime.now(timezone.utc) - timedelta(days=3)).timestamp()
+    recent_time = datetime.now(timezone.utc).timestamp()
+    import os
+    os.utime(asset_dir / referenced_id, (old_time, old_time))
+    os.utime(asset_dir / orphan_id, (old_time, old_time))
+    os.utime(asset_dir / recent_id, (recent_time, recent_time))
+
+    tenant = SimpleNamespace(
+        subdomain_slug="default",
+        ui_branding_json=json.dumps({
+            "logo_url": f"/api/ui/tenant-branding/assets/{referenced_id}",
+            "favicon_url": "https://cdn.example.test/favicon.png",
+        }),
+    )
+    result = reconcile_branding_assets(
+        tmp_path, [tenant], grace_hours=24, execute=False
+    )
+
+    assert [item["file"] for item in result["candidates"]] == [orphan_id]
+    assert result["deleted"] == []
+    assert (asset_dir / referenced_id).is_file()
+    assert (asset_dir / orphan_id).is_file()
+    assert (asset_dir / recent_id).is_file()
+
+
+def test_brand_asset_reconciliation_execute_removes_only_stale_orphans_and_temp_files(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    import os
+
+    from backend.scripts.reconcile_branding_assets import reconcile_branding_assets
+
+    asset_dir = tmp_path / "default" / "branding-assets"
+    asset_dir.mkdir(parents=True)
+    orphan_id = "d" * 32 + ".webp"
+    temp_id = "." + "e" * 32 + ".jpg.part"
+    referenced_id = "f" * 32 + ".png"
+    for name in (orphan_id, temp_id, referenced_id, "notes.txt"):
+        (asset_dir / name).write_bytes(b"data")
+    old_time = (datetime.now(timezone.utc) - timedelta(days=2)).timestamp()
+    for name in (orphan_id, temp_id, referenced_id, "notes.txt"):
+        os.utime(asset_dir / name, (old_time, old_time))
+
+    tenant = SimpleNamespace(
+        subdomain_slug="default",
+        ui_branding_json=json.dumps({
+            "favicon_url": f"/api/ui/tenant-branding/assets/{referenced_id}"
+        }),
+    )
+    result = reconcile_branding_assets(
+        tmp_path, [tenant], grace_hours=24, execute=True
+    )
+
+    assert {item["file"] for item in result["deleted"]} == {orphan_id, temp_id}
+    assert not (asset_dir / orphan_id).exists()
+    assert not (asset_dir / temp_id).exists()
+    assert (asset_dir / referenced_id).is_file()
+    assert (asset_dir / "notes.txt").is_file()
+
+
+def test_brand_asset_reconciliation_skips_tenant_with_malformed_branding_json(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    import os
+
+    from backend.scripts.reconcile_branding_assets import reconcile_branding_assets
+
+    asset_dir = tmp_path / "default" / "branding-assets"
+    asset_dir.mkdir(parents=True)
+    asset_id = "1" * 32 + ".jpeg"
+    asset = asset_dir / asset_id
+    asset.write_bytes(b"data")
+    old_time = (datetime.now(timezone.utc) - timedelta(days=2)).timestamp()
+    os.utime(asset, (old_time, old_time))
+
+    tenant = SimpleNamespace(subdomain_slug="default", ui_branding_json="{invalid")
+    result = reconcile_branding_assets(
+        tmp_path, [tenant], grace_hours=24, execute=True
+    )
+
+    assert result["candidates"] == []
+    assert result["deleted"] == []
+    assert result["skipped_tenants"] == [{
+        "tenant": "default",
+        "reason": "malformed branding configuration",
+    }]
+    assert asset.is_file()
+
+
+def test_brand_asset_reconciliation_rejects_symlinked_storage_root(tmp_path):
+    from types import SimpleNamespace
+    import pytest
+
+    from backend.scripts.reconcile_branding_assets import reconcile_branding_assets
+
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    linked_root = tmp_path / "linked"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+
+    tenant = SimpleNamespace(subdomain_slug="default", ui_branding_json="{}")
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        reconcile_branding_assets(linked_root, [tenant], execute=True)
+
