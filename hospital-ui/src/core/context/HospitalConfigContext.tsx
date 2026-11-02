@@ -59,10 +59,23 @@ export interface HospitalPolicies {
   enforceRevisitWindowExpiry: boolean;
 }
 
+export type WristbandPreset =
+  | "ADULT_STANDARD_280x25"
+  | "ADULT_WIDE_280x28"
+  | "ADULT_SLIM_250x19"
+  | "PEDIATRIC_180x19"
+  | "INFANT_NICU_150x15"
+  | "NEONATE_MICRO_100x12"
+  | "CUSTOM";
+
+export type ThermalRollWidth = "58mm" | "80mm" | "112mm" | "CUSTOM";
+
 export interface PrintTemplatesConfig {
   thermalToken: {
     headerTitle: string;
     subHeader: string;
+    rollWidth: ThermalRollWidth;
+    customWidthMm?: number;
     showEstimatedWait: boolean;
     showCashierReceipt: boolean;
     showBarcode: boolean;
@@ -70,7 +83,13 @@ export interface PrintTemplatesConfig {
   };
   wristband: {
     hospitalName: string;
-    wristbandType: "ADULT_STANDARD" | "PEDIATRIC" | "BARCODE_ONLY";
+    preset: WristbandPreset;
+    widthMm: number;
+    heightMm: number;
+    printableLengthMm: number;
+    orientation: "LANDSCAPE" | "PORTRAIT";
+    printerType: "ZEBRA_HC100" | "DIRECT_THERMAL_ROLL" | "LASER_SHEETLET" | "STANDARD_POS";
+    wristbandType: "ADULT_STANDARD" | "PEDIATRIC" | "INFANT_NICU" | "BARCODE_ONLY";
     showBloodGroup: boolean;
     showEmergencyPhone: boolean;
     showAllergyWarning: boolean;
@@ -121,6 +140,7 @@ export const DEFAULT_PRINT_TEMPLATES: PrintTemplatesConfig = {
   thermalToken: {
     headerTitle: "AVINYA HEALTHCARE APEX",
     subHeader: "OPD CONSULTATION TOKEN & RECEIPT",
+    rollWidth: "80mm",
     showEstimatedWait: true,
     showCashierReceipt: true,
     showBarcode: true,
@@ -128,6 +148,12 @@ export const DEFAULT_PRINT_TEMPLATES: PrintTemplatesConfig = {
   },
   wristband: {
     hospitalName: "AVINYA HEALTHCARE APEX",
+    preset: "ADULT_STANDARD_280x25",
+    widthMm: 280,
+    heightMm: 25,
+    printableLengthMm: 75,
+    orientation: "LANDSCAPE",
+    printerType: "DIRECT_THERMAL_ROLL",
     wristbandType: "ADULT_STANDARD",
     showBloodGroup: true,
     showEmergencyPhone: true,

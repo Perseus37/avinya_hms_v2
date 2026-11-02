@@ -11,6 +11,7 @@ import {
   Edit3,
   Clock,
   Sparkles,
+  Siren,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -314,6 +315,28 @@ export const PatientRegistrationWorkspace: React.FC = () => {
     }
   };
 
+  const handleEmergencyTraumaMode = () => {
+    const aliasNumber = Math.floor(1000 + Math.random() * 9000);
+    setFullName(`TRAUMA UNKNOWN MALE #${aliasNumber}`);
+    setGender("MALE");
+    setAgeYears("35");
+    setDob("1991-01-01");
+    setPhone("0000000000");
+    setBloodGroup("O-");
+    setAddress("Brought Unconscious by 108 Emergency Ambulance • Highway Police Intimation");
+    setPincode("");
+    setCity("Apex Emergency Intake");
+    setState("Telangana");
+    setPriority("EMERGENCY");
+    setConsultationType("NEW");
+    setBookOpdConsult(true);
+    const emergDoc = OPD_DOCTOR_ROSTER.find((d) => d.department.includes("Surgery") || d.department.includes("Medicine")) || OPD_DOCTOR_ROSTER[0];
+    if (emergDoc) {
+      setSelectedDoctorId(emergDoc.id);
+      setSelectedDept(emergDoc.department);
+    }
+  };
+
   const handlePrintDocument = () => {
     if (!successPatient) return;
     if (printDocType === "OPD_TOKEN" && generatedToken) {
@@ -345,28 +368,44 @@ export const PatientRegistrationWorkspace: React.FC = () => {
           <div class="center" style="font-size: 8px;">${template.footerNotice}</div>
         </div>
       `;
-      printDocument(html, { title: `OPD_Token_${generatedToken.tokenCode}`, docType: "THERMAL_TOKEN" });
+      printDocument(html, {
+        title: `OPD_Token_${generatedToken.tokenCode}`,
+        docType: "THERMAL_TOKEN",
+        thermalConfig: {
+          rollWidthMm: template.rollWidth === "58mm" ? 58 : template.rollWidth === "112mm" ? 112 : 80,
+        },
+      });
     } else {
       const template = printTemplates.wristband;
       const html = `
         <div class="wristband-slip">
           <div>
-            <div class="bold" style="font-size: 12px;">${(template.hospitalName || hospitalProfile.name).toUpperCase()}</div>
-            <div class="bold" style="font-size: 14px; margin-top: 2px;">${successPatient.full_name.toUpperCase()}</div>
-            <div style="font-size: 10px;">${successPatient.gender} ${template.showBloodGroup ? `• Blood: ${successPatient.blood_group || "O+"}` : ""}</div>
-            <div style="font-size: 9px;">Ph: ${successPatient.phone_number || "--"}</div>
-            ${template.showAllergyWarning ? `<div style="font-size: 8px; color: #dc2626; font-weight: bold; margin-top: 2px;">ALLERGIES: NKDA / VERIFY AT BEDSIDE</div>` : ""}
+            <div class="bold" style="font-size: 11px;">${(template.hospitalName || hospitalProfile.name).toUpperCase()}</div>
+            <div class="bold" style="font-size: 13px; margin-top: 2px;">${successPatient.full_name.toUpperCase()}</div>
+            <div style="font-size: 9px;">${successPatient.gender} ${template.showBloodGroup ? `• Blood: ${successPatient.blood_group || "O+"}` : ""}</div>
+            <div style="font-size: 8px;">Ph: ${successPatient.phone_number || "--"}</div>
+            ${template.showAllergyWarning ? `<div class="allergy-tag" style="margin-top: 2px;">ALLERGIES: NKDA / VERIFY AT BEDSIDE</div>` : ""}
           </div>
           <div class="center">
             <div class="barcode-box">||||| | |||| || ||| | |||</div>
-            <div class="bold" style="font-size: 13px;">${successPatient.mrn}</div>
+            <div class="bold" style="font-size: 12px;">${successPatient.mrn}</div>
             ${template.showEmergencyPhone && emergencyPhone ? `
               <div style="font-size: 8px;">ICE: ${emergencyPhone}</div>
             ` : ""}
           </div>
         </div>
       `;
-      printDocument(html, { title: `UHID_Wristband_${successPatient.mrn}`, docType: "WRISTBAND" });
+      printDocument(html, {
+        title: `UHID_Wristband_${successPatient.mrn}`,
+        docType: "WRISTBAND",
+        wristbandConfig: {
+          widthMm: template.widthMm || 280,
+          heightMm: template.heightMm || 25,
+          printableLengthMm: template.printableLengthMm || 75,
+          orientation: template.orientation === "PORTRAIT" ? "portrait" : "landscape",
+          printerType: template.printerType,
+        },
+      });
     }
   };
 
@@ -391,6 +430,26 @@ export const PatientRegistrationWorkspace: React.FC = () => {
             {errorMessage}
           </div>
         )}
+
+        <div className="flex flex-wrap items-center justify-between p-3 mb-6 bg-slate-900 border border-slate-800 rounded-xl gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-300 font-semibold">High-Velocity Intake Shortcuts:</span>
+            <span className="text-[10px] text-slate-500 font-mono">Bypass demographic barriers for trauma</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleEmergencyTraumaMode}
+              className="text-xs border-rose-800 text-rose-300 bg-rose-950/40 hover:bg-rose-900/60 font-bold flex items-center gap-1.5 shadow-sm"
+              title="Auto-generates anonymous alias UHID, sets Emergency priority and assigns Trauma Surgeon"
+            >
+              <Siren size={14} className="text-rose-400 animate-pulse" />
+              <span>Trauma Unidentified / John Doe Intake (1-Click)</span>
+            </Button>
+          </div>
+        </div>
 
         <form onSubmit={handleFormSubmit} className="space-y-6 max-w-4xl">
           {/* Section 1: Core Demographics */}

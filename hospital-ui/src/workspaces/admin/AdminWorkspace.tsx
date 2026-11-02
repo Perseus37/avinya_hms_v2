@@ -8,7 +8,7 @@ import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { Badge } from "../../components/ui/Badge";
 import { WorkspaceId } from "../../types";
-import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { useHospitalConfig, WristbandPreset, ThermalRollWidth } from "../../core/context/HospitalConfigContext";
 import {
   Database,
   Download,
@@ -69,17 +69,74 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
   // Print Templates Local Form State
   const [thermalTitle, setThermalTitle] = useState(printTemplates.thermalToken.headerTitle);
   const [thermalSubHeader, setThermalSubHeader] = useState(printTemplates.thermalToken.subHeader);
+  const [thermalRollWidth, setThermalRollWidth] = useState<ThermalRollWidth>(printTemplates.thermalToken.rollWidth || "80mm");
   const [thermalShowWait, setThermalShowWait] = useState(printTemplates.thermalToken.showEstimatedWait);
   const [thermalShowReceipt, setThermalShowReceipt] = useState(printTemplates.thermalToken.showCashierReceipt);
   const [thermalShowBarcode, setThermalShowBarcode] = useState(printTemplates.thermalToken.showBarcode);
   const [thermalFooter, setThermalFooter] = useState(printTemplates.thermalToken.footerNotice);
 
   const [wristbandName, setWristbandName] = useState(printTemplates.wristband.hospitalName);
-  const [wristbandType, setWristbandType] = useState<"ADULT_STANDARD" | "PEDIATRIC" | "BARCODE_ONLY">(printTemplates.wristband.wristbandType);
+  const [wristbandPreset, setWristbandPreset] = useState<WristbandPreset>(printTemplates.wristband.preset || "ADULT_STANDARD_280x25");
+  const [wristbandWidthMm, setWristbandWidthMm] = useState<number>(printTemplates.wristband.widthMm || 280);
+  const [wristbandHeightMm, setWristbandHeightMm] = useState<number>(printTemplates.wristband.heightMm || 25);
+  const [wristbandPrintableLengthMm, setWristbandPrintableLengthMm] = useState<number>(printTemplates.wristband.printableLengthMm || 75);
+  const [wristbandOrientation, setWristbandOrientation] = useState<"LANDSCAPE" | "PORTRAIT">(printTemplates.wristband.orientation || "LANDSCAPE");
+  const [wristbandPrinterType, setWristbandPrinterType] = useState<"ZEBRA_HC100" | "DIRECT_THERMAL_ROLL" | "LASER_SHEETLET" | "STANDARD_POS">(printTemplates.wristband.printerType || "DIRECT_THERMAL_ROLL");
+  const [wristbandType, setWristbandType] = useState<"ADULT_STANDARD" | "PEDIATRIC" | "INFANT_NICU" | "BARCODE_ONLY">(printTemplates.wristband.wristbandType || "ADULT_STANDARD");
   const [wristbandBlood, setWristbandBlood] = useState(printTemplates.wristband.showBloodGroup);
   const [wristbandPhone, setWristbandPhone] = useState(printTemplates.wristband.showEmergencyPhone);
   const [wristbandAllergy, setWristbandAllergy] = useState(printTemplates.wristband.showAllergyWarning);
   const [wristbandBarcode, setWristbandBarcode] = useState<"CODE128" | "QR">(printTemplates.wristband.barcodeFormat);
+
+  const handleWristbandPresetChange = (preset: WristbandPreset) => {
+    setWristbandPreset(preset);
+    switch (preset) {
+      case "ADULT_STANDARD_280x25":
+        setWristbandWidthMm(280);
+        setWristbandHeightMm(25);
+        setWristbandPrintableLengthMm(75);
+        setWristbandOrientation("LANDSCAPE");
+        setWristbandType("ADULT_STANDARD");
+        break;
+      case "ADULT_WIDE_280x28":
+        setWristbandWidthMm(280);
+        setWristbandHeightMm(28);
+        setWristbandPrintableLengthMm(80);
+        setWristbandOrientation("LANDSCAPE");
+        setWristbandType("ADULT_STANDARD");
+        break;
+      case "ADULT_SLIM_250x19":
+        setWristbandWidthMm(250);
+        setWristbandHeightMm(19);
+        setWristbandPrintableLengthMm(70);
+        setWristbandOrientation("LANDSCAPE");
+        setWristbandType("ADULT_STANDARD");
+        break;
+      case "PEDIATRIC_180x19":
+        setWristbandWidthMm(180);
+        setWristbandHeightMm(19);
+        setWristbandPrintableLengthMm(60);
+        setWristbandOrientation("LANDSCAPE");
+        setWristbandType("PEDIATRIC");
+        break;
+      case "INFANT_NICU_150x15":
+        setWristbandWidthMm(150);
+        setWristbandHeightMm(15);
+        setWristbandPrintableLengthMm(50);
+        setWristbandOrientation("LANDSCAPE");
+        setWristbandType("INFANT_NICU");
+        break;
+      case "NEONATE_MICRO_100x12":
+        setWristbandWidthMm(100);
+        setWristbandHeightMm(12);
+        setWristbandPrintableLengthMm(40);
+        setWristbandOrientation("LANDSCAPE");
+        setWristbandType("INFANT_NICU");
+        break;
+      case "CUSTOM":
+        break;
+    }
+  };
 
   const [bhtTitle, setBhtTitle] = useState(printTemplates.bedHeadTicket.hospitalTitle);
   const [bhtSubTitle, setBhtSubTitle] = useState(printTemplates.bedHeadTicket.subTitle);
@@ -1624,6 +1681,18 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                           />
                         </div>
                         <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Thermal Paper Roll Width</label>
+                          <select
+                            value={thermalRollWidth}
+                            onChange={(e) => setThermalRollWidth(e.target.value as any)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                          >
+                            <option value="58mm">58mm (2-inch Compact / Mobile POS)</option>
+                            <option value="80mm">80mm (3-inch Standard Hospital POS)</option>
+                            <option value="112mm">112mm (4-inch Desktop Slip Printer)</option>
+                          </select>
+                        </div>
+                        <div>
                           <label className="block text-[11px] text-slate-400 mb-1">Sub-Header Slogan</label>
                           <input
                             type="text"
@@ -1679,13 +1748,14 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                                 thermalToken: {
                                   headerTitle: thermalTitle,
                                   subHeader: thermalSubHeader,
+                                  rollWidth: thermalRollWidth,
                                   showEstimatedWait: thermalShowWait,
                                   showCashierReceipt: thermalShowReceipt,
                                   showBarcode: thermalShowBarcode,
                                   footerNotice: thermalFooter,
                                 },
                               });
-                              setTemplateSavedMsg("80mm Thermal Receipt Template Saved!");
+                              setTemplateSavedMsg(`${thermalRollWidth} Thermal Receipt Template Saved!`);
                               setTimeout(() => setTemplateSavedMsg(""), 3000);
                             }}
                           >
@@ -1749,16 +1819,88 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                           />
                         </div>
                         <div>
-                          <label className="block text-[11px] text-slate-400 mb-1">Wristband Size / Dimension</label>
+                          <label className="block text-[11px] text-slate-400 mb-1">Dedicated Wristband Printer Hardware</label>
                           <select
-                            value={wristbandType}
-                            onChange={(e) => setWristbandType(e.target.value as any)}
+                            value={wristbandPrinterType}
+                            onChange={(e) => setWristbandPrinterType(e.target.value as any)}
                             className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
                           >
-                            <option value="ADULT_STANDARD">Adult Standard (280mm x 25mm)</option>
-                            <option value="PEDIATRIC">Pediatric / Infant (180mm x 20mm)</option>
-                            <option value="BARCODE_ONLY">Barcode Only Strip</option>
+                            <option value="DIRECT_THERMAL_ROLL">Direct Thermal Roll Printer (Zebra ZD410 / SATO WS2 / TSC)</option>
+                            <option value="ZEBRA_HC100">Zebra ZD510-HC / HC100 Cartridge Printer (Vertical / Narrow-Edge Feed)</option>
+                            <option value="LASER_SHEETLET">A4 Sheet-Fed Laser with Peel-Off Wristband (Avery / PDC)</option>
+                            <option value="STANDARD_POS">Standard Direct Thermal Desktop</option>
                           </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Wristband Size &amp; Patient Demographic Preset</label>
+                          <select
+                            value={wristbandPreset}
+                            onChange={(e) => handleWristbandPresetChange(e.target.value as any)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                          >
+                            <option value="ADULT_STANDARD_280x25">Adult Standard (280mm × 25mm / 11" × 1")</option>
+                            <option value="ADULT_WIDE_280x28">Adult Wide (280mm × 28mm)</option>
+                            <option value="ADULT_SLIM_250x19">Adult Slim / Clip (250mm × 19mm / 10" × 0.75")</option>
+                            <option value="PEDIATRIC_180x19">Pediatric / Child (180mm × 19mm / 7" × 0.75")</option>
+                            <option value="INFANT_NICU_150x15">Infant / NICU Ultra-Soft (150mm × 15mm / 6" × 0.6")</option>
+                            <option value="NEONATE_MICRO_100x12">Neonate Micro-Premature (100mm × 12mm)</option>
+                            <option value="CUSTOM">Custom Dimensions (Manual Millimeter Configuration)</option>
+                          </select>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2 bg-slate-950 p-2.5 rounded border border-slate-800">
+                          <div>
+                            <label className="block text-[10px] text-slate-400 mb-0.5">Total Length (mm)</label>
+                            <input
+                              type="number"
+                              value={wristbandWidthMm}
+                              onChange={(e) => setWristbandWidthMm(Number(e.target.value))}
+                              className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-xs text-white font-mono"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-slate-400 mb-0.5">Band Width (mm)</label>
+                            <input
+                              type="number"
+                              value={wristbandHeightMm}
+                              onChange={(e) => setWristbandHeightMm(Number(e.target.value))}
+                              className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-xs text-white font-mono"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-slate-400 mb-0.5">Printable Face (mm)</label>
+                            <input
+                              type="number"
+                              value={wristbandPrintableLengthMm}
+                              onChange={(e) => setWristbandPrintableLengthMm(Number(e.target.value))}
+                              className="w-full bg-slate-900 border border-slate-700 rounded p-1.5 text-xs text-white font-mono"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-4">
+                          <label className="text-[11px] text-slate-400">Print Feed Orientation:</label>
+                          <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="wbOrientation"
+                              value="LANDSCAPE"
+                              checked={wristbandOrientation === "LANDSCAPE"}
+                              onChange={() => setWristbandOrientation("LANDSCAPE")}
+                            />
+                            <span>Landscape (Along Band)</span>
+                          </label>
+                          <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="wbOrientation"
+                              value="PORTRAIT"
+                              checked={wristbandOrientation === "PORTRAIT"}
+                              onChange={() => setWristbandOrientation("PORTRAIT")}
+                            />
+                            <span>Portrait (Zebra HC100 Cartridge)</span>
+                          </label>
                         </div>
                         <div className="space-y-2 pt-1 border-t border-slate-800">
                           <label className="flex items-center gap-2 cursor-pointer">
@@ -1808,6 +1950,12 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                               updatePrintTemplates({
                                 wristband: {
                                   hospitalName: wristbandName,
+                                  preset: wristbandPreset,
+                                  widthMm: wristbandWidthMm,
+                                  heightMm: wristbandHeightMm,
+                                  printableLengthMm: wristbandPrintableLengthMm,
+                                  orientation: wristbandOrientation,
+                                  printerType: wristbandPrinterType,
                                   wristbandType: wristbandType,
                                   showBloodGroup: wristbandBlood,
                                   showEmergencyPhone: wristbandPhone,
@@ -1815,7 +1963,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                                   barcodeFormat: wristbandBarcode,
                                 },
                               });
-                              setTemplateSavedMsg("Patient Wristband Template Saved!");
+                              setTemplateSavedMsg(`Wristband Template (${wristbandWidthMm}x${wristbandHeightMm}mm) Saved!`);
                               setTimeout(() => setTemplateSavedMsg(""), 3000);
                             }}
                           >

@@ -117,22 +117,33 @@ export const PatientRecordWorkspace: React.FC = () => {
   ];
 
   const handlePrintWristband = () => {
+    const template = printTemplates.wristband;
     const html = `
       <div class="wristband-slip">
         <div>
-          <div class="bold" style="font-size: 12px;">${printTemplates.wristband.hospitalName.toUpperCase()}</div>
-          <div class="bold" style="font-size: 14px; margin-top: 2px;">${activePatient.full_name.toUpperCase()}</div>
-          <div style="font-size: 10px;">${activePatient.gender} ${printTemplates.wristband.showBloodGroup && activePatient.blood_group ? `• Blood: ${activePatient.blood_group}` : ""}</div>
-          ${printTemplates.wristband.showEmergencyPhone && activePatient.phone_number ? `<div style="font-size: 9px;">Ph: ${activePatient.phone_number}</div>` : ""}
-          ${printTemplates.wristband.showAllergyWarning ? `<div style="font-size: 9px; color: red; font-weight: bold;">ALLERGIES: PENICILLIN G</div>` : ""}
+          <div class="bold" style="font-size: 11px;">${(template.hospitalName || hospitalProfile.name).toUpperCase()}</div>
+          <div class="bold" style="font-size: 13px; margin-top: 2px;">${activePatient.full_name.toUpperCase()}</div>
+          <div style="font-size: 9px;">${activePatient.gender} ${template.showBloodGroup && activePatient.blood_group ? `• Blood: ${activePatient.blood_group}` : ""}</div>
+          ${template.showEmergencyPhone && activePatient.phone_number ? `<div style="font-size: 8px;">Ph: ${activePatient.phone_number}</div>` : ""}
+          ${template.showAllergyWarning ? `<div class="allergy-tag" style="margin-top: 2px;">ALLERGIES: PENICILLIN G</div>` : ""}
         </div>
         <div class="center">
           <div class="barcode-box">||||| | |||| || ||| | |||</div>
-          <div class="bold" style="font-size: 13px;">${activePatient.mrn}</div>
+          <div class="bold" style="font-size: 12px;">${activePatient.mrn}</div>
         </div>
       </div>
     `;
-    printDocument(html, { title: `Wristband_${activePatient.mrn}`, docType: "WRISTBAND" });
+    printDocument(html, {
+      title: `Wristband_${activePatient.mrn}`,
+      docType: "WRISTBAND",
+      wristbandConfig: {
+        widthMm: template.widthMm || 280,
+        heightMm: template.heightMm || 25,
+        printableLengthMm: template.printableLengthMm || 75,
+        orientation: template.orientation === "PORTRAIT" ? "portrait" : "landscape",
+        printerType: template.printerType,
+      },
+    });
   };
 
   const handlePrintChartSummary = () => {

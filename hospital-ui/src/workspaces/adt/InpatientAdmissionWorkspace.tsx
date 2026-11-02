@@ -504,6 +504,37 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
     printDocument(html, { title: `BHT_${confirmedAdmission.mrn}`, docType: "CLINICAL_SUMMARY" });
   };
 
+  const handlePrintAdmissionWristband = () => {
+    if (!confirmedAdmission) return;
+    const template = printTemplates.wristband;
+    const html = `
+      <div class="wristband-slip">
+        <div>
+          <div class="bold" style="font-size: 11px;">${(template.hospitalName || hospitalProfile.name).toUpperCase()}</div>
+          <div class="bold" style="font-size: 13px; margin-top: 2px;">${confirmedAdmission.patientName.toUpperCase()}</div>
+          <div style="font-size: 9px;">${confirmedAdmission.ward} • Bed: ${confirmedAdmission.bedNumber}</div>
+          <div style="font-size: 8px;">Attending: ${confirmedAdmission.admittingDoctor}</div>
+          ${template.showAllergyWarning ? `<div class="allergy-tag" style="margin-top: 2px;">ALLERGIES: VERIFY AT BEDSIDE</div>` : ""}
+        </div>
+        <div class="center">
+          <div class="barcode-box">||||| | |||| || ||| | |||</div>
+          <div class="bold" style="font-size: 12px;">${confirmedAdmission.mrn}</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, {
+      title: `Admission_Wristband_${confirmedAdmission.mrn}`,
+      docType: "WRISTBAND",
+      wristbandConfig: {
+        widthMm: template.widthMm || 280,
+        heightMm: template.heightMm || 25,
+        printableLengthMm: template.printableLengthMm || 75,
+        orientation: template.orientation === "PORTRAIT" ? "portrait" : "landscape",
+        printerType: template.printerType,
+      },
+    });
+  };
+
   const handlePrintDischargeSummary = () => {
     if (!lastDischargedRecord) return;
     const template = printTemplates.dischargeSummary;
@@ -1758,15 +1789,25 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex items-center justify-between pt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handlePrintBHT}
-                className="flex items-center gap-1.5"
-              >
-                <Printer size={13} className="text-sky-400" /> Print Bed Head Ticket (BHT)
-              </Button>
+            <div className="flex items-center justify-between pt-2 gap-2">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePrintBHT}
+                  className="flex items-center gap-1.5"
+                >
+                  <Printer size={13} className="text-sky-400" /> Print Bed Head Ticket (BHT)
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePrintAdmissionWristband}
+                  className="flex items-center gap-1.5 border-purple-800 text-purple-300 bg-purple-950/40 hover:bg-purple-900/60"
+                >
+                  <Printer size={13} className="text-purple-400" /> Print Bedside Wristband
+                </Button>
+              </div>
 
               <Button
                 variant="primary"

@@ -776,7 +776,12 @@ export const DoctorCockpit: React.FC = () => {
                   {/* Medication Orders & Diagnostics */}
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Prescriptions (eRx)</h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">Prescriptions (eRx)</h3>
+                        <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800">
+                          eGFR: 72 mL/min (Normal)
+                        </span>
+                      </div>
                       <Button
                         variant="ghost"
                         size="sm"
