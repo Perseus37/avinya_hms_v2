@@ -35,6 +35,7 @@ The utility intentionally does not decide whether a caller is authorized to read
 6. Stage the file with restrictive permissions, scan it, and publish it atomically only after a clean scanner verdict.
 7. Persist the tenant-relative key and required audit event. If persistence fails, remove the newly published file best-effort and retain enough logs for orphan reconciliation.
 8. Keep private files outside public static mounts.
+9. Return downloads with an attachment disposition, a server-generated filename, `X-Content-Type-Options: nosniff`, and private no-store cache headers. Keep private document responses same-origin; do not allow shared intermediary/browser caches to retain patient, billing, or procurement records.
 
 ## Required download lifecycle
 
@@ -63,4 +64,6 @@ An S3-compatible backend is not implemented yet. When introduced, it should sit 
 - The shared helper centralizes path and symlink checks, but path-based filesystem operations are not a complete defense against a hostile local process racing directory replacement. Production storage mounts must not be writable by untrusted local users. A hardened object-store adapter or descriptor-relative filesystem implementation may be warranted for deployments with that threat model.
 - Branding and procurement now share bounded staging, signature-prefix validation, malware-scan invocation, failure cleanup, and atomic publication. Feature-specific extension rules, WebP container validation, scanner implementation, authorization, and metadata/audit transactions remain in their owning modules.
 - The upload helper uses path-based operations; the documented local-process directory-replacement race limitation still applies.
+
+Generated PDF attachment responses use `backend/core/document_responses.py` to standardize sanitized filenames, `Cache-Control: private, no-store`, `nosniff`, and same-origin response policy. Stored procurement invoice downloads apply equivalent private cache and content-sniffing headers through `FileResponse`.
 - No general clinical-document upload/download API or document retention engine is claimed by this implementation.
