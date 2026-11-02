@@ -40,6 +40,16 @@ from backend.control_plane.models import TenantRegistry
 router = APIRouter(prefix="/api/ui", tags=["Clinical & Operational UI Aggregates"])
 
 
+class TenantBrandingUpdate(BaseModel):
+    display_name: str = Field(min_length=2, max_length=150)
+    logo_url: Optional[str] = Field(default=None, max_length=2048)
+    favicon_url: Optional[str] = Field(default=None, max_length=2048)
+    primary_color: str = Field(default="#2563EB", pattern=r"^#[0-9a-fA-F]{6}$")
+    secondary_color: str = Field(default="#0F172A", pattern=r"^#[0-9a-fA-F]{6}$")
+    accent_color: str = Field(default="#0D9488", pattern=r"^#[0-9a-fA-F]{6}$")
+    tagline: Optional[str] = Field(default=None, max_length=160)
+
+
 class TenantBrandingResponse(BaseModel):
     tenant_slug: str
     hospital_name: str
