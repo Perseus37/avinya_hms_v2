@@ -471,6 +471,52 @@ export const SurgeryWorkspace: React.FC = () => {
     });
   };
 
+  const handlePrintImplantCard = (c: SurgicalCase) => {
+    if (!c.implantDetails) return;
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; border: 2px solid #0284c7; padding: 20px; border-radius: 8px;">
+        <div style="text-align: center; border-bottom: 2px solid #0284c7; padding-bottom: 10px; margin-bottom: 14px;">
+          <h2 style="margin: 0; font-size: 18px; text-transform: uppercase; color: #0369a1;">${hospitalProfile.name}</h2>
+          <div style="font-size: 11px; font-weight: bold; color: #dc2626; margin-top: 2px;">STATUTORY PATIENT MEDICAL IMPLANT & PROSTHESIS IDENTIFICATION CARD</div>
+          <div style="font-size: 9px; color: #555;">In compliance with Medical Device Vigilance & UDI Traceability Regulations</div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 11px; margin-bottom: 12px; background: #f8fafc; padding: 8px; border-radius: 4px;">
+          <div><b>Patient Name:</b> ${c.patientName.toUpperCase()}</div>
+          <div><b>UHID / MRN:</b> ${c.mrn}</div>
+          <div><b>Implantation Date:</b> ${new Date().toLocaleDateString()}</div>
+          <div><b>Operating Surgeon:</b> ${c.leadSurgeon}</div>
+        </div>
+
+        <div style="border: 1px solid #cbd5e1; padding: 12px; background: #f0f9ff; margin-bottom: 14px; border-radius: 6px;">
+          <div style="font-size: 10px; font-weight: bold; color: #0284c7; text-transform: uppercase; margin-bottom: 4px;">Implanted Medical Device Specifications:</div>
+          <div style="font-size: 14px; font-weight: bold; color: #0f172a; margin-bottom: 4px;">${c.implantDetails.deviceType}</div>
+          <div style="font-size: 11px; color: #334155; margin-bottom: 2px;"><b>Manufacturer:</b> ${c.implantDetails.manufacturer}</div>
+          <div style="font-size: 11px; color: #334155; margin-bottom: 2px;"><b>Lot / Serial Number:</b> ${c.implantDetails.serialLotNumber}</div>
+          <div style="font-family: monospace; font-size: 10px; color: #475569; margin-top: 6px; background: #fff; padding: 4px; border: 1px solid #e2e8f0; border-radius: 4px;">
+            UDI Barcode: ${c.implantDetails.udiBarcode}
+          </div>
+        </div>
+
+        <div style="border: 1px solid #fed7aa; background: #fffbeb; padding: 10px; border-radius: 6px; font-size: 10px; color: #9a3412; margin-bottom: 16px;">
+          <b>MRI SAFETY NOTICE:</b> MR CONDITIONAL. Inform radiological technologist prior to undergoing any Magnetic Resonance Imaging (MRI) scan. Carry this card at all times.
+        </div>
+
+        <div style="display: flex; justify-content: space-between; font-size: 10px; color: #475569; border-top: 1px dashed #cbd5e1; padding-top: 8px;">
+          <div>24/7 Hospital Helpline: ${hospitalProfile.phone}</div>
+          <div>Form No: MED-DEV-09</div>
+        </div>
+      </div>
+    `;
+
+    printDocument(html, {
+      title: `Implant_Card_${c.mrn}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
+  };
+
   const getStatusBadge = (status: TheatreStatus) => {
     switch (status) {
       case "IN_SURGERY":
@@ -916,6 +962,20 @@ export const SurgeryWorkspace: React.FC = () => {
                 </Card>
               </div>
 
+              {/* Discrepancy Alert Banner */}
+              {(!activeCase.spongeCount.reconciled || !activeCase.needleCount.reconciled) && (
+                <div className="p-3 rounded-lg bg-rose-950/80 border border-rose-600 flex items-center justify-between text-rose-200 text-xs font-mono animate-pulse">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">⚠️</span>
+                    <div>
+                      <strong className="text-rose-300 uppercase">HALT SURGICAL WOUND CLOSURE — COUNT DEFICIT DETECTED!</strong>
+                      <div>Statutory Protocol: 1) Physical cavity re-exploration, 2) STAT Portable C-Arm Fluoroscopy plain radiograph to rule out retained surgical items, 3) Inform HOD Surgery.</div>
+                    </div>
+                  </div>
+                  <Badge variant="danger" size="sm">CRITICAL RSI ALERT</Badge>
+                </div>
+              )}
+
               {/* Implant Registry Card */}
               {activeCase.implantDetails ? (
                 <Card className="p-4 bg-sky-950/20 border-sky-800/60 space-y-2">
@@ -926,7 +986,17 @@ export const SurgeryWorkspace: React.FC = () => {
                         Medical Implant / Prosthesis Registry Record
                       </h4>
                     </div>
-                    <Badge variant="info" size="sm">UDI VERIFIED</Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="info" size="sm">UDI VERIFIED</Badge>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handlePrintImplantCard(activeCase)}
+                        className="text-xs py-0.5 px-2 flex items-center gap-1 border-sky-700 text-sky-300 hover:bg-sky-900/40"
+                      >
+                        <Printer size={11} /> Print Implant Card
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3 text-xs pt-1">

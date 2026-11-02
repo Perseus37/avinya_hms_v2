@@ -479,6 +479,10 @@ To eliminate hospital-floor pain points and compliance risks, Avinya HMS systema
 8. **Infection Prevention & Control ([`InfectionControlWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/infection/InfectionControlWorkspace.tsx)):**
    - **Statutory Isolation Precaution Door Placards:** High-visibility, color-coded room entrance signs (Contact Precautions - Red, Droplet - Blue, Airborne - Yellow) generated for confirmed MDR pathogens (CRE, MRSA, Pan-Drug Resistant Acinetobacter) enforcing mandatory PPE, dedicated diagnostic equipment, and visitor restrictions under NABH/CDC guidelines.
 
+9. **Surgical Suite & Operating Theatre ([`SurgeryWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/surgery/SurgeryWorkspace.tsx)):**
+   - **Retained Surgical Item (RSI) Emergency Protocol:** Active count discrepancy alert blocking wound closure whenever laparotomy sponges or surgical needles/sharps fail reconciliation, mandating cavity re-exploration and STAT portable C-Arm plain fluoroscopy.
+   - **UDI Medical Device & Implant Identification Card:** Complies with medical device vigilance regulations (FDA/CDSCO) by generating statutory implant cards with UDI barcodes, manufacturer lot numbers, and MR-conditional safety instructions for implanted prostheses and stents.
+
 ---
 
 ## 5. Comprehensive AI Audit Scorecard & Evaluation
