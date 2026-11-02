@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   User,
   Clock,
@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   Sparkles,
   AlertCircle,
+  RefreshCw,
 } from "lucide-react";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
@@ -24,6 +25,8 @@ import { printDocument } from "../../utils/printDocument";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { uiApi } from "../../api/uiApi";
+import { PatientTimelineEvent, RevisitEligibility } from "../../types";
 
 type PatientRecordTab =
   | "overview"
@@ -41,6 +44,68 @@ export const PatientRecordWorkspace: React.FC = () => {
   const [activeTab, setActiveTab] = useState<PatientRecordTab>("overview");
   const [timelineFilter, setTimelineFilter] = useState<"ALL" | "CLINICAL" | "LAB" | "MED" | "BILLING">("ALL");
   const [bookedRevisitDoctor, setBookedRevisitDoctor] = useState<string | null>(null);
+  const [revisitPolicyNotice, setRevisitPolicyNotice] = useState<string | null>(null);
+
+  // Live timeline & doctor-specific revisit eligibility from backend
+  const [liveTimeline, setLiveTimeline] = useState<PatientTimelineEvent[] | null>(null);
+  const [loadingTimeline, setLoadingTimeline] = useState<boolean>(false);
+  const [liveRevisitMap, setLiveRevisitMap] = useState<Record<string, RevisitEligibility>>({});
+
+  const refreshTimeline = () => {
+    if (!activePatient?.patient_id) return;
+    setLoadingTimeline(true);
+    uiApi
+      .getPatientTimeline(activePatient.patient_id)
+      .then((events) => {
+        if (Array.isArray(events) && events.length > 0) {
+          setLiveTimeline(events);
+        }
+      })
+      .catch((err) => {
+        console.warn("Could not fetch live patient timeline, using fallback", err);
+      })
+      .finally(() => {
+        setLoadingTimeline(false);
+      });
+  };
+
+  useEffect(() => {
+    if (!activePatient?.patient_id) return;
+    let isCurrent = true;
+    setLoadingTimeline(true);
+
+    uiApi
+      .getPatientTimeline(activePatient.patient_id)
+      .then((events) => {
+        if (isCurrent && Array.isArray(events) && events.length > 0) {
+          setLiveTimeline(events);
+        }
+      })
+      .catch((err) => {
+        console.warn("Could not fetch live patient timeline, using fallback", err);
+      })
+      .finally(() => {
+        if (isCurrent) setLoadingTimeline(false);
+      });
+
+    // Check doctor-specific revisit eligibility with backend for common attending doctors
+    [1, 2, 3].forEach((docNum) => {
+      uiApi
+        .getRevisitEligibility(activePatient.patient_id, docNum)
+        .then((resp) => {
+          if (isCurrent && resp) {
+            setLiveRevisitMap((prev) => ({ ...prev, [`doc-${docNum}`]: resp }));
+          }
+        })
+        .catch(() => {
+          // Keep local calculation fallback
+        });
+    });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [activePatient?.patient_id]);
 
   if (!activePatient) {
     return (
@@ -77,9 +142,10 @@ export const PatientRecordWorkspace: React.FC = () => {
   const doc2Window = getFreeWindow("doc-2", 10);
   const doc3Window = getFreeWindow("doc-3", 14);
 
-  const doctorRevisitRecords = [
+  const baseDoctorRevisitRecords = [
     {
       doctorId: "doc-1",
+      numericId: 1,
       doctorName: "Dr. Vikram Seth",
       specialty: "Interventional Cardiology",
       lastVisitDate: "28-Oct-2026",
@@ -89,9 +155,11 @@ export const PatientRecordWorkspace: React.FC = () => {
       standardFee: doctors.find((d) => d.id === "doc-1")?.consultationFee || 800,
       isFreeRevisitEligible: 4 <= doc1Window,
       daysRemaining: Math.max(0, doc1Window - 4),
+      policySummary: "Within 7-day grace window. ₹800 fee waived.",
     },
     {
       doctorId: "doc-2",
+      numericId: 2,
       doctorName: "Dr. Rajesh Sharma",
       specialty: "Internal Medicine",
       lastVisitDate: "14-Oct-2026",
@@ -101,9 +169,11 @@ export const PatientRecordWorkspace: React.FC = () => {
       standardFee: doctors.find((d) => d.id === "doc-2")?.consultationFee || 500,
       isFreeRevisitEligible: 18 <= doc2Window,
       daysRemaining: Math.max(0, doc2Window - 18),
+      policySummary: "Grace window expired. Follow-up fee applies.",
     },
     {
       doctorId: "doc-3",
+      numericId: 3,
       doctorName: "Dr. Radhika Sen",
       specialty: "General Surgery",
       lastVisitDate: "20-Oct-2026",
@@ -113,8 +183,24 @@ export const PatientRecordWorkspace: React.FC = () => {
       standardFee: doctors.find((d) => d.id === "doc-3")?.consultationFee || 800,
       isFreeRevisitEligible: 12 <= doc3Window,
       daysRemaining: Math.max(0, doc3Window - 12),
+      policySummary: "Within surgical follow-up grace window. ₹800 fee waived.",
     },
   ];
+
+  const doctorRevisitRecords = baseDoctorRevisitRecords.map((rec) => {
+    const live = liveRevisitMap[rec.doctorId];
+    if (!live) return rec;
+    return {
+      ...rec,
+      isFreeRevisitEligible: live.is_free_revisit,
+      daysElapsed: live.revisit_day_elapsed,
+      daysRemaining: live.days_remaining,
+      freeWindowDays: live.grace_period_days,
+      standardFee: live.standard_fee_rupees,
+      policySummary: live.policy_summary,
+      lastVisitDate: live.last_consultation_date || rec.lastVisitDate,
+    };
+  });
 
   const handlePrintWristband = () => {
     const template = printTemplates.wristband;
@@ -183,7 +269,7 @@ export const PatientRecordWorkspace: React.FC = () => {
   };
 
   // Sample structured timeline data for active patient with revisit tagging
-  const timelineEvents = [
+  const sampleTimelineEvents = [
     {
       id: "ev-1",
       timestamp: "Today, 09:02",
@@ -252,7 +338,41 @@ export const PatientRecordWorkspace: React.FC = () => {
     },
   ];
 
-  const filteredEvents = timelineEvents.filter(
+  const getTimelineCategory = (cat: string): "CLINICAL" | "LAB" | "MED" | "BILLING" => {
+    const c = (cat || "").toUpperCase();
+    if (c === "LAB" || c === "DIAGNOSTIC") return "LAB";
+    if (c === "MEDICATION" || c === "PHARMACY") return "MED";
+    if (c === "BILLING" || c === "PAYMENT") return "BILLING";
+    return "CLINICAL";
+  };
+
+  const getTimelineIcon = (cat: string) => {
+    const c = (cat || "").toUpperCase();
+    if (c === "REGISTRATION") return User;
+    if (c === "TRIAGE") return Activity;
+    if (c === "CLINICAL" || c === "CONSULTATION") return Stethoscope;
+    if (c === "LAB" || c === "DIAGNOSTIC") return FileText;
+    if (c === "MEDICATION" || c === "PHARMACY") return Pill;
+    if (c === "BILLING") return CreditCard;
+    if (c === "ADMISSION") return Heart;
+    return Activity;
+  };
+
+  const effectiveTimeline = liveTimeline && liveTimeline.length > 0
+    ? liveTimeline.map((ev) => ({
+        id: ev.id,
+        timestamp: `${ev.date} ${ev.time}`,
+        type: ev.category,
+        category: getTimelineCategory(ev.category),
+        title: ev.title,
+        actor: ev.doctor_name || ev.department || "Hospital Staff",
+        details: ev.subtitle || (ev.details && Object.keys(ev.details).length > 0 ? Object.entries(ev.details).map(([k, v]) => `${k}: ${v}`).join(" • ") : "Event logged in electronic medical record."),
+        icon: getTimelineIcon(ev.category),
+        color: ev.severity === "CRITICAL" ? "rose" : ev.category === "TRIAGE" ? "emerald" : "sky",
+      }))
+    : sampleTimelineEvents;
+
+  const filteredEvents = effectiveTimeline.filter(
     (ev) => timelineFilter === "ALL" || ev.category === timelineFilter
   );
 
@@ -421,7 +541,11 @@ export const PatientRecordWorkspace: React.FC = () => {
                           variant="primary"
                           onClick={() => {
                             setBookedRevisitDoctor(rec.doctorName);
-                            setTimeout(() => setBookedRevisitDoctor(null), 3500);
+                            setRevisitPolicyNotice(rec.policySummary);
+                            setTimeout(() => {
+                              setBookedRevisitDoctor(null);
+                              setRevisitPolicyNotice(null);
+                            }, 4000);
                           }}
                           className="w-full text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center justify-center gap-1"
                         >
@@ -445,7 +569,7 @@ export const PatientRecordWorkspace: React.FC = () => {
                 <div className="p-2.5 rounded bg-emerald-950/80 border border-emerald-700 text-xs text-emerald-300 font-mono flex items-center gap-2">
                   <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
                   <span>
-                    <strong>Free Follow-Up Revisit Token Issued:</strong> Scheduled with {bookedRevisitDoctor}. Doctor's revisit rule applied: Fee waived to ₹0.00!
+                    <strong>Free Follow-Up Revisit Token Issued:</strong> Scheduled with {bookedRevisitDoctor}. {revisitPolicyNotice || "Doctor's revisit rule applied: Fee waived to ₹0.00!"}
                   </span>
                 </div>
               )}
@@ -577,8 +701,18 @@ export const PatientRecordWorkspace: React.FC = () => {
               <div className="lg:col-span-5 space-y-4">
                 <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
                   <div className="flex items-center justify-between border-b border-slate-800 pb-2">
-                    <div className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
-                      <Clock size={14} className="text-sky-400" /> Patient Care Timeline
+                    <div className="flex items-center gap-2">
+                      <div className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                        <Clock size={14} className="text-sky-400" /> Patient Care Timeline
+                      </div>
+                      <button
+                        type="button"
+                        onClick={refreshTimeline}
+                        title="Sync latest cross-encounter clinical timeline"
+                        className="text-slate-400 hover:text-sky-400 transition-colors p-0.5 rounded"
+                      >
+                        <RefreshCw size={11} className={loadingTimeline ? "animate-spin text-sky-400" : ""} />
+                      </button>
                     </div>
                     <div className="flex gap-1 bg-slate-950 p-1 rounded border border-slate-800 text-[10px]">
                       {(["ALL", "CLINICAL", "LAB", "MED", "BILLING"] as const).map((filter) => (
@@ -637,7 +771,22 @@ export const PatientRecordWorkspace: React.FC = () => {
           <div className="max-w-4xl mx-auto space-y-6">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-sm font-bold text-slate-100">Longitudinal Clinical Care Stream</h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-slate-100">Longitudinal Clinical Care Stream</h3>
+                  <button
+                    type="button"
+                    onClick={refreshTimeline}
+                    title="Sync latest cross-encounter clinical timeline"
+                    className="text-slate-400 hover:text-sky-400 transition-colors p-1 rounded"
+                  >
+                    <RefreshCw size={13} className={loadingTimeline ? "animate-spin text-sky-400" : ""} />
+                  </button>
+                  {liveTimeline && liveTimeline.length > 0 && (
+                    <Badge variant="success" size="sm" className="text-[10px] font-mono">
+                      Live Synchronized ({liveTimeline.length} events)
+                    </Badge>
+                  )}
+                </div>
                 <p className="text-xs text-slate-400">Synchronized cross-encounter timeline from initial registration to present care.</p>
               </div>
               <div className="flex gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs">

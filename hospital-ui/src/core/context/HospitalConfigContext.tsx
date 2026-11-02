@@ -1,5 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useEffect, useRef } from "react";
 import { generateEnterprise500Beds } from "../../data/enterpriseBeds";
+import { uiApi } from "../../api/uiApi";
+import { HardwarePrinterBackendConfig } from "../../types";
 
 export type BedCategory = "General" | "Semi-Private" | "Private" | "ICU";
 export type BedOccupancyStatus = "VACANT_CLEAN" | "OCCUPIED" | "HOUSEKEEPING" | "RESERVED";
@@ -367,6 +369,56 @@ const STORAGE_KEYS = {
   PRINTERS: "avinya_hospital_printers",
 };
 
+export function toBackendPrinter(device: HospitalPrinterDevice): HardwarePrinterBackendConfig {
+  return {
+    id: device.id,
+    name: device.name,
+    location: device.location,
+    connection_type: device.connectionType,
+    target_category: device.targetCategory,
+    protocol: device.protocol,
+    ip_address: device.ipAddress,
+    port: device.port,
+    media_width_mm: device.mediaWidthMm,
+    media_height_mm: device.mediaHeightMm,
+    printable_width_mm: device.printableWidthMm,
+    printable_height_mm: device.printableHeightMm,
+    margin_top_mm: device.marginTopMm,
+    margin_bottom_mm: device.marginBottomMm,
+    margin_left_mm: device.marginLeftMm,
+    margin_right_mm: device.marginRightMm,
+    orientation: device.orientation,
+    dpi: device.dpi,
+    status: device.status,
+    is_default: device.isDefault,
+  };
+}
+
+export function fromBackendPrinter(config: HardwarePrinterBackendConfig): HospitalPrinterDevice {
+  return {
+    id: config.id,
+    name: config.name,
+    location: config.location,
+    connectionType: (config.connection_type as PrinterConnectionType) || "USB",
+    targetCategory: (config.target_category as PrinterTargetCategory) || "THERMAL_TOKEN",
+    protocol: (config.protocol as PrinterProtocol) || "RAW_ESCPOS",
+    ipAddress: config.ip_address,
+    port: config.port,
+    mediaWidthMm: config.media_width_mm,
+    mediaHeightMm: config.media_height_mm,
+    printableWidthMm: config.printable_width_mm,
+    printableHeightMm: config.printable_height_mm,
+    marginTopMm: config.margin_top_mm ?? 0,
+    marginBottomMm: config.margin_bottom_mm ?? 0,
+    marginLeftMm: config.margin_left_mm ?? 0,
+    marginRightMm: config.margin_right_mm ?? 0,
+    orientation: (config.orientation as "PORTRAIT" | "LANDSCAPE") || "PORTRAIT",
+    dpi: config.dpi || 203,
+    status: (config.status as "ONLINE" | "OFFLINE" | "READY") || "ONLINE",
+    isDefault: !!config.is_default,
+  };
+}
+
 export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [hospitalProfile, setHospitalProfile] = useState<HospitalProfile>(() => {
     try {
@@ -447,8 +499,39 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
     localStorage.setItem(STORAGE_KEYS.PRINT_TEMPLATES, JSON.stringify(printTemplates));
   }, [printTemplates]);
 
+  // Synchronize physical printers from backend / Redis on mount
+  useEffect(() => {
+    let isMounted = true;
+    uiApi
+      .getFacilityPrinters()
+      .then((backendPrinters) => {
+        if (isMounted && backendPrinters && backendPrinters.length > 0) {
+          const mapped = backendPrinters.map(fromBackendPrinter);
+          setPrinters(mapped);
+          localStorage.setItem(STORAGE_KEYS.PRINTERS, JSON.stringify(mapped));
+        }
+      })
+      .catch((err) => {
+        console.warn("Facility printers backend sync offline, using local configuration", err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const isPrintersInitialMount = useRef(true);
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.PRINTERS, JSON.stringify(printers));
+    if (isPrintersInitialMount.current) {
+      isPrintersInitialMount.current = false;
+      return;
+    }
+    const timer = setTimeout(() => {
+      uiApi
+        .saveFacilityPrinters(printers.map(toBackendPrinter))
+        .catch((err) => console.warn("Failed persisting facility printers to backend:", err));
+    }, 800);
+    return () => clearTimeout(timer);
   }, [printers]);
 
   const updateHospitalProfile = (partial: Partial<HospitalProfile>) => {

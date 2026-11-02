@@ -428,6 +428,24 @@ To support the diverse printing hardware found across modern hospital campuses, 
 
 ---
 
+## 4.2 End-to-End Backend REST API & State Synchronization
+
+The frontend workspaces are directly connected to unified, multi-tenant backend endpoints in [`backend/domains/ui/router.py`](file:///v:/avinya_hms/backend/domains/ui/router.py) and typed via [`uiApi.ts`](file:///v:/avinya_hms/hospital-ui/src/api/uiApi.ts):
+
+1. **Longitudinal Patient Timeline (`GET /api/ui/patients/{patient_id}/timeline`):**
+   - Chronologically unifies encounters, admissions, nursing triage, NEWS2 alerts, diagnostic orders, CPOE electronic prescriptions, and cashier settlement receipts into a high-density clinical stream.
+   - Live-polled and refreshable in [`PatientRecordWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/patient/PatientRecordWorkspace.tsx) with instant category filtering (`ALL`, `CLINICAL`, `LAB`, `MED`, `BILLING`).
+
+2. **Doctor-Tied Revisit Eligibility & Fee Waiver Engine (`GET /api/ui/patients/{patient_id}/revisit-eligibility?doctor_id={id}`):**
+   - Automatically computes consultation elapsed days against the doctor's configured grace period (e.g., 7, 10, or 14 days).
+   - Issues 100% free revisit tokens (`is_free_revisit=True`, `applicable_fee=₹0.00`) or applies concessional follow-up fees when the window has elapsed.
+
+3. **Physical Hardware Printer Network Registry (`GET & POST /api/ui/facility/printers`):**
+   - Persists all departmental network IP, USB, WiFi, and system driver printers in Redis per hospital tenant slug with 1-year TTL.
+   - Automatically hydrates [`HospitalConfigContext.tsx`](file:///v:/avinya_hms/hospital-ui/src/core/context/HospitalConfigContext.tsx) on workstation startup, with zero-latency fallback to browser cache during network disconnects and debounced remote persistence.
+
+---
+
 ## 5. Comprehensive AI Audit Scorecard & Evaluation
 
 ### Overall System Rating: 9.2 / 10 (Remediated from 1.0 / 10)

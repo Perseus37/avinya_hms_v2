@@ -32,6 +32,8 @@ from backend.domains.facility.models import Bed, BedStatusEnum, PhysicalRoom, Wa
 from backend.domains.identity.models import DoctorProfile, User
 from backend.domains.patients.models import Patient, PatientAllergy
 from backend.domains.billing.models import PaymentReceipt, PaymentMethodEnum
+from backend.domains.pharmacy.models import Prescription
+from backend.domains.diagnostics.models import DiagnosticOrder
 
 router = APIRouter(prefix="/api/ui", tags=["Clinical & Operational UI Aggregates"])
 
@@ -39,6 +41,60 @@ router = APIRouter(prefix="/api/ui", tags=["Clinical & Operational UI Aggregates
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
+class PatientTimelineEvent(BaseModel):
+    id: str
+    timestamp: str
+    date: str
+    time: str
+    category: str  # "REGISTRATION", "CLINICAL", "TRIAGE", "LAB", "MEDICATION", "ADMISSION", "BILLING"
+    title: str
+    subtitle: Optional[str] = None
+    doctor_name: Optional[str] = None
+    department: Optional[str] = None
+    status: Optional[str] = None
+    severity: Optional[str] = None  # "NORMAL", "WARNING", "CRITICAL", "STAT"
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RevisitEligibilityResponse(BaseModel):
+    patient_id: int
+    doctor_id: int
+    doctor_name: str
+    department: str
+    is_free_revisit: bool
+    revisit_type: str  # "FREE_REVISIT" | "PAID_FOLLOWUP" | "NEW_VISIT"
+    revisit_day_elapsed: int
+    grace_period_days: int
+    days_remaining: int
+    standard_fee_rupees: float
+    applicable_fee_rupees: float
+    last_consultation_date: Optional[str] = None
+    policy_summary: str
+
+
+class HardwarePrinterConfig(BaseModel):
+    id: str
+    name: str
+    location: str
+    connection_type: str  # "NETWORK_IP", "USB", "WIFI", "SYSTEM_DRIVER"
+    target_category: str  # "WRISTBAND", "THERMAL_TOKEN", "CLINICAL_A4", "LAB_LABEL"
+    protocol: str  # "RAW_ZPL", "RAW_ESCPOS", "HTML_DRIVER"
+    ip_address: Optional[str] = None
+    port: Optional[int] = 9100
+    media_width_mm: int
+    media_height_mm: int
+    printable_width_mm: Optional[int] = None
+    printable_height_mm: Optional[int] = None
+    margin_top_mm: int = 0
+    margin_bottom_mm: int = 0
+    margin_left_mm: int = 0
+    margin_right_mm: int = 0
+    orientation: str = "PORTRAIT"
+    dpi: int = 203
+    status: str = "ONLINE"
+    is_default: bool = False
+
+
 class PatientQuickSearchItem(BaseModel):
     id: int
     mrn: str
@@ -887,5 +943,516 @@ def get_my_work_tasks(
         )
 
     return tasks
+
+
+# ---------------------------------------------------------------------------
+# 8. Longitudinal Patient Clinical Timeline
+# ---------------------------------------------------------------------------
+@router.get(
+    "/patients/{patient_id}/timeline",
+    response_model=List[PatientTimelineEvent],
+    dependencies=[Depends(RequirePermission("patients:read"))],
+)
+def get_patient_timeline(
+    patient_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Returns an aggregated, chronological longitudinal timeline of all health events
+    associated with the patient (registrations, triage, doctor consults, SOAP notes,
+    lab tests, admissions, and billing receipts).
+    """
+    patient = db.get(Patient, patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+
+    events: List[PatientTimelineEvent] = []
+
+    # 1. Registration Event
+    if hasattr(patient, "created_at") and patient.created_at:
+        dt = patient.created_at
+        events.append(
+            PatientTimelineEvent(
+                id=f"reg-{patient.id}",
+                timestamp=dt.isoformat(),
+                date=dt.strftime("%Y-%m-%d"),
+                time=dt.strftime("%H:%M"),
+                category="REGISTRATION",
+                title="Patient Registered & UHID Allocated",
+                subtitle=f"UHID: {patient.mrn} • Primary Demographic Record Created",
+                status="COMPLETED",
+                severity="NORMAL",
+                details={"phone": patient.phone_number, "gender": str(patient.gender)},
+            )
+        )
+
+    # 2. Encounters & Appointments
+    encounters = db.query(PatientEncounter).filter(PatientEncounter.patient_id == patient_id).all()
+    enc_ids = [e.id for e in encounters]
+
+    appts = db.query(Appointment).filter(Appointment.patient_id == patient_id).all()
+    for appt in appts:
+        dt = appt.appointment_time or appt.created_at
+        if dt:
+            doc_user = db.get(User, appt.doctor_id) if appt.doctor_id else None
+            doc_profile = (
+                db.query(DoctorProfile).filter(DoctorProfile.user_id == appt.doctor_id).first()
+                if appt.doctor_id
+                else None
+            )
+            doc_name = doc_user.full_name if doc_user else f"Dr. {appt.doctor_id}"
+            dept_name = doc_profile.specialization if doc_profile and doc_profile.specialization else "Outpatient Clinic"
+            st = appt.status.value if hasattr(appt.status, "value") else str(appt.status)
+            events.append(
+                PatientTimelineEvent(
+                    id=f"appt-{appt.id}",
+                    timestamp=dt.isoformat(),
+                    date=dt.strftime("%Y-%m-%d"),
+                    time=dt.strftime("%H:%M"),
+                    category="CLINICAL",
+                    title="Outpatient Consultation (OPD)",
+                    subtitle=f"Consultation with {doc_name} • {dept_name}",
+                    doctor_name=doc_name,
+                    department=dept_name,
+                    status=st,
+                    severity="NORMAL",
+                    details={"token_number": getattr(appt, "token_number", appt.id), "reason": getattr(appt, "reason", None)},
+                )
+            )
+
+    # 3. Inpatient Admissions
+    admissions = (
+        db.query(InpatientAdmission)
+        .join(PatientEncounter)
+        .filter(PatientEncounter.patient_id == patient_id)
+        .all()
+    )
+    for adm in admissions:
+        dt = adm.created_at
+        if dt:
+            bed = db.get(Bed, adm.current_bed_id) if adm.current_bed_id else None
+            room = db.get(PhysicalRoom, bed.room_id) if bed and bed.room_id else None
+            ward = db.get(Ward, room.ward_id) if room and room.ward_id else None
+            w_name = ward.name if ward else "Inpatient Ward"
+            b_num = bed.bed_number if bed else "Unassigned"
+            events.append(
+                PatientTimelineEvent(
+                    id=f"adm-{adm.id}",
+                    timestamp=dt.isoformat(),
+                    date=dt.strftime("%Y-%m-%d"),
+                    time=dt.strftime("%H:%M"),
+                    category="ADMISSION",
+                    title="Inpatient Hospital Admission",
+                    subtitle=f"Admitted to {w_name} • Bed {b_num}",
+                    status="DISCHARGED" if adm.discharge_time else "ADMITTED",
+                    severity="WARNING",
+                    details={
+                        "admission_type": str(adm.admission_type),
+                        "ward": w_name,
+                        "bed": b_num,
+                    },
+                )
+            )
+
+    # 4. Vitals & Early Warning Scores
+    if enc_ids:
+        vitals = (
+            db.query(EncounterVital)
+            .filter(EncounterVital.encounter_id.in_(enc_ids))
+            .order_by(EncounterVital.recorded_at.desc())
+            .limit(10)
+            .all()
+        )
+        for v in vitals:
+            dt = v.recorded_at or v.created_at
+            if dt:
+                news = (
+                    db.query(ClinicalEarlyWarningScore)
+                    .filter(ClinicalEarlyWarningScore.vital_id == v.id)
+                    .first()
+                )
+                score_val = news.total_score if news else 0
+                is_crit = score_val >= 5
+                events.append(
+                    PatientTimelineEvent(
+                        id=f"vital-{v.id}",
+                        timestamp=dt.isoformat(),
+                        date=dt.strftime("%Y-%m-%d"),
+                        time=dt.strftime("%H:%M"),
+                        category="TRIAGE",
+                        title=f"Clinical Vital Signs Recorded {'(NEWS2 Alert)' if is_crit else ''}",
+                        subtitle=f"BP: {v.systolic_bp}/{v.diastolic_bp} mmHg • HR: {v.pulse_rate_bpm} bpm • SpO2: {v.spo2_percentage}%",
+                        status="VERIFIED",
+                        severity="CRITICAL" if is_crit else "NORMAL",
+                        details={
+                            "systolic": v.systolic_bp,
+                            "diastolic": v.diastolic_bp,
+                            "spo2": v.spo2_percentage,
+                            "heart_rate": v.pulse_rate_bpm,
+                            "news2_score": score_val,
+                        },
+                    )
+                )
+
+    # 5. Diagnostic Orders
+    if enc_ids:
+        diag_orders = (
+            db.query(DiagnosticOrder)
+            .filter(DiagnosticOrder.encounter_id.in_(enc_ids))
+            .order_by(DiagnosticOrder.created_at.desc())
+            .limit(10)
+            .all()
+        )
+        for d_ord in diag_orders:
+            dt = d_ord.created_at
+            if dt:
+                events.append(
+                    PatientTimelineEvent(
+                        id=f"diag-{d_ord.id}",
+                        timestamp=dt.isoformat(),
+                        date=dt.strftime("%Y-%m-%d"),
+                        time=dt.strftime("%H:%M"),
+                        category="LAB",
+                        title="Diagnostic Lab Investigation",
+                        subtitle=f"Order #{d_ord.order_number if hasattr(d_ord, 'order_number') else d_ord.id}",
+                        status=str(d_ord.status),
+                        severity="NORMAL",
+                        details={"service_type": str(d_ord.service_type) if hasattr(d_ord, "service_type") else None},
+                    )
+                )
+
+    # 6. Prescriptions
+    if enc_ids:
+        rx_orders = (
+            db.query(Prescription)
+            .filter(Prescription.encounter_id.in_(enc_ids))
+            .order_by(Prescription.created_at.desc())
+            .limit(10)
+            .all()
+        )
+        for rx in rx_orders:
+            dt = rx.created_at
+            if dt:
+                events.append(
+                    PatientTimelineEvent(
+                        id=f"rx-{rx.id}",
+                        timestamp=dt.isoformat(),
+                        date=dt.strftime("%Y-%m-%d"),
+                        time=dt.strftime("%H:%M"),
+                        category="MEDICATION",
+                        title="Medications Prescribed (CPOE)",
+                        subtitle=f"Electronic Prescription #{rx.id}",
+                        status=str(rx.status),
+                        severity="NORMAL",
+                    )
+                )
+
+    # 7. Cashier Payment Receipts
+    receipts = (
+        db.query(PaymentReceipt)
+        .join(PatientEncounter, PaymentReceipt.patient_encounter_id == PatientEncounter.id, isouter=True)
+        .filter(
+            or_(
+                PaymentReceipt.patient_encounter_id.in_(enc_ids) if enc_ids else False,
+            )
+        )
+        .order_by(PaymentReceipt.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    for r in receipts:
+        dt = r.created_at
+        if dt:
+            amt_rupees = r.amount_paise / 100.0 if r.amount_paise else 0.0
+            events.append(
+                PatientTimelineEvent(
+                    id=f"pay-{r.id}",
+                    timestamp=dt.isoformat(),
+                    date=dt.strftime("%Y-%m-%d"),
+                    time=dt.strftime("%H:%M"),
+                    category="BILLING",
+                    title="Cashier Payment Receipt Issued",
+                    subtitle=f"Receipt #{r.receipt_number if hasattr(r, 'receipt_number') else r.id} • Paid ₹{amt_rupees:.2f} ({str(r.payment_method)})",
+                    status="SETTLED",
+                    severity="NORMAL",
+                    details={"amount_rupees": amt_rupees, "payment_method": str(r.payment_method)},
+                )
+            )
+
+    # Sort descending (newest milestone first)
+    events.sort(key=lambda x: x.timestamp, reverse=True)
+    return events
+
+
+# ---------------------------------------------------------------------------
+# 9. Doctor-Tied Revisit & Fee Waiver Calculator
+# ---------------------------------------------------------------------------
+@router.get(
+    "/patients/{patient_id}/revisit-eligibility",
+    response_model=RevisitEligibilityResponse,
+    dependencies=[Depends(RequirePermission("opd:read"))],
+)
+def get_revisit_eligibility(
+    patient_id: int,
+    doctor_id: int = Query(..., description="Target doctor user ID"),
+    db: Session = Depends(get_db),
+):
+    """
+    Evaluates patient eligibility for a complimentary revisit versus standard
+    or follow-up fee, tied to doctor-specific grace periods.
+    """
+    patient = db.get(Patient, patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+
+    doc_user = db.get(User, doctor_id)
+    if not doc_user:
+        raise HTTPException(status_code=404, detail="Doctor user not found.")
+
+    doc_profile = (
+        db.query(DoctorProfile)
+        .filter(or_(DoctorProfile.user_id == doctor_id, DoctorProfile.id == doctor_id))
+        .first()
+    )
+    dept_name = doc_profile.specialization if doc_profile and doc_profile.specialization else "General Medicine"
+
+    # Default policy: 7 days grace period for consultation revisits (can be customized per doctor profile)
+    grace_period_days = 7
+    standard_fee = 800.0
+    followup_fee = 400.0
+
+    # Search for previous completed appointment with this specific doctor
+    last_completed = (
+        db.query(Appointment)
+        .filter(
+            Appointment.patient_id == patient_id,
+            Appointment.doctor_id == doctor_id,
+            Appointment.status == AppointmentStatusEnum.COMPLETED,
+        )
+        .order_by(Appointment.appointment_time.desc())
+        .first()
+    )
+
+    now = date.today()
+    if last_completed and last_completed.appointment_time:
+        consult_dt = (
+            last_completed.appointment_time.date()
+            if isinstance(last_completed.appointment_time, datetime)
+            else last_completed.appointment_time
+        )
+        days_elapsed = (now - consult_dt).days
+
+        if days_elapsed <= grace_period_days:
+            days_remaining = max(0, grace_period_days - days_elapsed)
+            return RevisitEligibilityResponse(
+                patient_id=patient_id,
+                doctor_id=doctor_id,
+                doctor_name=doc_user.full_name,
+                department=dept_name,
+                is_free_revisit=True,
+                revisit_type="FREE_REVISIT",
+                revisit_day_elapsed=days_elapsed,
+                grace_period_days=grace_period_days,
+                days_remaining=days_remaining,
+                standard_fee_rupees=standard_fee,
+                applicable_fee_rupees=0.0,
+                last_consultation_date=consult_dt.isoformat(),
+                policy_summary=f"Eligible for Free Revisit (Day {days_elapsed} of {grace_period_days} days). ₹{standard_fee:.2f} fee waived.",
+            )
+        else:
+            return RevisitEligibilityResponse(
+                patient_id=patient_id,
+                doctor_id=doctor_id,
+                doctor_name=doc_user.full_name,
+                department=dept_name,
+                is_free_revisit=False,
+                revisit_type="PAID_FOLLOWUP",
+                revisit_day_elapsed=days_elapsed,
+                grace_period_days=grace_period_days,
+                days_remaining=0,
+                standard_fee_rupees=standard_fee,
+                applicable_fee_rupees=followup_fee,
+                last_consultation_date=consult_dt.isoformat(),
+                policy_summary=f"Follow-up visit. Previous consult was {days_elapsed} days ago (exceeds {grace_period_days}-day limit). Concession fee applies.",
+            )
+
+    # First-time / New Visit
+    return RevisitEligibilityResponse(
+        patient_id=patient_id,
+        doctor_id=doctor_id,
+        doctor_name=doc_user.full_name,
+        department=dept_name,
+        is_free_revisit=False,
+        revisit_type="NEW_VISIT",
+        revisit_day_elapsed=0,
+        grace_period_days=grace_period_days,
+        days_remaining=0,
+        standard_fee_rupees=standard_fee,
+        applicable_fee_rupees=standard_fee,
+        last_consultation_date=None,
+        policy_summary=f"New patient consultation with {doc_user.full_name}. Full standard fee applies.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 10. Departmental Hardware Printer Network Registry
+# ---------------------------------------------------------------------------
+DEFAULT_PRINTER_CATALOG = [
+    {
+        "id": "prn-1",
+        "name": "Front Desk Zebra ZD510-HC Dedicated Wristband Printer",
+        "location": "Admission Desk Counter 1",
+        "connection_type": "NETWORK_IP",
+        "target_category": "WRISTBAND",
+        "protocol": "RAW_ZPL",
+        "ip_address": "192.168.1.182",
+        "port": 9100,
+        "is_default": True,
+        "media_width_mm": 25,
+        "media_height_mm": 280,
+        "printable_width_mm": 22,
+        "printable_height_mm": 75,
+        "margin_top_mm": 1,
+        "margin_bottom_mm": 1,
+        "margin_left_mm": 2,
+        "margin_right_mm": 2,
+        "orientation": "PORTRAIT",
+        "dpi": 300,
+        "status": "ONLINE",
+    },
+    {
+        "id": "prn-2",
+        "name": "Reception Counter 1 Token & Receipt Slip Printer",
+        "location": "OPD Front Registration Counter 1",
+        "connection_type": "USB",
+        "target_category": "THERMAL_TOKEN",
+        "protocol": "RAW_ESCPOS",
+        "is_default": True,
+        "media_width_mm": 80,
+        "media_height_mm": 0,
+        "printable_width_mm": 76,
+        "printable_height_mm": 0,
+        "margin_top_mm": 2,
+        "margin_bottom_mm": 2,
+        "margin_left_mm": 2,
+        "margin_right_mm": 2,
+        "orientation": "PORTRAIT",
+        "dpi": 203,
+        "status": "ONLINE",
+    },
+    {
+        "id": "prn-3",
+        "name": "Emergency Triage & Trauma WiFi Wristband Unit",
+        "location": "ED Resuscitation Bay 1",
+        "connection_type": "WIFI",
+        "target_category": "WRISTBAND",
+        "protocol": "HTML_DRIVER",
+        "ip_address": "192.168.1.185",
+        "port": 9100,
+        "is_default": False,
+        "media_width_mm": 28,
+        "media_height_mm": 280,
+        "printable_width_mm": 25,
+        "printable_height_mm": 80,
+        "margin_top_mm": 1,
+        "margin_bottom_mm": 1,
+        "margin_left_mm": 2,
+        "margin_right_mm": 2,
+        "orientation": "PORTRAIT",
+        "dpi": 300,
+        "status": "ONLINE",
+    },
+    {
+        "id": "prn-4",
+        "name": "Inpatient Clinical Ward Managed HP LaserJet",
+        "location": "Ward Nursing Station Central",
+        "connection_type": "NETWORK_IP",
+        "target_category": "CLINICAL_A4",
+        "protocol": "HTML_DRIVER",
+        "ip_address": "192.168.1.190",
+        "port": 9100,
+        "is_default": True,
+        "media_width_mm": 210,
+        "media_height_mm": 297,
+        "printable_width_mm": 200,
+        "printable_height_mm": 287,
+        "margin_top_mm": 5,
+        "margin_bottom_mm": 5,
+        "margin_left_mm": 5,
+        "margin_right_mm": 5,
+        "orientation": "PORTRAIT",
+        "dpi": 600,
+        "status": "ONLINE",
+    },
+    {
+        "id": "prn-5",
+        "name": "Central Phlebotomy Tube Barcode Labeler",
+        "location": "Diagnostics Specimen Collection Counter",
+        "connection_type": "USB",
+        "target_category": "LAB_LABEL",
+        "protocol": "RAW_ZPL",
+        "is_default": True,
+        "media_width_mm": 50,
+        "media_height_mm": 25,
+        "printable_width_mm": 46,
+        "printable_height_mm": 22,
+        "margin_top_mm": 1,
+        "margin_bottom_mm": 1,
+        "margin_left_mm": 2,
+        "margin_right_mm": 2,
+        "orientation": "LANDSCAPE",
+        "dpi": 203,
+        "status": "ONLINE",
+    },
+]
+
+
+@router.get(
+    "/facility/printers",
+    response_model=List[HardwarePrinterConfig],
+    dependencies=[Depends(RequirePermission("config:read"))],
+)
+def list_facility_printers(
+    request: Request,
+    redis_client=Depends(get_redis),
+):
+    """
+    Returns registered physical hardware printers across hospital wings,
+    including network IP endpoints, continuous rolls, and discrete millimeters.
+    """
+    tenant = resolve_tenant_context(request)
+    cache_key = f"facility_printers:{tenant.subdomain_slug}"
+    if redis_client:
+        cached = redis_client.get(cache_key)
+        if cached:
+            try:
+                data = json.loads(cached.decode("utf-8") if isinstance(cached, bytes) else cached)
+                return [HardwarePrinterConfig(**item) for item in data]
+            except Exception:
+                pass
+
+    return [HardwarePrinterConfig(**item) for item in DEFAULT_PRINTER_CATALOG]
+
+
+@router.post(
+    "/facility/printers",
+    response_model=List[HardwarePrinterConfig],
+    dependencies=[Depends(RequirePermission("config:write"))],
+)
+def save_facility_printers(
+    payload: List[HardwarePrinterConfig],
+    request: Request,
+    redis_client=Depends(get_redis),
+):
+    """
+    Persists updated physical hardware printer configuration in Redis for all hospital workstations.
+    """
+    tenant = resolve_tenant_context(request)
+    cache_key = f"facility_printers:{tenant.subdomain_slug}"
+    data_to_save = [item.model_dump() for item in payload]
+    if redis_client:
+        redis_client.setex(cache_key, 31536000, json.dumps(data_to_save))  # 1 year TTL
+
+    return payload
 
 

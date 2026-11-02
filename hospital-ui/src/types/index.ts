@@ -140,3 +140,58 @@ export interface CashierShiftStatus {
   total_collected_paise: number;
   by_payment_method: Record<string, number>;
 }
+
+export interface PatientTimelineEvent {
+  id: string;
+  timestamp: string;
+  date: string;
+  time: string;
+  category: "REGISTRATION" | "CLINICAL" | "TRIAGE" | "LAB" | "MEDICATION" | "ADMISSION" | "BILLING" | string;
+  title: string;
+  subtitle?: string;
+  doctor_name?: string;
+  department?: string;
+  status?: string;
+  severity?: "NORMAL" | "WARNING" | "CRITICAL" | "STAT" | string;
+  details?: Record<string, any>;
+}
+
+export interface RevisitEligibility {
+  patient_id: number;
+  doctor_id: number;
+  doctor_name: string;
+  department: string;
+  is_free_revisit: boolean;
+  revisit_type: "FREE_REVISIT" | "PAID_FOLLOWUP" | "NEW_VISIT" | string;
+  revisit_day_elapsed: number;
+  grace_period_days: number;
+  days_remaining: number;
+  standard_fee_rupees: number;
+  applicable_fee_rupees: number;
+  last_consultation_date?: string | null;
+  policy_summary: string;
+}
+
+export interface HardwarePrinterBackendConfig {
+  id: string;
+  name: string;
+  location: string;
+  connection_type: "NETWORK_IP" | "USB" | "WIFI" | "SYSTEM_DRIVER" | string;
+  target_category: "WRISTBAND" | "THERMAL_TOKEN" | "CLINICAL_A4" | "LAB_LABEL" | string;
+  protocol: "RAW_ZPL" | "RAW_ESCPOS" | "HTML_DRIVER" | string;
+  ip_address?: string;
+  port?: number;
+  media_width_mm: number;
+  media_height_mm: number;
+  printable_width_mm?: number;
+  printable_height_mm?: number;
+  margin_top_mm?: number;
+  margin_bottom_mm?: number;
+  margin_left_mm?: number;
+  margin_right_mm?: number;
+  orientation?: "PORTRAIT" | "LANDSCAPE" | string;
+  dpi?: number;
+  status?: string;
+  is_default?: boolean;
+}
+

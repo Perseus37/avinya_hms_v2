@@ -255,3 +255,21 @@ Administrators configure physical devices in [`AdminWorkspace.tsx`](file:///v:/a
   - **Ward & Inpatient Care:** eMAR BCMA Dual-Witness Administration & SBAR Shift Kardex.
   - **Operating Theatres:** Intra-Operative WHO Surgical Safety Docket & Implant Registry.
   - **Biomedical Engineering:** IEC 62353 Electrical Safety & Calibration Certificate.
+
+---
+
+## 6. Multi-Tenant Backend REST API Integration
+
+The frontend workspaces communicate directly with backend domain services in [`backend/domains/ui/router.py`](file:///v:/avinya_hms/backend/domains/ui/router.py) through [`hospital-ui/src/api/uiApi.ts`](file:///v:/avinya_hms/hospital-ui/src/api/uiApi.ts):
+
+1. **Patient Care Longitudinal Timeline (`GET /api/ui/patients/{patient_id}/timeline`):**
+   - Combines 7 clinical event sources (registrations, triage vitals with NEWS2 triggers, doctor SOAP consults, CPOE diagnostic orders, CPOE electronic prescriptions, inpatient admissions, and cashier payment receipts) chronologically.
+   - Powers the Patient 360 overview tab and standalone longitudinal stream in [`PatientRecordWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/patient/PatientRecordWorkspace.tsx).
+
+2. **Doctor-Tied Revisit Eligibility Calculator (`GET /api/ui/patients/{patient_id}/revisit-eligibility?doctor_id={id}`):**
+   - Automatically determines whether a returning patient qualifies for a complimentary consultation ($100\%$ fee waiver) based on the attending doctor's individual grace window (default 7 days) or applies the concession follow-up tariff.
+
+3. **Facility Hardware Printers & Network Registry (`GET & POST /api/ui/facility/printers`):**
+   - Persists all campus-wide physical printer profiles (IP address, port, orientation, millimeters, margins, DPI, connection type, protocol) in Redis keyed by tenant subdomain.
+   - Automatically hydrates [`HospitalConfigContext.tsx`](file:///v:/avinya_hms/hospital-ui/src/core/context/HospitalConfigContext.tsx) on startup with automatic debounced cloud persistence when configurations are updated.
+

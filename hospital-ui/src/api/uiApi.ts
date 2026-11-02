@@ -5,6 +5,9 @@ import {
   DoctorQueueSummary,
   DetailedBedItem,
   CashierShiftStatus,
+  PatientTimelineEvent,
+  RevisitEligibility,
+  HardwarePrinterBackendConfig,
 } from "../types";
 
 export const uiApi = {
@@ -62,6 +65,29 @@ export const uiApi = {
 
   getMyWorkTasks: async () => {
     return apiClient<any[]>("/api/ui/tasks/my-work");
+  },
+
+  getPatientTimeline: async (patientId: number): Promise<PatientTimelineEvent[]> => {
+    return apiClient<PatientTimelineEvent[]>(`/api/ui/patients/${patientId}/timeline`);
+  },
+
+  getRevisitEligibility: async (patientId: number, doctorId: number): Promise<RevisitEligibility> => {
+    return apiClient<RevisitEligibility>(`/api/ui/patients/${patientId}/revisit-eligibility`, {
+      params: { doctor_id: doctorId },
+    });
+  },
+
+  getFacilityPrinters: async (): Promise<HardwarePrinterBackendConfig[]> => {
+    return apiClient<HardwarePrinterBackendConfig[]>("/api/ui/facility/printers");
+  },
+
+  saveFacilityPrinters: async (
+    printers: HardwarePrinterBackendConfig[]
+  ): Promise<HardwarePrinterBackendConfig[]> => {
+    return apiClient<HardwarePrinterBackendConfig[]>("/api/ui/facility/printers", {
+      method: "POST",
+      body: JSON.stringify(printers),
+    });
   },
 };
 
