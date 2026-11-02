@@ -323,8 +323,18 @@ def upload_tenant_brand_asset(
 
         scan_file_with_clamav(temporary)
         os.replace(temporary, destination)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Unable to remove incomplete tenant brand asset upload.", exc_info=True)
+        logger.error("Tenant brand asset write failed.", exc_info=True)
+        raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
     except Exception:
-        temporary.unlink(missing_ok=True)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Unable to remove rejected tenant brand asset upload.", exc_info=True)
         raise
     finally:
         file.file.close()
