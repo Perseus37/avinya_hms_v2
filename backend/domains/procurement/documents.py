@@ -12,6 +12,7 @@ from backend.core.config import settings
 from backend.core.storage import (
     StoragePathError,
     UploadContentError,
+    UploadEmptyError,
     UploadTooLargeError,
     resolve_tenant_storage_file,
     stage_and_publish_upload,
@@ -129,10 +130,15 @@ def store_vendor_invoice_document(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Invoice document exceeds the configured upload limit.",
         ) from exc
+    except UploadEmptyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invoice document cannot be empty.",
+        ) from exc
     except UploadContentError as exc:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Invoice document content does not match its file type or is empty.",
+            detail="Invoice document content does not match its file type.",
         ) from exc
     except OSError as exc:
         raise HTTPException(
