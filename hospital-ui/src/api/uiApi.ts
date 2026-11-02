@@ -10,7 +10,22 @@ import {
   HardwarePrinterBackendConfig,
 } from "../types";
 
-export interface TenantBranding {\n  tenant_slug: string;\n  hospital_name: string;\n  display_name: string;\n  logo_url: string | null;\n  favicon_url: string | null;\n  primary_color: string;\n  secondary_color: string;\n  accent_color: string;\n  tagline: string | null;\n}\n\nexport const uiApi = {\n  getTenantBranding: async (): Promise<TenantBranding> => {\n    return apiClient<TenantBranding>("/api/ui/tenant-branding");\n  },
+export interface TenantBranding {
+  tenant_slug: string;
+  hospital_name: string;
+  display_name: string;
+  logo_url: string | null;
+  favicon_url: string | null;
+  primary_color: string;
+  secondary_color: string;
+  accent_color: string;
+  tagline: string | null;
+}
+
+export const uiApi = {
+  getTenantBranding: async (): Promise<TenantBranding> => {
+    return apiClient<TenantBranding>("/api/ui/tenant-branding");
+  },
   quickSearchPatients: async (query: string, limit = 10): Promise<PatientQuickSearchItem[]> => {
     if (!query || query.trim().length === 0) return [];
     return apiClient<PatientQuickSearchItem[]>("/api/ui/patients/quick-search", {
