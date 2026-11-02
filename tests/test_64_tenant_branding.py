@@ -127,6 +127,14 @@ def test_existing_tenant_admin_role_receives_branding_permission(multi_tenant_en
 
     engine = multi_tenant_env["tenant_engines"]["hms_default"]
     with Session(engine) as db:
+        # Simulate a tenant seeded before config:write was introduced.
+        admin_role = db.query(Role).filter_by(code="ROLE_ADMIN").one()
+        admin_role.permissions = [
+            permission for permission in admin_role.permissions
+            if permission.code != "config:write"
+        ]
+        db.commit()
+
         seed_universal_hospital_data(
             db=db,
             hospital_name="Avinya Default Hospital",
