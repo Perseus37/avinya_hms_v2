@@ -927,17 +927,13 @@ export const CashierCounterWorkspace: React.FC = () => {
               <div className="flex justify-between border-b border-slate-800 pb-2">
                 <div>
                   <span className="font-bold text-slate-100 text-sm">{hospitalProfile.name || "HEALTHCARE FACILITY"}</span>
-                  {(hospitalProfile.taxGstin || hospitalProfile.accreditation) && (\n                    <div className="text-[10px] text-slate-400">\n                      {hospitalProfile.taxGstin ? `GSTIN: ${hospitalProfile.taxGstin}` : ""}\n                      {hospitalProfile.taxGstin && hospitalProfile.accreditation ? " • " : ""}\n                      {hospitalProfile.accreditation || ""}\n                    </div>\n                  )}
-                </div>
-                <div className="text-right">
-                  <div className="text-emerald-400 font-bold">{lastSettledInvoice.invoiceNumber}</div>
-                  <div className="text-[10px] text-slate-500">{new Date().toLocaleString()}</div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 text-[11px]">
-                <div>
-                  <span className="text-slate-500 block">Patient Name:</span>
+                  {(hospitalProfile.taxGstin || hospitalProfile.accreditation) && (
+                    <div className="text-[10px] text-slate-400">
+                      {hospitalProfile.taxGstin ? `GSTIN: ${hospitalProfile.taxGstin}` : ""}
+                      {hospitalProfile.taxGstin && hospitalProfile.accreditation ? " • " : ""}
+                      {hospitalProfile.accreditation || ""}
+                    </div>
+                  )}                  <span className="text-slate-500 block">Patient Name:</span>
                   <span className="text-slate-200 font-semibold">{lastSettledInvoice.patientName}</span>
                 </div>
                 <div>
