@@ -12,6 +12,8 @@ import {
   Clock,
   Sparkles,
   Siren,
+  AlertTriangle,
+  CreditCard,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -82,8 +84,29 @@ export const PatientRegistrationWorkspace: React.FC = () => {
   const [consultationType, setConsultationType] = useState<"NEW" | "FOLLOWUP" | "SECOND_OPINION">("NEW");
   const [priority, setPriority] = useState<"NORMAL" | "SENIOR_CITIZEN" | "EMERGENCY">("NORMAL");
   const [paymentMode, setPaymentMode] = useState<"CASH" | "UPI" | "CARD" | "PMJAY">("UPI");
+  const [pmjayCardNumber, setPmjayCardNumber] = useState("");
+  const [pmjayFamilyId, setPmjayFamilyId] = useState("");
+  const [pmjaySchemeName, setPmjaySchemeName] = useState("Ayushman Bharat PM-JAY (National)");
+  const [duplicateWarning, setDuplicateWarning] = useState<PatientCreatedResponse | null>(null);
   const [generatedToken, setGeneratedToken] = useState<GeneratedTokenDetails | null>(null);
   const [printDocType, setPrintDocType] = useState<"WRISTBAND" | "OPD_TOKEN">("OPD_TOKEN");
+
+  // Real-time duplicate check when phone changes
+  useEffect(() => {
+    if (!phone || phone.length < 8) {
+      setDuplicateWarning(null);
+      return;
+    }
+    const cleanPhone = phone.trim();
+    const match = recentPatients.find(
+      (p) => p.phone_number && p.phone_number.trim() === cleanPhone
+    );
+    if (match) {
+      setDuplicateWarning(match);
+    } else {
+      setDuplicateWarning(null);
+    }
+  }, [phone, recentPatients]);
 
   // Edit Demographic Profile Modal State
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -547,6 +570,27 @@ export const PatientRegistrationWorkspace: React.FC = () => {
                   maxLength={10}
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
                 />
+                {duplicateWarning && (
+                  <div className="mt-2 p-2.5 rounded-lg bg-amber-950/60 border border-amber-700/80 text-xs text-amber-200 flex items-start justify-between gap-2 shadow-lg">
+                    <div>
+                      <div className="font-bold flex items-center gap-1.5 text-amber-300">
+                        <AlertTriangle size={13} className="shrink-0" /> Potential Duplicate Patient Match!
+                      </div>
+                      <div className="text-[11px] text-amber-200/90 mt-0.5">
+                        Patient <strong>{duplicateWarning.full_name}</strong> already registered with UHID: <span className="font-mono font-bold text-sky-400">{duplicateWarning.mrn}</span>
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => selectPatient(duplicateWarning.id)}
+                      className="text-[10px] whitespace-nowrap bg-amber-900/60 hover:bg-amber-800 text-amber-100 border-amber-600"
+                    >
+                      Open Existing Record
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -876,6 +920,54 @@ export const PatientRegistrationWorkspace: React.FC = () => {
                           </select>
                         </div>
                       </div>
+
+                      {paymentMode === "PMJAY" && (
+                        <div className="p-3 rounded-lg bg-sky-950/40 border border-sky-800/80 space-y-2 text-xs">
+                          <div className="flex items-center justify-between text-sky-300 font-bold">
+                            <span className="flex items-center gap-1.5">
+                              <CreditCard size={14} className="text-sky-400" /> Ayushman Bharat / State Health Scheme Verification
+                            </span>
+                            <span className="text-[10px] font-mono bg-sky-900/60 text-sky-200 px-2 py-0.5 rounded border border-sky-700">
+                              NHA PM-JAY Cashless Entitlement
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-1">
+                            <div>
+                              <label className="block text-[10px] text-slate-400 mb-0.5">Scheme Program</label>
+                              <select
+                                value={pmjaySchemeName}
+                                onChange={(e) => setPmjaySchemeName(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-800 rounded p-1.5 text-xs text-slate-200"
+                              >
+                                <option value="Ayushman Bharat PM-JAY (National)">PM-JAY National (₹5 Lakh)</option>
+                                <option value="State Trust BPL Scheme">State BPL Trust Scheme (Aarogyasri / CMCHIS)</option>
+                                <option value="CGHS / ECHS Ex-Servicemen">CGHS / ECHS Government Quota</option>
+                                <option value="ESIC Beneficiary">ESIC Insured Person (IP)</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-slate-400 mb-0.5">PMJAY Golden Card / Beneficiary ID</label>
+                              <input
+                                type="text"
+                                placeholder="e.g. PMJAY-IND-9942-881"
+                                value={pmjayCardNumber}
+                                onChange={(e) => setPmjayCardNumber(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono placeholder:text-slate-600"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[10px] text-slate-400 mb-0.5">Family / Ration Card ID (NFSA)</label>
+                              <input
+                                type="text"
+                                placeholder="e.g. NFSA-28-0914421"
+                                value={pmjayFamilyId}
+                                onChange={(e) => setPmjayFamilyId(e.target.value)}
+                                className="w-full bg-slate-950 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono placeholder:text-slate-600"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       {consultationType === "FOLLOWUP" && (
                         <div className="p-2.5 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-xs text-emerald-300 flex items-center justify-between">

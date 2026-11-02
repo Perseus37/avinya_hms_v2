@@ -273,3 +273,17 @@ The frontend workspaces communicate directly with backend domain services in [`b
    - Persists all campus-wide physical printer profiles (IP address, port, orientation, millimeters, margins, DPI, connection type, protocol) in Redis keyed by tenant subdomain.
    - Automatically hydrates [`HospitalConfigContext.tsx`](file:///v:/avinya_hms/hospital-ui/src/core/context/HospitalConfigContext.tsx) on startup with automatic debounced cloud persistence when configurations are updated.
 
+---
+
+## 7. Mission-Critical Clinical Problem Resolution Matrix
+
+| Clinical Workspace | Real-World Operational Challenge | Architectural Solution & Statutory Implementation |
+|---|---|---|
+| **Patient Registration** | Duplicate MRN creation causing longitudinal patient record fragmentation | **Real-Time Duplicate Detection:** Matches primary mobile against active MPI with 1-click historical record selection; captures PMJAY Golden Card and NFSA Family IDs. |
+| **Inpatient ADT** | Uncontrolled ward entry & lost visitor traceability | **Attendant & Visitor Security Pass Printing:** Emits thermal gate passes (`THERMAL_TOKEN`) with barcode verification, family relationship, and ward visiting hours. |
+| **Blood Bank** | Critical exsanguinating trauma cannot wait 45 mins for Coombs test | **STAT Emergency Uncrossmatched O-Negative Protocol:** Instant allocation of Universal Donor PRBC with signed clinician justification and statutory Form 27C alert docket. |
+| **Diagnostics Lab** | Hemolyzed or clotted tubes discarded without nurse recollection | **Pre-Analytical Specimen Rejection Workflow:** Flags codified NABL rejection reasons (`HEMOLYZED`, `CLOTTED_EDTA`, `QNS`) and triggers 1-click STAT recollection tube label re-print. |
+| **Pharmacy** | Look-Alike / Sound-Alike (LASA) dispensing medication errors | **Tall Man Lettering & LASA Risk Banners:** ISMP-codified Tall Man strings (`hydrALAZINE` vs `hydrOXYzine`, `metFORMIN` vs `metOPROLOL`) with forced double-check confirmation. |
+| **Ward Nursing Station** | Fluid overload in renal/cardiac patients & delayed arrest alerting | **24-Hour Bedside Fluid Balance (I/O) & STAT Code Blue:** Tracks hourly IV/Oral vs Urine/Drain with cumulative net balance, plus 1-click bedside Code Blue cardiac arrest broadcast. |
+
+

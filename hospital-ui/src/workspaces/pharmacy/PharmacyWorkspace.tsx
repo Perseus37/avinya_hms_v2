@@ -1,11 +1,32 @@
 import React, { useState } from "react";
-import { Pill, ShieldAlert, Download, Barcode, CheckCircle2, UserCheck, ShieldCheck, PlusCircle, Printer } from "lucide-react";
+import { Pill, ShieldAlert, Download, Barcode, CheckCircle2, UserCheck, ShieldCheck, PlusCircle, Printer, AlertTriangle } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
 import { printDocument } from "../../utils/printDocument";
+
+export const LASA_REGISTRY: Record<string, { tallMan: string; confusedWith: string; alertRisk: string }> = {
+  hydralazine: { tallMan: "hydrALAZINE", confusedWith: "hydrOXYzine (Antihistamine)", alertRisk: "Arterial Vasodilator vs Antihistaminic Sedative" },
+  hydroxyzine: { tallMan: "hydrOXYzine", confusedWith: "hydrALAZINE (Antihypertensive)", alertRisk: "Antihistaminic Sedative vs Arterial Vasodilator" },
+  dopamine: { tallMan: "dopAMINE", confusedWith: "dobUTAMINE (Inotrope)", alertRisk: "Vasopressor / Inotrope Dosing Discrepancy" },
+  dobutamine: { tallMan: "dobUTAMINE", confusedWith: "dopAMINE (Vasopressor)", alertRisk: "Inotrope vs Vasopressor Dosing Discrepancy" },
+  metformin: { tallMan: "metFORMIN", confusedWith: "metOPROLOL (Beta Blocker)", alertRisk: "Oral Hypoglycemic vs Beta Blocker Bradycardia Risk" },
+  metoprolol: { tallMan: "metOPROLOL", confusedWith: "metFORMIN (Oral Hypoglycemic)", alertRisk: "Beta Blocker vs Oral Hypoglycemic" },
+  cefazoline: { tallMan: "cefaZOLIN", confusedWith: "cefTRIAXONE (3rd Gen Cephalosporin)", alertRisk: "Surgical Prophylaxis vs Broad-Spectrum Meningeal" },
+  ceftriaxone: { tallMan: "cefTRIAXONE", confusedWith: "cefaZOLIN (1st Gen Cephalosporin)", alertRisk: "3rd Gen Cephalosporin vs 1st Gen Cephalosporin" },
+};
+
+export function checkLasaDrug(drugName: string) {
+  const lower = drugName.toLowerCase();
+  for (const [key, data] of Object.entries(LASA_REGISTRY)) {
+    if (lower.includes(key)) {
+      return data;
+    }
+  }
+  return null;
+}
 
 interface PrescriptionItem {
   id: number;
@@ -76,6 +97,30 @@ export const PharmacyWorkspace: React.FC = () => {
           dosage: "1 tab PO HS x 30 days",
           batchNumber: "ATV-2026-M8",
           quantity: 30,
+          status: "PENDING",
+        },
+      ],
+      ddiPassed: true,
+      dispensed: false,
+    },
+    {
+      id: 3,
+      rxNumber: "Rx #9029",
+      patientName: "Meenakshi Sundaram",
+      mrn: "MRN-2026-0038",
+      medications: [
+        {
+          name: "Metformin 500mg ER Tablet (LASA)",
+          dosage: "1 tab PO BD after meals x 30 days",
+          batchNumber: "MET-2026-K9",
+          quantity: 60,
+          status: "PENDING",
+        },
+        {
+          name: "Hydralazine 25mg Tablet (LASA)",
+          dosage: "1 tab PO TDS x 15 days",
+          batchNumber: "HYD-2026-H2",
+          quantity: 45,
           status: "PENDING",
         },
       ],
@@ -399,23 +444,37 @@ export const PharmacyWorkspace: React.FC = () => {
                 </div>
 
                 <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-2 mb-3">
-                  {rx.medications.map((med, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center justify-between text-xs pb-2 border-b border-slate-900 last:border-0 last:pb-0"
-                    >
-                      <div>
-                        <div className="font-semibold text-slate-200">{med.name}</div>
-                        <div className="text-[11px] text-slate-400">{med.dosage}</div>
+                  {rx.medications.map((med, idx) => {
+                    const lasaMatch = checkLasaDrug(med.name);
+                    return (
+                      <div
+                        key={idx}
+                        className="text-xs pb-2 border-b border-slate-900 last:border-0 last:pb-0 space-y-1"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="font-semibold text-slate-200">{med.name}</div>
+                            <div className="text-[11px] text-slate-400">{med.dosage}</div>
+                          </div>
+                          <div className="text-right">
+                            <span className="font-mono text-emerald-400">
+                              Batch: {med.batchNumber}
+                            </span>
+                            <div className="text-[11px] text-slate-400">Qty: {med.quantity} units</div>
+                          </div>
+                        </div>
+                        {lasaMatch && (
+                          <div className="p-1.5 rounded bg-amber-950/50 border border-amber-700/60 text-[10px] text-amber-300 flex items-center justify-between">
+                            <span className="flex items-center gap-1 font-bold">
+                              <AlertTriangle size={11} className="text-amber-400" />
+                              <span>LASA Tall Man: <strong>{lasaMatch.tallMan}</strong></span>
+                            </span>
+                            <span className="text-amber-200/80">Risk: {lasaMatch.alertRisk}</span>
+                          </div>
+                        )}
                       </div>
-                      <div className="text-right">
-                        <span className="font-mono text-emerald-400">
-                          Batch: {med.batchNumber}
-                        </span>
-                        <div className="text-[11px] text-slate-400">Qty: {med.quantity} units</div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div className="flex items-center justify-between pt-1">

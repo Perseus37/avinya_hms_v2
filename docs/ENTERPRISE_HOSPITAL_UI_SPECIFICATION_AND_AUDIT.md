@@ -446,6 +446,34 @@ The frontend workspaces are directly connected to unified, multi-tenant backend 
 
 ---
 
+## 4.3 Real-World Operational Problem Resolution Across Workspaces
+
+To eliminate hospital-floor pain points and compliance risks, Avinya HMS systematically identifies and resolves real-world operational edge cases across clinical screens:
+
+1. **Patient Registration & MPI Integrity ([`PatientRegistrationWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/registration/PatientRegistrationWorkspace.tsx)):**
+   - **Real-Time Duplicate Prevention:** Automatically checks phone numbers against the active Master Patient Index (MPI), alerting operators before duplicate UHIDs/MRNs fragment the patient's medical history.
+   - **Ayushman Bharat PM-JAY & State Scheme Quota:** Directly captures PMJAY Golden Card IDs, Family Ration Card NFSA numbers, and state trust categories for cashless claim settlement.
+   - **Unknown / Trauma Intake:** 1-click generation of anonymous trauma profiles (`TRAUMA UNKNOWN MALE/FEMALE #XXXX`) with universal O-Negative blood pre-allocation.
+
+2. **Inpatient ADT & Bedside Security ([`InpatientAdmissionWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/adt/InpatientAdmissionWorkspace.tsx)):**
+   - **Attendant / Visitor Gate Pass Printing:** Generates statutory thermal attendant passes (`THERMAL_TOKEN` category) with visitor barcodes, relative relationship, and strict visiting hours for turnstile security checkpoints.
+   - **TPA Pre-Authorization Gate:** Locks bed allocation until insurance sanction amounts and payer information are verified.
+
+3. **Transfusion Medicine & Trauma ([`BloodBankWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/bloodbank/BloodBankWorkspace.tsx)):**
+   - **STAT Emergency Uncrossmatched O-Negative Protocol:** For catastrophic exsanguinating hemorrhage, allows senior clinicians to bypass the 45-minute crossmatch window with a signed justification modal and statutory Form 27C alert docket, while retaining pilot samples for retrospective Coombs testing.
+
+4. **Diagnostic Laboratory ([`DiagnosticsWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/diagnostics/DiagnosticsWorkspace.tsx)):**
+   - **Pre-Analytical Specimen Rejection Workflow:** Flags hemolyzed, clotted, or insufficient volume (QNS) samples with codified NABL reasons, alerts nursing, and issues 1-click STAT recollection barcode tube labels (`LAB_LABEL` category).
+
+5. **Pharmacy & Inpatient Dispensing ([`PharmacyWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/pharmacy/PharmacyWorkspace.tsx)):**
+   - **Tall Man Lettering & LASA Safety:** Implements ISMP-compliant Tall Man lettering (`hydrALAZINE` vs `hydrOXYzine`, `metFORMIN` vs `metOPROLOL`) with active risk warnings to prevent fatal look-alike / sound-alike dispensing errors.
+
+6. **Inpatient Nursing Station ([`WardNursingStation.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/nursing/WardNursingStation.tsx)):**
+   - **24-Hour Bedside Fluid Balance (I/O):** Monitors hourly intake (IV + Oral) versus output (Urine + Drains), computing cumulative net balances to detect fluid overload or dehydration risks.
+   - **STAT Code Blue Activation:** 1-click bedside cardiac arrest trigger broadcasting active bed locations with high-visibility siren banners and response team timers.
+
+---
+
 ## 5. Comprehensive AI Audit Scorecard & Evaluation
 
 ### Overall System Rating: 9.2 / 10 (Remediated from 1.0 / 10)

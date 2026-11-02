@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Microscope, AlertCircle, PhoneCall, CheckCircle2, FileCheck, Barcode, Printer, PlusCircle } from "lucide-react";
+import { Microscope, AlertCircle, PhoneCall, CheckCircle2, FileCheck, Barcode, Printer, PlusCircle, AlertTriangle, XCircle, RotateCcw } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -13,7 +13,8 @@ interface LabOrder {
   patientName: string;
   mrn: string;
   sampleType: string;
-  status: "COLLECTED" | "IN_ANALYSIS" | "AUTHORIZED";
+  status: "COLLECTED" | "IN_ANALYSIS" | "AUTHORIZED" | "SPECIMEN_REJECTED";
+  rejectionReason?: string;
   tests: Array<{
     name: string;
     barcode: string;
@@ -87,6 +88,36 @@ export const DiagnosticsWorkspace: React.FC = () => {
   // Print Lab Report State
   const [isPrintReportModalOpen, setIsPrintReportModalOpen] = useState(false);
   const [reportOrder, setReportOrder] = useState<LabOrder | null>(null);
+
+  // Specimen Rejection & STAT Recollection State
+  const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
+  const [orderToReject, setOrderToReject] = useState<LabOrder | null>(null);
+  const [rejectionReason, setRejectionReason] = useState<
+    "HEMOLYZED_SAMPLE" | "CLOTTED_EDTA_SPECIMEN" | "INSUFFICIENT_VOLUME_QNS" | "WRONG_TUBE_TYPE"
+  >("HEMOLYZED_SAMPLE");
+  const [rejectionNotes, setRejectionNotes] = useState(
+    "Gross hemolysis observed post-centrifugation. Potassium, AST, and LDH cannot be reported accurately."
+  );
+
+  const handleExecuteRejection = () => {
+    if (!orderToReject) return;
+    const reasonLabelMap = {
+      HEMOLYZED_SAMPLE: "Hemolyzed Sample (In vitro RBC lysis)",
+      CLOTTED_EDTA_SPECIMEN: "Clotted Specimen (Microclots in EDTA tube)",
+      INSUFFICIENT_VOLUME_QNS: "Quantity Not Sufficient (QNS)",
+      WRONG_TUBE_TYPE: "Mismatched Container / Wrong Anticoagulant",
+    };
+    const fullReason = `${reasonLabelMap[rejectionReason]} • ${rejectionNotes}`;
+    setOrders((prev) =>
+      prev.map((o) =>
+        o.id === orderToReject.id
+          ? { ...o, status: "SPECIMEN_REJECTED", rejectionReason: fullReason }
+          : o
+      )
+    );
+    setIsRejectModalOpen(false);
+    setOrderToReject(null);
+  };
 
   const handleCreateLabOrder = (e: React.FormEvent) => {
     e.preventDefault();
@@ -329,6 +360,8 @@ export const DiagnosticsWorkspace: React.FC = () => {
                         ? "success"
                         : order.status === "IN_ANALYSIS"
                         ? "warning"
+                        : order.status === "SPECIMEN_REJECTED"
+                        ? "danger"
                         : "info"
                     }
                     size="sm"
@@ -337,9 +370,30 @@ export const DiagnosticsWorkspace: React.FC = () => {
                       ? "Specimen Collected"
                       : order.status === "IN_ANALYSIS"
                       ? "In Analyzer"
+                      : order.status === "SPECIMEN_REJECTED"
+                      ? "Specimen Rejected (Recollect STAT)"
                       : "Verified & Released"}
                   </Badge>
                 </div>
+
+                {order.status === "SPECIMEN_REJECTED" && (
+                  <div className="p-2.5 rounded bg-rose-950/60 border border-rose-800 text-xs text-rose-200 flex items-start justify-between gap-2">
+                    <div>
+                      <div className="font-bold flex items-center gap-1.5 text-rose-400">
+                        <AlertTriangle size={13} /> Laboratory Specimen Rejected:
+                      </div>
+                      <div className="text-[11px] text-rose-300/90 mt-0.5">{order.rejectionReason}</div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handlePrintSpecimenTubeLabel(order)}
+                      className="text-[10px] text-rose-300 border-rose-700 hover:bg-rose-900/60 flex items-center gap-1"
+                    >
+                      <RotateCcw size={11} /> Print STAT Recollect Label
+                    </Button>
+                  </div>
+                )}
 
                 <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
                   {order.tests.map((t, idx) => (
@@ -387,6 +441,21 @@ export const DiagnosticsWorkspace: React.FC = () => {
                   >
                     <Barcode size={13} /> Tube Label
                   </Button>
+
+                  {order.status !== "AUTHORIZED" && order.status !== "SPECIMEN_REJECTED" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setOrderToReject(order);
+                        setIsRejectModalOpen(true);
+                      }}
+                      className="text-xs flex items-center gap-1 text-rose-400 hover:text-rose-200 border-rose-900/80 hover:bg-rose-950/40"
+                      title="Reject specimen due to Hemolysis, Microclots, or QNS"
+                    >
+                      <XCircle size={13} /> Reject Specimen
+                    </Button>
+                  )}
 
                   {order.status === "COLLECTED" && (
                     <Button
@@ -785,6 +854,82 @@ export const DiagnosticsWorkspace: React.FC = () => {
                 onClick={() => setIsPrintReportModalOpen(false)}
               >
                 Close
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal: Specimen Rejection & STAT Recollection */}
+      {isRejectModalOpen && orderToReject && (
+        <Modal
+          isOpen={isRejectModalOpen}
+          onClose={() => {
+            setIsRejectModalOpen(false);
+            setOrderToReject(null);
+          }}
+          title="Laboratory Specimen Rejection &amp; STAT Recollection Notice"
+        >
+          <div className="space-y-4">
+            <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-700/80 text-rose-200 text-xs flex items-start gap-2.5">
+              <AlertTriangle size={18} className="text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <strong>NABL PRE-ANALYTICAL ERROR:</strong> The submitted sample fails clinical analytical integrity standards. Tests will be suspended and an urgent recollection task will be dispatched to Phlebotomy / Nursing.
+              </div>
+            </div>
+
+            <div className="p-3 rounded bg-slate-900 border border-slate-800 text-xs space-y-1 font-mono">
+              <div><strong>Patient:</strong> {orderToReject.patientName} ({orderToReject.mrn})</div>
+              <div><strong>Order Number:</strong> {orderToReject.orderNumber} • <strong>Container:</strong> {orderToReject.sampleType}</div>
+              <div><strong>Tests Ordered:</strong> {orderToReject.tests.map((t) => t.name).join(", ")}</div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Codified Pre-Analytical Rejection Reason:
+              </label>
+              <select
+                value={rejectionReason}
+                onChange={(e) => setRejectionReason(e.target.value as any)}
+                className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+              >
+                <option value="HEMOLYZED_SAMPLE">Gross Hemolysis (In vitro RBC lysis invalidating Potassium/LDH)</option>
+                <option value="CLOTTED_EDTA_SPECIMEN">Clotted Specimen (Microclots in EDTA invalidating CBC/Platelets)</option>
+                <option value="INSUFFICIENT_VOLUME_QNS">Quantity Not Sufficient (QNS for complete test profile)</option>
+                <option value="WRONG_TUBE_TYPE">Mismatched Container / Wrong Anticoagulant</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Technologist Analytical Notes / Phlebotomy Instructions:
+              </label>
+              <textarea
+                rows={3}
+                value={rejectionNotes}
+                onChange={(e) => setRejectionNotes(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-rose-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setIsRejectModalOpen(false);
+                  setOrderToReject(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleExecuteRejection}
+                className="bg-rose-600 hover:bg-rose-500 text-white font-bold flex items-center gap-1.5"
+              >
+                <XCircle size={13} /> Confirm Rejection &amp; Request Recollection
               </Button>
             </div>
           </div>

@@ -7,10 +7,13 @@ import {
   Search,
   Check,
   Barcode,
+  Siren,
+  AlertTriangle,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { Modal } from "../../components/ui/Modal";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
 import { printDocument } from "../../utils/printDocument";
@@ -29,7 +32,7 @@ export interface BloodRequisition {
   orderingDept: string;
   orderingDoctor: string;
   requestedAt: string;
-  status: "PENDING_CROSSMATCH" | "COMPATIBLE_RESERVED" | "ISSUED_TO_WARD" | "TRANSFUSED";
+  status: "PENDING_CROSSMATCH" | "COMPATIBLE_RESERVED" | "ISSUED_TO_WARD" | "TRANSFUSED" | "EMERGENCY_UNCROSSMATCHED_RELEASE";
   allocatedBagIds?: string[];
   crossmatchDetails?: {
     majorCrossmatch: "COMPATIBLE" | "INCOMPATIBLE";
@@ -287,6 +290,32 @@ export const BloodBankWorkspace: React.FC = () => {
     );
   };
 
+  const [isEmergencyModalOpen, setIsEmergencyModalOpen] = useState(false);
+  const [emergencyJustification, setEmergencyJustification] = useState(
+    "Exsanguinating massive hemorrhage with acute shock. Clinical benefit of immediate universal O-Negative PRBC outweighs 45-minute crossmatch delay."
+  );
+
+  const handleExecuteEmergencyRelease = (reqId: string) => {
+    setRequisitions((prev) =>
+      prev.map((r) => {
+        if (r.id !== reqId) return r;
+        return {
+          ...r,
+          status: "EMERGENCY_UNCROSSMATCHED_RELEASE",
+          allocatedBagIds: ["EMERG-ONEG-771", "EMERG-ONEG-772"],
+          crossmatchDetails: {
+            majorCrossmatch: "COMPATIBLE",
+            minorCrossmatch: "COMPATIBLE",
+            coombsDirect: "NEGATIVE",
+            coombsIndirect: "NEGATIVE",
+            testedBy: "EMERGENCY CLINICIAN OVERRIDE (Retrospective Pilot Testing In Progress)",
+          },
+        };
+      })
+    );
+    setIsEmergencyModalOpen(false);
+  };
+
   // Statutory Print Compatibility Certificate & Blood Bag Tag
   const handlePrintCertificate = (req: BloodRequisition) => {
     const html = `
@@ -304,6 +333,15 @@ export const BloodBankWorkspace: React.FC = () => {
         <div style="text-align: center; background: #fee2e2; border: 1px solid #f87171; padding: 6px; font-weight: bold; font-size: 13px; color: #991b1b; margin-bottom: 14px;">
           STATUTORY BLOOD TRANSFUSION COMPATIBILITY CERTIFICATE & CROSSMATCH REPORT
         </div>
+
+        ${req.status === "EMERGENCY_UNCROSSMATCHED_RELEASE" ? `
+          <div style="background: #fef2f2; border: 2px solid #b91c1c; padding: 10px; margin-bottom: 14px; color: #991b1b; font-size: 11px; line-height: 1.4;">
+            <b style="font-size: 13px;">⚠️ STAT EMERGENCY UNCROSSMATCHED BLOOD RELEASE PROTOCOL</b><br/>
+            Universal Donor O-Negative units released immediately under emergency medical protocol without awaiting full 45-minute serological crossmatch.<br/>
+            <b>Clinician Justification:</b> Massive life-threatening hemorrhage. Benefit of acute volume and oxygen delivery outweighs crossmatch delay.<br/>
+            <i>Pre-transfusion recipient pilot tube retained in Blood Bank for retrospective major & minor compatibility testing.</i>
+          </div>
+        ` : ""}
 
         <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 12px;">
           <div><b>Patient Legal Name:</b> ${req.patientName.toUpperCase()}</div>
@@ -584,6 +622,17 @@ export const BloodBankWorkspace: React.FC = () => {
                         Release &amp; Issue to Ward
                       </Button>
                     )}
+                    {activeReq.status !== "ISSUED_TO_WARD" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setIsEmergencyModalOpen(true)}
+                        className="flex items-center gap-1.5 text-rose-400 hover:text-white hover:bg-rose-900/80 border-rose-800 bg-rose-950/40"
+                        title="Execute Statutory Emergency Uncrossmatched Blood Release"
+                      >
+                        <Siren size={13} className="text-rose-400" /> Emergency O-Neg Release
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -803,6 +852,63 @@ export const BloodBankWorkspace: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Modal: Emergency Uncrossmatched O-Negative Release */}
+      {isEmergencyModalOpen && (
+        <Modal
+          isOpen={isEmergencyModalOpen}
+          onClose={() => setIsEmergencyModalOpen(false)}
+          title="STAT Emergency Uncrossmatched Blood Release Protocol"
+        >
+          <div className="space-y-4">
+            <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-700/80 text-rose-200 text-xs flex items-start gap-2.5">
+              <AlertTriangle size={18} className="text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <strong>HIGH-RISK STATUTE NOTICE:</strong> Executing this protocol releases uncrossmatched O-Negative Universal Donor Packed Red Blood Cells (PRBC) immediately without awaiting standard 45-minute serological compatibility testing.
+              </div>
+            </div>
+
+            <div className="p-3 rounded bg-slate-900 border border-slate-800 text-xs space-y-1.5 font-mono">
+              <div><strong>Patient:</strong> {activeReq.patientName} ({activeReq.mrn})</div>
+              <div><strong>Stated Group:</strong> {activeReq.bloodGroup} • <strong>Requested Component:</strong> {activeReq.component}</div>
+              <div><strong>Destination:</strong> {activeReq.orderingDept}</div>
+              <div className="text-emerald-400"><strong>Release Units:</strong> 2 Units Universal O-Negative (PRBC)</div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1">
+                Attending Clinician Emergency Justification:
+              </label>
+              <textarea
+                rows={3}
+                value={emergencyJustification}
+                onChange={(e) => setEmergencyJustification(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 focus:outline-none focus:border-rose-500 font-mono"
+              />
+            </div>
+
+            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 text-[11px] text-slate-400 font-mono space-y-1">
+              <div>[✓] Pre-transfusion pilot specimen retained for retrospective Coombs test</div>
+              <div>[✓] Immediate delivery via STAT runner with Cold-Chain Bag</div>
+              <div>[✓] Mandatory adverse reaction monitoring at 0, 15, and 60 minutes</div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <Button variant="outline" size="sm" onClick={() => setIsEmergencyModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => handleExecuteEmergencyRelease(activeReq.id)}
+                className="bg-rose-600 hover:bg-rose-500 text-white font-bold flex items-center gap-1.5"
+              >
+                <Siren size={13} /> Authorize &amp; Dispatch O-Negative Units
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

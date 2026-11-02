@@ -241,6 +241,11 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
   const [payerName, setPayerName] = useState(MASTER_PATIENT_DIRECTORY[0].insurancePayer);
   const [preAuthAmount, setPreAuthAmount] = useState(MASTER_PATIENT_DIRECTORY[0].insurancePreAuth.toString());
 
+  // Attendant & Visitor Pass State
+  const [attendantName, setAttendantName] = useState("");
+  const [attendantRelation, setAttendantRelation] = useState("Spouse / Relative");
+  const [attendantPhone, setAttendantPhone] = useState("");
+
   // Bed Transfer State
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [transferringAdmission, setTransferringAdmission] = useState<ActiveAdmissionItem | null>(null);
@@ -534,6 +539,46 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
         orientation: printerDevice ? (printerDevice.orientation.toLowerCase() as "portrait" | "landscape") : (template.orientation === "PORTRAIT" ? "portrait" : "landscape"),
         printerType: template.printerType,
       },
+      printerDevice,
+    });
+  };
+
+  const handlePrintAttendantPass = () => {
+    if (!confirmedAdmission) return;
+    const printerDevice = getPrinterForCategory("THERMAL_TOKEN");
+    const html = `
+      <div class="thermal-receipt" style="text-align: center; font-family: monospace; font-size: 11px;">
+        <div style="font-size: 13px; font-weight: bold;">${(hospitalProfile.name || "AVINYA SUPER-SPECIALTY HOSPITAL").toUpperCase()}</div>
+        <div style="font-size: 11px; font-weight: bold; border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 4px 0; margin: 4px 0;">
+          INPATIENT ATTENDANT &amp; VISITOR PASS
+        </div>
+        <div style="text-align: left; margin: 6px 0; line-height: 1.4;">
+          <div><b>Patient:</b> ${confirmedAdmission.patientName.toUpperCase()}</div>
+          <div><b>UHID / MRN:</b> ${confirmedAdmission.mrn}</div>
+          <div><b>Ward / Room:</b> ${confirmedAdmission.ward} (Bed: ${confirmedAdmission.bedNumber})</div>
+          <div><b>Attendant:</b> ${(attendantName || "Primary Nominee").toUpperCase()} (${attendantRelation})</div>
+          ${attendantPhone ? `<div><b>Phone:</b> ${attendantPhone}</div>` : ""}
+          <div><b>Admitted:</b> ${confirmedAdmission.admittedAt}</div>
+          <div><b>Doctor:</b> ${confirmedAdmission.admittingDoctor}</div>
+        </div>
+        <div style="background: #f1f5f9; padding: 4px; border: 1px solid #cbd5e1; margin: 6px 0; font-size: 9px; text-align: left;">
+          <b>VISITING HOURS &amp; RULES:</b><br/>
+          • Morning: 11:00 AM - 01:00 PM<br/>
+          • Evening: 05:00 PM - 07:00 PM<br/>
+          <i>Only 1 attendant permitted at bedside with this badge. Turnstile scanning required at gate.</i>
+        </div>
+        <div style="margin: 6px 0;">
+          <div style="font-size: 16px; letter-spacing: 3px;">||| | |||| || | ||||</div>
+          <div style="font-size: 9px;">*PASS-${confirmedAdmission.mrn}-${confirmedAdmission.bedNumber}*</div>
+        </div>
+        <div style="font-size: 8px; color: #475569; margin-top: 4px;">
+          Hospital Security Gate Pass • Valid until Discharge
+        </div>
+      </div>
+    `;
+    printDocument(html, {
+      title: `Attendant_Pass_${confirmedAdmission.mrn}`,
+      docType: "THERMAL_TOKEN",
       printerDevice,
     });
   };
@@ -1330,6 +1375,52 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
             )}
           </Card>
 
+          {/* Attendant & Security Visitor Pass Details */}
+          <Card className="p-4 bg-slate-900/80 border-slate-800 space-y-3">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <span className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                <User size={14} className="text-purple-400" /> Bedside Attendant &amp; Security Pass Allocation
+              </span>
+              <span className="text-[10px] font-mono text-purple-400">1 Primary Pass Allowed</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[11px] text-slate-300 mb-1">Attendant Full Name</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Ramesh Varma"
+                  value={attendantName}
+                  onChange={(e) => setAttendantName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 placeholder:text-slate-600"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-300 mb-1">Relationship to Patient</label>
+                <select
+                  value={attendantRelation}
+                  onChange={(e) => setAttendantRelation(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                >
+                  <option value="Spouse">Spouse</option>
+                  <option value="Parent">Parent / Guardian</option>
+                  <option value="Child / Son / Daughter">Child (Son / Daughter)</option>
+                  <option value="Sibling">Sibling (Brother / Sister)</option>
+                  <option value="Other Relative">Other Relative / Nominee</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-300 mb-1">Attendant Phone / Contact</label>
+                <input
+                  type="tel"
+                  placeholder="10-digit mobile number"
+                  value={attendantPhone}
+                  onChange={(e) => setAttendantPhone(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 placeholder:text-slate-600 font-mono"
+                />
+              </div>
+            </div>
+          </Card>
+
           <div className="flex items-center justify-end gap-3 pt-2">
             <PermissionGate
               permission="bed.allocate"
@@ -1809,6 +1900,15 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
                   className="flex items-center gap-1.5 border-purple-800 text-purple-300 bg-purple-950/40 hover:bg-purple-900/60"
                 >
                   <Printer size={13} className="text-purple-400" /> Print Bedside Wristband
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePrintAttendantPass}
+                  className="flex items-center gap-1.5 border-emerald-800 text-emerald-300 bg-emerald-950/40 hover:bg-emerald-900/60"
+                  title="Print Bedside Attendant & Security Visitor Gate Pass"
+                >
+                  <Printer size={13} className="text-emerald-400" /> Print Attendant Pass
                 </Button>
               </div>
 

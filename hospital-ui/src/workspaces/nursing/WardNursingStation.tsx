@@ -22,6 +22,8 @@ import {
   Printer,
   Clock,
   ShieldCheck,
+  Droplet,
+  PlusCircle,
 } from "lucide-react";
 
 interface ScheduledMedication {
@@ -41,11 +43,50 @@ interface ScheduledMedication {
 
 export const WardNursingStation: React.FC = () => {
   const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
-  const [activeTab, setActiveTab] = useState<"beds" | "emar">("beds");
+  const [activeTab, setActiveTab] = useState<"beds" | "emar" | "fluid-balance">("beds");
   const [beds, setBeds] = useState<DetailedBedItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedWardId] = useState(1);
   const { selectPatient } = useActivePatient();
+
+  // Code Blue / Cardiac Arrest STAT Alert State
+  const [activeCodeBlue, setActiveCodeBlue] = useState<{
+    bedNumber: string;
+    patientName: string;
+    mrn: string;
+    location: string;
+    activatedAt: string;
+  } | null>(null);
+
+  // Fluid Balance Intake & Output State
+  const [fluidEntries, setFluidEntries] = useState([
+    { hour: "08:00 - 10:00", ivIntakeMl: 250, oralIntakeMl: 150, urineOutputMl: 220, drainOutputMl: 30, netBalance: 150 },
+    { hour: "10:00 - 12:00", ivIntakeMl: 200, oralIntakeMl: 200, urineOutputMl: 280, drainOutputMl: 20, netBalance: 100 },
+    { hour: "12:00 - 14:00", ivIntakeMl: 250, oralIntakeMl: 300, urineOutputMl: 350, drainOutputMl: 25, netBalance: 175 },
+    { hour: "14:00 - 16:00", ivIntakeMl: 200, oralIntakeMl: 100, urineOutputMl: 210, drainOutputMl: 15, netBalance: 75 },
+  ]);
+  const [newIvMl, setNewIvMl] = useState("200");
+  const [newOralMl, setNewOralMl] = useState("150");
+  const [newUrineMl, setNewUrineMl] = useState("250");
+  const [newDrainMl, setNewDrainMl] = useState("20");
+
+  const handleAddFluidEntry = (e: React.FormEvent) => {
+    e.preventDefault();
+    const iv = parseInt(newIvMl || "0", 10);
+    const oral = parseInt(newOralMl || "0", 10);
+    const urine = parseInt(newUrineMl || "0", 10);
+    const drain = parseInt(newDrainMl || "0", 10);
+    const net = (iv + oral) - (urine + drain);
+    const nowHour = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    setFluidEntries((prev) => [
+      ...prev,
+      { hour: `${nowHour} Entry`, ivIntakeMl: iv, oralIntakeMl: oral, urineOutputMl: urine, drainOutputMl: drain, netBalance: net },
+    ]);
+    setNewIvMl("");
+    setNewOralMl("");
+    setNewUrineMl("");
+    setNewDrainMl("");
+  };
 
   // Alert & Notification States
   const [notificationToast, setNotificationToast] = useState<{
@@ -361,6 +402,38 @@ export const WardNursingStation: React.FC = () => {
         </div>
       </div>
 
+      {/* Active Code Blue Flashing Siren Alert */}
+      {activeCodeBlue && (
+        <div className="mt-4 p-4 rounded-xl bg-rose-950 border-2 border-rose-500 text-rose-100 flex items-center justify-between shadow-2xl animate-pulse">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-xl bg-rose-900 flex items-center justify-center text-white shrink-0">
+              <Siren size={28} className="text-rose-300" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-black text-xs uppercase bg-rose-600 px-2 py-0.5 rounded text-white font-mono">
+                  🚨 CODE BLUE / CARDIAC ARREST STAT BROADCAST
+                </span>
+                <span className="text-xs font-mono text-rose-300">Activated: {activeCodeBlue.activatedAt}</span>
+              </div>
+              <div className="text-sm font-bold text-white mt-1">
+                LOCATION: {activeCodeBlue.location} • Patient: {activeCodeBlue.patientName} ({activeCodeBlue.mrn})
+              </div>
+              <div className="text-[11px] text-rose-200 mt-0.5">
+                Crash Cart Team, ICU Intensivist &amp; Rapid Response Team dispatched. Ward chimes active.
+              </div>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => setActiveCodeBlue(null)}
+            className="bg-white hover:bg-slate-200 text-rose-950 font-bold whitespace-nowrap"
+          >
+            Stand Down / Resuscitation Underway
+          </Button>
+        </div>
+      )}
+
       {/* RRT / Notification Alert Toast */}
       {notificationToast && (
         <div
@@ -416,6 +489,18 @@ export const WardNursingStation: React.FC = () => {
           }`}
         >
           <Pill size={14} /> Inpatient eMAR &amp; BCMA Administration Desk
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("fluid-balance")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "fluid-balance"
+              ? "bg-purple-500/10 text-purple-400 border border-purple-500/30"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+          }`}
+        >
+          <Droplet size={14} /> Fluid Balance (Intake / Output 24h)
         </button>
       </div>
 
@@ -505,15 +590,34 @@ export const WardNursingStation: React.FC = () => {
                           </span>
                         </div>
 
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveBedForVitals(bed);
-                          }}
-                          className="px-2 py-1 text-[11px] rounded bg-sky-950 text-sky-400 border border-sky-800 hover:bg-sky-900 transition-colors flex items-center gap-1"
-                        >
-                          <Activity size={11} /> Vitals &amp; NEWS2
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveBedForVitals(bed);
+                            }}
+                            className="px-2 py-1 text-[11px] rounded bg-sky-950 text-sky-400 border border-sky-800 hover:bg-sky-900 transition-colors flex items-center gap-1"
+                          >
+                            <Activity size={11} /> Vitals &amp; NEWS2
+                          </button>
+
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveCodeBlue({
+                                bedNumber: bed.bed_number,
+                                patientName: bed.occupied_details?.patient_name || "Unknown Patient",
+                                mrn: bed.occupied_details?.mrn || "MRN-PENDING",
+                                location: `Ward 1 • Bed ${bed.bed_number}`,
+                                activatedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+                              });
+                            }}
+                            className="px-2 py-1 text-[11px] rounded bg-rose-950 text-rose-400 border border-rose-800 hover:bg-rose-900 transition-colors flex items-center gap-1"
+                            title="Activate STAT Code Blue Cardiac Arrest Resuscitation Team"
+                          >
+                            <Siren size={11} /> Code Blue
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : (
@@ -624,6 +728,167 @@ export const WardNursingStation: React.FC = () => {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* TAB 3: FLUID BALANCE (INTAKE / OUTPUT 24H) */}
+      {activeTab === "fluid-balance" && (
+        <div className="space-y-6 mt-6">
+          {(() => {
+            const totalIntake = fluidEntries.reduce((acc, curr) => acc + curr.ivIntakeMl + curr.oralIntakeMl, 0);
+            const totalOutput = fluidEntries.reduce((acc, curr) => acc + curr.urineOutputMl + curr.drainOutputMl, 0);
+            const cumulativeNet = totalIntake - totalOutput;
+
+            return (
+              <>
+                {/* Fluid Summary Statistics Bar */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Total 24h Fluid Intake</span>
+                    <div className="text-xl font-bold font-mono text-sky-400">
+                      {totalIntake} mL
+                    </div>
+                    <span className="text-[10px] text-slate-500">IV Infusions + Oral Fluids</span>
+                  </Card>
+
+                  <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Total 24h Fluid Output</span>
+                    <div className="text-xl font-bold font-mono text-amber-400">
+                      {totalOutput} mL
+                    </div>
+                    <span className="text-[10px] text-slate-500">Urine + Surgical Drains</span>
+                  </Card>
+
+                  <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Cumulative Net Balance</span>
+                    <div className={`text-xl font-bold font-mono ${cumulativeNet >= 0 ? "text-purple-400" : "text-emerald-400"}`}>
+                      {cumulativeNet > 0 ? `+${cumulativeNet}` : cumulativeNet} mL
+                    </div>
+                    <span className="text-[10px] text-slate-500">
+                      {cumulativeNet > 500 ? "⚠️ Positive Fluid Overload Risk" : cumulativeNet < -500 ? "⚠️ Negative Deficit / Dehydration" : "Euvolemic Fluid Balance"}
+                    </span>
+                  </Card>
+
+                  <Card className="p-4 bg-slate-900 border-slate-800 space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Target Urine Output SLA</span>
+                    <div className="text-xl font-bold font-mono text-emerald-400">
+                      &gt; 0.5 mL/kg/h
+                    </div>
+                    <span className="text-[10px] text-slate-500">Renal Perfusion Adequate</span>
+                  </Card>
+                </div>
+
+                {/* Entry Form + Hourly Chart Grid */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  {/* Left Column: Quick Hourly I/O Logger */}
+                  <div className="lg:col-span-4">
+                    <Card className="p-4 bg-slate-900 border-slate-800 space-y-4">
+                      <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
+                        <PlusCircle size={15} className="text-purple-400" />
+                        <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                          Log Hourly Intake &amp; Output
+                        </h3>
+                      </div>
+
+                      <form onSubmit={handleAddFluidEntry} className="space-y-3 text-xs">
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">IV Infusions / Bolus (mL)</label>
+                          <input
+                            type="number"
+                            placeholder="e.g. 200"
+                            value={newIvMl}
+                            onChange={(e) => setNewIvMl(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Oral Fluids / Ryle&apos;s Tube Feeds (mL)</label>
+                          <input
+                            type="number"
+                            placeholder="e.g. 150"
+                            value={newOralMl}
+                            onChange={(e) => setNewOralMl(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Urine Output (Catheter / Urinal) (mL)</label>
+                          <input
+                            type="number"
+                            placeholder="e.g. 250"
+                            value={newUrineMl}
+                            onChange={(e) => setNewUrineMl(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] text-slate-400 mb-1">Surgical Wound Drains / Stoma (mL)</label>
+                          <input
+                            type="number"
+                            placeholder="e.g. 20"
+                            value={newDrainMl}
+                            onChange={(e) => setNewDrainMl(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                          />
+                        </div>
+
+                        <Button type="submit" variant="primary" size="sm" className="w-full font-bold">
+                          Record I/O Balance Entry
+                        </Button>
+                      </form>
+                    </Card>
+                  </div>
+
+                  {/* Right Column: Hourly Intake / Output Ledger Table */}
+                  <div className="lg:col-span-8">
+                    <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                        <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                          <Droplet size={14} className="text-purple-400" />
+                          24-Hour Fluid Balance Hourly Timeline
+                        </h3>
+                        <Badge variant="purple" size="sm" className="font-mono text-[10px]">
+                          Cumulative: {cumulativeNet > 0 ? `+${cumulativeNet}` : cumulativeNet} mL
+                        </Badge>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs">
+                          <thead className="bg-slate-950 text-slate-400 uppercase font-mono text-[10px]">
+                            <tr>
+                              <th className="p-2.5">Time Interval</th>
+                              <th className="p-2.5 text-sky-400">IV Intake</th>
+                              <th className="p-2.5 text-sky-400">Oral Intake</th>
+                              <th className="p-2.5 text-amber-400">Urine Output</th>
+                              <th className="p-2.5 text-amber-400">Drains</th>
+                              <th className="p-2.5 text-right font-bold">Net Interval</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60 font-mono">
+                            {fluidEntries.map((row, idx) => (
+                              <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
+                                <td className="p-2.5 font-bold text-slate-300 font-sans">{row.hour}</td>
+                                <td className="p-2.5 text-sky-300">+{row.ivIntakeMl} mL</td>
+                                <td className="p-2.5 text-sky-300">+{row.oralIntakeMl} mL</td>
+                                <td className="p-2.5 text-amber-300">-{row.urineOutputMl} mL</td>
+                                <td className="p-2.5 text-amber-300">-{row.drainOutputMl} mL</td>
+                                <td className={`p-2.5 text-right font-bold ${row.netBalance >= 0 ? "text-purple-400" : "text-emerald-400"}`}>
+                                  {row.netBalance > 0 ? `+${row.netBalance}` : row.netBalance} mL
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
 
