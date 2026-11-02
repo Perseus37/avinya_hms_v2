@@ -422,8 +422,9 @@ Production configuration supports both storage layouts:
   `ATTACHMENTS_HOST_PATH=/mnt/avinya-attachments`. This reduces shared disk
   pressure but both disks remain on the same VM failure domain.
 
-Procurement vendor invoice uploads are stored durably below
-`ATTACHMENTS_STORAGE_DIR` in a directory for the active tenant. The API accepts
+Procurement vendor invoice uploads and tenant branding logo/favicon assets are
+stored durably below `ATTACHMENTS_STORAGE_DIR` in tenant-specific directories
+(`<tenant>/branding-assets` for branding). The API accepts
 PDF, PNG, and JPEG files up to `MAX_ATTACHMENT_UPLOAD_BYTES` (20 MiB by
 default); it checks the file signature, scans the staged file with the local
 ClamAV service, then assigns a random server-side filename. A detection rejects
@@ -434,9 +435,13 @@ ClamAV a separate egress network for signature updates; allow the required
 ClamAV update traffic through the host's egress policy and monitor scanner
 health and logs. The AI extraction task uses a separate tenant DB session and
 does not delete the source document. Local Compose uses the persistent
-`hms_attachments` volume; production uses `ATTACHMENTS_HOST_PATH`. Include
-attachments in encrypted host backups and verify a restore before relying on
-them.
+`hms_attachments` volume; production uses `ATTACHMENTS_HOST_PATH`. The
+production backup script excludes attachments unless `INCLUDE_ATTACHMENTS=true`
+is set. Set it for every scheduled backup if tenant logos, favicons, invoice
+documents, or other uploaded files must be recoverable. The encrypted snapshot
+contains `attachments.tar.gz.gpg`; restore it to a separate staging directory
+and verify tenant paths and file permissions before any controlled recovery.
+Do not assume a successful database restore also restores uploaded files.
 
 The invoice path now has a durable audit of authorized download requests; it
 records that a response was initiated, not that the client received every
