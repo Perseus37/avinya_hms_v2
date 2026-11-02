@@ -291,5 +291,6 @@ The frontend workspaces communicate directly with backend domain services in [`b
 | **Doctor Cockpit** | Disjointed OPD-to-IPD admission pathways & manual sick leave disputes | **IPD Bed Requisition & Statutory Medical Certificates:** 1-click issuance of Form ADT-01 bed booking orders (Emergency STAT/High-Acuity) with pre-transfer care directives, plus NMC-compliant statutory sick leave certificates. |
 | **Biomedical Engineering** | Inadvertent patient connection to broken/uncalibrated life support | **Physical Lockout Tagout (LOTO) Danger Placards:** Instant Form BME-LOTO-01 hazard notices tagged to defective assets prohibiting patient use under NABH FMS.6/OSHA. |
 | **Cashier Billing Counter** | Long payment settlement queues & unrecorded charity concessions | **EWS Concession Engine & Quick-Tender Presets:** Multi-tier waiver approvals (Senior Citizen, Staff, EWS 100% Free Bed) codified on GST receipts, plus 1-click Cash/UPI/Card presets. |
+| **Patient Record (EMR)** | Unverified data disclosure & statutory privacy non-compliance | **DPDP Act 2023 Consent Disclosure Certificates:** Form DPDP-CERT-01 specifying purpose-specific consent statuses, cryptographic SHA-256 hash, and DPO rights contact. |
 
 

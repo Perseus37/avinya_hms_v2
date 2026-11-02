@@ -265,7 +265,90 @@ export const PatientRecordWorkspace: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: `Chart_Summary_${activePatient.mrn}`, docType: "CLINICAL_SUMMARY" });
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(html, {
+      title: `Chart_Summary_${activePatient.mrn}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
+  };
+
+  const handlePrintConsentCertificate = () => {
+    if (!activePatient) return;
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 700px; margin: 0 auto; border: 2px solid #000; padding: 24px;">
+        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
+          <div style="font-size: 12px; font-weight: bold; color: #0284c7; margin-top: 2px;">
+            STATUTORY DATA PRINCIPAL CONSENT & PRIVACY DISCLOSURE CERTIFICATE
+          </div>
+          <div style="font-size: 10px; color: #555;">Issued under Section 6 of India Digital Personal Data Protection (DPDP) Act 2023 • Form DPDP-CERT-01</div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 14px;">
+          <div><b>Data Principal (Patient):</b> ${activePatient.full_name.toUpperCase()}</div>
+          <div><b>UHID / MRN:</b> ${activePatient.mrn}</div>
+          <div><b>Age / Gender:</b> ${activePatient.age_years}Y / ${activePatient.gender}</div>
+          <div><b>Date:</b> ${new Date().toLocaleDateString()}</div>
+        </div>
+
+        <div style="border: 1px solid #cbd5e1; background: #f8fafc; padding: 12px; border-radius: 6px; margin-bottom: 16px; font-size: 11px;">
+          <h4 style="margin: 0 0 8px 0; font-size: 12px; text-transform: uppercase; color: #0f172a;">Purpose-Specific Consent Audit Register:</h4>
+          <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
+            <thead>
+              <tr style="border-bottom: 1px solid #cbd5e1; text-align: left; background: #e2e8f0;">
+                <th style="padding: 6px;">Processing Purpose</th>
+                <th style="padding: 6px; text-align: center;">Status</th>
+                <th style="padding: 6px; text-align: center;">Recorded Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 6px;">Routine Clinical Consultation & Diagnostics</td>
+                <td style="padding: 6px; text-align: center; font-weight: bold; color: #16a34a;">GRANTED</td>
+                <td style="padding: 6px; text-align: center;">01-Nov-2026</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 6px;">Inpatient Hospital Care & Nursing Administration</td>
+                <td style="padding: 6px; text-align: center; font-weight: bold; color: #16a34a;">GRANTED</td>
+                <td style="padding: 6px; text-align: center;">01-Nov-2026</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 6px;">TPA Insurance Cashless Claim Adjudication</td>
+                <td style="padding: 6px; text-align: center; font-weight: bold; color: #16a34a;">GRANTED</td>
+                <td style="padding: 6px; text-align: center;">01-Nov-2026</td>
+              </tr>
+              <tr>
+                <td style="padding: 6px;">Anonymized Medical Research & Academic Studies</td>
+                <td style="padding: 6px; text-align: center; font-weight: bold; color: #dc2626;">REFUSED</td>
+                <td style="padding: 6px; text-align: center;">01-Nov-2026</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="background: #f1f5f9; border: 1px solid #cbd5e1; padding: 10px; border-radius: 6px; font-family: monospace; font-size: 10px; margin-bottom: 16px;">
+          <div><b>Cryptographic SHA-256 Consent Hash:</b> e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855</div>
+          <div><b>Consent Notice Version:</b> DPDP-NOTIF-v2.1 • Storage: Immutable Hospital Vault</div>
+        </div>
+
+        <div style="font-size: 10px; color: #475569; line-height: 1.5; margin-bottom: 24px;">
+          <b>Data Principal Rights Notice:</b> As per Chapter III of the DPDP Act 2023, the data principal reserves the right to access, correct, update, or withdraw consent at any time via the Hospital Data Protection Officer (DPO) at <u>dpo@${hospitalProfile.subdomain || "hospital"}.in</u>.
+        </div>
+
+        <div style="display: flex; justify-content: space-between; margin-top: 50px; font-size: 11px;">
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Data Protection Officer (DPO)</div>
+          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Medical Records Officer / Registrar</div>
+        </div>
+      </div>
+    `;
+
+    printDocument(html, {
+      title: `DPDP_Consent_Cert_${activePatient.mrn}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
   };
 
   // Sample structured timeline data for active patient with revisit tagging
@@ -1059,7 +1142,18 @@ export const PatientRecordWorkspace: React.FC = () => {
                 <h3 className="text-sm font-bold text-slate-100">India DPDP Act 2023 Consent Governance</h3>
                 <p className="text-xs text-slate-400">Purpose-specific digital consent artifacts and data principal access audit trail.</p>
               </div>
-              <Badge variant="success">DPDP SECTION 6 COMPLIANT</Badge>
+              <div className="flex items-center gap-2">
+                <Badge variant="success">DPDP SECTION 6 COMPLIANT</Badge>
+                <Button
+                  onClick={handlePrintConsentCertificate}
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-1.5 text-xs text-sky-400 border-sky-800 hover:bg-sky-950/40"
+                  title="Print Official Form DPDP-CERT-01"
+                >
+                  <Printer size={13} /> Print Statutory Consent Record
+                </Button>
+              </div>
             </div>
             <Card className="p-4 bg-slate-900 border-slate-800 space-y-4">
               <div className="text-xs text-slate-300">

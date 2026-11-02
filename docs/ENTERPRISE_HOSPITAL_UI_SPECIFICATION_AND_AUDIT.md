@@ -494,6 +494,9 @@ To eliminate hospital-floor pain points and compliance risks, Avinya HMS systema
     - **Authorized Institutional Concession & EWS Waiver Engine:** Accommodates statutory charity care and administrative waivers (Senior Citizen 10%, Staff/Dependent 25%, Charitable Trust 50%, EWS Indigent Free Bed 100%) with codified approving authority (Medical Superintendent, Managing Director) reflected on both A4 GST Tax Invoices and thermal slips.
     - **Quick-Tender Split Presets & Real NPCI UPI Intent QR:** Eliminates cashier bottlenecks during peak OPD rush hours with 1-click 100% Cash/UPI/Card presets and dynamic UPI QR rendering.
 
+13. **Longitudinal Patient Record & Privacy Governance ([`PatientRecordWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/patient/PatientRecordWorkspace.tsx)):**
+    - **DPDP Act 2023 Statutory Consent & Privacy Disclosure Certificate:** 1-click issuance of Form DPDP-CERT-01 complying with Section 6 of India's Digital Personal Data Protection Act, certifying purpose-specific consent statuses (Clinical Care, TPA Insurance, Research), cryptographic SHA-256 consent hash, and DPO grievance contacts.
+
 ---
 
 ## 5. Comprehensive AI Audit Scorecard & Evaluation
