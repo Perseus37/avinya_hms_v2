@@ -65,7 +65,7 @@ interface AdminWorkspaceProps {
 }
 
 export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspace }) => {
-  const { branding, updateBranding } = useTenantBranding();
+  const { branding, updateBranding, uploadAsset } = useTenantBranding();
   const [activeTab, setActiveTab] = useState<"overview" | "metrics" | "registers" | "customization">("overview");
   const [customSubTab, setCustomSubTab] = useState<"facility" | "doctors" | "branding" | "policies" | "printTemplates" | "printers">("facility");
   const [activeDocTemplate, setActiveDocTemplate] = useState<"thermal" | "wristband" | "bht" | "discharge">("thermal");
@@ -946,6 +946,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
   const [brandSaving, setBrandSaving] = useState(false);
   const [brandSavedMsg, setBrandSavedMsg] = useState("");
   const [brandError, setBrandError] = useState("");
+  const [brandAssetUploading, setBrandAssetUploading] = useState<"logo" | "favicon" | null>(null);
 
   useEffect(() => {
     if (!branding) return;
@@ -957,6 +958,21 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
     setBrandSecondaryColor(branding.secondary_color);
     setBrandAccentColor(branding.accent_color);
   }, [branding]);
+
+  const handleBrandAssetUpload = async (kind: "logo" | "favicon", file?: File) => {
+    if (!file) return;
+    setBrandAssetUploading(kind);
+    setBrandError("");
+    setBrandSavedMsg("");
+    try {
+      await uploadAsset(file, kind);
+      setBrandSavedMsg(kind === "logo" ? "Tenant logo uploaded and applied." : "Tenant favicon uploaded and applied.");
+    } catch (error) {
+      setBrandError(error instanceof Error ? error.message : "Brand asset upload failed.");
+    } finally {
+      setBrandAssetUploading(null);
+    }
+  };
 
   const handleSaveTenantBranding = async () => {
     if (brandDisplayName.trim().length < 2) {
@@ -2459,8 +2475,18 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                     <input value={brandLogoUrl} onChange={(e) => setBrandLogoUrl(e.target.value)} placeholder="/assets/tenant-logo.svg" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-100" />
                   </div>
                   <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Upload logo (PNG, JPEG, WebP)</label>
+                    <input type="file" accept="image/png,image/jpeg,image/webp" disabled={brandAssetUploading !== null} onChange={(e) => { const file = e.currentTarget.files?.[0]; e.currentTarget.value = ""; void handleBrandAssetUpload("logo", file); }} className="w-full text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-700 file:px-3 file:py-2 file:text-xs file:text-slate-100" />
+                    {brandAssetUploading === "logo" && <p className="mt-1 text-[10px] text-sky-400">Uploading and scanning logo…</p>}
+                  </div>
+                  <div>
                     <label className="block text-xs font-semibold text-slate-300 mb-1">Favicon URL (optional)</label>
                     <input value={brandFaviconUrl} onChange={(e) => setBrandFaviconUrl(e.target.value)} placeholder="/assets/favicon.ico" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-100" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Upload favicon (PNG, JPEG, WebP)</label>
+                    <input type="file" accept="image/png,image/jpeg,image/webp" disabled={brandAssetUploading !== null} onChange={(e) => { const file = e.currentTarget.files?.[0]; e.currentTarget.value = ""; void handleBrandAssetUpload("favicon", file); }} className="w-full text-xs text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-700 file:px-3 file:py-2 file:text-xs file:text-slate-100" />
+                    {brandAssetUploading === "favicon" && <p className="mt-1 text-[10px] text-sky-400">Uploading and scanning favicon…</p>}
                   </div>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
