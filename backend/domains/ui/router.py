@@ -23,7 +23,10 @@ from sqlalchemy.orm import Session
 from backend.core.config import settings
 from backend.core.storage import (
     StoragePathError,
+    UploadContentError,
+    UploadTooLargeError,
     resolve_tenant_storage_file,
+    stage_and_publish_upload,
     tenant_storage_directory,
 )
 from backend.core.database import get_control_db, get_db, resolve_tenant_context
@@ -291,44 +294,32 @@ def upload_tenant_brand_asset(
         raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
 
     asset_id = f"{uuid.uuid4().hex}{suffix}"
-    temporary = tenant_root / f".{asset_id}.part"
-    destination = tenant_root / asset_id
-    total_bytes = 0
-    header = bytearray()
-    try:
-        with temporary.open("xb") as output:
-            os.chmod(temporary, 0o600)
-            while chunk := file.file.read(1024 * 1024):
-                total_bytes += len(chunk)
-                if total_bytes > settings.MAX_ATTACHMENT_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="Brand asset exceeds the configured upload limit.")
-                if len(header) < len(signature):
-                    header.extend(chunk[:len(signature) - len(header)])
-                output.write(chunk)
 
-        if total_bytes == 0 or not header.startswith(signature):
-            raise HTTPException(status_code=415, detail="Image content does not match its file type.")
+    def validate_staged_asset(staged_path: Path) -> None:
         if suffix == ".webp":
-            with temporary.open("rb") as image_file:
+            with staged_path.open("rb") as image_file:
                 image_file.seek(8)
                 if image_file.read(4) != b"WEBP":
-                    raise HTTPException(status_code=415, detail="Image content does not match its file type.")
+                    raise UploadContentError("Image content does not match its file type.")
 
-        scan_file_with_clamav(temporary)
-        os.replace(temporary, destination)
+    try:
+        stage_and_publish_upload(
+            tenant_root,
+            asset_id,
+            f".{asset_id}.part",
+            file.file,
+            max_bytes=settings.MAX_ATTACHMENT_UPLOAD_BYTES,
+            signature=signature,
+            scanner=scan_file_with_clamav,
+            validate_staged=validate_staged_asset,
+        )
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=413, detail="Brand asset exceeds the configured upload limit.") from exc
+    except UploadContentError as exc:
+        raise HTTPException(status_code=415, detail="Image content does not match its file type.") from exc
     except OSError as exc:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            logger.warning("Unable to remove incomplete tenant brand asset upload.", exc_info=True)
         logger.error("Tenant brand asset write failed.", exc_info=True)
         raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
-    except Exception:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            logger.warning("Unable to remove rejected tenant brand asset upload.", exc_info=True)
-        raise
     finally:
         file.file.close()
 
