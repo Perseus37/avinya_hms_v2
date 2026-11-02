@@ -15,6 +15,16 @@ The current implementation is filesystem-backed through `ATTACHMENTS_STORAGE_DIR
 
 Clinical records, lab reports, prescriptions, patient attachments, and other private documents must not be exposed through the public branding route or a static web-server directory.
 
+## Tenant and branch isolation boundary
+
+The control-plane `TenantRegistry` maps each active subdomain to one unique branch code and one unique tenant database name. The request resolver selects that database before application-domain queries execute. Procurement and insurance tables therefore live inside the selected branch database; their records are not shared across branch databases by default.
+
+Access tokens carry both `tenant_slug` and `branch_code`. Authentication validates both claims against the resolved tenant context. A token for one branch cannot be replayed against another branch, and a mismatched branch claim is rejected even if the token signature is otherwise valid.
+
+Cross-branch patient discovery, import, or pull must use the explicit federation/import workflows and provenance/audit controls. Do not add ordinary cross-branch joins or shared procurement/insurance catalogs without an approved architecture decision. If the deployment later changes to multiple branches inside one tenant database, explicit branch identifiers and query-level enforcement will be required before that topology is enabled.
+
+Regression coverage for procurement invoice/document isolation, insurance provider catalog isolation, and token branch-claim binding lives in `tests/test_67_branch_isolation.py`.
+
 ## Shared filesystem primitives
 
 `backend/core/storage.py` currently provides:
