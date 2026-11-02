@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.config import settings
+from backend.core.document_responses import pdf_attachment_response
 from backend.core.dependencies import RequirePermission
 from backend.domains.billing.models import Invoice
 from backend.domains.bloodbank.models import RadiologyStudyMetadata
@@ -85,12 +86,7 @@ def _pdf_response_from_html(html_str: str, filename: str) -> Response:
         pdf = render_html_pdf(html_str)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    safe_filename = re.sub(r"[^A-Za-z0-9._-]", "_", filename if filename.endswith(".pdf") else f"{filename}.pdf")
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
-    )
+    return pdf_attachment_response(pdf, filename)
 
 
 def _invoice_document_profile(db: Session) -> Dict[str, Any]:
@@ -1198,12 +1194,7 @@ def download_invoice_pdf(
         pdf = render_html_pdf(html_response.body.decode("utf-8"))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    filename = re.sub(r"[^A-Za-z0-9._-]", "_", f"invoice-{invoice_id}.pdf")
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return pdf_attachment_response(pdf, f"invoice-{invoice_id}.pdf")
 
 
 # 3. Printable eRx Medical Prescription
