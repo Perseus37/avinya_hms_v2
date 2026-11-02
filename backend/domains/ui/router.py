@@ -8,7 +8,6 @@ and clinical cockpit summaries to eliminate frontend waterfall requests.
 from datetime import date, datetime, timezone
 import json
 import logging
-import os
 import re
 import uuid
 from pathlib import Path
