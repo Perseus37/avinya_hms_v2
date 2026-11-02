@@ -186,6 +186,10 @@ def seed_universal_hospital_data(
     perm_map = ensure_permissions_exist(db)
 
     if db.query(User).first():
+        # Idempotently grant the tenant-branding permission to existing system admins.
+        existing_admin_role = db.query(Role).filter(Role.code == "ROLE_ADMIN").first()
+        if existing_admin_role and perm_map["config:write"] not in existing_admin_role.permissions:
+            existing_admin_role.permissions.append(perm_map["config:write"])
         db.commit()
         return False
 
