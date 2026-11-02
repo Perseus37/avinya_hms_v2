@@ -245,4 +245,13 @@ Administrators configure physical devices in [`AdminWorkspace.tsx`](file:///v:/a
 - **Print Protocols:** `RAW_ZPL` (Zebra Programming Language for barcode straps), `RAW_ESCPOS` (ESC/POS command set for receipt rolls), `HTML_DRIVER` (isolated browser DOM print).
 - **Physical Millimeter Adjustments:** Custom media width, height, printable area, and 4-way margins ($T, B, L, R$).
 - **Calibration Slip Utility:** Built-in test print engine generates physical margin validation slips with alignment marks to verify print registration prior to live clinical deployment.
-- **Dynamic Selection in Workspaces:** Intake, Registration, ADT, and Patient 360 query `getPrinterForCategory()` to automatically route jobs to the designated departmental printer matching exact configured dimensions.
+- **Dynamic Selection in Workspaces:** All 15 hospital workspaces query `getPrinterForCategory()` (`WRISTBAND`, `THERMAL_TOKEN`, `CLINICAL_A4`, `LAB_LABEL`) to automatically route jobs to the designated departmental printer matching exact configured millimeter dimensions:
+  - **Emergency Department:** Red-Tag Trauma Wristband & ESI Triage slip.
+  - **Diagnostics / Phlebotomy:** Specimen Barcode Tube Label ($50\text{mm} \times 25\text{mm}$) & NABL A4 Report.
+  - **Blood Bank:** Form 27C Compatibility Certificate & Blood Bag Tie-On Tag.
+  - **Cashier Counter:** Quick POS $80\text{mm}$ Settlement Receipt & Formal A4 GST Tax Invoice.
+  - **OPD Queue & Registration:** Walk-in OPD Consultation Token Slip & Revisit Voucher.
+  - **Doctor Consultation Cockpit:** CPOE Prescription Slip & Diagnostic Order Docket.
+  - **Ward & Inpatient Care:** eMAR BCMA Dual-Witness Administration & SBAR Shift Kardex.
+  - **Operating Theatres:** Intra-Operative WHO Surgical Safety Docket & Implant Registry.
+  - **Biomedical Engineering:** IEC 62353 Electrical Safety & Calibration Certificate.

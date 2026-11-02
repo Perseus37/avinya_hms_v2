@@ -51,7 +51,7 @@ export interface AspRequest {
 }
 
 export const InfectionControlWorkspace: React.FC = () => {
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
   const [activeTab, setActiveTab] = useState<"HAI_SURVEILLANCE" | "ASP_QUEUE" | "ANTIBIOGRAM" | "HAND_HYGIENE">("HAI_SURVEILLANCE");
   const [searchQuery, setSearchQuery] = useState("");
   const [deviceFilter, setDeviceFilter] = useState<string>("ALL");
@@ -310,9 +310,11 @@ export const InfectionControlWorkspace: React.FC = () => {
       </div>
     `;
 
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
     printDocument(reportHtml, {
       docType: "CLINICAL_SUMMARY",
       title: `HAI_Case_${item.id}_${item.mrn}`,
+      printerDevice: a4Printer,
     });
   };
 

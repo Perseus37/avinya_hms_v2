@@ -8,6 +8,7 @@ import {
   Activity,
   ShieldAlert,
   Printer,
+  Tag,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
@@ -33,11 +34,12 @@ interface EmergencyCase {
   mlcNumber?: string;
   policeStation?: string;
   policeBuckleNo?: string;
+  assignedZone?: string;
 }
 
 export const EDTriageBoard: React.FC = () => {
   const { selectPatient } = useActivePatient();
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile, printTemplates, getPrinterForCategory } = useHospitalConfig();
   const [cases, setCases] = useState<EmergencyCase[]>([
     {
       id: 101,
@@ -215,6 +217,7 @@ export const EDTriageBoard: React.FC = () => {
   ];
 
   const handlePrintTriageSlip = (c: EmergencyCase) => {
+    const printerDevice = getPrinterForCategory("THERMAL_TOKEN");
     const html = `
       <div class="thermal-slip">
         <div class="center bold" style="font-size: 13px;">${hospitalProfile.name.toUpperCase()}</div>
@@ -240,10 +243,48 @@ export const EDTriageBoard: React.FC = () => {
         <div class="center" style="font-size: 9px;">Assigned by Triage Officer • ${new Date().toLocaleTimeString()}</div>
       </div>
     `;
-    printDocument(html, { title: `Triage_${c.mrn}`, docType: "THERMAL_TOKEN" });
+    printDocument(html, {
+      title: `Triage_${c.mrn}`,
+      docType: "THERMAL_TOKEN",
+      printerDevice,
+    });
+  };
+
+  const handlePrintEmergencyWristband = (c: EmergencyCase) => {
+    const template = printTemplates.wristband;
+    const printerDevice = getPrinterForCategory("WRISTBAND");
+    const html = `
+      <div class="wristband-slip">
+        <div>
+          <div class="bold" style="font-size: 11px;">${(template.hospitalName || hospitalProfile.name).toUpperCase()} • EMERGENCY</div>
+          <div class="bold" style="font-size: 13px; margin-top: 2px;">${c.name.toUpperCase()}</div>
+          <div style="font-size: 9px; font-weight: bold; color: #dc2626;">ESI LEVEL ${c.esi} • ${c.complaint.slice(0, 32)}</div>
+          <div style="font-size: 8px;">Arrived: ${c.arrival} • ${c.assignedZone ? `Bed: ${c.assignedZone}` : "Zone: ED Trauma Bay"}</div>
+          <div class="allergy-tag" style="margin-top: 2px;">EMERGENCY HIGH RISK • VERIFY ALERTS</div>
+        </div>
+        <div class="center">
+          <div class="barcode-box">||||| | |||| || ||| | |||</div>
+          <div class="bold" style="font-size: 12px;">${c.mrn}</div>
+          ${c.isMlc ? `<div style="font-size: 8px; color: #b91c1c; font-weight: bold;">MLC CASE</div>` : ""}
+        </div>
+      </div>
+    `;
+    printDocument(html, {
+      title: `Emergency_Wristband_${c.mrn}`,
+      docType: "WRISTBAND",
+      wristbandConfig: {
+        widthMm: printerDevice?.mediaWidthMm || template.widthMm || 280,
+        heightMm: printerDevice?.mediaHeightMm || template.heightMm || 25,
+        printableLengthMm: printerDevice?.printableHeightMm || printerDevice?.printableWidthMm || template.printableLengthMm || 75,
+        orientation: printerDevice ? (printerDevice.orientation.toLowerCase() as "portrait" | "landscape") : (template.orientation === "PORTRAIT" ? "portrait" : "landscape"),
+        printerType: template.printerType,
+      },
+      printerDevice,
+    });
   };
 
   const handlePrintPoliceIntimation = (c: EmergencyCase) => {
+    const printerDevice = getPrinterForCategory("CLINICAL_A4");
     const html = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 700px; margin: 0 auto; border: 2px solid #000; padding: 24px;">
         <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
@@ -276,7 +317,11 @@ export const EDTriageBoard: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: `MLC_${c.mlcNumber || c.mrn}`, docType: "CLINICAL_SUMMARY" });
+    printDocument(html, {
+      title: `MLC_${c.mlcNumber || c.mrn}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice,
+    });
   };
 
   return (
@@ -416,6 +461,16 @@ export const EDTriageBoard: React.FC = () => {
                             className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
                           >
                             <Printer size={11} />
+                          </button>
+                          <button
+                            title="Print Emergency Wristband"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePrintEmergencyWristband(c);
+                            }}
+                            className="p-1 rounded bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-800/80 transition-colors"
+                          >
+                            <Tag size={11} />
                           </button>
                           {col.level > 1 && (
                             <button
@@ -751,14 +806,24 @@ export const EDTriageBoard: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-between pt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handlePrintTriageSlip(selectedCaseForPrint)}
-                className="flex items-center gap-1.5"
-              >
-                <Printer size={13} /> Print Triage Slip
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePrintTriageSlip(selectedCaseForPrint)}
+                  className="flex items-center gap-1.5"
+                >
+                  <Printer size={13} /> Print Triage Slip
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePrintEmergencyWristband(selectedCaseForPrint)}
+                  className="flex items-center gap-1.5 border-purple-800 text-purple-300 hover:bg-purple-950/40"
+                >
+                  <Tag size={13} className="text-purple-400" /> Print Emergency Wristband
+                </Button>
+              </div>
               <Button variant="primary" size="sm" onClick={() => setSelectedCaseForPrint(null)}>
                 Close
               </Button>

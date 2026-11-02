@@ -6,6 +6,7 @@ import {
   Printer,
   Search,
   Check,
+  Barcode,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
@@ -63,7 +64,7 @@ export interface DonorRecord {
 
 export const BloodBankWorkspace: React.FC = () => {
   const { selectPatient } = useActivePatient();
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
 
   const [activeTab, setActiveTab] = useState<"requisitions" | "inventory" | "donors" | "coldchain">("requisitions");
   const [selectedReqId, setSelectedReqId] = useState<string>("REQ-01");
@@ -355,7 +356,42 @@ export const BloodBankWorkspace: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: `Blood_Compatibility_${req.mrn}`, docType: "CLINICAL_SUMMARY" });
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(html, {
+      title: `Blood_Compatibility_${req.mrn}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
+  };
+
+  const handlePrintBloodBagTieTag = (req: BloodRequisition, bagId: string) => {
+    const labelPrinter = getPrinterForCategory("LAB_LABEL") || getPrinterForCategory("THERMAL_TOKEN");
+    const html = `
+      <div style="padding: 2mm 3mm; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; height: 100%; display: flex; flex-direction: column; justify-content: space-between;">
+        <div style="border-bottom: 2px solid #b91c1c; padding-bottom: 2px; text-align: center;">
+          <div style="font-weight: 900; font-size: 10px; color: #b91c1c;">COMPATIBLE BLOOD BAG TAG</div>
+          <div style="font-size: 8px; color: #333;">${hospitalProfile.name.slice(0, 22)}</div>
+        </div>
+        <div style="font-size: 9px; line-height: 1.3; margin: 2px 0;">
+          <div><b>Patient:</b> ${req.patientName.toUpperCase()}</div>
+          <div><b>UHID:</b> ${req.mrn} • <b>Ward:</b> ${req.orderingDept}</div>
+          <div style="font-size: 11px; font-weight: 900; color: #b91c1c; margin: 2px 0;">
+            Pt Grp: ${req.bloodGroup} • Bag: ${bagId}
+          </div>
+          <div><b>Component:</b> ${req.component}</div>
+          <div><b>Crossmatch:</b> COMPATIBLE • DAT: NEG</div>
+        </div>
+        <div style="border-top: 1px dashed #666; padding-top: 2px; text-align: center; font-size: 8px;">
+          <div style="font-family: monospace; font-size: 9px; font-weight: bold;">||| | |||| || |||</div>
+          <div>DUAL-NURSE BEDSIDE CHECK MANDATORY</div>
+        </div>
+      </div>
+    `;
+    printDocument(html, {
+      title: `BagTag_${bagId}`,
+      docType: "LAB_REPORT",
+      printerDevice: labelPrinter,
+    });
   };
 
   return (
@@ -519,6 +555,17 @@ export const BloodBankWorkspace: React.FC = () => {
                   </div>
 
                   <div className="flex items-center gap-2">
+                    {activeReq.allocatedBagIds && activeReq.allocatedBagIds.length > 0 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handlePrintBloodBagTieTag(activeReq, activeReq.allocatedBagIds?.[0] || "BAG-01")}
+                        className="flex items-center gap-1.5 text-rose-400 hover:text-rose-300 border-rose-900/60"
+                        title="Print Physical Blood Bag Tie-On Label"
+                      >
+                        <Barcode size={13} /> Print Bag Tag
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       size="sm"

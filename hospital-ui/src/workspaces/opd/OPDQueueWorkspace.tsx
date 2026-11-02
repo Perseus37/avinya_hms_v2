@@ -16,11 +16,13 @@ import {
   ShieldCheck,
   Megaphone,
   Sparkles,
+  Printer,
 } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { printDocument } from "../../utils/printDocument";
 
 export type ChamberDoctorStatus = "IN_CHAMBER" | "ON_ROUNDS" | "IN_OT" | "PAUSED";
 
@@ -45,7 +47,7 @@ export interface OPDQueueItem {
 }
 
 export const OPDQueueWorkspace: React.FC = () => {
-  const { doctors, departments, hospitalProfile } = useHospitalConfig();
+  const { doctors, departments, hospitalProfile, printTemplates, getPrinterForCategory } = useHospitalConfig();
 
   const [selectedDept, setSelectedDept] = useState<string>("ALL");
   const [isTvDisplayOpen, setIsTvDisplayOpen] = useState(false);
@@ -362,6 +364,34 @@ export const OPDQueueWorkspace: React.FC = () => {
     );
     setReassignItem(null);
     setTargetDoctorId("");
+  };
+
+  const handleReprintToken = (item: OPDQueueItem) => {
+    const template = printTemplates.thermalToken;
+    const thermalPrinter = getPrinterForCategory("THERMAL_TOKEN");
+    const html = `
+      <div class="thermal-slip">
+        <div class="center bold" style="font-size: 13px;">${(template.headerTitle || hospitalProfile.name).toUpperCase()}</div>
+        ${template.subHeader ? `<div class="center" style="font-size: 9px; margin-bottom: 4px;">${template.subHeader}</div>` : ""}
+        <div class="divider"></div>
+        <div class="center bold" style="font-size: 24px; letter-spacing: 2px;">${item.tokenNumber}</div>
+        <div class="center" style="font-size: 10px;">Chamber ${item.chamberNumber} • ${item.department}</div>
+        <div class="divider"></div>
+        <div><b>Doctor:</b> ${item.doctorName}</div>
+        <div><b>Patient:</b> ${item.patientName.toUpperCase()} (${item.ageGender})</div>
+        <div><b>UHID:</b> ${item.mrn}</div>
+        <div><b>Priority:</b> ${item.priorityLevel}</div>
+        <div><b>Visit Type:</b> ${item.revisitType === "FREE_REVISIT" ? "FREE REVISIT (GRACE PERIOD)" : "CONSULTATION"}</div>
+        <div class="divider"></div>
+        <div class="center" style="font-size: 8px;">DUPLICATE RE-PRINT • ${new Date().toLocaleTimeString()}</div>
+        <div class="center" style="font-size: 8px;">${template.footerNotice}</div>
+      </div>
+    `;
+    printDocument(html, {
+      title: `Token_${item.tokenNumber}`,
+      docType: "THERMAL_TOKEN",
+      printerDevice: thermalPrinter,
+    });
   };
 
   const filteredItems = queueItems.filter(
@@ -681,6 +711,13 @@ export const OPDQueueWorkspace: React.FC = () => {
                       </Button>
 
                       <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleReprintToken(item)}
+                          className="text-[10px] text-amber-400 hover:text-amber-300 flex items-center gap-0.5"
+                          title="Re-print Patient Consultation Token Slip"
+                        >
+                          <Printer size={10} /> Slip
+                        </button>
                         <button
                           onClick={() => {
                             setReassignItem(item);

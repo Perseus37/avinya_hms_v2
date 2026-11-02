@@ -32,7 +32,7 @@ interface VaultItem {
 }
 
 export const PharmacyWorkspace: React.FC = () => {
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
   const [prescriptions, setPrescriptions] = useState<PrescriptionItem[]>([
     {
       id: 1,
@@ -219,7 +219,12 @@ export const PharmacyWorkspace: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: `Dispense_${rx.rxNumber.replace(/\s+/g, "_")}`, docType: "CLINICAL_SUMMARY" });
+    const thermalPrinter = getPrinterForCategory("THERMAL_TOKEN");
+    printDocument(html, {
+      title: `Dispense_${rx.rxNumber.replace(/\s+/g, "_")}`,
+      docType: "THERMAL_TOKEN",
+      printerDevice: thermalPrinter,
+    });
   };
 
   const handlePrintNdpsVoucher = (log: {
@@ -254,7 +259,12 @@ export const PharmacyWorkspace: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: `NDPS_Voucher_${log.batch}`, docType: "CLINICAL_SUMMARY" });
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(html, {
+      title: `NDPS_Voucher_${log.batch}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
   };
 
   const handleNdpsMovementSubmit = (e: React.FormEvent) => {

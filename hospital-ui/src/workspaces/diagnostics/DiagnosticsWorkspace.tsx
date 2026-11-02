@@ -25,7 +25,7 @@ interface LabOrder {
 }
 
 export const DiagnosticsWorkspace: React.FC = () => {
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
   const [orders, setOrders] = useState<LabOrder[]>([
     {
       id: 1,
@@ -234,7 +234,42 @@ export const DiagnosticsWorkspace: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: `Lab_Report_${order.orderNumber}`, docType: "CLINICAL_SUMMARY" });
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(html, {
+      title: `Lab_Report_${order.orderNumber}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
+  };
+
+  const handlePrintSpecimenTubeLabel = (order: LabOrder) => {
+    const labPrinter = getPrinterForCategory("LAB_LABEL");
+    const barcodeCode = order.tests[0]?.barcode || `SMP-${order.orderNumber}`;
+    const testNames = order.tests.map((t) => t.name.replace(/\(.*\)/g, "").trim()).join(", ");
+
+    const html = `
+      <div style="width: 100%; height: 100%; padding: 1mm 2mm; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; justify-content: space-between;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #000; padding-bottom: 1px;">
+          <span style="font-weight: 900; font-size: 9px; text-transform: uppercase;">${hospitalProfile.name.slice(0, 18)}</span>
+          <span style="font-size: 8px; font-weight: bold; font-family: monospace;">${order.mrn}</span>
+        </div>
+        <div>
+          <div style="font-weight: 900; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${order.patientName.toUpperCase()}</div>
+          <div style="font-size: 8px; font-weight: bold; color: #333;">${order.sampleType}</div>
+          <div style="font-size: 7.5px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${testNames}</div>
+        </div>
+        <div style="text-align: center; border-top: 1px dashed #666; padding-top: 1px;">
+          <div style="font-family: monospace; font-size: 11px; font-weight: 900; letter-spacing: 2px;">||| | |||| || |||</div>
+          <div style="font-family: monospace; font-size: 8.5px; font-weight: bold;">*${barcodeCode}*</div>
+        </div>
+      </div>
+    `;
+
+    printDocument(html, {
+      title: `TubeLabel_${barcodeCode}`,
+      docType: "LAB_REPORT",
+      printerDevice: labPrinter,
+    });
   };
 
   return (
@@ -342,7 +377,17 @@ export const DiagnosticsWorkspace: React.FC = () => {
                   ))}
                 </div>
 
-                <div className="flex items-center justify-end gap-3 pt-2">
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handlePrintSpecimenTubeLabel(order)}
+                    className="text-xs flex items-center gap-1 text-sky-400 hover:text-sky-300 border-sky-800/80"
+                    title="Print Barcode Specimen Tube Label (50x25mm Labeler)"
+                  >
+                    <Barcode size={13} /> Tube Label
+                  </Button>
+
                   {order.status === "COLLECTED" && (
                     <Button
                       variant="outline"
@@ -716,14 +761,24 @@ export const DiagnosticsWorkspace: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-between pt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => reportOrder && handlePrintLabReport(reportOrder)}
-                className="flex items-center gap-1.5"
-              >
-                <Printer size={13} /> Print Laboratory Report
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => reportOrder && handlePrintLabReport(reportOrder)}
+                  className="flex items-center gap-1.5"
+                >
+                  <Printer size={13} /> Print Laboratory Report
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => reportOrder && handlePrintSpecimenTubeLabel(reportOrder)}
+                  className="flex items-center gap-1.5 text-sky-400 hover:text-sky-300 border-sky-800/80"
+                >
+                  <Barcode size={13} /> Print Specimen Tube Label
+                </Button>
+              </div>
               <Button
                 variant="primary"
                 size="sm"

@@ -34,7 +34,7 @@ interface BillItem {
 
 export const CashierCounterWorkspace: React.FC = () => {
   const { patientSummary } = useActivePatient();
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
   const [shift, setShift] = useState<CashierShiftStatus | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isOpenModalActive, setIsOpenModalActive] = useState(false);
@@ -230,7 +230,7 @@ export const CashierCounterWorkspace: React.FC = () => {
     setIsInvoicePrintModalOpen(true);
   };
 
-  const handlePrintInvoice = () => {
+  const handlePrintA4Invoice = () => {
     if (!lastSettledInvoice) return;
     const subtotal = billItems.reduce((acc, it) => acc + it.unitPrice * it.quantity, 0);
     const html = `
@@ -289,7 +289,49 @@ export const CashierCounterWorkspace: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: `Invoice_${lastSettledInvoice.invoiceNumber}`, docType: "CLINICAL_SUMMARY" });
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(html, {
+      title: `Invoice_${lastSettledInvoice.invoiceNumber}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
+  };
+
+  const handlePrintThermalReceipt = () => {
+    if (!lastSettledInvoice) return;
+    const thermalPrinter = getPrinterForCategory("THERMAL_TOKEN");
+    const html = `
+      <div class="thermal-slip">
+        <div class="center bold" style="font-size: 13px;">${hospitalProfile.name.toUpperCase()}</div>
+        <div class="center" style="font-size: 9px; margin-bottom: 4px;">CASHIER SETTLEMENT RECEIPT</div>
+        <div class="divider"></div>
+        <div><b>Inv No:</b> ${lastSettledInvoice.invoiceNumber}</div>
+        <div><b>Date:</b> ${new Date().toLocaleString()}</div>
+        <div class="divider"></div>
+        <div><b>Patient:</b> ${lastSettledInvoice.patientName.toUpperCase()}</div>
+        <div><b>UHID:</b> ${lastSettledInvoice.mrn}</div>
+        <div class="divider"></div>
+        ${billItems.map((it) => `
+          <div style="display: flex; justify-content: space-between; font-size: 10px; margin: 2px 0;">
+            <span>${it.description.slice(0, 20)} x${it.quantity}</span>
+            <span>₹${(it.unitPrice * it.quantity).toFixed(2)}</span>
+          </div>
+        `).join("")}
+        <div class="divider"></div>
+        <div class="bold" style="display: flex; justify-content: space-between; font-size: 13px; margin: 4px 0;">
+          <span>TOTAL PAID:</span>
+          <span>₹${lastSettledInvoice.totalAmount.toFixed(2)}</span>
+        </div>
+        <div style="font-size: 9px;">Payment Verified • Cash/UPI Tendered</div>
+        <div class="divider"></div>
+        <div class="center" style="font-size: 8px;">Exempted under GST Notif 12/2017-CT(R) • Thank You</div>
+      </div>
+    `;
+    printDocument(html, {
+      title: `Receipt_${lastSettledInvoice.invoiceNumber}`,
+      docType: "THERMAL_TOKEN",
+      printerDevice: thermalPrinter,
+    });
   };
 
   return (
@@ -811,14 +853,24 @@ export const CashierCounterWorkspace: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-between pt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handlePrintInvoice}
-                className="flex items-center gap-1.5"
-              >
-                <Printer size={13} /> Print Tax Invoice (80mm / A4)
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePrintThermalReceipt}
+                  className="flex items-center gap-1.5 text-amber-400 hover:text-amber-300 border-amber-800/80"
+                >
+                  <Receipt size={13} /> Print Thermal Slip (80mm)
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePrintA4Invoice}
+                  className="flex items-center gap-1.5 text-sky-400 hover:text-sky-300 border-sky-800/80"
+                >
+                  <Printer size={13} /> Print Formal A4 Invoice
+                </Button>
+              </div>
 
               <Button variant="primary" size="sm" onClick={() => setIsInvoicePrintModalOpen(false)}>
                 Done

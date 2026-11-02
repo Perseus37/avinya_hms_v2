@@ -75,7 +75,7 @@ export interface SurgicalCase {
 
 export const SurgeryWorkspace: React.FC = () => {
   const { selectPatient } = useActivePatient();
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
 
   const [activeTab, setActiveTab] = useState<"theatres" | "checklist" | "counts" | "pacu">("theatres");
   const [selectedCaseId, setSelectedCaseId] = useState<string>("CASE-01");
@@ -463,7 +463,12 @@ export const SurgeryWorkspace: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: `OT_Docket_${c.mrn}`, docType: "CLINICAL_SUMMARY" });
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(html, {
+      title: `OT_Docket_${c.mrn}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
   };
 
   const getStatusBadge = (status: TheatreStatus) => {

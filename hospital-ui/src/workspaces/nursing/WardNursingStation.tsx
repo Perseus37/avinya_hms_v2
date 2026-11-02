@@ -40,7 +40,7 @@ interface ScheduledMedication {
 }
 
 export const WardNursingStation: React.FC = () => {
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
   const [activeTab, setActiveTab] = useState<"beds" | "emar">("beds");
   const [beds, setBeds] = useState<DetailedBedItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -307,7 +307,12 @@ export const WardNursingStation: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: "Nursing_SBAR_Handover_Kardex", docType: "CLINICAL_SUMMARY" });
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(html, {
+      title: "Nursing_SBAR_Handover_Kardex",
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: a4Printer,
+    });
   };
 
   return (

@@ -48,7 +48,7 @@ export interface BreakdownTicket {
 }
 
 export const BiomedicalWorkspace: React.FC = () => {
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
   const [activeTab, setActiveTab] = useState<"ASSET_REGISTER" | "BREAKDOWN_TICKETS" | "CALIBRATION_SCHEDULE">("ASSET_REGISTER");
   const [searchQuery, setSearchQuery] = useState("");
   const [tierFilter, setTierFilter] = useState<string>("ALL");
@@ -282,9 +282,11 @@ export const BiomedicalWorkspace: React.FC = () => {
       </div>
     `;
 
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
     printDocument(certHtml, {
       docType: "CLINICAL_SUMMARY",
       title: `BME_Calib_Cert_${asset.assetTag}`,
+      printerDevice: a4Printer,
     });
   };
 

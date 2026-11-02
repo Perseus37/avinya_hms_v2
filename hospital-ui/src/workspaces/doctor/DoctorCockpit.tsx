@@ -45,7 +45,7 @@ interface PrescribedTest {
 }
 
 export const DoctorCockpit: React.FC = () => {
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
   const [activeTab, setActiveTab] = useState<"consultation" | "history" | "trends">("consultation");
   const [queue, setQueue] = useState<DoctorQueueSummary | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -393,7 +393,8 @@ export const DoctorCockpit: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: `Prescription_${ptMrn}`, docType: "CLINICAL_SUMMARY" });
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(html, { title: `Prescription_${ptMrn}`, docType: "CLINICAL_SUMMARY", printerDevice: a4Printer });
   };
 
   const handleProceedToNextPatient = () => {
