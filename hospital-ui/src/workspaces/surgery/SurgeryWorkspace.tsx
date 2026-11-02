@@ -459,7 +459,7 @@ export const SurgeryWorkspace: React.FC = () => {
           <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Scrub Nurse Verification Signature</div>
         </div>
         <div style="margin-top: 24px; text-align: center; font-size: 9px; color: #64748b;">
-          Avinya HMS Statutory Surgical Suite Clinical OS • Confidential Medical Record
+          Confidential Medical Record
         </div>
       </div>
     `;
