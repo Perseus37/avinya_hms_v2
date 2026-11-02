@@ -156,7 +156,7 @@ def test_brand_asset_upload_is_tenant_scoped_and_audited(
 
     monkeypatch.setattr("backend.domains.ui.router.settings.ATTACHMENTS_STORAGE_DIR", str(tmp_path))
     monkeypatch.setattr("backend.domains.ui.router.scan_file_with_clamav", lambda path: None)
-    image_bytes = b"\\x89PNG\\r\\n\\x1a\\n" + b"test-image-data"
+    image_bytes = b"\x89PNG\r\n\x1a\n" + b"test-image-data"
 
     upload = client.post(
         "/api/ui/tenant-branding/assets?kind=logo",
