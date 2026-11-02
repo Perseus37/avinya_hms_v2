@@ -774,7 +774,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
 
         <div style="margin-top: 10px; border-top: 1px solid #ccc; padding-top: 4px; display: flex; justify-content: space-between; font-size: 8px; color: #555;">
           <div>Print Category: <b>CLINICAL_A4</b> | Hardware Device: <b>${targetPrinter ? targetPrinter.name : "System Default Laser/A4"}</b></div>
-          <div>Statutory Verification Timestamp: ${timestamp} | Avinya Health Audit Engine</div>
+          <div>Statutory Verification Timestamp: ${timestamp} | Hospital audit record</div>
         </div>
       </div>
     `;
