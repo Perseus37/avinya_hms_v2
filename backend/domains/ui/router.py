@@ -152,12 +152,20 @@ def update_tenant_branding(
                 detail="Brand assets must use HTTPS URLs or same-origin absolute paths.",
             )
 
-    branding = payload.model_dump()
-    branding["display_name"] = branding["display_name"].strip()
-    if len(branding["display_name"]) < 2:
+    try:
+        branding = json.loads(tenant.ui_branding_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        branding = {}
+    if not isinstance(branding, dict):
+        branding = {}
+
+    updates = payload.model_dump()
+    updates["display_name"] = updates["display_name"].strip()
+    if len(updates["display_name"]) < 2:
         raise HTTPException(status_code=422, detail="Display name must contain at least two characters.")
-    if branding["tagline"] is not None:
-        branding["tagline"] = branding["tagline"].strip() or None
+    if updates["tagline"] is not None:
+        updates["tagline"] = updates["tagline"].strip() or None
+    branding.update(updates)
 
     tenant.ui_branding_json = json.dumps(branding)
     control_db.add(tenant)
@@ -175,13 +183,13 @@ def update_tenant_branding(
     return TenantBrandingResponse(
         tenant_slug=tenant.subdomain_slug,
         hospital_name=tenant.hospital_name,
-        display_name=branding["display_name"],
-        logo_url=branding["logo_url"],
-        favicon_url=branding["favicon_url"],
-        primary_color=branding["primary_color"],
-        secondary_color=branding["secondary_color"],
-        accent_color=branding["accent_color"],
-        tagline=branding["tagline"],
+        display_name=branding.get("display_name") or tenant.hospital_name,
+        logo_url=branding.get("logo_url"),
+        favicon_url=branding.get("favicon_url"),
+        primary_color=branding.get("primary_color", "#2563EB"),
+        secondary_color=branding.get("secondary_color", "#0F172A"),
+        accent_color=branding.get("accent_color", "#0D9488"),
+        tagline=branding.get("tagline"),
     )
 
 
