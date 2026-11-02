@@ -206,6 +206,35 @@ _BRAND_ASSET_SIGNATURES = {
     ".webp": (b"RIFF", "image/webp"),
 }
 _BRAND_ASSET_ID = re.compile(r"^[0-9a-f]{32}\.(png|jpg|jpeg|webp)$")
+_BRAND_ASSET_URL_PREFIX = "/api/ui/tenant-branding/assets/"
+
+
+def _local_brand_asset_id(asset_url: Any) -> Optional[str]:
+    """Return an asset ID only for URLs owned by this branding endpoint."""
+    if not isinstance(asset_url, str) or not asset_url.startswith(_BRAND_ASSET_URL_PREFIX):
+        return None
+    asset_id = asset_url[len(_BRAND_ASSET_URL_PREFIX):]
+    return asset_id if _BRAND_ASSET_ID.fullmatch(asset_id) else None
+
+
+def _delete_tenant_brand_asset(tenant_slug: str, asset_id: str) -> None:
+    """Delete one validated asset inside its tenant directory; never follow path escapes."""
+    if not _BRAND_ASSET_ID.fullmatch(asset_id):
+        return
+    storage_root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
+    tenant_directory = (storage_root / tenant_slug).resolve()
+    tenant_root = (tenant_directory / "branding-assets").resolve()
+    try:
+        tenant_directory.relative_to(storage_root)
+        tenant_root.relative_to(tenant_directory)
+        asset_path = (tenant_root / asset_id).resolve()
+        asset_path.relative_to(tenant_root)
+    except ValueError:
+        return
+    if asset_path.is_file():
+        asset_path.unlink()
+
+
 
 
 @router.post(
@@ -294,7 +323,9 @@ def upload_tenant_brand_asset(
             branding = {}
         if not isinstance(branding, dict):
             branding = {}
-        branding["logo_url" if kind == "logo" else "favicon_url"] = asset_url
+        branding_key = "logo_url" if kind == "logo" else "favicon_url"
+        previous_asset_id = _local_brand_asset_id(branding.get(branding_key))
+        branding[branding_key] = asset_url
         tenant.ui_branding_json = json.dumps(branding)
         control_db.add(tenant)
         control_db.add(ControlPlaneAuditLog(
@@ -308,6 +339,15 @@ def upload_tenant_brand_asset(
         destination.unlink(missing_ok=True)
         control_db.rollback()
         raise
+
+    # Remove only the replaced local asset, and only when neither branding slot
+    # still references it. External URLs and unrelated files are never touched.
+    still_referenced = previous_asset_id and any(
+        _local_brand_asset_id(branding.get(key)) == previous_asset_id
+        for key in ("logo_url", "favicon_url")
+    )
+    if previous_asset_id and previous_asset_id != asset_id and not still_referenced:
+        _delete_tenant_brand_asset(tenant.subdomain_slug, previous_asset_id)
 
     return {"asset_url": asset_url, "kind": kind, "size_bytes": total_bytes}
 
