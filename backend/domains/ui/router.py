@@ -236,10 +236,22 @@ def upload_tenant_brand_asset(
         raise HTTPException(status_code=415, detail="Brand assets must be PNG, JPEG, or WebP images.")
 
     signature, media_type = signature_info
-    tenant_root = (Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-                   / tenant_context.subdomain_slug / "branding-assets")
-    tenant_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(tenant_root.parent, 0o700)
+    if not re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}$", tenant_context.subdomain_slug):
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    storage_root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
+    tenant_directory = (storage_root / tenant_context.subdomain_slug).resolve()
+    try:
+        tenant_directory.relative_to(storage_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
+    tenant_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(tenant_directory, 0o700)
+    tenant_root = (tenant_directory / "branding-assets").resolve()
+    try:
+        tenant_root.relative_to(tenant_directory)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
+    tenant_root.mkdir(exist_ok=True, mode=0o700)
     os.chmod(tenant_root, 0o700)
 
     asset_id = f"{uuid.uuid4().hex}{suffix}"
@@ -306,8 +318,19 @@ def get_tenant_brand_asset(request: Request, asset_id: str):
     if not _BRAND_ASSET_ID.fullmatch(asset_id):
         raise HTTPException(status_code=404, detail="Brand asset not found.")
     tenant_context = resolve_tenant_context(request)
-    tenant_root = (Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-                   / tenant_context.subdomain_slug / "branding-assets").resolve()
+    if not re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}$", tenant_context.subdomain_slug):
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    storage_root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
+    tenant_directory = (storage_root / tenant_context.subdomain_slug).resolve()
+    try:
+        tenant_directory.relative_to(storage_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
+    tenant_root = (tenant_directory / "branding-assets").resolve()
+    try:
+        tenant_root.relative_to(tenant_directory)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
     asset_path = (tenant_root / asset_id).resolve()
     try:
         asset_path.relative_to(tenant_root)
