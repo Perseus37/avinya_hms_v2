@@ -9,6 +9,11 @@ from typing import BinaryIO
 from fastapi import HTTPException, status
 
 from backend.core.config import settings
+from backend.core.storage import (
+    StoragePathError,
+    resolve_tenant_storage_file,
+    tenant_storage_directory,
+)
 
 _ALLOWED_SIGNATURES = {
     ".pdf": b"%PDF-",
@@ -72,33 +77,19 @@ def scan_file_with_clamav(document_path: Path) -> None:
 
 
 def _invoice_storage_directory(tenant_slug: str, *, create: bool) -> Path:
-    """Return the canonical invoice directory without traversing tenant-controlled symlinks."""
-    if not _TENANT_SLUG.fullmatch(tenant_slug):
-        raise RuntimeError("Tenant slug is not a safe storage path component.")
-
-    root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-    tenant_root = root / tenant_slug
-    invoice_dir = tenant_root / "procurement-invoices"
-
+    """Return the shared tenant-safe procurement storage namespace."""
     try:
-        if create:
-            tenant_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if tenant_root.is_symlink() or tenant_root.resolve() != tenant_root:
-            raise HTTPException(status_code=503, detail="Invoice document storage is unavailable.")
-        if create:
-            os.chmod(tenant_root, 0o700)
-            invoice_dir.mkdir(exist_ok=True, mode=0o700)
-        if invoice_dir.is_symlink() or invoice_dir.resolve() != invoice_dir:
-            raise HTTPException(status_code=503, detail="Invoice document storage is unavailable.")
-        if create:
-            os.chmod(invoice_dir, 0o700)
-    except OSError as exc:
+        return tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_slug,
+            "procurement-invoices",
+            create=create,
+        )
+    except StoragePathError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Invoice document storage is unavailable.",
         ) from exc
-
-    return invoice_dir
 
 
 def store_vendor_invoice_document(
@@ -175,11 +166,9 @@ def resolve_vendor_invoice_document(tenant_slug: str, document_key: str) -> Path
         raise HTTPException(status_code=404, detail="Invoice document not found.")
 
     tenant_dir = _invoice_storage_directory(tenant_slug, create=False)
-    document_path = tenant_dir / key.name
     try:
-        if document_path.is_symlink() or document_path.resolve() != document_path:
-            raise HTTPException(status_code=404, detail="Invoice document not found.")
-    except OSError as exc:
+        document_path = resolve_tenant_storage_file(tenant_dir, key.name)
+    except StoragePathError as exc:
         raise HTTPException(status_code=404, detail="Invoice document not found.") from exc
 
     if document_path.suffix.lower() not in _ALLOWED_SIGNATURES or not document_path.is_file():
