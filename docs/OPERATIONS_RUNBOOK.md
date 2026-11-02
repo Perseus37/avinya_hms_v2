@@ -12,6 +12,7 @@ Related documents:
 - [Production Deployment Guide](PRODUCTION_DEPLOYMENT.md)
 - [Production Readiness Roadmap](PRODUCTION_READINESS_ROADMAP.md)
 - [Migration Studio Guide](MIGRATION_STUDIO.md)
+- [Tenant Document Storage Architecture](TENANT_DOCUMENT_STORAGE.md)
 
 ## 1. Safety rules
 
