@@ -79,11 +79,13 @@ def get_current_user(
         payload = jwt.decode(raw_token, tenant.jwt_secret_key, algorithms=[settings.ALGORITHM])
         user_id: str = payload.get("sub")
         token_tenant: str = payload.get("tenant_slug")
+        token_branch: str = payload.get("branch_code")
         token_id = payload.get("jti")
         if (
             not isinstance(user_id, str)
             or not user_id.isdecimal()
             or token_tenant != tenant.subdomain_slug
+            or token_branch != tenant.branch_code
             or "purpose" in payload
             or not isinstance(token_id, str)
             or not token_id
