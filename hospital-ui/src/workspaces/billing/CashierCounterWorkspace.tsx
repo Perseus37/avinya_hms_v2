@@ -103,22 +103,35 @@ export const CashierCounterWorkspace: React.FC = () => {
     patientName: string;
     mrn: string;
     totalAmount: number;
+    subtotal: number;
+    discountAmount: number;
+    concessionApprover?: string;
     paidAmount: number;
     breakdown: Record<string, number>;
   } | null>(null);
+
+  // Concession & Institutional Waiver State
+  const [concessionPercent, setConcessionPercent] = useState<number>(0);
+  const [concessionApprover, setConcessionApprover] = useState<string>("Medical Superintendent (EWS Waiver)");
+  const [concessionReason, setConcessionReason] = useState<string>("EWS / BPL Economically Weaker Section Statutory Care");
 
   const calculateSubtotal = () => {
     return billItems.reduce((acc, item) => acc + item.unitPrice * item.quantity, 0);
   };
 
+  const calculateDiscount = () => {
+    return (calculateSubtotal() * concessionPercent) / 100;
+  };
+
   const calculateGst = () => {
+    const discountedFactor = Math.max(0, 1 - concessionPercent / 100);
     return billItems.reduce(
-      (acc, item) => acc + (item.unitPrice * item.quantity * item.gstRate) / 100,
+      (acc, item) => acc + (item.unitPrice * item.quantity * discountedFactor * item.gstRate) / 100,
       0
     );
   };
 
-  const totalBillAmount = calculateSubtotal() + calculateGst();
+  const totalBillAmount = Math.max(0, calculateSubtotal() - calculateDiscount() + calculateGst());
 
   const totalTendered =
     (parseFloat(cashTendered) || 0) +
@@ -217,6 +230,9 @@ export const CashierCounterWorkspace: React.FC = () => {
       patientName: patientSummary?.full_name || "Siddharth Verma",
       mrn: patientSummary?.mrn || "MRN-2026-0001",
       totalAmount: totalBillAmount,
+      subtotal: calculateSubtotal(),
+      discountAmount: calculateDiscount(),
+      concessionApprover: concessionPercent > 0 ? `${concessionApprover} (${concessionPercent}%)` : undefined,
       paidAmount: totalTendered,
       breakdown: {
         Cash: parseFloat(cashTendered) || 0,
@@ -272,8 +288,15 @@ export const CashierCounterWorkspace: React.FC = () => {
           </tbody>
         </table>
         <div style="display: flex; justify-content: flex-end; margin-bottom: 20px;">
-          <div style="width: 250px; font-size: 12px; line-height: 1.8;">
-            <div style="display: flex; justify-content: space-between;"><span>Subtotal:</span> <span>₹${subtotal.toFixed(2)}</span></div>
+          <div style="width: 280px; font-size: 12px; line-height: 1.8;">
+            <div style="display: flex; justify-content: space-between;"><span>Gross Subtotal:</span> <span>₹${(lastSettledInvoice.subtotal || subtotal).toFixed(2)}</span></div>
+            ${lastSettledInvoice.discountAmount > 0 ? `
+              <div style="display: flex; justify-content: space-between; color: #16a34a; font-weight: bold;">
+                <span>Institutional Waiver / Concession:</span>
+                <span>-₹${lastSettledInvoice.discountAmount.toFixed(2)}</span>
+              </div>
+              <div style="font-size: 9px; color: #555; text-align: right;">Sanctioned by: ${lastSettledInvoice.concessionApprover || "Medical Superintendent"}</div>
+            ` : ""}
             <div style="display: flex; justify-content: space-between;"><span>Healthcare GST (Exempt/0%):</span> <span>₹0.00</span></div>
             <div style="display: flex; justify-content: space-between; font-weight: bold; border-top: 2px solid #000; font-size: 13px;">
               <span>Total Paid:</span> <span style="color: #16a34a;">₹${lastSettledInvoice.totalAmount.toFixed(2)}</span>
@@ -318,6 +341,12 @@ export const CashierCounterWorkspace: React.FC = () => {
           </div>
         `).join("")}
         <div class="divider"></div>
+        ${lastSettledInvoice.discountAmount > 0 ? `
+          <div style="display: flex; justify-content: space-between; font-size: 10px; color: #16a34a; margin: 2px 0;">
+            <span>Concession (${lastSettledInvoice.concessionApprover?.slice(0, 14)}):</span>
+            <span>-₹${lastSettledInvoice.discountAmount.toFixed(2)}</span>
+          </div>
+        ` : ""}
         <div class="bold" style="display: flex; justify-content: space-between; font-size: 13px; margin: 4px 0;">
           <span>TOTAL PAID:</span>
           <span>₹${lastSettledInvoice.totalAmount.toFixed(2)}</span>
@@ -594,9 +623,51 @@ export const CashierCounterWorkspace: React.FC = () => {
               <span className="text-slate-200">₹{calculateGst().toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
             </div>
 
-            <div className="flex justify-between text-slate-400">
-              <span>Hospital Concession / Discount:</span>
-              <span className="text-emerald-400">₹0.00</span>
+            <div className="pt-2 border-t border-slate-800 space-y-1.5">
+              <div className="flex justify-between items-center text-slate-400">
+                <span>Institutional Waiver / Concession:</span>
+                <select
+                  value={concessionPercent}
+                  onChange={(e) => setConcessionPercent(parseInt(e.target.value, 10))}
+                  className="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-[11px] text-slate-200"
+                >
+                  <option value={0}>Nil (0%)</option>
+                  <option value={10}>Senior Citizen / Veteran (10%)</option>
+                  <option value={25}>Staff / Dependent (25%)</option>
+                  <option value={50}>Charitable Trust (50%)</option>
+                  <option value={100}>EWS Indigent Free Bed (100%)</option>
+                </select>
+              </div>
+
+              {concessionPercent > 0 && (
+                <>
+                  <div className="flex justify-between items-center text-slate-400">
+                    <span>Sanctioning Authority:</span>
+                    <select
+                      value={concessionApprover}
+                      onChange={(e) => setConcessionApprover(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded px-1 py-0.5 text-[10px] text-slate-200"
+                    >
+                      <option value="Medical Superintendent">Medical Superintendent</option>
+                      <option value="Managing Director / COO">Managing Director / COO</option>
+                      <option value="Charitable Trustee Board">Charitable Trustee Board</option>
+                    </select>
+                  </div>
+                  <div className="flex justify-between items-center text-slate-400">
+                    <span>Waiver Reason:</span>
+                    <input
+                      type="text"
+                      value={concessionReason}
+                      onChange={(e) => setConcessionReason(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] text-slate-200 w-44"
+                    />
+                  </div>
+                  <div className="flex justify-between text-emerald-400 font-bold">
+                    <span>Waiver Deduction ({concessionPercent}%):</span>
+                    <span>-₹{calculateDiscount().toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="pt-3 border-t border-slate-800 flex justify-between items-center text-sm font-bold">
@@ -715,6 +786,48 @@ export const CashierCounterWorkspace: React.FC = () => {
                 ₹{remainingBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
               </span>
             </div>
+          </div>
+
+          {/* Quick-Tender Presets */}
+          <div className="flex items-center gap-2 pt-1 font-mono text-[11px]">
+            <span className="text-slate-500 text-[10px] uppercase">Quick Tender:</span>
+            <button
+              type="button"
+              onClick={() => {
+                setCashTendered(totalBillAmount.toFixed(2));
+                setUpiTendered("0");
+                setCardTendered("0");
+                setTpaClaimTendered("0");
+              }}
+              className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700"
+            >
+              100% Cash
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCashTendered("0");
+                setUpiTendered(totalBillAmount.toFixed(2));
+                setCardTendered("0");
+                setTpaClaimTendered("0");
+                setIsUpiQrVisible(true);
+              }}
+              className="px-2 py-0.5 rounded bg-sky-950 text-sky-400 hover:bg-sky-900 border border-sky-800"
+            >
+              100% UPI
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setCashTendered("0");
+                setUpiTendered("0");
+                setCardTendered(totalBillAmount.toFixed(2));
+                setTpaClaimTendered("0");
+              }}
+              className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700"
+            >
+              100% Card
+            </button>
           </div>
 
           {/* Tender Inputs */}

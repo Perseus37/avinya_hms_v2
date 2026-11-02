@@ -490,6 +490,10 @@ To eliminate hospital-floor pain points and compliance risks, Avinya HMS systema
 11. **Biomedical Engineering & Clinical Equipment Safety ([`BiomedicalWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/biomedical/BiomedicalWorkspace.tsx)):**
     - **Lockout Tagout (LOTO) Danger Placards:** Generates statutory physical warning placards (Form BME-LOTO-01) under NABH FMS.6 and OSHA standards for any medical device undergoing breakdown or failing electrical safety thresholds, prohibiting patient connection until certified recalibration.
 
+12. **Cashier Billing Counter & Revenue Cycle ([`CashierCounterWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/billing/CashierCounterWorkspace.tsx)):**
+    - **Authorized Institutional Concession & EWS Waiver Engine:** Accommodates statutory charity care and administrative waivers (Senior Citizen 10%, Staff/Dependent 25%, Charitable Trust 50%, EWS Indigent Free Bed 100%) with codified approving authority (Medical Superintendent, Managing Director) reflected on both A4 GST Tax Invoices and thermal slips.
+    - **Quick-Tender Split Presets & Real NPCI UPI Intent QR:** Eliminates cashier bottlenecks during peak OPD rush hours with 1-click 100% Cash/UPI/Card presets and dynamic UPI QR rendering.
+
 ---
 
 ## 5. Comprehensive AI Audit Scorecard & Evaluation
