@@ -21,8 +21,9 @@ Clinical records, lab reports, prescriptions, patient attachments, and other pri
 
 - `tenant_storage_directory(root, tenant_slug, namespace, create=...)`: validates tenant and namespace components, creates directories with restrictive permissions when requested, and rejects symlinked tenant or namespace directories.
 - `resolve_tenant_storage_file(directory, filename)`: permits only a single child filename and rejects traversal and symlinked files.
+- `stage_and_publish_upload(...)`: streams in bounded chunks to an exclusive temporary file, applies restrictive file permissions, validates the leading signature and optional feature-specific staged-file checks, invokes the supplied malware scanner, then atomically publishes the destination. It removes only a temporary file created by that invocation when any step fails.
 
-The utility intentionally does not decide whether a caller is authorized to read or write a document. It does not perform content validation, malware scanning, audit logging, database metadata persistence, or cleanup. Feature code must continue to enforce those controls.
+The utility intentionally does not decide whether a caller is authorized to read or write a document. It does not define accepted extensions/signatures, scanner policy, audit logging, database metadata persistence, or post-commit orphan cleanup. Feature code supplies those policies and maps shared upload exceptions to its API contract.
 
 ## Required upload lifecycle
 
@@ -60,5 +61,6 @@ An S3-compatible backend is not implemented yet. When introduced, it should sit 
 ## Known limitations
 
 - The shared helper centralizes path and symlink checks, but path-based filesystem operations are not a complete defense against a hostile local process racing directory replacement. Production storage mounts must not be writable by untrusted local users. A hardened object-store adapter or descriptor-relative filesystem implementation may be warranted for deployments with that threat model.
-- Branding and procurement still own their respective streaming, validation, scan, and publish logic. Those operations should be consolidated only after their feature-specific contracts are covered by regression tests.
+- Branding and procurement now share bounded staging, signature-prefix validation, malware-scan invocation, failure cleanup, and atomic publication. Feature-specific extension rules, WebP container validation, scanner implementation, authorization, and metadata/audit transactions remain in their owning modules.
+- The upload helper uses path-based operations; the documented local-process directory-replacement race limitation still applies.
 - No general clinical-document upload/download API or document retention engine is claimed by this implementation.
