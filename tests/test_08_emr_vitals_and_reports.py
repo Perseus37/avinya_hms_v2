@@ -748,3 +748,13 @@ def test_report_preview_sample_context_uses_neutral_branding_defaults():
     assert context["tenant"]["hospital_name"] == "Hospital"
     assert context["tenant"]["branch_code"] == "MAIN"
 
+def test_report_template_branding_catalog_uses_neutral_tenant_samples():
+    from backend.domains.reports.templates import COMMON_GROUPS
+
+    branding = next(group for group in COMMON_GROUPS if group["group_name"] == "Hospital Branding")
+    samples = {item["label"]: item["sample"] for item in branding["variables"]}
+
+    assert samples["Hospital Name"] == "Sample Hospital"
+    assert samples["Branch Code"] == "SAMPLE-01"
+    assert "Apollo" not in " ".join(samples.values())
+
