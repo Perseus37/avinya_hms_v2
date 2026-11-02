@@ -120,6 +120,60 @@ def get_tenant_branding(
     )
 
 
+@router.put(
+    "/tenant-branding",
+    response_model=TenantBrandingResponse,
+    dependencies=[Depends(RequirePermission("config:write"))],
+)
+def update_tenant_branding(
+    payload: TenantBrandingUpdate,
+    request: Request,
+    control_db: Session = Depends(get_control_db),
+):
+    """Update the allowlisted branding configuration for the resolved tenant."""
+    tenant_context = resolve_tenant_context(request)
+    tenant = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.subdomain_slug == tenant_context.subdomain_slug,
+            TenantRegistry.is_active == True,
+        )
+    ).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant configuration not found.")
+
+    for asset_url in (payload.logo_url, payload.favicon_url):
+        if asset_url and not (
+            (asset_url.startswith("/") and not asset_url.startswith("//"))
+            or asset_url.startswith("https://")
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Brand assets must use HTTPS URLs or same-origin absolute paths.",
+            )
+
+    branding = payload.model_dump()
+    branding["display_name"] = branding["display_name"].strip()
+    if branding["tagline"] is not None:
+        branding["tagline"] = branding["tagline"].strip() or None
+
+    tenant.ui_branding_json = json.dumps(branding)
+    control_db.add(tenant)
+    control_db.commit()
+    control_db.refresh(tenant)
+
+    return TenantBrandingResponse(
+        tenant_slug=tenant.subdomain_slug,
+        hospital_name=tenant.hospital_name,
+        display_name=branding["display_name"],
+        logo_url=branding["logo_url"],
+        favicon_url=branding["favicon_url"],
+        primary_color=branding["primary_color"],
+        secondary_color=branding["secondary_color"],
+        accent_color=branding["accent_color"],
+        tagline=branding["tagline"],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
