@@ -200,12 +200,12 @@ def update_tenant_branding(
 
 
 _BRAND_ASSET_SIGNATURES = {
-    ".png": (b"\\x89PNG\\r\\n\\x1a\\n", "image/png"),
-    ".jpg": (b"\\xff\\xd8\\xff", "image/jpeg"),
+    ".png": (b"\x89PNG\r\n\x1a\n", "image/png"),
+    ".jpg": (b"\xff\xd8\xff", "image/jpeg"),
     ".jpeg": (b"\\xff\\xd8\\xff", "image/jpeg"),
     ".webp": (b"RIFF", "image/webp"),
 }
-_BRAND_ASSET_ID = re.compile(r"^[0-9a-f]{32}\\.(png|jpg|jpeg|webp)$")
+_BRAND_ASSET_ID = re.compile(r"^[0-9a-f]{32}\.(png|jpg|jpeg|webp)$")
 
 
 @router.post(
