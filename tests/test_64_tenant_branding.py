@@ -303,3 +303,48 @@ def test_replacing_logo_retains_previous_asset_when_favicon_still_uses_it(
         assert branding["favicon_url"] == shared_url
         assert branding["logo_url"] == replacement.json()["asset_url"]
 
+
+def test_failed_brand_asset_database_commit_keeps_previous_asset_and_removes_new_file(
+    client, multi_tenant_env, superuser_headers, monkeypatch, tmp_path
+):
+    import pytest
+    from sqlalchemy.orm import Session
+
+    monkeypatch.setattr("backend.domains.ui.router.settings.ATTACHMENTS_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr("backend.domains.ui.router.scan_file_with_clamav", lambda path: None)
+
+    first = client.post(
+        "/api/ui/tenant-branding/assets?kind=logo",
+        headers=superuser_headers,
+        files={"file": ("existing.png", b"\x89PNG\r\n\x1a\nexisting-image", "image/png")},
+    )
+    assert first.status_code == 200, first.text
+    previous_url = first.json()["asset_url"]
+    asset_directory = tmp_path / "default" / "branding-assets"
+    previous_path = asset_directory / previous_url.rsplit("/", 1)[-1]
+    assert previous_path.is_file()
+
+    original_commit = Session.commit
+
+    def fail_brand_upload_commit(session):
+        if any(
+            getattr(item, "action", None) == "TENANT_BRAND_ASSET_UPLOADED"
+            for item in session.new
+        ):
+            raise RuntimeError("simulated branding commit failure")
+        return original_commit(session)
+
+    monkeypatch.setattr(Session, "commit", fail_brand_upload_commit)
+    with pytest.raises(RuntimeError, match="simulated branding commit failure"):
+        client.post(
+            "/api/ui/tenant-branding/assets?kind=logo",
+            headers=superuser_headers,
+            files={"file": ("replacement.png", b"\x89PNG\r\n\x1a\nreplacement-image", "image/png")},
+        )
+
+    assert previous_path.is_file()
+    assert list(asset_directory.iterdir()) == [previous_path]
+    with multi_tenant_env["control_session_factory"]() as db:
+        tenant = db.query(TenantRegistry).filter_by(subdomain_slug="default").one()
+        assert json.loads(tenant.ui_branding_json)["logo_url"] == previous_url
+
