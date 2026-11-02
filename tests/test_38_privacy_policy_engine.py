@@ -59,6 +59,7 @@ NON_PATIENT_OR_DEFERRED_GET_ROUTES = {
     "/api/auth/me",
     "/api/auth/me/preferences",
     "/api/auth/password/reset",
+    "/api/auth/unlock/verify",
     "/api/auth/permissions",
     "/api/auth/permissions/matrix",
     "/api/auth/roles",

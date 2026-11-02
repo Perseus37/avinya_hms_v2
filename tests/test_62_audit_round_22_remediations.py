@@ -483,3 +483,141 @@ def test_n98_dpdp_dossier_populated_and_integrity(client, superuser_headers, mul
         assert audit is not None
         assert f"patient_id={p.id}" in audit.reason_code
 
+
+def test_third_party_image_digests_pinned_in_docker_compose():
+    """
+    Section 28.4: Verify that all third-party service images in docker-compose.prod.yml
+    are pinned by immutable sha256 digests.
+    """
+    compose_path = Path("docker-compose.prod.yml")
+    assert compose_path.is_file()
+    compose = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+
+    third_party_services = [
+        "docker-proxy",
+        "reverse-proxy",
+        "db",
+        "redis",
+        "clamav",
+        "prometheus",
+        "alertmanager",
+        "postgres-exporter",
+        "redis-exporter",
+        "node-exporter",
+    ]
+
+    for svc_name in third_party_services:
+        svc = compose["services"][svc_name]
+        image = svc.get("image", "")
+        assert "@sha256:" in image, f"Service '{svc_name}' image '{image}' must be pinned with @sha256 digest"
+
+
+def test_f05_account_lockout_self_service_unlock_flow(client, multi_tenant_env):
+    """
+    F-05 / Section 28.4: Verify self-service account unlock via cryptographically signed token.
+    An account locked out following repeated failures can be restored via /unlock/verify.
+    """
+    from sqlalchemy.orm import Session
+    from backend.domains.identity.models import User, UserStatusEnum
+    from backend.domains.privacy.models import PrivacyDecisionAudit
+    from backend.domains.identity.auth_router import _issue_unlock_token
+    from backend.core.database import resolve_tenant_context
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        user = db.query(User).filter_by(email="doctor@default.com").one()
+        user.status = UserStatusEnum.LOCKED
+        user.failed_login_attempts = 5
+        db.commit()
+
+    # 1. Verify locked account cannot log in
+    res = client.post(
+        "/v1/api/auth/login",
+        headers={"X-Hospital-Subdomain": "default"},
+        json={"email": "doctor@default.com", "password": "StaffPass123!"},
+    )
+    assert res.status_code == 401
+
+    # 2. Request self-service unlock instructions
+    req_res = client.post(
+        "/v1/api/auth/unlock/request",
+        headers={"X-Hospital-Subdomain": "default"},
+        json={"email": "doctor@default.com"},
+    )
+    assert req_res.status_code == 202
+    assert "unlock instructions" in req_res.json()["message"]
+
+    # 3. Simulate issued unlock token for the user
+    with Session(engine) as db:
+        user = db.query(User).filter_by(email="doctor@default.com").one()
+        from backend.control_plane.models import TenantRegistry
+        with multi_tenant_env["control_session_factory"]() as cp_db:
+            reg = cp_db.query(TenantRegistry).filter_by(subdomain_slug="default").one()
+            from backend.core.database import TenantContext
+            from backend.security.envelope import decrypt_tenant_secret
+            tenant = TenantContext(
+                subdomain_slug=reg.subdomain_slug,
+                branch_code=reg.branch_code,
+                hospital_name=reg.hospital_name,
+                db_name=reg.db_name,
+                jwt_secret_key=decrypt_tenant_secret(reg.jwt_secret_key),
+            )
+            unlock_token = _issue_unlock_token(user, tenant)
+
+    # 4. Verify unlock with token
+    verify_res = client.post(
+        "/v1/api/auth/unlock/verify",
+        headers={"X-Hospital-Subdomain": "default"},
+        json={"token": unlock_token},
+    )
+    assert verify_res.status_code == 200
+    assert "successfully unlocked" in verify_res.json()["message"]
+
+    # 5. User can now successfully log in
+    login_res = client.post(
+        "/v1/api/auth/login",
+        headers={"X-Hospital-Subdomain": "default"},
+        json={"email": "doctor@default.com", "password": "StaffPass123!"},
+    )
+    assert login_res.status_code == 200
+    assert "access_token" in login_res.json()
+
+    # 6. Verify audit record was created
+    with Session(engine) as db:
+        user = db.query(User).filter_by(email="doctor@default.com").one()
+        assert user.status == UserStatusEnum.ACTIVE
+        assert user.failed_login_attempts == 0
+        audit = db.query(PrivacyDecisionAudit).filter_by(
+            data_use_point="identity.user.self_unlock"
+        ).first()
+        assert audit is not None
+        assert f"user_id={user.id}" in audit.reason_code
+
+
+def test_bootstrap_apply_roles_cli_and_sql_script(monkeypatch):
+    """
+    Section 28.4 / 28.5: Verify postgres-roles.sql defines all 4 least-privilege roles
+    and bootstrap.py supports --apply-roles argument.
+    """
+    roles_sql_path = Path("deployments/postgres-roles.sql")
+    assert roles_sql_path.is_file()
+    sql_text = roles_sql_path.read_text(encoding="utf-8")
+
+    # Verify all least-privilege roles are declared
+    for role in ["hms_app", "hms_migrator", "hms_backup", "hms_exporter"]:
+        assert f"rolname = '{role}'" in sql_text
+        assert f"CREATE ROLE {role}" in sql_text
+
+    # Verify standard predefined role assignments
+    assert "GRANT pg_read_all_data TO hms_backup;" in sql_text
+    assert "GRANT pg_monitor TO hms_exporter;" in sql_text
+
+    # Test bootstrap CLI parser handles --apply-roles
+    from backend.scripts.bootstrap import main
+    calls = []
+    monkeypatch.setattr("backend.scripts.bootstrap.bootstrap_system", lambda apply_roles=False: calls.append(apply_roles))
+    
+    assert main(["--apply-roles"]) == 0
+    assert calls == [True]
+
+

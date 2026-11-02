@@ -124,6 +124,14 @@ class MfaDisableRequest(BaseModel):
     code: str = Field(min_length=6, max_length=32)
 
 
+class AccountUnlockRequest(BaseModel):
+    email: EmailStr
+
+
+class AccountUnlockVerifyRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=4096)
+
+
 def _validate_password(value: str) -> str:
     classes = (
         any(char.islower() for char in value),
@@ -211,6 +219,43 @@ def _decode_mfa_token(token: str, tenant, purpose: str) -> int:
     return int(subject)
 
 
+def _issue_unlock_token(user: User, tenant) -> str:
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "sub": str(user.id),
+            "email": user.email,
+            "tenant_slug": tenant.subdomain_slug,
+            "branch_code": tenant.branch_code,
+            "purpose": "account_unlock",
+            "jti": secrets.token_hex(16),
+            "exp": now + timedelta(minutes=settings.LOGIN_LOCKOUT_MINUTES),
+        },
+        tenant.jwt_secret_key,
+        algorithm=settings.ALGORITHM,
+    )
+
+
+def _decode_unlock_token(token: str, tenant) -> int:
+    try:
+        payload = jwt.decode(
+            token,
+            tenant.jwt_secret_key,
+            algorithms=[settings.ALGORITHM],
+        )
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=400, detail="Invalid or expired account unlock token.") from exc
+    subject = payload.get("sub")
+    if (
+        payload.get("purpose") != "account_unlock"
+        or payload.get("tenant_slug") != tenant.subdomain_slug
+        or not isinstance(subject, str)
+        or not subject.isdecimal()
+    ):
+        raise HTTPException(status_code=400, detail="Invalid or expired account unlock token.")
+    return int(subject)
+
+
 def _issue_access_session(user: User, tenant, db: Session) -> str:
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -243,7 +288,7 @@ def _complete_login(user: User, tenant, db: Session) -> dict[str, str]:
     return {"access_token": token, "token_type": "bearer"}
 
 
-def _record_mfa_failure(db: Session, user: User) -> None:
+def _record_mfa_failure(db: Session, user: User, tenant=None) -> None:
     user.failed_login_attempts += 1
     policy = get_or_create_policy(db)
     user_locked = False
@@ -256,14 +301,23 @@ def _record_mfa_failure(db: Session, user: User) -> None:
         user_locked = True
     db.commit()
 
-    # N-09: Send email AFTER transaction commit succeeds
+    # N-09 / F-05: Send alert email with self-service unlock link AFTER transaction commit succeeds
     if user_locked and user.email:
         try:
+            unlock_link_text = ""
+            if tenant is not None:
+                raw_token = _issue_unlock_token(user, tenant)
+                unlock_url = (
+                    f"{settings.tenant_url(tenant.subdomain_slug)}"
+                    f"/v1/api/auth/unlock/verify?token={raw_token}"
+                )
+                unlock_link_text = f"\n\nTo unlock your account immediately without waiting for an administrator, visit:\n{unlock_url}"
             _dispatch_email(
                 user.email,
                 "Security Alert: Your Avinya HMS account has been temporarily locked",
                 f"Your account {user.email} was locked following repeated invalid MFA authentication attempts.\n"
-                f"The lock will automatically expire in {settings.LOGIN_LOCKOUT_MINUTES} minutes, or contact an administrator to request an immediate unlock.",
+                f"The lock will automatically expire in {settings.LOGIN_LOCKOUT_MINUTES} minutes.{unlock_link_text}\n"
+                f"Or contact an administrator to request an immediate unlock.",
             )
         except Exception:
             pass
@@ -419,6 +473,23 @@ def login(
                         user.failed_login_attempts,
                         client_ip,
                     )
+                    if user.email:
+                        try:
+                            raw_token = _issue_unlock_token(user, tenant)
+                            unlock_url = (
+                                f"{settings.tenant_url(tenant.subdomain_slug)}"
+                                f"/v1/api/auth/unlock/verify?token={raw_token}"
+                            )
+                            _dispatch_email(
+                                user.email,
+                                "Security Alert: Your Avinya HMS account has been temporarily locked",
+                                f"Your account {user.email} was locked following repeated invalid login attempts from IP {client_ip}.\n"
+                                f"The lock will automatically expire in {settings.LOGIN_LOCKOUT_MINUTES} minutes.\n\n"
+                                f"To unlock your account immediately without waiting for an administrator, visit:\n{unlock_url}\n\n"
+                                f"If you did not initiate these login attempts, please alert your security administrator immediately.",
+                            )
+                        except Exception:
+                            pass
                 db.commit()
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -696,6 +767,137 @@ def reset_password(
     _revoke_user_sessions(db, user.id)
     db.commit()
     return {"status": "success", "message": "Password reset; sign in with the new password."}
+
+
+@router.post("/unlock/request", status_code=status.HTTP_202_ACCEPTED)
+def request_account_unlock(
+    payload: AccountUnlockRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(RateLimiter(scope="auth_unlock_request", max_requests=5, window_seconds=300)),
+):
+    """
+    Self-service account unlock request (F-05 mitigation).
+    Dispatches a single-use signed unlock token to the registered email address
+    without disclosing whether the account exists or is currently locked.
+    """
+    tenant = resolve_tenant_context(request)
+    user = db.execute(select(User).where(User.email == payload.email)).scalar_one_or_none()
+    if user and user.status == UserStatusEnum.LOCKED:
+        raw_token = _issue_unlock_token(user, tenant)
+        unlock_url = (
+            f"{settings.tenant_url(tenant.subdomain_slug)}"
+            f"/v1/api/auth/unlock/verify?token={raw_token}"
+        )
+        _dispatch_email(
+            user.email,
+            "Avinya HMS Account Unlock Request",
+            f"An account unlock was requested for {user.email}.\n\n"
+            f"Click the link below to unlock your account immediately:\n{unlock_url}\n\n"
+            f"This link expires in {settings.LOGIN_LOCKOUT_MINUTES} minutes. "
+            f"If you did not make this request, you can safely ignore this email.",
+        )
+    return {
+        "message": "If an account matching that address is currently locked, unlock instructions have been sent to the registered email."
+    }
+
+
+@router.get("/unlock/verify")
+@router.post("/unlock/verify")
+def verify_account_unlock(
+    request: Request,
+    token: Optional[str] = None,
+    payload: Optional[AccountUnlockVerifyRequest] = None,
+    db: Session = Depends(get_db),
+    redis_client=Depends(get_redis),
+):
+    """
+    Self-service account unlock verification endpoint (F-05).
+    Accepts unlock token via query parameter or POST body, verifies JWT signature and expiry,
+    restores account to ACTIVE status, resets failed attempts, and records an audit trail.
+    """
+    tenant = resolve_tenant_context(request)
+    unlock_token = token or (payload.token if payload else None)
+    if not unlock_token:
+        unlock_token = request.query_params.get("token")
+    if not unlock_token:
+        raise HTTPException(status_code=400, detail="Missing account unlock token.")
+
+    user_id = _decode_unlock_token(unlock_token, tenant)
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid unlock token: user not found.")
+
+    if user.status == UserStatusEnum.LOCKED:
+        user.status = UserStatusEnum.ACTIVE
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        db.info["audit_user_id"] = user.id
+        from backend.domains.privacy.models import PrivacyDecisionAudit
+        db.add(
+            PrivacyDecisionAudit(
+                actor_user_id=user.id,
+                data_use_point="identity.user.self_unlock",
+                mode="ENFORCE",
+                result="ALLOW",
+                reason_code=f"SELF_UNLOCK:user_id={user.id}:email={user.email}"[:255],
+            )
+        )
+        db.commit()
+        logger.info("User %s (id=%d) successfully self-unlocked account via email token", user.email, user.id)
+
+    if redis_client:
+        try:
+            _mfa_failure_limiter.reset_actor(request, redis_client, f"user:{user.id}")
+            redis_client.delete(f"auth_mfa_failure:user:{user.id}")
+            if hasattr(tenant, "subdomain_slug"):
+                redis_client.delete(f"rl:auth_mfa_failure:{tenant.subdomain_slug}:user:{user.id}")
+        except Exception:
+            pass
+
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and request.method == "GET":
+        html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Account Unlocked - Avinya HMS</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f8fafc; }}
+    .card {{ background: #fff; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); max-width: 420px; text-align: center; }}
+    h1 {{ color: #0f172a; font-size: 1.5rem; margin-bottom: 0.5rem; }}
+    p {{ color: #475569; font-size: 0.95rem; line-height: 1.5; }}
+    .btn {{ display: inline-block; margin-top: 1rem; padding: 0.6rem 1.2rem; background: #0284c7; color: #fff; text-decoration: none; border-radius: 6px; font-weight: 500; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Account Unlocked</h1>
+    <p>Your Avinya HMS account <strong>{user.email}</strong> has been successfully unlocked.</p>
+    <p>You may now return to the login screen and sign in.</p>
+    <a href="/login" class="btn">Proceed to Login</a>
+  </div>
+</body>
+</html>"""
+        return HTMLResponse(
+            html,
+            headers={
+                "Content-Security-Policy": (
+                    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+                    "base-uri 'none'; frame-ancestors 'none'"
+                ),
+                "Referrer-Policy": "no-referrer",
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "DENY",
+            },
+        )
+
+    return {
+        "status": "success",
+        "message": f"Account {user.email} has been successfully unlocked. You may now log in.",
+    }
 
 
 @router.post("/mfa/enroll")

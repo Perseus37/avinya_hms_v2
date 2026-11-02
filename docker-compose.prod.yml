@@ -1,6 +1,6 @@
 services:
   docker-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0
+    image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
     restart: unless-stopped
     security_opt:
       - "no-new-privileges:true"
@@ -27,7 +27,7 @@ services:
       - internal-net
 
   reverse-proxy:
-    image: traefik:v2.11
+    image: traefik:v2.11@sha256:1deb54ffa1da92723ad9ba17118b7570e0eb924103c758f25cb34db273abc024
     restart: unless-stopped
     security_opt:
       - "no-new-privileges:true"
@@ -70,7 +70,7 @@ services:
       - internal-net
 
   db:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
     restart: unless-stopped
     security_opt:
       - "no-new-privileges:true"
@@ -124,7 +124,7 @@ services:
     environment:
       TZ: "${APP_TIMEZONE:?APP_TIMEZONE is required}"
       PGTZ: "${APP_TIMEZONE:?APP_TIMEZONE is required}"
-    command: ["python", "backend/scripts/bootstrap.py"]
+    command: ["python", "backend/scripts/bootstrap.py", "--apply-roles"]
     depends_on:
       db:
         condition: service_healthy
@@ -137,7 +137,7 @@ services:
       - internal-net
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     restart: unless-stopped
     security_opt:
       - "no-new-privileges:true"
@@ -440,7 +440,7 @@ services:
       - public-net
 
   prometheus:
-    image: prom/prometheus:v2.53.3
+    image: prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951
     restart: unless-stopped
     security_opt:
       - "no-new-privileges:true"
@@ -476,7 +476,7 @@ services:
       - internal-net
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
     restart: unless-stopped
     security_opt:
       - "no-new-privileges:true"
@@ -509,7 +509,7 @@ services:
       - internal-net
 
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.15.0
+    image: prometheuscommunity/postgres-exporter:v0.15.0@sha256:386b12d19eab2a37d7cd8ca8b4c7491cc7a830d9581f49af6c98a393da9605e6
     restart: unless-stopped
     security_opt:
       - "no-new-privileges:true"
@@ -536,7 +536,7 @@ services:
       - internal-net
 
   redis-exporter:
-    image: oliver006/redis_exporter:v1.61.0-alpine
+    image: oliver006/redis_exporter:v1.61.0-alpine@sha256:024f0326296886a1aae08075322f937d9680d67c4d9d16be4ef7b7449b3115a8
     restart: unless-stopped
     security_opt:
       - "no-new-privileges:true"
@@ -564,7 +564,7 @@ services:
       - internal-net
 
   node-exporter:
-    image: prom/node-exporter:v1.8.2
+    image: prom/node-exporter:v1.8.2@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706
     restart: unless-stopped
     security_opt:
       - "no-new-privileges:true"

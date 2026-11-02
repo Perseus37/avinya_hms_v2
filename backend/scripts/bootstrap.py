@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -78,9 +79,35 @@ def provision_physical_databases():
     conn.close()
 
 
-def bootstrap_system():
+def apply_database_roles():
+    """Applies least-privilege PostgreSQL roles (hms_app, hms_migrator, hms_backup, hms_exporter) from deployments/postgres-roles.sql."""
+    roles_sql_path = _REPO_DIR / "deployments" / "postgres-roles.sql"
+    if not roles_sql_path.is_file():
+        logger.warning(f"Roles definition script not found at {roles_sql_path}")
+        return
+
+    logger.info("Applying PostgreSQL least-privilege roles from deployments/postgres-roles.sql...")
+    sql_text = roles_sql_path.read_text(encoding="utf-8")
+    conn = psycopg2.connect(
+        user=settings.POSTGRES_USER,
+        password=settings.POSTGRES_PASSWORD,
+        host=settings.POSTGRES_HOST,
+        port=settings.POSTGRES_PORT,
+        database="postgres",
+    )
+    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    with conn.cursor() as cur:
+        cur.execute(sql_text)
+    conn.close()
+    logger.info("Successfully applied PostgreSQL least-privilege roles.")
+
+
+def bootstrap_system(apply_roles: bool = False):
     # 1. Ensure databases physically exist before ORM loads
     provision_physical_databases()
+
+    if apply_roles or os.getenv("POSTGRES_APPLY_ROLES", "0").lower() in ("1", "true"):
+        apply_database_roles()
 
     default_tenant_db = (
         f"{settings.TENANT_DATABASE_PREFIX}{settings.DEFAULT_TENANT_SLUG}"
@@ -189,10 +216,15 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Drop and rebuild development databases before running migrations and seed",
     )
+    parser.add_argument(
+        "--apply-roles",
+        action="store_true",
+        help="Apply least-privilege PostgreSQL roles (hms_app, hms_migrator, hms_backup, hms_exporter)",
+    )
     args = parser.parse_args(argv)
     if args.reset:
         reset_physical_databases()
-    bootstrap_system()
+    bootstrap_system(apply_roles=args.apply_roles)
     return 0
 
 
