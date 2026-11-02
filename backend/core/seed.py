@@ -60,7 +60,7 @@ GRANULAR_PERMISSIONS = [
     ("billing:write", "Create invoices, append catalog items, and record payments", "Billing"),
     ("billing:reverse", "Void invoices, remove line items, and reverse payments", "Billing"),
     # Tenant configuration and white-label identity
-    ("config:write", "Manage tenant branding and application configuration", "Configuration"),
+    ("config:write", "Manage tenant branding and application configuration", "IAM"),
     # IAM & User Administration
     ("iam:read", "View users, roles, departments, and permissions", "IAM"),
     ("iam:write", "Create/update users, doctors, roles, and assign permissions", "IAM"),
