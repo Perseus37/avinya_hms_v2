@@ -408,3 +408,24 @@ def test_configured_trusted_proxy_can_supply_forwarded_tenant_host(monkeypatch):
 
     assert extract_subdomain_slug(request) == "apollo"
 
+def test_brand_asset_upload_returns_503_when_storage_directory_is_unavailable(
+    client, superuser_headers, monkeypatch, tmp_path
+):
+    from pathlib import Path
+
+    monkeypatch.setattr("backend.domains.ui.router.settings.ATTACHMENTS_STORAGE_DIR", str(tmp_path))
+
+    def deny_directory_creation(*args, **kwargs):
+        raise PermissionError("simulated read-only attachment mount")
+
+    monkeypatch.setattr(Path, "mkdir", deny_directory_creation)
+    response = client.post(
+        "/api/ui/tenant-branding/assets?kind=logo",
+        headers=superuser_headers,
+        files={"file": ("tenant-logo.png", b"\x89PNG\r\n\x1a\nimage-data", "image/png")},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["message"] == "Brand asset storage is unavailable."
+    assert list(tmp_path.iterdir()) == []
+
