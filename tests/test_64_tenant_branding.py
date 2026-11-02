@@ -348,3 +348,63 @@ def test_failed_brand_asset_database_commit_keeps_previous_asset_and_removes_new
         tenant = db.query(TenantRegistry).filter_by(subdomain_slug="default").one()
         assert json.loads(tenant.ui_branding_json)["logo_url"] == previous_url
 
+def test_untrusted_forwarded_host_cannot_change_tenant_routing(monkeypatch):
+    from starlette.requests import Request
+
+    from backend.core.config import settings
+    from backend.core.database import extract_subdomain_slug
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "ALLOW_HEADER_TENANT_OVERRIDE", False)
+    monkeypatch.setattr(settings, "BASE_DOMAIN", "example.test")
+    monkeypatch.setattr(settings, "TRUSTED_PROXY_IPS", "198.51.100.10/32")
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/ui/tenant-branding/assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
+            "headers": [
+                (b"host", b"default.example.test"),
+                (b"x-forwarded-host", b"apollo.example.test"),
+                (b"x-hospital-subdomain", b"apollo"),
+            ],
+            "client": ("203.0.113.25", 43120),
+            "server": ("default.example.test", 443),
+            "scheme": "https",
+            "query_string": b"",
+        }
+    )
+
+    assert extract_subdomain_slug(request) == "default"
+
+
+def test_configured_trusted_proxy_can_supply_forwarded_tenant_host(monkeypatch):
+    from starlette.requests import Request
+
+    from backend.core.config import settings
+    from backend.core.database import extract_subdomain_slug
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "ALLOW_HEADER_TENANT_OVERRIDE", False)
+    monkeypatch.setattr(settings, "BASE_DOMAIN", "example.test")
+    monkeypatch.setattr(settings, "TRUSTED_PROXY_IPS", "198.51.100.0/24")
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/ui/tenant-branding",
+            "headers": [
+                (b"host", b"internal-api"),
+                (b"x-forwarded-host", b"apollo.example.test"),
+            ],
+            "client": ("198.51.100.10", 43120),
+            "server": ("internal-api", 8000),
+            "scheme": "https",
+            "query_string": b"",
+        }
+    )
+
+    assert extract_subdomain_slug(request) == "apollo"
+
