@@ -205,3 +205,25 @@ def test_brand_asset_upload_rejects_svg_active_content(client, superuser_headers
         files={"file": ("logo.svg", b"<svg></svg>", "image/svg+xml")},
     )
     assert response.status_code == 415
+
+
+def test_brand_asset_upload_fails_closed_when_malware_scanner_is_unavailable(
+    client, superuser_headers, monkeypatch, tmp_path
+):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr("backend.domains.ui.router.settings.ATTACHMENTS_STORAGE_DIR", str(tmp_path))
+
+    def scanner_unavailable(_path):
+        raise HTTPException(status_code=503, detail="Scanner unavailable.")
+
+    monkeypatch.setattr("backend.domains.ui.router.scan_file_with_clamav", scanner_unavailable)
+    image_bytes = b"\\x89PNG\\r\\n\\x1a\\n" + b"test-image-data"
+    response = client.post(
+        "/api/ui/tenant-branding/assets?kind=logo",
+        headers=superuser_headers,
+        files={"file": ("tenant-logo.png", image_bytes, "image/png")},
+    )
+    assert response.status_code == 503
+    asset_directory = tmp_path / "default" / "branding-assets"
+    assert not asset_directory.exists() or list(asset_directory.iterdir()) == []
