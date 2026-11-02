@@ -9,8 +9,8 @@
   --av-border-strong: #cbd5e1;
   --av-text: #0f172a;
   --av-text-muted: #64748b;
-  --av-primary: #2563eb;
-  --av-primary-soft: #eff6ff;
+  --av-primary: var(--tenant-primary, #2563eb);
+  --av-primary-soft: color-mix(in srgb, var(--tenant-primary, #2563eb) 9%, white);
   --av-success: #15803d;
   --av-success-soft: #f0fdf4;
   --av-warning: #b45309;
