@@ -546,3 +546,13 @@ def test_brand_asset_reconciliation_rejects_symlinked_storage_root(tmp_path):
     with pytest.raises(ValueError, match="must not be a symlink"):
         reconcile_branding_assets(linked_root, [tenant], execute=True)
 
+def test_brand_asset_reconciliation_enforces_minimum_grace_period(tmp_path):
+    from types import SimpleNamespace
+    import pytest
+
+    from backend.scripts.reconcile_branding_assets import reconcile_branding_assets
+
+    tenant = SimpleNamespace(subdomain_slug="default", ui_branding_json="{}")
+    with pytest.raises(ValueError, match="at least 24"):
+        reconcile_branding_assets(tmp_path, [tenant], grace_hours=1, execute=True)
+
