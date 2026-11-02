@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Search, LogOut, Activity, User, HelpCircle, Keyboard, ChevronDown, ShieldCheck, CheckSquare, Building2 } from "lucide-react";
 import { useAuth } from "../../core/context/AuthContext";
 import { usePermissions, ROLE_DEFINITIONS, RoleCode } from "../../core/context/PermissionsContext";
-import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
+import { useHospitalConfig } from "../../core/context/HospitalConfigContext";\nimport { useTenantBranding } from "../../core/context/TenantBrandingContext";
 import { Modal } from "../ui/Modal";
 
 interface TopNavbarProps {
@@ -13,7 +13,7 @@ interface TopNavbarProps {
 export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenCommandPalette, onOpenTasks }) => {
   const { user, logout } = useAuth();
   const { activeRole, roleDefinition, isSimulating, isDev, setActiveRole, resetToAuthenticatedRole } = usePermissions();
-  const { hospitalProfile } = useHospitalConfig();
+  const { hospitalProfile } = useHospitalConfig();\n  const { branding } = useTenantBranding();
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isRoleMenuOpen, setIsRoleMenuOpen] = useState(false);
 
