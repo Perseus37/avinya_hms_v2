@@ -118,3 +118,23 @@ def test_branding_update_rejects_token_from_another_tenant(client, apollo_admin_
         json={"display_name": "Cross Tenant Attempt"},
     )
     assert response.status_code == 401
+
+
+def test_existing_tenant_admin_role_receives_branding_permission(multi_tenant_env):
+    from backend.core.seed import seed_universal_hospital_data
+    from backend.domains.identity.models import Permission, Role
+    from sqlalchemy.orm import Session
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        seed_universal_hospital_data(
+            db=db,
+            hospital_name="Avinya Default Hospital",
+            branch_code="HQ-HYD-01",
+            admin_email="admin@default.com",
+            admin_password="AdminPassword123!",
+        )
+        admin_role = db.query(Role).filter_by(code="ROLE_ADMIN").one()
+        permission_codes = {permission.code for permission in admin_role.permissions}
+        assert "config:write" in permission_codes
+        assert db.query(Permission).filter_by(code="config:write").one()
