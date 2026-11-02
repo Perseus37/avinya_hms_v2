@@ -7,6 +7,7 @@ and clinical cockpit summaries to eliminate frontend waterfall requests.
 
 from datetime import date, datetime, timezone
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -80,7 +81,7 @@ def get_tenant_branding(
 
     def safe_color(key: str, fallback: str) -> str:
         value = raw.get(key)
-        if isinstance(value, str) and __import__("re").fullmatch(r"#[0-9a-fA-F]{6}", value.strip()):
+        if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value.strip()):
             return value.strip()
         return fallback
 
