@@ -215,6 +215,9 @@ services:
       - "no-new-privileges:true"
     cap_drop:
       - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     env_file: .env.production
     environment:
       TZ: "${APP_TIMEZONE:?APP_TIMEZONE is required}"
@@ -275,6 +278,9 @@ services:
       - "no-new-privileges:true"
     cap_drop:
       - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     env_file: .env.production
     environment:
       TZ: "${APP_TIMEZONE:?APP_TIMEZONE is required}"
@@ -311,6 +317,9 @@ services:
       - "no-new-privileges:true"
     cap_drop:
       - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     env_file: .env.production
     environment:
       TZ: "${APP_TIMEZONE:?APP_TIMEZONE is required}"
@@ -348,6 +357,9 @@ services:
       - "no-new-privileges:true"
     cap_drop:
       - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     env_file: .env.production
     environment:
       TZ: "${APP_TIMEZONE:?APP_TIMEZONE is required}"
