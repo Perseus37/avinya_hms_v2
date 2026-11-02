@@ -4,6 +4,7 @@ import pytest
 
 from backend.core.storage import (
     UploadContentError,
+    UploadEmptyError,
     UploadTooLargeError,
     stage_and_publish_upload,
 )
@@ -98,3 +99,18 @@ def test_staged_upload_does_not_remove_an_existing_temp_file_on_collision(tmp_pa
 
     assert existing.read_bytes() == b"owned by another operation"
     assert not (tmp_path / "document.pdf").exists()
+
+
+def test_staged_upload_reports_empty_content_separately(tmp_path):
+    with pytest.raises(UploadEmptyError):
+        stage_and_publish_upload(
+            tmp_path,
+            "document.pdf",
+            ".document.part",
+            BytesIO(b""),
+            max_bytes=1024,
+            signature=b"%PDF-",
+            scanner=lambda _: pytest.fail("scanner must not run"),
+        )
+
+    assert list(tmp_path.iterdir()) == []
