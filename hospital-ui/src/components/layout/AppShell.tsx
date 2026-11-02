@@ -8,6 +8,7 @@ import { CommandPalette } from "../clinical/CommandPalette";
 import { MyWorkDrawer } from "./MyWorkDrawer";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
 
+const HospitalAdminDashboard = lazy(() => import("../../workspaces/overview/HospitalAdminDashboard").then((m) => ({ default: m.HospitalAdminDashboard })));
 const PatientRegistrationWorkspace = lazy(() => import("../../workspaces/registration/PatientRegistrationWorkspace").then((m) => ({ default: m.PatientRegistrationWorkspace })));
 const PatientRecordWorkspace = lazy(() => import("../../workspaces/patient/PatientRecordWorkspace").then((m) => ({ default: m.PatientRecordWorkspace })));
 const OPDQueueWorkspace = lazy(() => import("../../workspaces/opd/OPDQueueWorkspace").then((m) => ({ default: m.OPDQueueWorkspace })));
@@ -25,10 +26,10 @@ const BiomedicalWorkspace = lazy(() => import("../../workspaces/biomedical/Biome
 const AdminWorkspace = lazy(() => import("../../workspaces/admin/AdminWorkspace").then((m) => ({ default: m.AdminWorkspace })));
 
 const WorkspaceSkeleton: React.FC<{ activeWorkspace: WorkspaceId }> = ({ activeWorkspace }) => (
-  <div className="flex-1 flex flex-col items-center justify-center bg-slate-950 text-slate-400">
-    <div className="w-7 h-7 border-2 border-blue-400 border-t-transparent rounded-full animate-spin mb-3" />
-    <span className="text-sm font-medium text-slate-200">Loading workspace</span>
-    <span className="text-[11px] text-slate-500 mt-1">{activeWorkspace.replaceAll("-", " ")}</span>
+  <div className="flex flex-1 flex-col items-center justify-center bg-[#f5f7fa] text-slate-500">
+    <div className="mb-3 h-7 w-7 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700" />
+    <span className="text-sm font-medium text-slate-700">Loading workspace</span>
+    <span className="mt-1 text-[11px] text-slate-400">{activeWorkspace.replaceAll("-", " ")}</span>
   </div>
 );
 
@@ -55,6 +56,7 @@ export const AppShell: React.FC = () => {
 
   const renderActiveWorkspace = () => {
     switch (activeWorkspace) {
+      case "overview": return <HospitalAdminDashboard />;
       case "registration": return <PatientRegistrationWorkspace />;
       case "patient-record": return <PatientRecordWorkspace />;
       case "opd-queue": return <OPDQueueWorkspace />;
@@ -70,17 +72,17 @@ export const AppShell: React.FC = () => {
       case "infection-control": return <InfectionControlWorkspace />;
       case "biomedical": return <BiomedicalWorkspace />;
       case "admin": return <AdminWorkspace onSelectWorkspace={setActiveWorkspace} />;
-      default: return <PatientRegistrationWorkspace />;
+      default: return <HospitalAdminDashboard />;
     }
   };
 
   return (
-    <div className="av-shell h-screen w-screen flex flex-col overflow-hidden">
+    <div className="av-shell flex h-screen w-screen flex-col overflow-hidden">
       <TopNavbar onOpenCommandPalette={() => setIsCommandPaletteOpen(true)} onOpenTasks={() => setIsTasksOpen(true)} />
       <PatientSafetyBanner onOpenPatientRecord={() => setActiveWorkspace("patient-record")} />
-      <div className="flex-1 flex min-h-0 overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         <Sidebar activeWorkspace={activeWorkspace} onSelectWorkspace={setActiveWorkspace} />
-        <main className="flex-1 min-w-0 flex overflow-hidden bg-slate-950">
+        <main className="flex min-w-0 flex-1 overflow-hidden bg-[#f5f7fa]">
           <ErrorBoundary moduleName={`Workspace: ${activeWorkspace}`}>
             <Suspense fallback={<WorkspaceSkeleton activeWorkspace={activeWorkspace} />}>
               {renderActiveWorkspace()}
