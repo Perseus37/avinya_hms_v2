@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from backend.core.database import get_db, resolve_tenant_context
+from backend.core.database import get_control_db, get_db, resolve_tenant_context
 from backend.core.dependencies import RequirePermission, get_current_user, get_redis
 from backend.domains.clinical.models import (
     ClinicalEarlyWarningScore,
@@ -34,8 +34,79 @@ from backend.domains.patients.models import Patient, PatientAllergy
 from backend.domains.billing.models import PaymentReceipt, PaymentMethodEnum
 from backend.domains.pharmacy.models import Prescription
 from backend.domains.diagnostics.models import DiagnosticOrder
+from backend.control_plane.models import TenantRegistry
 
 router = APIRouter(prefix="/api/ui", tags=["Clinical & Operational UI Aggregates"])
+
+
+class TenantBrandingResponse(BaseModel):
+    tenant_slug: str
+    hospital_name: str
+    display_name: str
+    logo_url: Optional[str] = None
+    favicon_url: Optional[str] = None
+    primary_color: str = "#2563EB"
+    secondary_color: str = "#0F172A"
+    accent_color: str = "#0D9488"
+    tagline: Optional[str] = None
+
+
+@router.get("/tenant-branding", response_model=TenantBrandingResponse)
+def get_tenant_branding(
+    request: Request,
+    control_db: Session = Depends(get_control_db),
+):
+    """Public, read-only branding bootstrap. Returns an allowlisted view of the resolved tenant's configuration."""
+    tenant_context = resolve_tenant_context(request)
+    tenant = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.subdomain_slug == tenant_context.subdomain_slug,
+            TenantRegistry.is_active == True,
+        )
+    ).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant configuration not found.")
+
+    try:
+        raw = json.loads(tenant.ui_branding_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def safe_text(key: str, fallback: Optional[str] = None) -> Optional[str]:
+        value = raw.get(key)
+        return value.strip()[:160] if isinstance(value, str) and value.strip() else fallback
+
+    def safe_color(key: str, fallback: str) -> str:
+        value = raw.get(key)
+        if isinstance(value, str) and __import__("re").fullmatch(r"#[0-9a-fA-F]{6}", value.strip()):
+            return value.strip()
+        return fallback
+
+    def safe_asset_url(key: str) -> Optional[str]:
+        value = raw.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        candidate = value.strip()
+        if candidate.startswith("/") and not candidate.startswith("//"):
+            return candidate
+        if candidate.startswith("https://"):
+            return candidate
+        return None
+
+    hospital_name = tenant_context.hospital_name
+    return TenantBrandingResponse(
+        tenant_slug=tenant_context.subdomain_slug,
+        hospital_name=hospital_name,
+        display_name=safe_text("display_name", hospital_name) or hospital_name,
+        logo_url=safe_asset_url("logo_url"),
+        favicon_url=safe_asset_url("favicon_url"),
+        primary_color=safe_color("primary_color", "#2563EB"),
+        secondary_color=safe_color("secondary_color", "#0F172A"),
+        accent_color=safe_color("accent_color", "#0D9488"),
+        tagline=safe_text("tagline"),
+    )
 
 
 # ---------------------------------------------------------------------------
