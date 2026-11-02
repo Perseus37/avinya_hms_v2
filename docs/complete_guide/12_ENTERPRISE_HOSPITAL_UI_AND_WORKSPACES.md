@@ -292,5 +292,6 @@ The frontend workspaces communicate directly with backend domain services in [`b
 | **Biomedical Engineering** | Inadvertent patient connection to broken/uncalibrated life support | **Physical Lockout Tagout (LOTO) Danger Placards:** Instant Form BME-LOTO-01 hazard notices tagged to defective assets prohibiting patient use under NABH FMS.6/OSHA. |
 | **Cashier Billing Counter** | Long payment settlement queues & unrecorded charity concessions | **EWS Concession Engine & Quick-Tender Presets:** Multi-tier waiver approvals (Senior Citizen, Staff, EWS 100% Free Bed) codified on GST receipts, plus 1-click Cash/UPI/Card presets. |
 | **Patient Record (EMR)** | Unverified data disclosure & statutory privacy non-compliance | **DPDP Act 2023 Consent Disclosure Certificates:** Form DPDP-CERT-01 specifying purpose-specific consent statuses, cryptographic SHA-256 hash, and DPO rights contact. |
+| **OPD Queue & QMS** | Sudden doctor absence for emergency surgery stalls lobby queues | **Bulk Doctor Queue Transfer & Emergency OT Advisory:** 1-click bulk rerouting of waiting patients to available peer consultants, live status sync, and 4K display alerts. |
 
 

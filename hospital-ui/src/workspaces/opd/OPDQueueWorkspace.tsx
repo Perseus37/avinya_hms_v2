@@ -69,6 +69,9 @@ export const OPDQueueWorkspace: React.FC = () => {
   // Reassignment Modal state
   const [reassignItem, setReassignItem] = useState<OPDQueueItem | null>(null);
   const [targetDoctorId, setTargetDoctorId] = useState<string>("");
+  const [bulkTransferSourceDocId, setBulkTransferSourceDocId] = useState<string | null>(null);
+  const [bulkTransferTargetDocId, setBulkTransferTargetDocId] = useState<string>("");
+  const [bulkTransferToast, setBulkTransferToast] = useState<string | null>(null);
 
   // Realistic sample OPD Queue
   const [queueItems, setQueueItems] = useState<OPDQueueItem[]>([
@@ -366,6 +369,34 @@ export const OPDQueueWorkspace: React.FC = () => {
     setTargetDoctorId("");
   };
 
+  const handleExecuteBulkTransfer = () => {
+    if (!bulkTransferSourceDocId || !bulkTransferTargetDocId) return;
+    const targetDoc = doctors.find((d) => d.id === bulkTransferTargetDocId);
+    if (!targetDoc) return;
+
+    let count = 0;
+    setQueueItems((prev) =>
+      prev.map((q) => {
+        if (q.doctorId === bulkTransferSourceDocId && (q.status === "WAITING" || q.status === "TRIAGED")) {
+          count++;
+          return {
+            ...q,
+            doctorId: targetDoc.id,
+            doctorName: targetDoc.name,
+            department: targetDoc.department,
+            chamberNumber: targetDoc.roomNumber,
+          };
+        }
+        return q;
+      })
+    );
+
+    setBulkTransferToast(`Successfully transferred ${count} waiting patients to ${targetDoc.name} (${targetDoc.roomNumber})`);
+    setTimeout(() => setBulkTransferToast(null), 4000);
+    setBulkTransferSourceDocId(null);
+    setBulkTransferTargetDocId("");
+  };
+
   const handleReprintToken = (item: OPDQueueItem) => {
     const template = printTemplates.thermalToken;
     const thermalPrinter = getPrinterForCategory("THERMAL_TOKEN");
@@ -521,31 +552,64 @@ export const OPDQueueWorkspace: React.FC = () => {
                     <span className="text-sky-400 font-mono font-bold">({waitingForDoc} wait)</span>
                   </div>
                 </div>
-                <Badge
-                  variant={
-                    status === "IN_CHAMBER"
-                      ? "success"
+                <div className="flex items-center gap-1.5">
+                  <Badge
+                    variant={
+                      status === "IN_CHAMBER"
+                        ? "success"
+                        : status === "ON_ROUNDS"
+                        ? "warning"
+                        : status === "IN_OT"
+                        ? "purple"
+                        : "neutral"
+                    }
+                    className="text-[9px] px-1 py-0 uppercase tracking-tighter"
+                  >
+                    {status === "IN_CHAMBER"
+                      ? "Active"
                       : status === "ON_ROUNDS"
-                      ? "warning"
+                      ? "Rounds"
                       : status === "IN_OT"
-                      ? "purple"
-                      : "neutral"
-                  }
-                  className="text-[9px] px-1 py-0 uppercase tracking-tighter"
-                >
-                  {status === "IN_CHAMBER"
-                    ? "Active"
-                    : status === "ON_ROUNDS"
-                    ? "Rounds"
-                    : status === "IN_OT"
-                    ? "In OT"
-                    : "Paused"}
-                </Badge>
+                      ? "In OT"
+                      : "Paused"}
+                  </Badge>
+                  {waitingForDoc > 0 && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setBulkTransferSourceDocId(doc.id);
+                        setBulkTransferTargetDocId(doctors.find((d) => d.id !== doc.id)?.id || "");
+                      }}
+                      className="p-1 rounded bg-slate-800 hover:bg-sky-900 text-sky-400 border border-slate-700 hover:border-sky-600 transition-colors"
+                      title={`Bulk transfer ${waitingForDoc} waiting patients to another chamber`}
+                    >
+                      <RefreshCw size={10} />
+                    </span>
+                  )}
+                </div>
               </button>
             );
           })}
         </div>
       </div>
+
+      {/* Bulk Transfer Toast Notification */}
+      {bulkTransferToast && (
+        <div className="mx-4 mt-3 p-3 rounded-lg bg-sky-950/80 border border-sky-500/80 text-sky-200 text-xs font-mono flex items-center justify-between animate-fadeIn">
+          <div className="flex items-center gap-2">
+            <RefreshCw size={14} className="text-sky-400" />
+            <span>{bulkTransferToast}</span>
+          </div>
+          <button
+            onClick={() => setBulkTransferToast(null)}
+            className="text-slate-400 hover:text-white"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* 3. OPD Executive Metrics KPI Strip */}
       <div className="p-4 border-b border-slate-800/80 bg-slate-900/40 grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -889,6 +953,82 @@ export const OPDQueueWorkspace: React.FC = () => {
                 className="text-xs bg-sky-600 hover:bg-sky-500 text-slate-950 font-bold"
               >
                 Confirm Transfer
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Doctor Queue Transfer Modal */}
+      {bulkTransferSourceDocId && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 max-w-md w-full shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-4">
+              <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
+                <RefreshCw size={15} className="text-sky-400" /> Bulk OPD Queue Transfer
+              </h3>
+              <button
+                onClick={() => setBulkTransferSourceDocId(null)}
+                className="text-slate-400 hover:text-white"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="text-xs text-slate-300 space-y-2 mb-4 bg-slate-950 p-3 rounded border border-slate-800 font-mono">
+              <div>
+                Source Consultant:{" "}
+                <span className="font-bold text-white">
+                  {doctors.find((d) => d.id === bulkTransferSourceDocId)?.name}
+                </span>{" "}
+                ({doctors.find((d) => d.id === bulkTransferSourceDocId)?.roomNumber})
+              </div>
+              <div className="text-amber-300">
+                Active Waiting Patients:{" "}
+                <strong>
+                  {
+                    queueItems.filter(
+                      (q) =>
+                        q.doctorId === bulkTransferSourceDocId &&
+                        (q.status === "WAITING" || q.status === "TRIAGED")
+                    ).length
+                  }
+                </strong>
+              </div>
+            </div>
+
+            <div className="space-y-1 mb-4">
+              <label className="text-xs font-semibold text-slate-300">
+                Select Destination On-Duty Doctor:
+              </label>
+              <select
+                value={bulkTransferTargetDocId}
+                onChange={(e) => setBulkTransferTargetDocId(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded text-xs text-white focus:outline-none focus:border-sky-500 font-mono"
+              >
+                {doctors
+                  .filter((d) => d.id !== bulkTransferSourceDocId)
+                  .map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name} ({d.department} - {d.roomNumber})
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+              <Button
+                variant="outline"
+                onClick={() => setBulkTransferSourceDocId(null)}
+                className="text-xs border-slate-700 text-slate-300"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleExecuteBulkTransfer}
+                className="text-xs bg-sky-600 hover:bg-sky-500 text-slate-950 font-bold"
+              >
+                Transfer All Waiting Patients
               </Button>
             </div>
           </div>

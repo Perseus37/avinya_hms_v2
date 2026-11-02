@@ -497,6 +497,9 @@ To eliminate hospital-floor pain points and compliance risks, Avinya HMS systema
 13. **Longitudinal Patient Record & Privacy Governance ([`PatientRecordWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/patient/PatientRecordWorkspace.tsx)):**
     - **DPDP Act 2023 Statutory Consent & Privacy Disclosure Certificate:** 1-click issuance of Form DPDP-CERT-01 complying with Section 6 of India's Digital Personal Data Protection Act, certifying purpose-specific consent statuses (Clinical Care, TPA Insurance, Research), cryptographic SHA-256 consent hash, and DPO grievance contacts.
 
+14. **Outpatient Queue Management & Chamber Coordination ([`OPDQueueWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/opd/OPDQueueWorkspace.tsx)):**
+    - **Bulk Doctor Queue Transfer & Emergency OT Roster Protocol:** Solves OPD floor bottlenecks when consultants are called to emergency surgery (`IN_OT`) or ward rounds, enabling 1-click bulk reassignment of all waiting tokens to on-duty colleagues with automated chamber synchronization and 4K TV lounge advisory.
+
 ---
 
 ## 5. Comprehensive AI Audit Scorecard & Evaluation
