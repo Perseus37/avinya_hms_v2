@@ -218,7 +218,7 @@ def test_brand_asset_upload_fails_closed_when_malware_scanner_is_unavailable(
         raise HTTPException(status_code=503, detail="Scanner unavailable.")
 
     monkeypatch.setattr("backend.domains.ui.router.scan_file_with_clamav", scanner_unavailable)
-    image_bytes = b"\\x89PNG\\r\\n\\x1a\\n" + b"test-image-data"
+    image_bytes = b"\x89PNG\r\n\x1a\n" + b"test-image-data"
     response = client.post(
         "/api/ui/tenant-branding/assets?kind=logo",
         headers=superuser_headers,
