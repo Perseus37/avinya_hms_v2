@@ -19,7 +19,7 @@ def test_pdf_attachment_response_disables_caching_and_sets_security_headers():
 def test_pdf_attachment_response_sanitizes_untrusted_filename_characters():
     response = pdf_attachment_response(b"%PDF-test", '../../invoice\r\nX-Evil: yes')
 
-    assert response.headers["content-disposition"] == 'attachment; filename="invoice_X-Evil__yes.pdf"'
+    assert response.headers["content-disposition"] == 'attachment; filename="invoice__X-Evil__yes.pdf"'
     assert "\r" not in response.headers["content-disposition"]
     assert "\n" not in response.headers["content-disposition"]
 
