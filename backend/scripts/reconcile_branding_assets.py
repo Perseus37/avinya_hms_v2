@@ -33,6 +33,7 @@ _TENANT_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 _ASSET_ID = re.compile(r"^[0-9a-f]{32}\.(?:png|jpg|jpeg|webp)$")
 _TEMP_ID = re.compile(r"^\.[0-9a-f]{32}\.(?:png|jpg|jpeg|webp)\.part$")
 _BRAND_ASSET_URL_PREFIX = "/api/ui/tenant-branding/assets/"
+_MIN_GRACE_HOURS = 24
 
 
 def _referenced_asset_ids(branding_json: str | None) -> set[str] | None:
@@ -67,8 +68,8 @@ def reconcile_branding_assets(
     tenant_filter: str | None = None,
 ) -> dict:
     """Scan known tenant directories; execute=False reports without deleting."""
-    if grace_hours < 0:
-        raise ValueError("grace_hours must be zero or greater")
+    if grace_hours < _MIN_GRACE_HOURS:
+        raise ValueError("grace_hours must be at least 24 to protect in-flight uploads")
     root = Path(storage_root)
     if root.is_symlink():
         raise ValueError("Attachment storage root must not be a symlink")
@@ -172,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         "--grace-hours",
         type=float,
         default=24,
-        help="Minimum file age before cleanup (default: 24 hours).",
+        help="Minimum file age before cleanup (minimum and default: 24 hours).",
     )
     parser.add_argument(
         "--execute",
@@ -180,8 +181,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Actually unlink eligible files. Without this flag the command is read-only.",
     )
     args = parser.parse_args(argv)
-    if args.grace_hours < 0:
-        parser.error("--grace-hours must be zero or greater")
+    if args.grace_hours < _MIN_GRACE_HOURS:
+        parser.error("--grace-hours must be at least 24 to protect in-flight uploads")
 
     try:
         with ControlSessionLocal() as control_db:
