@@ -18,6 +18,7 @@ import {
   HospitalPrinterDevice,
 } from "../../core/context/HospitalConfigContext";
 import { printDocument } from "../../utils/printDocument";
+import { useTenantBranding } from "../../core/context/TenantBrandingContext";
 import {
   Database,
   Download,
@@ -64,6 +65,7 @@ interface AdminWorkspaceProps {
 }
 
 export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspace }) => {
+  const { branding, updateBranding } = useTenantBranding();
   const [activeTab, setActiveTab] = useState<"overview" | "metrics" | "registers" | "customization">("overview");
   const [customSubTab, setCustomSubTab] = useState<"facility" | "doctors" | "branding" | "policies" | "printTemplates" | "printers">("facility");
   const [activeDocTemplate, setActiveDocTemplate] = useState<"thermal" | "wristband" | "bht" | "discharge">("thermal");
@@ -221,7 +223,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
           Margins: T:${printer.marginTopMm}mm B:${printer.marginBottomMm}mm L:${printer.marginLeftMm}mm R:${printer.marginRightMm}mm
         </div>
         <div style="font-size: 8px; color: #777; margin-top: 2px;">
-          Timestamp: ${new Date().toISOString()} | Avinya Health Hardware Engine
+          Timestamp: ${new Date().toISOString()} | Hardware calibration service
         </div>
       </div>
     `;
@@ -613,7 +615,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
         <!-- Footer Verification -->
         <div style="margin-top: 10px; border-top: 1px solid #999; padding-top: 4px; display: flex; justify-content: space-between; font-size: 8px; color: #555;">
           <div>Print Category: <b>CLINICAL_A4</b> | Configured Device: <b>${targetPrinter ? targetPrinter.name : "System Default Laser/A4"}</b></div>
-          <div>Generated At: ${timestamp} | Avinya Health BCP Framework</div>
+          <div>Generated At: ${timestamp} | Hospital business continuity framework</div>
         </div>
       </div>
     `;
@@ -934,6 +936,53 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
   const [editHospPhone, setEditHospPhone] = useState(hospitalProfile.phone);
   const [editHospAccreditation, setEditHospAccreditation] = useState(hospitalProfile.accreditation);
   const [profileSavedMsg, setProfileSavedMsg] = useState("");
+  const [brandDisplayName, setBrandDisplayName] = useState("");
+  const [brandTagline, setBrandTagline] = useState("");
+  const [brandLogoUrl, setBrandLogoUrl] = useState("");
+  const [brandFaviconUrl, setBrandFaviconUrl] = useState("");
+  const [brandPrimaryColor, setBrandPrimaryColor] = useState("#2563EB");
+  const [brandSecondaryColor, setBrandSecondaryColor] = useState("#0F172A");
+  const [brandAccentColor, setBrandAccentColor] = useState("#0D9488");
+  const [brandSaving, setBrandSaving] = useState(false);
+  const [brandSavedMsg, setBrandSavedMsg] = useState("");
+  const [brandError, setBrandError] = useState("");
+
+  useEffect(() => {
+    if (!branding) return;
+    setBrandDisplayName(branding.display_name || branding.hospital_name);
+    setBrandTagline(branding.tagline || "");
+    setBrandLogoUrl(branding.logo_url || "");
+    setBrandFaviconUrl(branding.favicon_url || "");
+    setBrandPrimaryColor(branding.primary_color);
+    setBrandSecondaryColor(branding.secondary_color);
+    setBrandAccentColor(branding.accent_color);
+  }, [branding]);
+
+  const handleSaveTenantBranding = async () => {
+    if (brandDisplayName.trim().length < 2) {
+      setBrandError("Enter a display name with at least two characters.");
+      return;
+    }
+    setBrandSaving(true);
+    setBrandError("");
+    setBrandSavedMsg("");
+    try {
+      await updateBranding({
+        display_name: brandDisplayName.trim(),
+        tagline: brandTagline.trim() || null,
+        logo_url: brandLogoUrl.trim() || null,
+        favicon_url: brandFaviconUrl.trim() || null,
+        primary_color: brandPrimaryColor,
+        secondary_color: brandSecondaryColor,
+        accent_color: brandAccentColor,
+      });
+      setBrandSavedMsg("Tenant branding saved and applied.");
+    } catch (error) {
+      setBrandError(error instanceof Error ? error.message : "Branding could not be saved.");
+    } finally {
+      setBrandSaving(false);
+    }
+  };
 
   // Metrics Catalog Filters
   const [metricSearch, setMetricSearch] = useState("");
@@ -2389,6 +2438,50 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                     <CheckCircle2 size={12} /> {profileSavedMsg}
                   </span>
                 )}
+              </div>
+
+              <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-4 space-y-4">
+                <div>
+                  <h4 className="text-sm font-semibold text-slate-100">Application branding</h4>
+                  <p className="mt-1 text-xs text-slate-400">These settings are stored centrally for this tenant and shared with its authorized users.</p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Application display name</label>
+                    <input value={brandDisplayName} onChange={(e) => setBrandDisplayName(e.target.value)} maxLength={150} className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-100" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Tagline (optional)</label>
+                    <input value={brandTagline} onChange={(e) => setBrandTagline(e.target.value)} maxLength={160} className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-100" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Logo URL (HTTPS or same-origin path)</label>
+                    <input value={brandLogoUrl} onChange={(e) => setBrandLogoUrl(e.target.value)} placeholder="/assets/tenant-logo.svg" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-100" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1">Favicon URL (optional)</label>
+                    <input value={brandFaviconUrl} onChange={(e) => setBrandFaviconUrl(e.target.value)} placeholder="/assets/favicon.ico" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-100" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {[
+                    { label: "Primary", value: brandPrimaryColor, setter: setBrandPrimaryColor },
+                    { label: "Secondary", value: brandSecondaryColor, setter: setBrandSecondaryColor },
+                    { label: "Accent", value: brandAccentColor, setter: setBrandAccentColor },
+                  ].map((color) => (
+                    <label key={color.label} className="flex items-center gap-3 rounded-lg border border-slate-700 p-3 text-xs text-slate-300">
+                      <input type="color" value={color.value} onChange={(e) => color.setter(e.target.value)} className="h-8 w-10 cursor-pointer bg-transparent" />
+                      <span>{color.label}<span className="block text-[10px] text-slate-500 font-mono">{color.value}</span></span>
+                    </label>
+                  ))}
+                </div>
+                {brandError && <p role="alert" className="text-xs text-rose-400">{brandError}</p>}
+                {brandSavedMsg && <p role="status" className="text-xs text-emerald-400">{brandSavedMsg}</p>}
+                <div className="flex justify-end">
+                  <Button size="sm" variant="primary" onClick={handleSaveTenantBranding} disabled={brandSaving}>
+                    {brandSaving ? "Saving…" : "Save application branding"}
+                  </Button>
+                </div>
               </div>
 
               <div className="space-y-3">
