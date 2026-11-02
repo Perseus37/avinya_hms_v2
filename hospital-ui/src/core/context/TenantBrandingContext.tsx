@@ -6,6 +6,7 @@ interface TenantBrandingContextValue {
   isLoading: boolean;
   error: string | null;
   updateBranding: (branding: Omit<TenantBranding, "tenant_slug" | "hospital_name">) => Promise<void>;
+  uploadAsset: (file: File, kind: "logo" | "favicon") => Promise<void>;
 }
 
 const TenantBrandingContext = createContext<TenantBrandingContextValue>({
@@ -13,6 +14,7 @@ const TenantBrandingContext = createContext<TenantBrandingContextValue>({
   isLoading: true,
   error: null,
   updateBranding: async () => {},
+  uploadAsset: async () => {},
 });
 
 export const TenantBrandingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -44,6 +46,12 @@ export const TenantBrandingProvider: React.FC<{ children: React.ReactNode }> = (
     applyBranding(updated);
   };
 
+  const uploadAsset = async (file: File, kind: "logo" | "favicon") => {
+    await uiApi.uploadTenantBrandAsset(file, kind);
+    const updated = await uiApi.getTenantBranding();
+    applyBranding(updated);
+  };
+
   useEffect(() => {
     let active = true;
     uiApi.getTenantBranding()
@@ -62,7 +70,7 @@ export const TenantBrandingProvider: React.FC<{ children: React.ReactNode }> = (
   }, []);
 
   return (
-    <TenantBrandingContext.Provider value={{ branding, isLoading, error, updateBranding }}>
+    <TenantBrandingContext.Provider value={{ branding, isLoading, error, updateBranding, uploadAsset }}>
       {children}
     </TenantBrandingContext.Provider>
   );
