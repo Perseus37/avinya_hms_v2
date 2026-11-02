@@ -416,3 +416,40 @@ def test_invoice_download_rejects_symlinked_document(
         )
 
     assert rejected.value.status_code == 404
+
+
+def test_shared_tenant_storage_rejects_invalid_components(tmp_path):
+    from backend.core.storage import StoragePathError, tenant_storage_directory
+
+    with pytest.raises(StoragePathError):
+        tenant_storage_directory(tmp_path, "../outside", "procurement-invoices", create=True)
+    with pytest.raises(StoragePathError):
+        tenant_storage_directory(tmp_path, "default", "../outside", create=True)
+
+
+def test_shared_tenant_storage_rejects_symlinked_namespace(tmp_path):
+    from backend.core.storage import StoragePathError, tenant_storage_directory
+
+    tenant_dir = tmp_path / "default"
+    tenant_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tenant_dir / "procurement-invoices").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(StoragePathError):
+        tenant_storage_directory(tmp_path, "default", "procurement-invoices", create=True)
+
+
+def test_shared_tenant_storage_file_resolution_rejects_traversal_and_symlinks(tmp_path):
+    from backend.core.storage import StoragePathError, resolve_tenant_storage_file
+
+    tenant_dir = tmp_path / "default"
+    tenant_dir.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.7")
+    (tenant_dir / "linked.pdf").symlink_to(outside)
+
+    with pytest.raises(StoragePathError):
+        resolve_tenant_storage_file(tenant_dir, "../outside.pdf")
+    with pytest.raises(StoragePathError):
+        resolve_tenant_storage_file(tenant_dir, "linked.pdf")
