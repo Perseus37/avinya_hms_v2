@@ -360,7 +360,12 @@ def upload_tenant_brand_asset(
         ))
         control_db.commit()
     except Exception:
-        destination.unlink(missing_ok=True)
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            # Preserve the DB rollback even if cleanup cannot reach the mount;
+            # the resulting unreferenced file can be removed by storage maintenance.
+            logger.warning("Unable to remove uncommitted tenant brand asset: %s", destination, exc_info=True)
         control_db.rollback()
         raise
 
