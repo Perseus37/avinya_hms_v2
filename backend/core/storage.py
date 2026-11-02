@@ -81,7 +81,11 @@ class UploadTooLargeError(ValueError):
 
 
 class UploadContentError(ValueError):
-    """A staged upload was empty or did not match its declared content type."""
+    """A staged upload did not match its declared content type."""
+
+
+class UploadEmptyError(UploadContentError):
+    """A staged upload contained no bytes."""
 
 
 def stage_and_publish_upload(
@@ -137,8 +141,10 @@ def stage_and_publish_upload(
                     header.extend(chunk[: len(signature) - len(header)])
                 output.write(chunk)
 
-        if total_bytes == 0 or not header.startswith(signature):
-            raise UploadContentError("Upload is empty or does not match its file type.")
+        if total_bytes == 0:
+            raise UploadEmptyError("Upload cannot be empty.")
+        if not header.startswith(signature):
+            raise UploadContentError("Upload does not match its file type.")
         if validate_staged is not None:
             validate_staged(temporary)
 
