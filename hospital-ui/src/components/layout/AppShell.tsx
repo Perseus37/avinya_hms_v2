@@ -37,7 +37,7 @@ export const AppShell: React.FC = () => {
     }
   }, [roleDefinition, activeWorkspace]);
 
-  // Global Keyboard Listener for Cmd+K / Ctrl+K and Alt+1..9
+  // Global Keyboard Listener for Cmd+K / Ctrl+K and Alt shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -45,33 +45,39 @@ export const AppShell: React.FC = () => {
         setIsCommandPaletteOpen((prev) => !prev);
       }
 
-      // Fast workspace switching via Alt+1..9
+      // Fast workspace switching via Alt + Number / Letter
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
-        const workspaceOrder: WorkspaceId[] = [
-          "registration",
-          "patient-record",
-          "opd-queue",
-          "adt",
-          "doctor",
-          "nursing",
-          "triage",
-          "surgery",
-          "blood-bank",
-          "pharmacy",
-          "diagnostics",
-          "billing",
-          "admin",
-        ];
-        const num = parseInt(e.key, 10);
-        if (num >= 1 && num <= workspaceOrder.length) {
-          e.preventDefault();
-          setActiveWorkspace(workspaceOrder[num - 1]);
+        const keyLower = e.key.toLowerCase();
+        const shortcutMap: Record<string, WorkspaceId> = {
+          "1": "registration",
+          "2": "adt",
+          "3": "doctor",
+          "4": "nursing",
+          "5": "triage",
+          "6": "pharmacy",
+          "7": "diagnostics",
+          "8": "billing",
+          "9": "admin",
+          "p": "patient-record",
+          "q": "opd-queue",
+          "s": "surgery",
+          "b": "blood-bank",
+          "i": "infection-control",
+          "m": "biomedical",
+        };
+
+        if (shortcutMap[keyLower]) {
+          const target = shortcutMap[keyLower];
+          if (isWorkspaceAllowed(target)) {
+            e.preventDefault();
+            setActiveWorkspace(target);
+          }
         }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [isWorkspaceAllowed]);
 
   const renderActiveWorkspace = () => {
     switch (activeWorkspace) {

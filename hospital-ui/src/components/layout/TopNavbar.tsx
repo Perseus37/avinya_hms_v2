@@ -205,18 +205,24 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({ onOpenCommandPalette, onOp
             <span>High-throughput keyboard shortcuts engineered for rapid clinical and front-desk workflows.</span>
           </div>
 
-          <div className="space-y-2 text-xs font-mono">
+          <div className="space-y-2 text-xs font-mono max-h-[60vh] overflow-y-auto pr-1">
             {[
-              { key: "Cmd + K / Ctrl + K", desc: "Universal Patient MPI Search & Workspace Switcher" },
-              { key: "Alt + 1", desc: "Patient Intake & Demographic Registration Desk" },
-              { key: "Alt + 2", desc: "Inpatient ADT, Bed Matrices & Clinical Discharges" },
-              { key: "Alt + 3", desc: "Doctor Clinical Cockpit, SOAP Notes & CPOE e-Rx" },
-              { key: "Alt + 4", desc: "Ward Nursing Station, Bed Grid & NEWS2 Vitals" },
-              { key: "Alt + 5", desc: "Emergency Triage Board, Trauma MLC & ESI Scores" },
-              { key: "Alt + 6", desc: "Cashier Counter, Shift Reconcile & GST Invoicing" },
-              { key: "Alt + 7", desc: "Central Pharmacy, Barcode Scanning & NDPS Vault" },
-              { key: "Alt + 8", desc: "Laboratory Diagnostics, Accessioning & Panic Delta" },
-              { key: "Alt + 9", desc: "Executive Command Center HUD & Statutory Exports" },
+              { key: "Cmd + K / Ctrl + K", desc: "Universal Patient MPI Search & Command Launcher" },
+              { key: "Alt + 1", desc: "Patient Intake & Registration Desk" },
+              { key: "Alt + P", desc: "Longitudinal Patient 360 & DPDP Consent" },
+              { key: "Alt + Q", desc: "OPD Queue Command & 4K Lounge Calling" },
+              { key: "Alt + 2", desc: "Inpatient ADT, Bed Booking & Visitor Pass" },
+              { key: "Alt + 3", desc: "Doctor Cockpit, CPOE & Admission Orders" },
+              { key: "Alt + 4", desc: "Ward Nursing, eMAR BCMA & Fluid Balance" },
+              { key: "Alt + 5", desc: "Emergency Triage, Trauma MLC & MCI Intake" },
+              { key: "Alt + S", desc: "Surgery Suite, WHO Checklist & RSI Safety" },
+              { key: "Alt + B", desc: "Blood Bank, Form 27C & STAT O-Neg Release" },
+              { key: "Alt + 6", desc: "Central Pharmacy, Tall Man & NDPS Vault" },
+              { key: "Alt + 7", desc: "Laboratory Diagnostics & Sample Rejections" },
+              { key: "Alt + I", desc: "Infection Control & MDR Isolation Placards" },
+              { key: "Alt + M", desc: "Biomedical Engineering & LOTO Safety" },
+              { key: "Alt + 8", desc: "Cashier Billing, EWS Waivers & GST Invoice" },
+              { key: "Alt + 9", desc: "Executive Cockpit, Downtime BCP & Facility Dossier" },
               { key: "Esc", desc: "Close any open dialog or modal without committing" },
             ].map((item, idx) => (
               <div
