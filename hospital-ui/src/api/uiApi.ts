@@ -26,6 +26,12 @@ export const uiApi = {
   getTenantBranding: async (): Promise<TenantBranding> => {
     return apiClient<TenantBranding>("/api/ui/tenant-branding");
   },
+  updateTenantBranding: async (branding: Omit<TenantBranding, "tenant_slug" | "hospital_name">): Promise<TenantBranding> => {
+    return apiClient<TenantBranding>("/api/ui/tenant-branding", {
+      method: "PUT",
+      body: JSON.stringify(branding),
+    });
+  },
   quickSearchPatients: async (query: string, limit = 10): Promise<PatientQuickSearchItem[]> => {
     if (!query || query.trim().length === 0) return [];
     return apiClient<PatientQuickSearchItem[]>("/api/ui/patients/quick-search", {
