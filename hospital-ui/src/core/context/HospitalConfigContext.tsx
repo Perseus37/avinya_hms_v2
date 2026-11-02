@@ -484,11 +484,21 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
 
   useEffect(() => {
     if (!branding) return;
+    const tenantName = branding.hospital_name || branding.display_name;
     setHospitalProfile((current) => ({
       ...current,
-      name: branding.hospital_name || branding.display_name || current.name,
+      name: tenantName || current.name,
       subdomain: branding.tenant_slug,
     }));
+    if (tenantName) {
+      setPrintTemplates((current) => ({
+        ...current,
+        thermalToken: { ...current.thermalToken, headerTitle: current.thermalToken.headerTitle || tenantName },
+        wristband: { ...current.wristband, hospitalName: current.wristband.hospitalName || tenantName },
+        bedHeadTicket: { ...current.bedHeadTicket, hospitalTitle: current.bedHeadTicket.hospitalTitle || tenantName },
+        dischargeSummary: { ...current.dischargeSummary, hospitalHeader: current.dischargeSummary.hospitalHeader || tenantName },
+      }));
+    }
   }, [branding]);
 
   // Save to localStorage whenever state changes
