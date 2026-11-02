@@ -11,7 +11,10 @@ from fastapi import HTTPException, status
 from backend.core.config import settings
 from backend.core.storage import (
     StoragePathError,
+    UploadContentError,
+    UploadTooLargeError,
     resolve_tenant_storage_file,
+    stage_and_publish_upload,
     tenant_storage_directory,
 )
 
@@ -22,7 +25,6 @@ _ALLOWED_SIGNATURES = {
     ".jpeg": b"\xff\xd8\xff",
 }
 _TENANT_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-_CHUNK_SIZE = 1024 * 1024
 _CLAMD_CHUNK_SIZE = 64 * 1024
 _CLAMD_MAX_RESPONSE_BYTES = 4096
 
@@ -109,45 +111,36 @@ def store_vendor_invoice_document(
 
     tenant_dir = _invoice_storage_directory(tenant_slug, create=True)
     document_id = uuid.uuid4().hex
-    destination = tenant_dir / f"{document_id}{suffix}"
-    temporary = tenant_dir / f".{document_id}.part"
-    total_bytes = 0
-    header = bytearray()
+    destination_name = f"{document_id}{suffix}"
+    temporary_name = f".{document_id}.part"
 
     try:
-        with temporary.open("xb") as output:
-            os.chmod(temporary, 0o600)
-            while chunk := source.read(_CHUNK_SIZE):
-                total_bytes += len(chunk)
-                if total_bytes > settings.MAX_ATTACHMENT_UPLOAD_BYTES:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                        detail="Invoice document exceeds the configured upload limit.",
-                    )
-                if len(header) < len(signature):
-                    header.extend(chunk[: len(signature) - len(header)])
-                output.write(chunk)
+        stage_and_publish_upload(
+            tenant_dir,
+            destination_name,
+            temporary_name,
+            source,
+            max_bytes=settings.MAX_ATTACHMENT_UPLOAD_BYTES,
+            signature=signature,
+            scanner=scan_file_with_clamav,
+        )
+    except UploadTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Invoice document exceeds the configured upload limit.",
+        ) from exc
+    except UploadContentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Invoice document content does not match its file type or is empty.",
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Invoice document storage is unavailable.",
+        ) from exc
 
-        if not header.startswith(signature):
-            raise HTTPException(
-                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail="Invoice document content does not match its file type.",
-            )
-        if total_bytes == 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invoice document cannot be empty.",
-            )
-
-        scan_file_with_clamav(temporary)
-        os.replace(temporary, destination)
-    except Exception:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-
+    destination = tenant_dir / destination_name
     key = PurePosixPath(tenant_slug, "procurement-invoices", destination.name).as_posix()
     return key, destination
 def resolve_vendor_invoice_document(tenant_slug: str, document_key: str) -> Path:
