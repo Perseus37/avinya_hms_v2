@@ -51,7 +51,12 @@ class OnboardHospitalRequest(BaseModel):
     quota_max_users: int = 200
     blueprint_archetype: str = "TIER_1_QUATERNARY_500_BED"
     federation_sharing_mode: FederationPolicyEnum = FederationPolicyEnum.FULL_MESH
-    brand_primary_color: str = "#06b6d4"
+    brand_primary_color: str = "#2563EB"
+    brand_secondary_color: str = "#0F172A"
+    brand_accent_color: str = "#0D9488"
+    brand_logo_url: Optional[str] = None
+    brand_favicon_url: Optional[str] = None
+    brand_tagline: Optional[str] = None
     seed_icd10: bool = True
     seed_allergies: bool = True
     seed_complaints: bool = True
@@ -88,6 +93,25 @@ class OnboardHospitalRequest(BaseModel):
     @classmethod
     def normalize_branch_code(cls, v: str) -> str:
         return v.strip().upper() if isinstance(v, str) else v
+
+    @field_validator("brand_primary_color", "brand_secondary_color", "brand_accent_color")
+    @classmethod
+    def validate_brand_color(cls, value: str) -> str:
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", value.strip()):
+            raise ValueError("Brand colors must use six-digit hexadecimal notation.")
+        return value.strip().upper()
+
+    @field_validator("brand_logo_url", "brand_favicon_url")
+    @classmethod
+    def validate_brand_asset_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or not value.strip():
+            return None
+        candidate = value.strip()
+        if candidate.startswith("/") and not candidate.startswith("//"):
+            return candidate
+        if candidate.startswith("https://"):
+            return candidate
+        raise ValueError("Brand assets must use HTTPS URLs or same-origin absolute paths.")
 
 def _dispatch_welcome_email(to_email: str, data: dict) -> tuple[bool, Optional[str]]:
     try:
@@ -241,7 +265,16 @@ def provision_hospital(
     subdomain_url = settings.tenant_url(slug)
     contract_meta = {**quote, "provisioned_at": datetime.now(timezone.utc).isoformat()}
     quotas_dict = {"max_beds": effective_max_beds, "max_users": req.quota_max_users}
-    branding_dict = {"primary_color": req.brand_primary_color}
+    branding_dict = {
+        "display_name": req.hospital_name,
+        "primary_color": req.brand_primary_color,
+        "secondary_color": req.brand_secondary_color,
+        "accent_color": req.brand_accent_color,
+        "logo_url": req.brand_logo_url,
+        "favicon_url": req.brand_favicon_url,
+        "tagline": req.brand_tagline,
+    }
+    branding_dict = {key: value for key, value in branding_dict.items() if value is not None}
     provisioning_config = {
         "blueprint_archetype": req.blueprint_archetype,
         "seed_icd10": req.seed_icd10,
