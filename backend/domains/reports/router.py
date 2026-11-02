@@ -527,8 +527,8 @@ def list_report_templates(
     return [_serialize_template(t) for t in templates]
 
 def _build_sample_context(
-    hospital_name: str = "Avinya Hospital",
-    branch_code: str = "HQ-HYD-01",
+    hospital_name: str = "Hospital",
+    branch_code: str = "MAIN",
 ) -> Dict[str, Any]:
     return {
         "tenant": {
