@@ -156,7 +156,7 @@ interface ActiveAdmissionItem {
 
 export const InpatientAdmissionWorkspace: React.FC = () => {
   const { patientSummary } = useActivePatient();
-  const { beds: ENTERPRISE_BED_POOL, hospitalProfile, printTemplates } = useHospitalConfig();
+  const { beds: ENTERPRISE_BED_POOL, hospitalProfile, printTemplates, getPrinterForCategory } = useHospitalConfig();
   const [errorMessage, setErrorMessage] = useState("");
   const [isSuccessModalOpen, setIsSuccessModalOpen] = useState(false);
   const [confirmedAdmission, setConfirmedAdmission] = useState<ActiveAdmissionItem | null>(null);
@@ -501,12 +501,14 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
         </div>
       </div>
     `;
-    printDocument(html, { title: `BHT_${confirmedAdmission.mrn}`, docType: "CLINICAL_SUMMARY" });
+    const a4Printer = getPrinterForCategory("CLINICAL_A4");
+    printDocument(html, { title: `BHT_${confirmedAdmission.mrn}`, docType: "CLINICAL_SUMMARY", printerDevice: a4Printer });
   };
 
   const handlePrintAdmissionWristband = () => {
     if (!confirmedAdmission) return;
     const template = printTemplates.wristband;
+    const printerDevice = getPrinterForCategory("WRISTBAND");
     const html = `
       <div class="wristband-slip">
         <div>
@@ -526,12 +528,13 @@ export const InpatientAdmissionWorkspace: React.FC = () => {
       title: `Admission_Wristband_${confirmedAdmission.mrn}`,
       docType: "WRISTBAND",
       wristbandConfig: {
-        widthMm: template.widthMm || 280,
-        heightMm: template.heightMm || 25,
-        printableLengthMm: template.printableLengthMm || 75,
-        orientation: template.orientation === "PORTRAIT" ? "portrait" : "landscape",
+        widthMm: printerDevice?.mediaWidthMm || template.widthMm || 280,
+        heightMm: printerDevice?.mediaHeightMm || template.heightMm || 25,
+        printableLengthMm: printerDevice?.printableHeightMm || printerDevice?.printableWidthMm || template.printableLengthMm || 75,
+        orientation: printerDevice ? (printerDevice.orientation.toLowerCase() as "portrait" | "landscape") : (template.orientation === "PORTRAIT" ? "portrait" : "landscape"),
         printerType: template.printerType,
       },
+      printerDevice,
     });
   };
 

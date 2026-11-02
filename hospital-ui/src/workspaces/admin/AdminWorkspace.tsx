@@ -8,7 +8,16 @@ import { Button } from "../../components/ui/Button";
 import { Modal } from "../../components/ui/Modal";
 import { Badge } from "../../components/ui/Badge";
 import { WorkspaceId } from "../../types";
-import { useHospitalConfig, WristbandPreset, ThermalRollWidth } from "../../core/context/HospitalConfigContext";
+import {
+  useHospitalConfig,
+  WristbandPreset,
+  ThermalRollWidth,
+  PrinterConnectionType,
+  PrinterTargetCategory,
+  PrinterProtocol,
+  HospitalPrinterDevice,
+} from "../../core/context/HospitalConfigContext";
+import { printDocument } from "../../utils/printDocument";
 import {
   Database,
   Download,
@@ -39,6 +48,11 @@ import {
   Building,
   CheckCircle2,
   Printer,
+  Cpu,
+  Wifi,
+  Network,
+  HardDrive,
+  Zap,
 } from "lucide-react";
 
 interface AdminWorkspaceProps {
@@ -47,7 +61,7 @@ interface AdminWorkspaceProps {
 
 export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspace }) => {
   const [activeTab, setActiveTab] = useState<"overview" | "metrics" | "registers" | "customization">("overview");
-  const [customSubTab, setCustomSubTab] = useState<"facility" | "doctors" | "branding" | "policies" | "printTemplates">("facility");
+  const [customSubTab, setCustomSubTab] = useState<"facility" | "doctors" | "branding" | "policies" | "printTemplates" | "printers">("facility");
   const [activeDocTemplate, setActiveDocTemplate] = useState<"thermal" | "wristband" | "bht" | "discharge">("thermal");
 
   const {
@@ -56,6 +70,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
     doctors,
     beds,
     printTemplates,
+    printers,
     updateHospitalProfile,
     updatePolicies,
     updatePrintTemplates,
@@ -63,8 +78,155 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
     deleteBed,
     addDoctor,
     deleteDoctor,
+    addPrinter,
+    deletePrinter,
+    setDefaultPrinter,
     resetToDefaultCatalog,
   } = useHospitalConfig();
+
+  // Hardware Printer Management Local Form State
+  const [prnName, setPrnName] = useState("");
+  const [prnLocation, setPrnLocation] = useState("");
+  const [prnConnType, setPrnConnType] = useState<PrinterConnectionType>("NETWORK_IP");
+  const [prnCategory, setPrnCategory] = useState<PrinterTargetCategory>("WRISTBAND");
+  const [prnProtocol, setPrnProtocol] = useState<PrinterProtocol>("RAW_ZPL");
+  const [prnIp, setPrnIp] = useState("192.168.1.182");
+  const [prnPort, setPrnPort] = useState(9100);
+  const [prnWidthMm, setPrnWidthMm] = useState(25);
+  const [prnHeightMm, setPrnHeightMm] = useState(280);
+  const [prnPrintableWidthMm, setPrnPrintableWidthMm] = useState(22);
+  const [prnPrintableHeightMm, setPrnPrintableHeightMm] = useState(75);
+  const [prnOrientation, setPrnOrientation] = useState<"PORTRAIT" | "LANDSCAPE">("PORTRAIT");
+  const [prnDpi, setPrnDpi] = useState(300);
+  const [prnMarginTop, setPrnMarginTop] = useState(1);
+  const [prnMarginBottom, setPrnMarginBottom] = useState(1);
+  const [prnMarginLeft, setPrnMarginLeft] = useState(2);
+  const [prnMarginRight, setPrnMarginRight] = useState(2);
+  const [prnIsDefault, setPrnIsDefault] = useState(false);
+  const [printerSuccessMsg, setPrinterSuccessMsg] = useState("");
+
+  const applyPrinterHardwarePreset = (presetName: string) => {
+    switch (presetName) {
+      case "ZEBRA_ZD510_HC":
+        setPrnName("Zebra ZD510-HC Dedicated Healthcare Wristband Cartridge Printer");
+        setPrnLocation("Admission Desk Counter 1");
+        setPrnConnType("NETWORK_IP");
+        setPrnCategory("WRISTBAND");
+        setPrnProtocol("RAW_ZPL");
+        setPrnWidthMm(25);
+        setPrnHeightMm(280);
+        setPrnPrintableWidthMm(22);
+        setPrnPrintableHeightMm(75);
+        setPrnOrientation("PORTRAIT");
+        setPrnDpi(300);
+        setPrnPort(9100);
+        break;
+      case "DIRECT_THERMAL_WRISTBAND":
+        setPrnName("Desktop Direct Thermal Wristband Printer (Wide Feed)");
+        setPrnLocation("Emergency Triage Counter");
+        setPrnConnType("NETWORK_IP");
+        setPrnCategory("WRISTBAND");
+        setPrnProtocol("HTML_DRIVER");
+        setPrnWidthMm(280);
+        setPrnHeightMm(25);
+        setPrnPrintableWidthMm(75);
+        setPrnPrintableHeightMm(22);
+        setPrnOrientation("LANDSCAPE");
+        setPrnDpi(203);
+        setPrnPort(9100);
+        break;
+      case "EPSON_80MM_THERMAL":
+        setPrnName("Epson TM-T88 / POS 80mm Reception Token Slip Printer");
+        setPrnLocation("OPD Registration Slip Counter");
+        setPrnConnType("USB");
+        setPrnCategory("THERMAL_TOKEN");
+        setPrnProtocol("RAW_ESCPOS");
+        setPrnWidthMm(80);
+        setPrnHeightMm(0);
+        setPrnPrintableWidthMm(76);
+        setPrnPrintableHeightMm(0);
+        setPrnOrientation("PORTRAIT");
+        setPrnDpi(203);
+        break;
+      case "COMPACT_58MM_THERMAL":
+        setPrnName("Compact POS 58mm Token Slip Printer");
+        setPrnLocation("Pharmacy Cashier Window");
+        setPrnConnType("USB");
+        setPrnCategory("THERMAL_TOKEN");
+        setPrnProtocol("RAW_ESCPOS");
+        setPrnWidthMm(58);
+        setPrnHeightMm(0);
+        setPrnPrintableWidthMm(54);
+        setPrnPrintableHeightMm(0);
+        setPrnOrientation("PORTRAIT");
+        setPrnDpi(203);
+        break;
+      case "WARD_LASER_A4":
+        setPrnName("Ward Central HP LaserJet Managed A4 Printer");
+        setPrnLocation("Inpatient Nursing Station Floor 3");
+        setPrnConnType("NETWORK_IP");
+        setPrnCategory("CLINICAL_A4");
+        setPrnProtocol("HTML_DRIVER");
+        setPrnWidthMm(210);
+        setPrnHeightMm(297);
+        setPrnPrintableWidthMm(200);
+        setPrnPrintableHeightMm(287);
+        setPrnOrientation("PORTRAIT");
+        setPrnDpi(600);
+        setPrnPort(9100);
+        break;
+      case "LAB_TUBE_LABELER":
+        setPrnName("Central Specimen Barcode Tube Labeler");
+        setPrnLocation("Phlebotomy Collection Room");
+        setPrnConnType("USB");
+        setPrnCategory("LAB_LABEL");
+        setPrnProtocol("RAW_ZPL");
+        setPrnWidthMm(50);
+        setPrnHeightMm(25);
+        setPrnPrintableWidthMm(46);
+        setPrnPrintableHeightMm(22);
+        setPrnOrientation("LANDSCAPE");
+        setPrnDpi(203);
+        break;
+    }
+  };
+
+  const handleTestPrint = (printer: HospitalPrinterDevice) => {
+    const isWb = printer.targetCategory === "WRISTBAND";
+    const isThermal = printer.targetCategory === "THERMAL_TOKEN";
+    const isLabel = printer.targetCategory === "LAB_LABEL";
+
+    const htmlContent = `
+      <div style="text-align: center; border: 2px dashed #000; padding: 4px; box-sizing: border-box; height: 100%;">
+        <div style="font-weight: 900; font-size: 11px; text-transform: uppercase;">*** HARDWARE CALIBRATION TEST ***</div>
+        <div style="font-size: 10px; font-weight: bold; margin-top: 2px;">${printer.name}</div>
+        <div style="font-size: 9px; color: #333; margin-top: 1px;">
+          Category: <b>${printer.targetCategory}</b> | Protocol: <b>${printer.protocol}</b>
+        </div>
+        <div style="font-size: 9px; color: #333;">
+          Conn: <b>${printer.connectionType}</b> ${printer.ipAddress ? `(${printer.ipAddress}:${printer.port || 9100})` : "(Direct Hardware Port)"}
+        </div>
+        <div style="font-size: 9px; margin-top: 2px;">
+          Media: <b>${printer.mediaWidthMm}mm × ${printer.mediaHeightMm > 0 ? `${printer.mediaHeightMm}mm` : "Roll"}</b> | ${printer.orientation} | ${printer.dpi} DPI
+        </div>
+        <div style="margin: 4px auto; display: inline-block; padding: 2px 8px; border: 1px solid #000; font-family: monospace; font-weight: bold; font-size: 10px;">
+          *CALIB-${printer.id.toUpperCase()}-OK*
+        </div>
+        <div style="font-size: 8px; color: #555;">
+          Margins: T:${printer.marginTopMm}mm B:${printer.marginBottomMm}mm L:${printer.marginLeftMm}mm R:${printer.marginRightMm}mm
+        </div>
+        <div style="font-size: 8px; color: #777; margin-top: 2px;">
+          Timestamp: ${new Date().toISOString()} | Avinya Health Hardware Engine
+        </div>
+      </div>
+    `;
+
+    printDocument(htmlContent, {
+      title: `Hardware Test Slip — ${printer.name}`,
+      docType: isWb ? "WRISTBAND" : isThermal ? "THERMAL_TOKEN" : isLabel ? "LAB_REPORT" : "CLINICAL_SUMMARY",
+      printerDevice: printer,
+    });
+  };
 
   // Print Templates Local Form State
   const [thermalTitle, setThermalTitle] = useState(printTemplates.thermalToken.headerTitle);
@@ -1020,6 +1182,18 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
               }`}
             >
               <Printer size={14} /> Statutory Print Layouts &amp; Templates
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCustomSubTab("printers")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                customSubTab === "printers"
+                  ? "bg-sky-500/20 text-sky-400 border border-sky-500/40"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Cpu size={14} /> Hardware Printers &amp; Network Devices ({printers.length} Devices)
             </button>
 
             <div className="flex-1 text-right">
@@ -2276,10 +2450,457 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
               </div>
             </div>
           )}
+
+          {/* Sub-tab 6: Hardware Printers & Network Devices */}
+          {customSubTab === "printers" && (
+            <div className="space-y-6">
+              {/* Header Info Card */}
+              <Card className="p-5 bg-slate-900 border-slate-800 space-y-4">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3 border-b border-slate-800">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400">
+                      <Cpu size={24} />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
+                        Departmental Hardware Printers &amp; JetDirect / RAW Network Sockets
+                        <Badge variant="purple" size="sm">Zero Hardcoded Sizes</Badge>
+                      </h3>
+                      <p className="text-xs text-slate-400">
+                        Configure physical printer dimensions (mm), margins, feed orientation, and network endpoints (TCP Port 9100 RAW, USB, WiFi, ESC/POS, ZPL) across hospital departments.
+                      </p>
+                    </div>
+                  </div>
+                  {printerSuccessMsg && (
+                    <div className="px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold animate-pulse">
+                      {printerSuccessMsg}
+                    </div>
+                  )}
+                </div>
+
+                {/* Quick Hardware Presets */}
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
+                    Quick Hardware Presets &amp; Cartridge Autofill
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => applyPrinterHardwarePreset("ZEBRA_ZD510_HC")}
+                      className="px-2.5 py-1 text-xs bg-slate-950 hover:bg-slate-800 text-sky-300 border border-slate-800 rounded flex items-center gap-1 transition-all"
+                    >
+                      <Zap size={11} className="text-amber-400" /> Zebra ZD510-HC (Vertical 25×280mm Portrait)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyPrinterHardwarePreset("DIRECT_THERMAL_WRISTBAND")}
+                      className="px-2.5 py-1 text-xs bg-slate-950 hover:bg-slate-800 text-sky-300 border border-slate-800 rounded flex items-center gap-1 transition-all"
+                    >
+                      <Zap size={11} className="text-amber-400" /> Desktop Direct Thermal (Wide 280×25mm Landscape)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyPrinterHardwarePreset("EPSON_80MM_THERMAL")}
+                      className="px-2.5 py-1 text-xs bg-slate-950 hover:bg-slate-800 text-sky-300 border border-slate-800 rounded flex items-center gap-1 transition-all"
+                    >
+                      <Zap size={11} className="text-amber-400" /> POS 80mm Token Slip (Continuous ESC/POS)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyPrinterHardwarePreset("COMPACT_58MM_THERMAL")}
+                      className="px-2.5 py-1 text-xs bg-slate-950 hover:bg-slate-800 text-sky-300 border border-slate-800 rounded flex items-center gap-1 transition-all"
+                    >
+                      <Zap size={11} className="text-amber-400" /> Compact 58mm Thermal Roll (Continuous)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyPrinterHardwarePreset("WARD_LASER_A4")}
+                      className="px-2.5 py-1 text-xs bg-slate-950 hover:bg-slate-800 text-sky-300 border border-slate-800 rounded flex items-center gap-1 transition-all"
+                    >
+                      <Zap size={11} className="text-amber-400" /> Ward LaserJet (A4 210×297mm 600 DPI)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyPrinterHardwarePreset("LAB_TUBE_LABELER")}
+                      className="px-2.5 py-1 text-xs bg-slate-950 hover:bg-slate-800 text-sky-300 border border-slate-800 rounded flex items-center gap-1 transition-all"
+                    >
+                      <Zap size={11} className="text-amber-400" /> Diagnostics Tube Labeler (50×25mm)
+                    </button>
+                  </div>
+                </div>
+              </Card>
+
+              {/* Form: Add New Hardware Printer */}
+              <Card className="p-5 bg-slate-900 border-slate-800 space-y-4">
+                <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                  <Plus size={14} className="text-sky-400" /> Add / Configure Physical Printer Device
+                </h4>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!prnName.trim()) return;
+
+                    addPrinter({
+                      name: prnName,
+                      location: prnLocation || "Main Admission Desk",
+                      connectionType: prnConnType,
+                      targetCategory: prnCategory,
+                      protocol: prnProtocol,
+                      ipAddress: (prnConnType === "NETWORK_IP" || prnConnType === "WIFI") ? prnIp : undefined,
+                      port: (prnConnType === "NETWORK_IP" || prnConnType === "WIFI") ? prnPort : undefined,
+                      isDefault: prnIsDefault,
+                      mediaWidthMm: Number(prnWidthMm) || 80,
+                      mediaHeightMm: Number(prnHeightMm) || 0,
+                      printableWidthMm: Number(prnPrintableWidthMm) || Number(prnWidthMm) || 75,
+                      printableHeightMm: Number(prnPrintableHeightMm) || (Number(prnHeightMm) > 0 ? Number(prnHeightMm) : 0),
+                      marginTopMm: Number(prnMarginTop) || 0,
+                      marginBottomMm: Number(prnMarginBottom) || 0,
+                      marginLeftMm: Number(prnMarginLeft) || 0,
+                      marginRightMm: Number(prnMarginRight) || 0,
+                      orientation: prnOrientation,
+                      dpi: Number(prnDpi) || 203,
+                      status: "ONLINE",
+                    });
+
+                    setPrinterSuccessMsg(`Printer "${prnName}" registered successfully!`);
+                    setPrnName("");
+                    setPrnLocation("");
+                    setTimeout(() => setPrinterSuccessMsg(""), 3500);
+                  }}
+                  className="space-y-4"
+                >
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">Printer Device Name *</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Zebra ZD510-HC Admission Desk"
+                        value={prnName}
+                        onChange={(e) => setPrnName(e.target.value)}
+                        required
+                        className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">Hospital Location / Station</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Counter 1, ED Trauma Bay 2, Ward 3A"
+                        value={prnLocation}
+                        onChange={(e) => setPrnLocation(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">Target Document Category *</label>
+                      <select
+                        value={prnCategory}
+                        onChange={(e) => setPrnCategory(e.target.value as PrinterTargetCategory)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                      >
+                        <option value="WRISTBAND">Patient Wristbands (Barcoded Strap)</option>
+                        <option value="THERMAL_TOKEN">Thermal Token &amp; Cashier Slips (Roll)</option>
+                        <option value="CLINICAL_A4">Clinical BHT &amp; Discharge Reports (A4)</option>
+                        <option value="LAB_LABEL">Diagnostics Specimen Tube Labels</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">Connectivity *</label>
+                      <select
+                        value={prnConnType}
+                        onChange={(e) => setPrnConnType(e.target.value as PrinterConnectionType)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                      >
+                        <option value="NETWORK_IP">Network Ethernet (TCP Port 9100 RAW / JetDirect)</option>
+                        <option value="WIFI">Hospital Secure WiFi (IP Socket)</option>
+                        <option value="USB">Direct USB / POS Thermal Interface</option>
+                        <option value="SYSTEM_DRIVER">OS Spooled System Driver</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-slate-400 block mb-1">Print Protocol</label>
+                      <select
+                        value={prnProtocol}
+                        onChange={(e) => setPrnProtocol(e.target.value as PrinterProtocol)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                      >
+                        <option value="RAW_ZPL">RAW ZPL (Zebra HC100 / ZD Series)</option>
+                        <option value="RAW_ESCPOS">RAW ESC/POS (Epson / Star / POS)</option>
+                        <option value="HTML_DRIVER">Browser HTML Engine / Spooler</option>
+                      </select>
+                    </div>
+                    {(prnConnType === "NETWORK_IP" || prnConnType === "WIFI") ? (
+                      <>
+                        <div>
+                          <label className="text-[11px] text-slate-400 block mb-1">IP Address</label>
+                          <input
+                            type="text"
+                            placeholder="192.168.1.182"
+                            value={prnIp}
+                            onChange={(e) => setPrnIp(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-slate-400 block mb-1">Port (Default 9100)</label>
+                          <input
+                            type="number"
+                            value={prnPort}
+                            onChange={(e) => setPrnPort(Number(e.target.value))}
+                            className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <div className="col-span-2 flex items-center text-xs text-slate-500 pt-5">
+                        <HardDrive size={14} className="mr-1.5" /> Direct attached USB / driver endpoint auto-negotiated by host
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Millimeter Dimensions & Margins */}
+                  <div className="p-3 bg-slate-950 rounded-lg border border-slate-800/80 space-y-3">
+                    <div className="text-[11px] font-semibold text-slate-300 flex items-center justify-between">
+                      <span>Exact Media Physical Millimeters (Zero Hardcoded Boundaries)</span>
+                      <span className="text-[10px] text-slate-500 font-mono">Set 0mm Height for Continuous Thermal Rolls</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Width (mm)</label>
+                        <input
+                          type="number"
+                          value={prnWidthMm}
+                          onChange={(e) => setPrnWidthMm(Number(e.target.value))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Height (mm)</label>
+                        <input
+                          type="number"
+                          value={prnHeightMm}
+                          onChange={(e) => setPrnHeightMm(Number(e.target.value))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Printable W (mm)</label>
+                        <input
+                          type="number"
+                          value={prnPrintableWidthMm}
+                          onChange={(e) => setPrnPrintableWidthMm(Number(e.target.value))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Printable H (mm)</label>
+                        <input
+                          type="number"
+                          value={prnPrintableHeightMm}
+                          onChange={(e) => setPrnPrintableHeightMm(Number(e.target.value))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Feed Orientation</label>
+                        <select
+                          value={prnOrientation}
+                          onChange={(e) => setPrnOrientation(e.target.value as "PORTRAIT" | "LANDSCAPE")}
+                          className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
+                        >
+                          <option value="PORTRAIT">PORTRAIT (Vertical Feed)</option>
+                          <option value="LANDSCAPE">LANDSCAPE (Wide Feed)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Resolution (DPI)</label>
+                        <select
+                          value={prnDpi}
+                          onChange={(e) => setPrnDpi(Number(e.target.value))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-slate-200 font-mono"
+                        >
+                          <option value="203">203 DPI (Standard Thermal)</option>
+                          <option value="300">300 DPI (Zebra Wristband HD)</option>
+                          <option value="600">600 DPI (High-Res Laser A4)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Margins */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 border-t border-slate-800/60">
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-0.5">Top Margin (mm)</label>
+                        <input
+                          type="number"
+                          value={prnMarginTop}
+                          onChange={(e) => setPrnMarginTop(Number(e.target.value))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs text-slate-200 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-0.5">Bottom Margin (mm)</label>
+                        <input
+                          type="number"
+                          value={prnMarginBottom}
+                          onChange={(e) => setPrnMarginBottom(Number(e.target.value))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs text-slate-200 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-0.5">Left Margin (mm)</label>
+                        <input
+                          type="number"
+                          value={prnMarginLeft}
+                          onChange={(e) => setPrnMarginLeft(Number(e.target.value))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs text-slate-200 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-0.5">Right Margin (mm)</label>
+                        <input
+                          type="number"
+                          value={prnMarginRight}
+                          onChange={(e) => setPrnMarginRight(Number(e.target.value))}
+                          className="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs text-slate-200 font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={prnIsDefault}
+                        onChange={(e) => setPrnIsDefault(e.target.checked)}
+                        className="rounded border-slate-700 bg-slate-900 text-sky-500"
+                      />
+                      <span>Set as Default Device for this Document Category</span>
+                    </label>
+
+                    <Button size="sm" variant="primary" type="submit" className="flex items-center gap-1.5">
+                      <Plus size={14} /> Register Printer Device
+                    </Button>
+                  </div>
+                </form>
+              </Card>
+
+              {/* Hardware Device Inventory List */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                    <Printer size={14} className="text-sky-400" /> Configured Departmental Devices ({printers.length})
+                  </h4>
+                  <span className="text-[11px] text-slate-500">
+                    Live hardware status monitored via raw socket handshake
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3">
+                  {printers.map((prn) => (
+                    <Card key={prn.id} className="p-4 bg-slate-900 border-slate-800 hover:border-slate-700 transition-all">
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                        <div className="space-y-1.5 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-bold text-sm text-slate-100">{prn.name}</span>
+                            <Badge
+                              variant={prn.targetCategory === "WRISTBAND" ? "purple" : prn.targetCategory === "THERMAL_TOKEN" ? "info" : prn.targetCategory === "CLINICAL_A4" ? "success" : "warning"}
+                              size="sm"
+                            >
+                              {prn.targetCategory}
+                            </Badge>
+                            {prn.isDefault && (
+                              <Badge variant="success" size="sm" className="font-bold">
+                                ★ DEFAULT
+                              </Badge>
+                            )}
+                            <Badge variant={prn.status === "ONLINE" ? "success" : "neutral"} size="sm">
+                              {prn.status}
+                            </Badge>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 font-mono">
+                            <span className="flex items-center gap-1 text-slate-300">
+                              <Building size={12} className="text-slate-500" /> {prn.location}
+                            </span>
+                            <span>•</span>
+                            <span className="flex items-center gap-1">
+                              {prn.connectionType === "NETWORK_IP" ? <Network size={12} className="text-sky-400" /> : prn.connectionType === "WIFI" ? <Wifi size={12} className="text-emerald-400" /> : <HardDrive size={12} className="text-amber-400" />}
+                              {prn.connectionType} {prn.ipAddress ? `(${prn.ipAddress}:${prn.port || 9100})` : "(Direct Hardware)"}
+                            </span>
+                            <span>•</span>
+                            <span>Protocol: <b className="text-slate-200">{prn.protocol}</b></span>
+                          </div>
+
+                          <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-2 pt-1 font-mono">
+                            <span className="bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                              Media: <b className="text-sky-300">{prn.mediaWidthMm}mm × {prn.mediaHeightMm > 0 ? `${prn.mediaHeightMm}mm` : "Continuous Roll"}</b>
+                            </span>
+                            <span className="bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                              Feed: <b className="text-slate-300">{prn.orientation}</b>
+                            </span>
+                            <span className="bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                              Printable: <b>{prn.printableWidthMm || prn.mediaWidthMm}mm × {prn.printableHeightMm || prn.mediaHeightMm || "Full"}mm</b>
+                            </span>
+                            <span className="bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                              Margins: <b>T:{prn.marginTopMm} B:{prn.marginBottomMm} L:{prn.marginLeftMm} R:{prn.marginRightMm} mm</b>
+                            </span>
+                            <span className="bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                              Density: <b>{prn.dpi} DPI</b>
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="flex items-center gap-2 self-end lg:self-center">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleTestPrint(prn)}
+                            className="text-xs flex items-center gap-1.5 text-sky-400 hover:text-sky-300 border-sky-500/30"
+                          >
+                            <Zap size={13} className="text-amber-400" /> Test Print / Ping Slip
+                          </Button>
+
+                          {!prn.isDefault && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setDefaultPrinter(prn.id)}
+                              className="text-xs text-slate-400 hover:text-emerald-400"
+                            >
+                              Make Default
+                            </Button>
+                          )}
+
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              if (confirm(`Remove printer device "${prn.name}"?`)) {
+                                deletePrinter(prn.id);
+                              }
+                            }}
+                            className="text-xs text-rose-400 hover:bg-rose-950/30"
+                          >
+                            <Trash2 size={13} />
+                          </Button>
+                        </div>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Modal: Register Preview */}
       {activePreviewRegister && (
         <Modal
           isOpen={true}

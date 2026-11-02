@@ -37,7 +37,7 @@ type PatientRecordTab =
 
 export const PatientRecordWorkspace: React.FC = () => {
   const { patientSummary: activePatient } = useActivePatient();
-  const { doctors, policies, hospitalProfile, printTemplates } = useHospitalConfig();
+  const { doctors, policies, hospitalProfile, printTemplates, getPrinterForCategory } = useHospitalConfig();
   const [activeTab, setActiveTab] = useState<PatientRecordTab>("overview");
   const [timelineFilter, setTimelineFilter] = useState<"ALL" | "CLINICAL" | "LAB" | "MED" | "BILLING">("ALL");
   const [bookedRevisitDoctor, setBookedRevisitDoctor] = useState<string | null>(null);
@@ -118,6 +118,7 @@ export const PatientRecordWorkspace: React.FC = () => {
 
   const handlePrintWristband = () => {
     const template = printTemplates.wristband;
+    const printerDevice = getPrinterForCategory("WRISTBAND");
     const html = `
       <div class="wristband-slip">
         <div>
@@ -137,12 +138,13 @@ export const PatientRecordWorkspace: React.FC = () => {
       title: `Wristband_${activePatient.mrn}`,
       docType: "WRISTBAND",
       wristbandConfig: {
-        widthMm: template.widthMm || 280,
-        heightMm: template.heightMm || 25,
-        printableLengthMm: template.printableLengthMm || 75,
-        orientation: template.orientation === "PORTRAIT" ? "portrait" : "landscape",
+        widthMm: printerDevice?.mediaWidthMm || template.widthMm || 280,
+        heightMm: printerDevice?.mediaHeightMm || template.heightMm || 25,
+        printableLengthMm: printerDevice?.printableHeightMm || printerDevice?.printableWidthMm || template.printableLengthMm || 75,
+        orientation: printerDevice ? (printerDevice.orientation.toLowerCase() as "portrait" | "landscape") : (template.orientation === "PORTRAIT" ? "portrait" : "landscape"),
         printerType: template.printerType,
       },
+      printerDevice,
     });
   };
 

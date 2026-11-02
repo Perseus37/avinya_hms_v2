@@ -38,7 +38,7 @@ interface GeneratedTokenDetails {
 
 export const PatientRegistrationWorkspace: React.FC = () => {
   const { selectPatient } = useActivePatient();
-  const { doctors: OPD_DOCTOR_ROSTER, hospitalProfile, departments, printTemplates, policies } = useHospitalConfig();
+  const { doctors: OPD_DOCTOR_ROSTER, hospitalProfile, departments, printTemplates, policies, getPrinterForCategory } = useHospitalConfig();
   const [isLoading, setIsLoading] = useState(false);
   const [successPatient, setSuccessPatient] = useState<PatientCreatedResponse | null>(null);
   const [isSuccessModalOpen, setIsSuccessModalOpen] = useState(false);
@@ -341,6 +341,7 @@ export const PatientRegistrationWorkspace: React.FC = () => {
     if (!successPatient) return;
     if (printDocType === "OPD_TOKEN" && generatedToken) {
       const template = printTemplates.thermalToken;
+      const printerDevice = getPrinterForCategory("THERMAL_TOKEN");
       const html = `
         <div class="thermal-slip">
           <div class="center bold" style="font-size: 13px;">${(template.headerTitle || hospitalProfile.name).toUpperCase()}</div>
@@ -372,11 +373,13 @@ export const PatientRegistrationWorkspace: React.FC = () => {
         title: `OPD_Token_${generatedToken.tokenCode}`,
         docType: "THERMAL_TOKEN",
         thermalConfig: {
-          rollWidthMm: template.rollWidth === "58mm" ? 58 : template.rollWidth === "112mm" ? 112 : 80,
+          rollWidthMm: printerDevice?.mediaWidthMm || (template.rollWidth === "58mm" ? 58 : template.rollWidth === "112mm" ? 112 : 80),
         },
+        printerDevice,
       });
     } else {
       const template = printTemplates.wristband;
+      const printerDevice = getPrinterForCategory("WRISTBAND");
       const html = `
         <div class="wristband-slip">
           <div>
@@ -399,12 +402,13 @@ export const PatientRegistrationWorkspace: React.FC = () => {
         title: `UHID_Wristband_${successPatient.mrn}`,
         docType: "WRISTBAND",
         wristbandConfig: {
-          widthMm: template.widthMm || 280,
-          heightMm: template.heightMm || 25,
-          printableLengthMm: template.printableLengthMm || 75,
-          orientation: template.orientation === "PORTRAIT" ? "portrait" : "landscape",
+          widthMm: printerDevice?.mediaWidthMm || template.widthMm || 280,
+          heightMm: printerDevice?.mediaHeightMm || template.heightMm || 25,
+          printableLengthMm: printerDevice?.printableHeightMm || printerDevice?.printableWidthMm || template.printableLengthMm || 75,
+          orientation: printerDevice ? (printerDevice.orientation.toLowerCase() as "portrait" | "landscape") : (template.orientation === "PORTRAIT" ? "portrait" : "landscape"),
           printerType: template.printerType,
         },
+        printerDevice,
       });
     }
   };

@@ -864,7 +864,7 @@ export const WardNursingStation: React.FC = () => {
                 type="submit"
                 variant="primary"
                 size="sm"
-                disabled={!wristbandScanned || !ampouleScanned || isSubmittingEmar}
+                disabled={!wristbandScanned || !ampouleScanned || (selectedMedForAdmin.isHighAlert && !witnessStaffId.trim()) || isSubmittingEmar}
               >
                 {isSubmittingEmar ? "Logging BCMA..." : "Confirm & Administer Dose"}
               </Button>

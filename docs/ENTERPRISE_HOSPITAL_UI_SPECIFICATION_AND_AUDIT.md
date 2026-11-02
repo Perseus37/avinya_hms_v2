@@ -391,6 +391,37 @@ All 12 statutory clinical and administrative documents generate through the scop
 | **DOC-10** | Form 27C Blood Compatibility Certificate | A4 Portrait Certificate | [`blood-bank`](file:///v:/avinya_hms/hospital-ui/src/workspaces/bloodbank/BloodBankWorkspace.tsx) |
 | **DOC-11** | Form 3C NDPS Controlled Substances Handover | A4 Portrait Handover Docket | [`pharmacy`](file:///v:/avinya_hms/hospital-ui/src/workspaces/pharmacy/PharmacyWorkspace.tsx) |
 | **DOC-12** | Form BME-QC-08 Medical Calibration Certificate | A4 Portrait Certificate | [`biomedical`](file:///v:/avinya_hms/hospital-ui/src/workspaces/biomedical/BiomedicalWorkspace.tsx) |
+| **DOC-13** | Hardware Calibration & Alignment Test Slip | Multi-form factor (Roll / Strap / Label / A4) | [`admin`](file:///v:/avinya_hms/hospital-ui/src/workspaces/admin/AdminWorkspace.tsx) |
+
+---
+
+## 4.1 Departmental Hardware Printer & Network Device Architecture
+
+To support the diverse printing hardware found across modern hospital campuses, Avinya HMS introduces a zero-hardcoded physical printing engine:
+
+1. **Connectivity Modes Supported:**
+   - **Network IP (Port 9100 RAW / JetDirect):** Direct raw socket streaming to enterprise Ethernet and WiFi printers without spooler interference.
+   - **Secure Hospital WiFi:** Direct IP printing for mobile emergency triage crash carts and bedside rover workstations.
+   - **USB / Direct POS:** Low-latency direct driver communication for thermal receipt counters and outpatient pharmacy kiosks.
+   - **System Driver:** Spooled OS printing for centralized ward laser multi-function centers.
+
+2. **Zero-Hardcoded Physical Media Dimensions:**
+   - Fully customizable **Width (mm)** and **Height (mm)** (0 for continuous thermal rolls).
+   - Dedicated **Printable Width (mm)** and **Printable Height (mm)** boundaries preventing margin bleeding.
+   - Independent 4-way millimeter margin controls (**Top, Bottom, Left, Right**).
+   - Feed Orientation toggle (**PORTRAIT** vs **LANDSCAPE**) dynamically steering CSS `@page` sizing to match physical hardware cartridge feed directions (e.g., Zebra ZD510-HC narrow-edge vertical feed vs standard wide-edge thermal desktop labelers).
+   - Selectable resolution density (**203 DPI, 300 DPI, 600 DPI**).
+
+3. **Pre-Engineered Hardware Presets:**
+   - **Zebra ZD510-HC / HC100:** Dedicated vertical healthcare wristband cartridges (25mm x 280mm Portrait @ 300 DPI).
+   - **Desktop Direct Thermal Wristband:** Wide-feed direct thermal label rolls (280mm x 25mm Landscape @ 203 DPI).
+   - **Epson TM-T88 / POS 80mm:** Reception token slip printer (80mm Continuous @ 203 DPI).
+   - **Compact 58mm POS Thermal:** Pharmacy cashier slip printer (58mm Continuous @ 203 DPI).
+   - **Ward Managed LaserJet A4:** Inpatient clinical chart and BHT document printer (210mm x 297mm @ 600 DPI).
+   - **Phlebotomy Specimen Tube Labeler:** Diagnostics barcode tube labeler (50mm x 25mm Landscape @ 203 DPI).
+
+4. **Clinical Safety & BCMA High-Alert Verification:**
+   - In [`WardNursingStation.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/nursing/WardNursingStation.tsx), electronic medication administration (eMAR) enforces a strict **Dual-Witness Co-Signing Modal** for high-alert medications (Insulin, Heparin, IV Potassium, Narcotics). The administration button remains hard-disabled until both the bedside wristband barcode, the medication ampoule GS1 barcode, and the second witnessing nurse's verified badge ID are entered.
 
 ---
 

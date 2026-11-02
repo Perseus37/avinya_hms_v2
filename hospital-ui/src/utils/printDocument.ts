@@ -1,3 +1,5 @@
+import { HospitalPrinterDevice } from "../core/context/HospitalConfigContext";
+
 /**
  * Avinya Isolated Printing Utility
  * Renders statutory slips, multi-dimension wristbands, thermal tokens, and clinical summaries
@@ -22,6 +24,7 @@ export interface PrintDocumentOptions {
   docType?: "THERMAL_TOKEN" | "WRISTBAND" | "CLINICAL_SUMMARY" | "LAB_REPORT";
   wristbandConfig?: WristbandPrintConfig;
   thermalConfig?: ThermalPrintConfig;
+  printerDevice?: HospitalPrinterDevice;
 }
 
 export function printDocument(htmlContent: string, options: PrintDocumentOptions = {}): void {
@@ -30,7 +33,16 @@ export function printDocument(htmlContent: string, options: PrintDocumentOptions
     docType = "THERMAL_TOKEN",
     wristbandConfig = {},
     thermalConfig = {},
+    printerDevice,
   } = options;
+
+  if (printerDevice) {
+    console.info(
+      `[Avinya Hardware Dispatch] Printing '${title}' on '${printerDevice.name}' via ${printerDevice.connectionType} ` +
+      `(${printerDevice.ipAddress ? `${printerDevice.ipAddress}:${printerDevice.port || 9100}` : "Direct Attached"}) ` +
+      `Protocol: ${printerDevice.protocol} Media: ${printerDevice.mediaWidthMm}x${printerDevice.mediaHeightMm || "Roll"}mm`
+    );
+  }
 
   const printWindow = window.open("", "_blank", "width=780,height=850,menubar=no,toolbar=no,location=no,status=no");
   if (!printWindow) {
@@ -39,23 +51,27 @@ export function printDocument(htmlContent: string, options: PrintDocumentOptions
     return;
   }
 
-  const isThermal = docType === "THERMAL_TOKEN";
-  const isWristband = docType === "WRISTBAND";
+  const isThermal = docType === "THERMAL_TOKEN" || (printerDevice && printerDevice.targetCategory === "THERMAL_TOKEN");
+  const isWristband = docType === "WRISTBAND" || (printerDevice && printerDevice.targetCategory === "WRISTBAND");
+  const isLabLabel = docType === "LAB_REPORT" || (printerDevice && printerDevice.targetCategory === "LAB_LABEL");
 
   // Dynamic Thermal Sizing
-  const rollWidth = thermalConfig.rollWidthMm || 80;
+  const rollWidth = printerDevice?.mediaWidthMm || thermalConfig.rollWidthMm || 80;
   const contentWidth = Math.max(48, rollWidth - 4);
 
   // Dynamic Wristband Sizing (defaults to Adult 280x25mm if unspecified)
-  const wbWidth = wristbandConfig.widthMm || 280;
-  const wbHeight = wristbandConfig.heightMm || 25;
-  const wbPrintableLength = wristbandConfig.printableLengthMm || Math.min(wbWidth, 80);
-  const wbOrientation = wristbandConfig.orientation || "landscape";
-  const isZebraVertical = wristbandConfig.printerType === "ZEBRA_HC100" || wbOrientation === "portrait";
+  const wbWidth = printerDevice?.mediaWidthMm || wristbandConfig.widthMm || 280;
+  const wbHeight = printerDevice?.mediaHeightMm || wristbandConfig.heightMm || 25;
+  const wbPrintableLength = printerDevice?.printableHeightMm || printerDevice?.printableWidthMm || wristbandConfig.printableLengthMm || Math.min(wbWidth, 80);
+  const wbOrientation = printerDevice ? printerDevice.orientation.toLowerCase() as "landscape" | "portrait" : (wristbandConfig.orientation || "landscape");
+  const isZebraVertical = (printerDevice?.name.toLowerCase().includes("zebra") || wristbandConfig.printerType === "ZEBRA_HC100" || wbOrientation === "portrait");
 
   const customStyles = isThermal
     ? `
-      @page { size: ${rollWidth}mm auto; margin: 0; }
+      @page {
+        size: ${rollWidth}mm auto;
+        margin: ${printerDevice?.marginTopMm || 0}mm ${printerDevice?.marginRightMm || 0}mm ${printerDevice?.marginBottomMm || 0}mm ${printerDevice?.marginLeftMm || 0}mm;
+      }
       body {
         width: ${contentWidth}mm;
         margin: 0 auto;
@@ -72,7 +88,7 @@ export function printDocument(htmlContent: string, options: PrintDocumentOptions
     ? `
       @page {
         size: ${isZebraVertical ? `${wbHeight}mm ${wbWidth}mm portrait` : `${wbWidth}mm ${wbHeight}mm landscape`};
-        margin: 0;
+        margin: ${printerDevice?.marginTopMm || 0}mm ${printerDevice?.marginRightMm || 0}mm ${printerDevice?.marginBottomMm || 0}mm ${printerDevice?.marginLeftMm || 0}mm;
       }
       body {
         margin: 0;
@@ -117,8 +133,30 @@ export function printDocument(htmlContent: string, options: PrintDocumentOptions
         border-radius: 2px;
       }
     `
+    : isLabLabel
+    ? `
+      @page {
+        size: ${printerDevice ? `${printerDevice.mediaWidthMm}mm ${printerDevice.mediaHeightMm}mm ${printerDevice.orientation.toLowerCase()}` : "50mm 25mm landscape"};
+        margin: ${printerDevice?.marginTopMm || 1}mm ${printerDevice?.marginRightMm || 2}mm ${printerDevice?.marginBottomMm || 1}mm ${printerDevice?.marginLeftMm || 2}mm;
+      }
+      body {
+        margin: 0;
+        padding: 2px 4px;
+        width: ${printerDevice?.mediaWidthMm || 50}mm;
+        height: ${printerDevice?.mediaHeightMm || 25}mm;
+        box-sizing: border-box;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 8px;
+        line-height: 1.1;
+        color: #000;
+        background: #fff;
+      }
+    `
     : `
-      @page { size: A4 portrait; margin: 15mm; }
+      @page {
+        size: ${printerDevice ? `${printerDevice.mediaWidthMm}mm ${printerDevice.mediaHeightMm}mm ${printerDevice.orientation.toLowerCase()}` : "A4 portrait"};
+        margin: ${printerDevice?.marginTopMm ? `${printerDevice.marginTopMm}mm` : "15mm"};
+      }
       body {
         margin: 0;
         padding: 18px;

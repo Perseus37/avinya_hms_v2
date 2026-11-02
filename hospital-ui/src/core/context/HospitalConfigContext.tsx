@@ -70,6 +70,34 @@ export type WristbandPreset =
 
 export type ThermalRollWidth = "58mm" | "80mm" | "112mm" | "CUSTOM";
 
+export type PrinterConnectionType = "NETWORK_IP" | "USB" | "WIFI" | "SYSTEM_DRIVER";
+export type PrinterTargetCategory = "WRISTBAND" | "THERMAL_TOKEN" | "CLINICAL_A4" | "LAB_LABEL";
+export type PrinterProtocol = "HTML_DRIVER" | "RAW_ZPL" | "RAW_ESCPOS";
+
+export interface HospitalPrinterDevice {
+  id: string;
+  name: string;
+  location: string;
+  connectionType: PrinterConnectionType;
+  targetCategory: PrinterTargetCategory;
+  protocol: PrinterProtocol;
+  ipAddress?: string;
+  port?: number;
+  usbVendorId?: string;
+  isDefault: boolean;
+  mediaWidthMm: number; // Fully customizable by hospital
+  mediaHeightMm: number; // Fully customizable (0 for continuous thermal rolls)
+  printableWidthMm?: number;
+  printableHeightMm?: number;
+  marginTopMm: number;
+  marginBottomMm: number;
+  marginLeftMm: number;
+  marginRightMm: number;
+  orientation: "PORTRAIT" | "LANDSCAPE";
+  dpi: number;
+  status: "ONLINE" | "OFFLINE" | "READY";
+}
+
 export interface PrintTemplatesConfig {
   thermalToken: {
     headerTitle: string;
@@ -192,12 +220,122 @@ const DEFAULT_DOCTORS: OpdDoctor[] = [
 
 const DEFAULT_BEDS: EnterpriseBed[] = generateEnterprise500Beds();
 
+export const DEFAULT_PRINTERS: HospitalPrinterDevice[] = [
+  {
+    id: "prn-1",
+    name: "Front Desk Zebra ZD510-HC Dedicated Wristband Printer",
+    location: "Admission Desk Counter 1",
+    connectionType: "NETWORK_IP",
+    targetCategory: "WRISTBAND",
+    protocol: "RAW_ZPL",
+    ipAddress: "192.168.1.182",
+    port: 9100,
+    isDefault: true,
+    mediaWidthMm: 25,
+    mediaHeightMm: 280,
+    printableWidthMm: 22,
+    printableHeightMm: 75,
+    marginTopMm: 1,
+    marginBottomMm: 1,
+    marginLeftMm: 2,
+    marginRightMm: 2,
+    orientation: "PORTRAIT",
+    dpi: 300,
+    status: "ONLINE",
+  },
+  {
+    id: "prn-2",
+    name: "Reception Counter 1 Token & Receipt Slip Printer",
+    location: "OPD Front Registration Counter 1",
+    connectionType: "USB",
+    targetCategory: "THERMAL_TOKEN",
+    protocol: "RAW_ESCPOS",
+    isDefault: true,
+    mediaWidthMm: 80,
+    mediaHeightMm: 0,
+    printableWidthMm: 76,
+    printableHeightMm: 0,
+    marginTopMm: 2,
+    marginBottomMm: 2,
+    marginLeftMm: 2,
+    marginRightMm: 2,
+    orientation: "PORTRAIT",
+    dpi: 203,
+    status: "ONLINE",
+  },
+  {
+    id: "prn-3",
+    name: "Emergency Triage & Trauma WiFi Wristband Unit",
+    location: "ED Resuscitation Bay 1",
+    connectionType: "WIFI",
+    targetCategory: "WRISTBAND",
+    protocol: "HTML_DRIVER",
+    ipAddress: "192.168.1.185",
+    port: 9100,
+    isDefault: false,
+    mediaWidthMm: 28,
+    mediaHeightMm: 280,
+    printableWidthMm: 25,
+    printableHeightMm: 80,
+    marginTopMm: 1,
+    marginBottomMm: 1,
+    marginLeftMm: 2,
+    marginRightMm: 2,
+    orientation: "PORTRAIT",
+    dpi: 300,
+    status: "ONLINE",
+  },
+  {
+    id: "prn-4",
+    name: "Inpatient Clinical Ward Managed HP LaserJet",
+    location: "Ward Nursing Station Central",
+    connectionType: "NETWORK_IP",
+    targetCategory: "CLINICAL_A4",
+    protocol: "HTML_DRIVER",
+    ipAddress: "192.168.1.190",
+    port: 9100,
+    isDefault: true,
+    mediaWidthMm: 210,
+    mediaHeightMm: 297,
+    printableWidthMm: 200,
+    printableHeightMm: 287,
+    marginTopMm: 5,
+    marginBottomMm: 5,
+    marginLeftMm: 5,
+    marginRightMm: 5,
+    orientation: "PORTRAIT",
+    dpi: 600,
+    status: "ONLINE",
+  },
+  {
+    id: "prn-5",
+    name: "Central Phlebotomy Tube Barcode Labeler",
+    location: "Diagnostics Specimen Collection Counter",
+    connectionType: "USB",
+    targetCategory: "LAB_LABEL",
+    protocol: "RAW_ZPL",
+    isDefault: true,
+    mediaWidthMm: 50,
+    mediaHeightMm: 25,
+    printableWidthMm: 46,
+    printableHeightMm: 22,
+    marginTopMm: 1,
+    marginBottomMm: 1,
+    marginLeftMm: 2,
+    marginRightMm: 2,
+    orientation: "LANDSCAPE",
+    dpi: 203,
+    status: "ONLINE",
+  },
+];
+
 interface HospitalConfigContextType {
   hospitalProfile: HospitalProfile;
   policies: HospitalPolicies;
   doctors: OpdDoctor[];
   beds: EnterpriseBed[];
   printTemplates: PrintTemplatesConfig;
+  printers: HospitalPrinterDevice[];
   towers: string[];
   floors: string[];
   departments: string[];
@@ -210,6 +348,11 @@ interface HospitalConfigContextType {
   addDoctor: (doc: Omit<OpdDoctor, "id">) => void;
   updateDoctor: (docId: string, partial: Partial<OpdDoctor>) => void;
   deleteDoctor: (docId: string) => void;
+  addPrinter: (printer: Omit<HospitalPrinterDevice, "id">) => void;
+  updatePrinter: (printerId: string, partial: Partial<HospitalPrinterDevice>) => void;
+  deletePrinter: (printerId: string) => void;
+  setDefaultPrinter: (printerId: string) => void;
+  getPrinterForCategory: (category: PrinterTargetCategory) => HospitalPrinterDevice | undefined;
   resetToDefaultCatalog: () => void;
 }
 
@@ -221,6 +364,7 @@ const STORAGE_KEYS = {
   DOCTORS: "avinya_hospital_doctors",
   BEDS: "avinya_hospital_beds",
   PRINT_TEMPLATES: "avinya_hospital_print_templates",
+  PRINTERS: "avinya_hospital_printers",
 };
 
 export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -273,6 +417,15 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
     }
   });
 
+  const [printers, setPrinters] = useState<HospitalPrinterDevice[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.PRINTERS);
+      return saved ? JSON.parse(saved) : DEFAULT_PRINTERS;
+    } catch {
+      return DEFAULT_PRINTERS;
+    }
+  });
+
   // Save to localStorage whenever state changes
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(hospitalProfile));
@@ -293,6 +446,10 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.PRINT_TEMPLATES, JSON.stringify(printTemplates));
   }, [printTemplates]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.PRINTERS, JSON.stringify(printers));
+  }, [printers]);
 
   const updateHospitalProfile = (partial: Partial<HospitalProfile>) => {
     setHospitalProfile((prev) => ({ ...prev, ...partial }));
@@ -334,17 +491,49 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
     setDoctors((prev) => prev.filter((d) => d.id !== docId));
   };
 
+  const addPrinter = (printer: Omit<HospitalPrinterDevice, "id">) => {
+    const nextId = `prn-${Date.now().toString().slice(-4)}`;
+    const newPrn: HospitalPrinterDevice = { ...printer, id: nextId };
+    setPrinters((prev) => [...prev, newPrn]);
+  };
+
+  const updatePrinter = (printerId: string, partial: Partial<HospitalPrinterDevice>) => {
+    setPrinters((prev) => prev.map((p) => (p.id === printerId ? { ...p, ...partial } : p)));
+  };
+
+  const deletePrinter = (printerId: string) => {
+    setPrinters((prev) => prev.filter((p) => p.id !== printerId));
+  };
+
+  const setDefaultPrinter = (printerId: string) => {
+    const target = printers.find((p) => p.id === printerId);
+    if (!target) return;
+    setPrinters((prev) =>
+      prev.map((p) =>
+        p.targetCategory === target.targetCategory
+          ? { ...p, isDefault: p.id === printerId }
+          : p
+      )
+    );
+  };
+
+  const getPrinterForCategory = (category: PrinterTargetCategory): HospitalPrinterDevice | undefined => {
+    return printers.find((p) => p.targetCategory === category && p.isDefault) || printers.find((p) => p.targetCategory === category);
+  };
+
   const resetToDefaultCatalog = () => {
     setHospitalProfile(DEFAULT_PROFILE);
     setPolicies(DEFAULT_POLICIES);
     setDoctors(DEFAULT_DOCTORS);
     setBeds(DEFAULT_BEDS);
     setPrintTemplates(DEFAULT_PRINT_TEMPLATES);
+    setPrinters(DEFAULT_PRINTERS);
     localStorage.removeItem(STORAGE_KEYS.PROFILE);
     localStorage.removeItem(STORAGE_KEYS.POLICIES);
     localStorage.removeItem(STORAGE_KEYS.DOCTORS);
     localStorage.removeItem(STORAGE_KEYS.BEDS);
     localStorage.removeItem(STORAGE_KEYS.PRINT_TEMPLATES);
+    localStorage.removeItem(STORAGE_KEYS.PRINTERS);
   };
 
   // Derive unique towers, floors, and departments from configured dataset
@@ -360,6 +549,7 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
         doctors,
         beds,
         printTemplates,
+        printers,
         towers,
         floors,
         departments,
@@ -372,6 +562,11 @@ export const HospitalConfigProvider: React.FC<{ children: React.ReactNode }> = (
         addDoctor,
         updateDoctor,
         deleteDoctor,
+        addPrinter,
+        updatePrinter,
+        deletePrinter,
+        setDefaultPrinter,
+        getPrinterForCategory,
         resetToDefaultCatalog,
       }}
     >

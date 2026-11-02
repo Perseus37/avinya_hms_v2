@@ -226,3 +226,23 @@ Every sensitive button, tab, and input in the UI is gated by `<PermissionGate>`:
 - `config.facility_manage`
 
 Unauthorized actions are cleanly removed or disabled with tooltip explanation, preventing unauthorized state mutations.
+
+---
+
+## 5. Hardware Printer Management & Physical Media Dimensions
+
+### Zero Hardcoded Paper Dimensions
+In enterprise hospitals, printing hardware varies widely across wings:
+- **Zebra ZD510-HC / HC100 Vertical Cartridges:** Narrow-edge feed ($25\text{mm} \times 280\text{mm}$ in portrait orientation).
+- **Direct Thermal Wristband Desktop Units:** Wide-edge feed ($280\text{mm} \times 25\text{mm}$ in landscape orientation).
+- **Reception POS Slips:** Continuous rolls ($80\text{mm}$ or $58\text{mm}$ width, $0\text{mm}$ continuous length).
+- **Central Ward Laser Multi-Function Devices:** Standard ISO 216 ($210\text{mm} \times 297\text{mm}$ A4 portrait).
+- **Phlebotomy Tube Labelers:** Die-cut label rolls ($50\text{mm} \times 25\text{mm}$ landscape).
+
+### Hardware Device Registry & Direct Network Dispatch
+Administrators configure physical devices in [`AdminWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/admin/AdminWorkspace.tsx) under the **Hardware Printers & Network Devices** sub-tab:
+- **Connection Type:** `NETWORK_IP` (Port 9100 RAW / JetDirect TCP socket), `USB` (direct POS interface), `WIFI` (secure wireless roaming), `SYSTEM_DRIVER` (OS spooled).
+- **Print Protocols:** `RAW_ZPL` (Zebra Programming Language for barcode straps), `RAW_ESCPOS` (ESC/POS command set for receipt rolls), `HTML_DRIVER` (isolated browser DOM print).
+- **Physical Millimeter Adjustments:** Custom media width, height, printable area, and 4-way margins ($T, B, L, R$).
+- **Calibration Slip Utility:** Built-in test print engine generates physical margin validation slips with alignment marks to verify print registration prior to live clinical deployment.
+- **Dynamic Selection in Workspaces:** Intake, Registration, ADT, and Patient 360 query `getPrinterForCategory()` to automatically route jobs to the designated departmental printer matching exact configured dimensions.
