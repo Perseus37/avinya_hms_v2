@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { apiClient, getAuthToken, getTenantSlug } from "./client";
 import {
   PatientQuickSearchItem,
   PatientSummaryCard,
@@ -31,6 +31,24 @@ export const uiApi = {
       method: "PUT",
       body: JSON.stringify(branding),
     });
+  },
+  uploadTenantBrandAsset: async (file: File, kind: "logo" | "favicon"): Promise<{ asset_url: string; kind: string; size_bytes: number }> => {
+    const form = new FormData();
+    form.append("file", file);
+    const token = getAuthToken();
+    const response = await fetch(`/api/ui/tenant-branding/assets?kind=${kind}`, {
+      method: "POST",
+      headers: {
+        "X-Hospital-Subdomain": getTenantSlug(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: form,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || `Brand asset upload failed (HTTP ${response.status}).`);
+    }
+    return response.json();
   },
   quickSearchPatients: async (query: string, limit = 10): Promise<PatientQuickSearchItem[]> => {
     if (!query || query.trim().length === 0) return [];
