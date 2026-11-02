@@ -344,3 +344,75 @@ def test_invoice_extraction_failure_retains_document_for_manual_review(
         assert invoice.notes == (
             "AI extraction failed; the source document is retained for manual review."
         )
+
+
+def test_invoice_storage_rejects_symlinked_tenant_directory(
+    monkeypatch, tmp_path
+):
+    from backend.domains.procurement.documents import store_vendor_invoice_document
+
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (storage_root / "default").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(settings, "ATTACHMENTS_STORAGE_DIR", str(storage_root))
+    monkeypatch.setattr(
+        "backend.domains.procurement.documents.scan_file_with_clamav",
+        lambda _: None,
+    )
+
+    with pytest.raises(HTTPException) as rejected:
+        store_vendor_invoice_document(
+            "default", "invoice.pdf", BytesIO(b"%PDF-1.7\\ncontent")
+        )
+
+    assert rejected.value.status_code == 503
+    assert not list(outside.rglob("*"))
+
+
+def test_invoice_storage_rejects_symlinked_invoice_directory(
+    monkeypatch, tmp_path
+):
+    from backend.domains.procurement.documents import store_vendor_invoice_document
+
+    storage_root = tmp_path / "storage"
+    tenant_root = storage_root / "default"
+    tenant_root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tenant_root / "procurement-invoices").symlink_to(
+        outside, target_is_directory=True
+    )
+    monkeypatch.setattr(settings, "ATTACHMENTS_STORAGE_DIR", str(storage_root))
+    monkeypatch.setattr(
+        "backend.domains.procurement.documents.scan_file_with_clamav",
+        lambda _: None,
+    )
+
+    with pytest.raises(HTTPException) as rejected:
+        store_vendor_invoice_document(
+            "default", "invoice.pdf", BytesIO(b"%PDF-1.7\\ncontent")
+        )
+
+    assert rejected.value.status_code == 503
+    assert not list(outside.rglob("*"))
+
+
+def test_invoice_download_rejects_symlinked_document(
+    monkeypatch, tmp_path
+):
+    storage_root = tmp_path / "storage"
+    invoice_dir = storage_root / "default" / "procurement-invoices"
+    invoice_dir.mkdir(parents=True)
+    outside_file = tmp_path / "outside.pdf"
+    outside_file.write_bytes(b"%PDF-1.7\\nprivate")
+    (invoice_dir / ("a" * 32 + ".pdf")).symlink_to(outside_file)
+    monkeypatch.setattr(settings, "ATTACHMENTS_STORAGE_DIR", str(storage_root))
+
+    with pytest.raises(HTTPException) as rejected:
+        resolve_vendor_invoice_document(
+            "default", f"default/procurement-invoices/{'a' * 32}.pdf"
+        )
+
+    assert rejected.value.status_code == 404
