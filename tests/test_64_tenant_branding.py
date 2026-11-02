@@ -355,7 +355,7 @@ def test_untrusted_forwarded_host_cannot_change_tenant_routing(monkeypatch):
     from backend.core.database import extract_subdomain_slug
 
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
-    monkeypatch.setattr(settings, "ALLOW_HEADER_TENANT_OVERRIDE", False)
+    monkeypatch.setattr(settings, "ALLOW_HEADER_TENANT_OVERRIDE", False, raising=False)
     monkeypatch.setattr(settings, "BASE_DOMAIN", "example.test")
     monkeypatch.setattr(settings, "TRUSTED_PROXY_IPS", "198.51.100.10/32")
 
