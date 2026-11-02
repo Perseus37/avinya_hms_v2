@@ -71,6 +71,36 @@ def scan_file_with_clamav(document_path: Path) -> None:
     )
 
 
+def _invoice_storage_directory(tenant_slug: str, *, create: bool) -> Path:
+    """Return the canonical invoice directory without traversing tenant-controlled symlinks."""
+    if not _TENANT_SLUG.fullmatch(tenant_slug):
+        raise RuntimeError("Tenant slug is not a safe storage path component.")
+
+    root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
+    tenant_root = root / tenant_slug
+    invoice_dir = tenant_root / "procurement-invoices"
+
+    try:
+        if create:
+            tenant_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if tenant_root.is_symlink() or tenant_root.resolve() != tenant_root:
+            raise HTTPException(status_code=503, detail="Invoice document storage is unavailable.")
+        if create:
+            os.chmod(tenant_root, 0o700)
+            invoice_dir.mkdir(exist_ok=True, mode=0o700)
+        if invoice_dir.is_symlink() or invoice_dir.resolve() != invoice_dir:
+            raise HTTPException(status_code=503, detail="Invoice document storage is unavailable.")
+        if create:
+            os.chmod(invoice_dir, 0o700)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Invoice document storage is unavailable.",
+        ) from exc
+
+    return invoice_dir
+
+
 def store_vendor_invoice_document(
     tenant_slug: str, filename: str | None, source: BinaryIO
 ) -> tuple[str, Path]:
@@ -86,13 +116,7 @@ def store_vendor_invoice_document(
             detail="Invoice documents must be PDF, PNG, or JPEG files.",
         )
 
-    root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-    tenant_root = root / tenant_slug
-    tenant_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(tenant_root, 0o700)
-    tenant_dir = tenant_root / "procurement-invoices"
-    tenant_dir.mkdir(exist_ok=True, mode=0o700)
-    os.chmod(tenant_dir, 0o700)
+    tenant_dir = _invoice_storage_directory(tenant_slug, create=True)
     document_id = uuid.uuid4().hex
     destination = tenant_dir / f"{document_id}{suffix}"
     temporary = tenant_dir / f".{document_id}.part"
@@ -127,29 +151,35 @@ def store_vendor_invoice_document(
         scan_file_with_clamav(temporary)
         os.replace(temporary, destination)
     except Exception:
-        temporary.unlink(missing_ok=True)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
 
     key = PurePosixPath(tenant_slug, "procurement-invoices", destination.name).as_posix()
     return key, destination
-
-
 def resolve_vendor_invoice_document(tenant_slug: str, document_key: str) -> Path:
-    """Resolve a stored invoice key while enforcing its tenant directory boundary."""
+    """Resolve a stored invoice key while enforcing tenant and symlink boundaries."""
     if not _TENANT_SLUG.fullmatch(tenant_slug):
         raise RuntimeError("Tenant slug is not a safe storage path component.")
 
     key = PurePosixPath(document_key)
     expected_prefix = PurePosixPath(tenant_slug, "procurement-invoices")
-    if key.is_absolute() or key.parts[:2] != expected_prefix.parts or len(key.parts) != 3:
+    if (
+        key.is_absolute()
+        or key.parts[:2] != expected_prefix.parts
+        or len(key.parts) != 3
+        or not re.fullmatch(r"[0-9a-f]{32}\\.(?:pdf|png|jpg|jpeg)", key.name)
+    ):
         raise HTTPException(status_code=404, detail="Invoice document not found.")
 
-    root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-    tenant_root = (root / tenant_slug / "procurement-invoices").resolve()
-    document_path = (root.joinpath(*key.parts)).resolve()
+    tenant_dir = _invoice_storage_directory(tenant_slug, create=False)
+    document_path = tenant_dir / key.name
     try:
-        document_path.relative_to(tenant_root)
-    except ValueError as exc:
+        if document_path.is_symlink() or document_path.resolve() != document_path:
+            raise HTTPException(status_code=404, detail="Invoice document not found.")
+    except OSError as exc:
         raise HTTPException(status_code=404, detail="Invoice document not found.") from exc
 
     if document_path.suffix.lower() not in _ALLOWED_SIGNATURES or not document_path.is_file():
