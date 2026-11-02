@@ -156,8 +156,12 @@ Hospital workstations demand rapid keyboard-first throughput. Avinya HMS impleme
 ### Workspace 15: Executive Command HUD & Master Administration (`admin`)
 - **Executive Operational Metrics:** Occupancy rate, ALOS, RevPOB, unbilled folio WIP, and ED LWBS.
 - **700+ Metric Enterprise Cube Explorer:** Interactive multidimensional KPI navigator.
-- **Statutory Registers HUD:** RFC 4180 CSV exports for Midnight Census, Cashier Shift, and NDPS ledgers.
-- **Interactive Print Template Studio (WYSIWYG):** Live controls for 80mm Thermal Receipt, Barcode Wristband, A4 Bed Head Ticket, and A4 Statutory Discharge Summary.
+- **Statutory Registers HUD:** RFC 4180 CSV exports for Midnight Census, Cashier Shift, NDPS, and Bio-Medical Waste ledgers.
+- **Interactive Print Template Studio (WYSIWYG):** Dynamic media controls for 80mm/58mm Thermal Receipt, Custom Wristband sizes (Adult Standard, Adult Slim, Pediatric, Infant NICU, Neonate Micro), A4 Bed Head Ticket, and A4 Statutory Discharge Summary.
+- **Hospital Business Continuity Plan (BCP) & Downtime Pack:** 1-click issuance of Form ADM-BCP-01 containing standardized offline START Triage Vouchers, Doctor Order Sheets with allergy checks, Inpatient Vitals Flowsheets, STAT Uncrossmatched Blood Requisition, and Manual Cashier Counterfoils for server/network outages.
+- **Statutory Facility Environmental & Safety Audit Dossier:** Form NABH-FMS-01 capturing CPCB Form IV Bio-Medical Waste Annual Return, Fire Service NOC & hydrant tests, AERB Radiation Safety Officer certifications, Liquid Medical Oxygen (LMO) tank purity, and 15-second DG ATS cutover.
+- **Emergency Code Drill Simulator & Protocol Wall Placards:** Evaluator for unannounced drills (Code Red, Blue, Pink, Orange, Yellow, Black) with response timers, and high-visibility wall placards (Form ADM-CODE-PLACARD).
+- **Batch Ward Bed Provisioning Engine:** Rapid commissioning of up to 50 sequenced operational beds with room prefixes, bed categories, tariffs, and equipment tags in 1 click.
 
 ---
 

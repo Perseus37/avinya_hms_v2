@@ -53,6 +53,10 @@ import {
   Network,
   HardDrive,
   Zap,
+  Flame,
+  BellRing,
+  AlertOctagon,
+  ShieldAlert,
 } from "lucide-react";
 
 interface AdminWorkspaceProps {
@@ -71,6 +75,7 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
     beds,
     printTemplates,
     printers,
+    getPrinterForCategory,
     updateHospitalProfile,
     updatePolicies,
     updatePrintTemplates,
@@ -327,6 +332,590 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
   const [newTariff, setNewTariff] = useState("2500");
   const [newFeatures, setNewFeatures] = useState("O2 Wall Outlet, Call Bell");
   const [bedSuccessMsg, setBedSuccessMsg] = useState("");
+
+  // Batch Bed Provisioning State
+  const [batchModalOpen, setBatchModalOpen] = useState(false);
+  const [batchWardName, setBatchWardName] = useState("Surgical ICU Wing B");
+  const [batchTower, setBatchTower] = useState("Main Tower");
+  const [batchFloor, setBatchFloor] = useState("Floor 4");
+  const [batchRoomPrefix, setBatchRoomPrefix] = useState("R-40");
+  const [batchBedPrefix, setBatchBedPrefix] = useState("ICU-");
+  const [batchStartNum, setBatchStartNum] = useState(1);
+  const [batchCount, setBatchCount] = useState(10);
+  const [batchCategory, setBatchCategory] = useState<"General" | "Semi-Private" | "Private" | "ICU">("ICU");
+  const [batchTariff, setBatchTariff] = useState("5500");
+  const [batchFeatures, setBatchFeatures] = useState("Multi-Para Monitor, Ventilator Ready, O2 Wall Outlet, Suction Unit");
+
+  // Hospital Downtime BCP & Disaster Continuity State
+  const [downtimeModeActive, setDowntimeModeActive] = useState(false);
+  const [bcpPrintSuccess, setBcpPrintSuccess] = useState("");
+
+  // Hospital Emergency Code Drills State
+  const [drillModalOpen, setDrillModalOpen] = useState(false);
+  const [selectedDrillCode, setSelectedDrillCode] = useState<"CODE_RED" | "CODE_BLUE" | "CODE_PINK" | "CODE_ORANGE" | "CODE_YELLOW" | "CODE_BLACK">("CODE_RED");
+  const [drillLocation, setDrillLocation] = useState("Ward 3B Corridor");
+  const [drillResponseSecs, setDrillResponseSecs] = useState("102");
+  const [drillStaffCount, setDrillStaffCount] = useState("14");
+  const [recentDrills, setRecentDrills] = useState<
+    Array<{
+      id: string;
+      code: "CODE_RED" | "CODE_BLUE" | "CODE_PINK" | "CODE_ORANGE" | "CODE_YELLOW" | "CODE_BLACK";
+      location: string;
+      date: string;
+      responseTime: string;
+      staffCount: number;
+      result: string;
+      evaluator: string;
+    }>
+  >([
+    {
+      id: "DRL-2026-041",
+      code: "CODE_RED",
+      location: "Ward 3B Corridor",
+      date: "2026-10-28",
+      responseTime: "1m 42s",
+      staffCount: 14,
+      result: "PASSED (NABH FMS.4)",
+      evaluator: "Safety Officer K. Sharma",
+    },
+    {
+      id: "DRL-2026-040",
+      code: "CODE_BLUE",
+      location: "OPD Waiting Bay 2",
+      date: "2026-10-22",
+      responseTime: "1m 18s",
+      staffCount: 6,
+      result: "PASSED (AHA / ACLS)",
+      evaluator: "ICU Registrar Dr. Sen",
+    },
+    {
+      id: "DRL-2026-039",
+      code: "CODE_PINK",
+      location: "NICU Mother Ward",
+      date: "2026-10-15",
+      responseTime: "2m 04s",
+      staffCount: 18,
+      result: "PASSED (Infant Security)",
+      evaluator: "Chief Security Officer",
+    },
+  ]);
+
+  const handleBatchAddBeds = () => {
+    if (!batchWardName.trim() || batchCount <= 0) {
+      alert("Please specify a valid Ward Name and positive count.");
+      return;
+    }
+    const feats = batchFeatures.split(",").map((s) => s.trim()).filter(Boolean);
+    const tariffNum = parseInt(batchTariff || "3500", 10);
+
+    for (let i = 0; i < batchCount; i++) {
+      const currentNum = batchStartNum + i;
+      const bedNumber = `${batchBedPrefix}${currentNum.toString().padStart(2, "0")}`;
+      const roomNumber = `${batchRoomPrefix}${Math.floor((currentNum - 1) / 4) + 1}`;
+      addBed({
+        bedNumber,
+        roomNumber,
+        tower: batchTower,
+        floor: batchFloor,
+        wardName: batchWardName.trim(),
+        category: batchCategory,
+        status: "VACANT_CLEAN",
+        dailyTariffRupees: tariffNum,
+        features: feats,
+      });
+    }
+
+    setBatchModalOpen(false);
+    setBedSuccessMsg(`Successfully provisioned batch of ${batchCount} operational beds!`);
+    setTimeout(() => setBedSuccessMsg(""), 3500);
+  };
+
+  const handleRecordEmergencyDrill = () => {
+    const drillId = `DRL-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`;
+    const newDrill = {
+      id: drillId,
+      code: selectedDrillCode,
+      location: drillLocation,
+      date: new Date().toISOString().slice(0, 10),
+      responseTime: `${drillResponseSecs}s`,
+      staffCount: parseInt(drillStaffCount || "10", 10),
+      result: parseInt(drillResponseSecs, 10) <= 180 ? "PASSED (NABH FMS.4)" : "ACTION REQUIRED",
+      evaluator: "Safety Officer / Drill Commander",
+    };
+    setRecentDrills([newDrill, ...recentDrills]);
+    setDrillModalOpen(false);
+  };
+
+  const handlePrintDowntimeBcpPack = () => {
+    const targetPrinter = getPrinterForCategory("CLINICAL_A4");
+    const timestamp = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+    const batchId = `BCP-${Date.now().toString().slice(-6)}`;
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; color: #000; line-height: 1.3; font-size: 11px;">
+        <!-- Top Institutional Header -->
+        <div style="border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: flex-start;">
+          <div>
+            <div style="font-size: 17px; font-weight: 900; letter-spacing: 0.5px; text-transform: uppercase;">
+              ${hospitalProfile.name}
+            </div>
+            <div style="font-size: 10px; color: #333;">
+              ${hospitalProfile.address} | Ph: ${hospitalProfile.phone}
+            </div>
+            <div style="font-size: 9px; font-weight: bold; color: #b91c1c; margin-top: 2px;">
+              ${hospitalProfile.accreditation} • EMERGENCY BUSINESS CONTINUITY PLAN (NABH FMS.8)
+            </div>
+          </div>
+          <div style="text-align: right; border: 1.5px solid #000; padding: 4px 8px; border-radius: 4px; background: #fee2e2;">
+            <div style="font-size: 11px; font-weight: 900; color: #991b1b;">FORM ADM-BCP-01</div>
+            <div style="font-size: 9px; font-weight: bold; color: #000;">OFFLINE CONTINGENCY PACK</div>
+            <div style="font-size: 8px; font-family: monospace;">BATCH: ${batchId}</div>
+          </div>
+        </div>
+
+        <div style="background: #fef2f2; border: 1px solid #f87171; padding: 6px 10px; margin-bottom: 12px; border-radius: 4px;">
+          <div style="font-weight: 900; color: #991b1b; font-size: 11px; text-transform: uppercase;">
+            ⚠️ CRITICAL NOTICE: ACTIVE SYSTEM DOWNTIME / DISASTER OPERATIONAL MODE
+          </div>
+          <div style="font-size: 9.5px; color: #333; margin-top: 2px;">
+            This packet contains statutory paper counterparts for clinical care during HIS/network outages. All entries must be documented in ballpoint pen and preserved for post-recovery reconciliation under NABH Standard COP.2.
+          </div>
+        </div>
+
+        <!-- FORM 1: EMERGENCY TRIAGE DOCKET -->
+        <div style="border: 1.5px solid #000; border-radius: 4px; padding: 8px; margin-bottom: 14px; page-break-inside: avoid;">
+          <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #000; padding-bottom: 4px; margin-bottom: 6px;">
+            <div style="font-weight: 900; font-size: 11px; text-transform: uppercase;">
+              1. EMERGENCY DEPARTMENT START OFFLINE TRIAGE & INTAKE DOCKET
+            </div>
+            <div style="font-size: 9px; font-weight: bold;">STAT-ER-DOWNTIME</div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 6px; margin-bottom: 6px; font-size: 10px;">
+            <div style="border-bottom: 1px dotted #000; padding-bottom: 2px;"><b>Patient Name:</b> ___________________________</div>
+            <div style="border-bottom: 1px dotted #000; padding-bottom: 2px;"><b>Age / Sex:</b> ___ / ___</div>
+            <div style="border-bottom: 1px dotted #000; padding-bottom: 2px;"><b>Temp UHID:</b> ____________</div>
+            <div style="border-bottom: 1px dotted #000; padding-bottom: 2px;"><b>Time Arrived:</b> _______</div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 6px 0; text-align: center; font-size: 9.5px; font-weight: bold;">
+            <div style="border: 2px solid #dc2626; background: #fee2e2; color: #991b1b; padding: 4px; border-radius: 3px;">
+              [ ] RED (IMMEDIATE)<br/><span style="font-size: 8px; font-weight: normal;">Resp &gt; 30, Pulse weak, Unconscious</span>
+            </div>
+            <div style="border: 2px solid #f59e0b; background: #fef3c7; color: #92400e; padding: 4px; border-radius: 3px;">
+              [ ] YELLOW (DELAYED)<br/><span style="font-size: 8px; font-weight: normal;">Serious fracture, severe pain, stable</span>
+            </div>
+            <div style="border: 2px solid #16a34a; background: #dcfce7; color: #166534; padding: 4px; border-radius: 3px;">
+              [ ] GREEN (WALKING)<br/><span style="font-size: 8px; font-weight: normal;">Minor lacerations, ambulating</span>
+            </div>
+            <div style="border: 2px solid #000; background: #e2e8f0; color: #000; padding: 4px; border-radius: 3px;">
+              [ ] BLACK (EXPECTANT)<br/><span style="font-size: 8px; font-weight: normal;">No respiration after airway cleared</span>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 4px; font-size: 9px; margin-top: 6px;">
+            <div style="border: 1px solid #999; padding: 2px 4px;">BP: _____ / _____ mmHg</div>
+            <div style="border: 1px solid #999; padding: 2px 4px;">HR: _____ bpm</div>
+            <div style="border: 1px solid #999; padding: 2px 4px;">SpO2: _____ %</div>
+            <div style="border: 1px solid #999; padding: 2px 4px;">GCS (E+V+M): _____ / 15</div>
+            <div style="border: 1px solid #999; padding: 2px 4px;">GRBS: _____ mg/dL</div>
+          </div>
+        </div>
+
+        <!-- FORM 2: DOCTOR OFFLINE CLINICAL ORDER & PRESCRIPTION SHEET -->
+        <div style="border: 1.5px solid #000; border-radius: 4px; padding: 8px; margin-bottom: 14px; page-break-inside: avoid;">
+          <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #000; padding-bottom: 4px; margin-bottom: 6px;">
+            <div style="font-weight: 900; font-size: 11px; text-transform: uppercase;">
+              2. PHYSICIAN DOWNTIME CPOE &amp; STAT PRESCRIPTION SHEET
+            </div>
+            <div style="font-size: 9px; font-weight: bold; color: #b91c1c;">MANDATORY ALLERGY CHECK</div>
+          </div>
+
+          <div style="background: #fffbeb; border: 1px solid #f59e0b; padding: 4px 6px; font-size: 9.5px; margin-bottom: 6px; display: flex; justify-content: space-between;">
+            <div><b>Known Drug Allergies:</b> [ ] NKDA &nbsp;&nbsp;&nbsp; [ ] Penicillin &nbsp;&nbsp;&nbsp; [ ] Sulfa &nbsp;&nbsp;&nbsp; [ ] NSAIDs &nbsp;&nbsp;&nbsp; [ ] Other: ______________________</div>
+          </div>
+
+          <table style="width: 100%; border-collapse: collapse; font-size: 9px; margin-bottom: 8px;">
+            <thead>
+              <tr style="background: #f1f5f9; border: 1px solid #000;">
+                <th style="border: 1px solid #000; padding: 3px; width: 5%;">#</th>
+                <th style="border: 1px solid #000; padding: 3px; width: 35%;">Drug Generic Name &amp; Strength</th>
+                <th style="border: 1px solid #000; padding: 3px; width: 15%;">Dose &amp; Route</th>
+                <th style="border: 1px solid #000; padding: 3px; width: 15%;">Frequency</th>
+                <th style="border: 1px solid #000; padding: 3px; width: 15%;">Duration</th>
+                <th style="border: 1px solid #000; padding: 3px; width: 15%;">Nurse Admin Sign</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${[1, 2, 3, 4].map((i) => `
+                <tr style="height: 22px;">
+                  <td style="border: 1px solid #000; text-align: center; font-weight: bold;">${i}</td>
+                  <td style="border: 1px solid #000; padding: 2px;"></td>
+                  <td style="border: 1px solid #000; padding: 2px;"></td>
+                  <td style="border: 1px solid #000; padding: 2px;"></td>
+                  <td style="border: 1px solid #000; padding: 2px;"></td>
+                  <td style="border: 1px solid #000; padding: 2px;"></td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+
+          <div style="display: flex; justify-content: space-between; font-size: 9px; margin-top: 4px;">
+            <div>Clinical Diagnosis / Directives: ________________________________________________</div>
+            <div style="border-top: 1px solid #000; padding-top: 2px; width: 220px; text-align: center;">
+              <b>Treating Clinician Sign &amp; NMC Reg No.</b>
+            </div>
+          </div>
+        </div>
+
+        <!-- FORM 3: STAT UNCROSSMATCHED BLOOD REQUISITION -->
+        <div style="border: 1.5px solid #000; border-radius: 4px; padding: 8px; margin-bottom: 14px; page-break-inside: avoid;">
+          <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #000; padding-bottom: 4px; margin-bottom: 6px;">
+            <div style="font-weight: 900; font-size: 11px; text-transform: uppercase;">
+              3. STAT UNCROSSMATCHED EMERGENCY BLOOD RELEASE FORM
+            </div>
+            <div style="font-size: 9px; font-weight: bold;">FORM 27-C DOWNTIME</div>
+          </div>
+
+          <div style="font-size: 9px; margin-bottom: 4px;">
+            [ ] <b>EMERGENCY O-NEGATIVE / UNCROSSMATCHED PROTOCOL:</b> I certify that waiting for standard crossmatching entails imminent loss of life.
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 6px; font-size: 9px;">
+            <div>Product: [ ] PRBC [ ] FFP [ ] Platelets</div>
+            <div>Units: _________</div>
+            <div>Patient ABO/Rh: _________</div>
+            <div>Clinician Signature: __________________</div>
+          </div>
+        </div>
+
+        <!-- FORM 4: MANUAL CASHIER COUNTERFOIL RECEIPT -->
+        <div style="border: 1.5px dashed #000; border-radius: 4px; padding: 8px; page-break-inside: avoid; background: #fafafa;">
+          <div style="display: flex; justify-content: space-between; border-bottom: 1px dashed #000; padding-bottom: 4px; margin-bottom: 6px;">
+            <div style="font-weight: 900; font-size: 11px; text-transform: uppercase;">
+              4. MANUAL CASHIER EMERGENCY RECEIPT &amp; AUDIT COUNTERFOIL
+            </div>
+            <div style="font-size: 9px; font-weight: bold;">SERIES: MAN-${batchId}</div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 6px; font-size: 9.5px; margin-bottom: 4px;">
+            <div>Received from: ____________________________________</div>
+            <div>Dept: [ ] OPD [ ] IPD [ ] ER</div>
+            <div>Tender: [ ] Cash [ ] UPI Manual Ref</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 6px; font-size: 9.5px;">
+            <div>Gross: ₹ _____________</div>
+            <div>Concession: ₹ _____________</div>
+            <div><b>Net Received: ₹ _____________</b></div>
+            <div style="text-align: right;">Cashier Sign: __________________</div>
+          </div>
+        </div>
+
+        <!-- Footer Verification -->
+        <div style="margin-top: 10px; border-top: 1px solid #999; padding-top: 4px; display: flex; justify-content: space-between; font-size: 8px; color: #555;">
+          <div>Print Category: <b>CLINICAL_A4</b> | Configured Device: <b>${targetPrinter ? targetPrinter.name : "System Default Laser/A4"}</b></div>
+          <div>Generated At: ${timestamp} | Avinya Health BCP Framework</div>
+        </div>
+      </div>
+    `;
+
+    printDocument(htmlContent, {
+      title: `Emergency Downtime Clinical Pack — ${batchId}`,
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: targetPrinter,
+    });
+
+    setBcpPrintSuccess(`Offline Contingency Pack (${batchId}) dispatched to ${targetPrinter ? targetPrinter.name : "A4 Laser Printer"}.`);
+    setTimeout(() => setBcpPrintSuccess(""), 4000);
+  };
+
+  const handlePrintFacilityComplianceDossier = () => {
+    const targetPrinter = getPrinterForCategory("CLINICAL_A4");
+    const timestamp = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; color: #000; line-height: 1.35; font-size: 10.5px;">
+        <div style="border-bottom: 2px solid #000; padding-bottom: 6px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: flex-start;">
+          <div>
+            <div style="font-size: 17px; font-weight: 900; letter-spacing: 0.5px; text-transform: uppercase;">
+              ${hospitalProfile.name}
+            </div>
+            <div style="font-size: 10px; color: #333;">
+              ${hospitalProfile.address} | Ph: ${hospitalProfile.phone}
+            </div>
+            <div style="font-size: 9px; font-weight: bold; color: #1e3a8a; margin-top: 2px;">
+              FACILITY MANAGEMENT & SAFETY (FMS) EXECUTIVE STATUTORY AUDIT DOSSIER
+            </div>
+          </div>
+          <div style="text-align: right; border: 1.5px solid #000; padding: 4px 8px; border-radius: 4px; background: #f0fdf4;">
+            <div style="font-size: 11px; font-weight: 900; color: #166534;">FORM NABH-FMS-01</div>
+            <div style="font-size: 8px; font-weight: bold; color: #000;">NABH 5TH EDITION / CPCB COMPLIANCE</div>
+            <div style="font-size: 8px; font-family: monospace;">AUDIT DATE: ${new Date().toISOString().slice(0, 10)}</div>
+          </div>
+        </div>
+
+        <div style="border: 1px solid #000; padding: 8px; border-radius: 4px; margin-bottom: 10px; background: #fafafa;">
+          <div style="font-weight: 900; font-size: 11px; text-transform: uppercase; margin-bottom: 4px; color: #0f172a;">
+            1. BIO-MEDICAL WASTE (BMW) MANAGEMENT STATUTORY ANNUAL RETURN (CPCB FORM IV)
+          </div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 9.5px; margin-bottom: 4px;">
+            <thead>
+              <tr style="background: #e2e8f0; border: 1px solid #000;">
+                <th style="border: 1px solid #000; padding: 3px;">Category</th>
+                <th style="border: 1px solid #000; padding: 3px;">Color Code</th>
+                <th style="border: 1px solid #000; padding: 3px;">Waste Description</th>
+                <th style="border: 1px solid #000; padding: 3px;">Annual Generation</th>
+                <th style="border: 1px solid #000; padding: 3px;">Treatment / Disposal Mode</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="border: 1px solid #000; padding: 3px; font-weight: bold;">Yellow</td>
+                <td style="border: 1px solid #000; padding: 3px; background: #fef08a;">Yellow Non-Chlorinated</td>
+                <td style="border: 1px solid #000; padding: 3px;">Human anatomical, soiled cotton, expired drugs</td>
+                <td style="border: 1px solid #000; padding: 3px; font-family: monospace; font-weight: bold;">4,820.5 kg</td>
+                <td style="border: 1px solid #000; padding: 3px;">Common Bio-medical Incineration (1050°C)</td>
+              </tr>
+              <tr>
+                <td style="border: 1px solid #000; padding: 3px; font-weight: bold;">Red</td>
+                <td style="border: 1px solid #000; padding: 3px; background: #fecaca;">Red Autoclave Safe</td>
+                <td style="border: 1px solid #000; padding: 3px;">Contaminated plastics, tubing, catheters, IV bottles</td>
+                <td style="border: 1px solid #000; padding: 3px; font-family: monospace; font-weight: bold;">7,142.0 kg</td>
+                <td style="border: 1px solid #000; padding: 3px;">Autoclaving + Shredding + Recycling</td>
+              </tr>
+              <tr>
+                <td style="border: 1px solid #000; padding: 3px; font-weight: bold;">White (Translucent)</td>
+                <td style="border: 1px solid #000; padding: 3px; background: #f8fafc;">Puncture-Proof Container</td>
+                <td style="border: 1px solid #000; padding: 3px;">Needles, scalpels, blades, fixed needles</td>
+                <td style="border: 1px solid #000; padding: 3px; font-family: monospace; font-weight: bold;">892.4 kg</td>
+                <td style="border: 1px solid #000; padding: 3px;">Autoclaving + Encapsulation / Metal Sharp Pit</td>
+              </tr>
+              <tr>
+                <td style="border: 1px solid #000; padding: 3px; font-weight: bold;">Blue</td>
+                <td style="border: 1px solid #000; padding: 3px; background: #bfdbfe;">Cardboard Box / Blue Mark</td>
+                <td style="border: 1px solid #000; padding: 3px;">Glassware, medicine vials, ampoules</td>
+                <td style="border: 1px solid #000; padding: 3px; font-family: monospace; font-weight: bold;">1,425.8 kg</td>
+                <td style="border: 1px solid #000; padding: 3px;">1% Sodium Hypochlorite Disinfection + Recycling</td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="font-size: 8.5px; color: #475569;">
+            Authorized Transporter: <b>CleanEnv Solutions Pvt Ltd (Auth No: CPCB/BMW-TR-81/2024, Valid to: 31-Dec-2028)</b> • 100% Barcoded Bag Manifesting active.
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px;">
+          <!-- 2. Fire Safety -->
+          <div style="border: 1px solid #000; padding: 6px; border-radius: 4px;">
+            <div style="font-weight: 900; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;">
+              2. FIRE SAFETY &amp; LIFE PROTECTION (FMS.4)
+            </div>
+            <div style="font-size: 9px;">• State Fire Service NOC: <b>FS-NOC-2024-9182 (Valid to 14-Nov-2027)</b></div>
+            <div style="font-size: 9px;">• Wet Riser &amp; Yard Hydrant Pressure: <b>7.2 kg/cm² (Weekly Tested)</b></div>
+            <div style="font-size: 9px;">• Optical Smoke Detectors: <b>128/128 Operational (Tested Oct 2026)</b></div>
+            <div style="font-size: 9px;">• Evacuation Mock Drills: <b>Completed 28-Oct-2026 (Avg time: 1m 42s)</b></div>
+          </div>
+
+          <!-- 3. AERB Radiation Safety -->
+          <div style="border: 1px solid #000; padding: 6px; border-radius: 4px;">
+            <div style="font-weight: 900; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;">
+              3. AERB RADIATION SAFETY (NABH FMS.6)
+            </div>
+            <div style="font-size: 9px;">• Radiological Safety Officer: <b>Dr. S. Nambiar (RSO-III Reg #AERB-8821)</b></div>
+            <div style="font-size: 9px;">• 128-Slice CT &amp; Digital X-Ray QA: <b>Calibrated &amp; Certified (Sep 2026)</b></div>
+            <div style="font-size: 9px;">• Lead Apron Integrity: <b>24/24 aprons 0.5mm Pb eq. inspected (0 tears)</b></div>
+            <div style="font-size: 9px;">• Staff TLD Badges: <b>18 Badges quarterly monitored (All &lt; 1 mSv)</b></div>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px;">
+          <!-- 4. Medical Gas Pipeline -->
+          <div style="border: 1px solid #000; padding: 6px; border-radius: 4px;">
+            <div style="font-weight: 900; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;">
+              4. MEDICAL GAS PIPELINE SYSTEM (MGPS)
+            </div>
+            <div style="font-size: 9px;">• Cryogenic Liquid Medical O2 (LMO): <b>10,000 Liters Vessel (99.4% Purity)</b></div>
+            <div style="font-size: 9px;">• Emergency Backup Manifold: <b>60 High-Pressure D-Type Cylinders</b></div>
+            <div style="font-size: 9px;">• Terminal Line Pressure: <b>O2 4.2 Bar • Suction -60 kPa • MedAir 4 Bar</b></div>
+            <div style="font-size: 9px;">• Master Alarm Panel: <b>Audible/Visual sensors active in ICU &amp; Control Room</b></div>
+          </div>
+
+          <!-- 5. Emergency Power & Water -->
+          <div style="border: 1px solid #000; padding: 6px; border-radius: 4px;">
+            <div style="font-weight: 900; font-size: 10px; text-transform: uppercase; margin-bottom: 2px;">
+              5. EMERGENCY UTILITIES &amp; INFECTION SAFETY
+            </div>
+            <div style="font-size: 9px;">• Dual Cummins DG Sets: <b>500 kVA + 380 kVA with ATS (12s cutover)</b></div>
+            <div style="font-size: 9px;">• On-Site Fuel Reserve: <b>4,000 Liters HSD (72 hours full load runtime)</b></div>
+            <div style="font-size: 9px;">• Drinking &amp; Dialysis RO Water: <b>TDS 42 ppm, E. coli: 0 CFU/100ml</b></div>
+            <div style="font-size: 9px;">• Legionella Water Test: <b>Negative (NABL Report #LAB-W-2026-904)</b></div>
+          </div>
+        </div>
+
+        <!-- Statutory Endorsement & Seals -->
+        <div style="margin-top: 14px; border-top: 1.5px solid #000; padding-top: 8px; display: grid; grid-template-columns: 1fr 1fr 1fr; text-align: center; font-size: 9.5px;">
+          <div>
+            ____________________________________<br/>
+            <b>Er. K. Sharma, B.E. (Mech)</b><br/>
+            Chief Biomedical &amp; Facility Engineer
+          </div>
+          <div>
+            ____________________________________<br/>
+            <b>Dr. R. Swaminathan, MD (Micro)</b><br/>
+            Infection Control &amp; BMW Officer
+          </div>
+          <div>
+            ____________________________________<br/>
+            <b>Dr. A. Sengupta, MS, MHA</b><br/>
+            Medical Superintendent &amp; Director
+          </div>
+        </div>
+
+        <div style="margin-top: 10px; border-top: 1px solid #ccc; padding-top: 4px; display: flex; justify-content: space-between; font-size: 8px; color: #555;">
+          <div>Print Category: <b>CLINICAL_A4</b> | Hardware Device: <b>${targetPrinter ? targetPrinter.name : "System Default Laser/A4"}</b></div>
+          <div>Statutory Verification Timestamp: ${timestamp} | Avinya Health Audit Engine</div>
+        </div>
+      </div>
+    `;
+
+    printDocument(htmlContent, {
+      title: "Statutory Facility Management & Safety Dossier",
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: targetPrinter,
+    });
+  };
+
+  const handlePrintEmergencyPlacard = () => {
+    const targetPrinter = getPrinterForCategory("CLINICAL_A4");
+    const timestamp = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; color: #000; line-height: 1.25; font-size: 10.5px;">
+        <div style="text-align: center; border-bottom: 3px solid #000; padding-bottom: 6px; margin-bottom: 8px;">
+          <div style="font-size: 18px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase;">
+            ${hospitalProfile.name}
+          </div>
+          <div style="font-size: 13px; font-weight: 900; color: #b91c1c; text-transform: uppercase; margin-top: 2px;">
+            EMERGENCY HOSPITAL CODE RESPONSE QUICK REFERENCE PROTOCOL
+          </div>
+          <div style="font-size: 9.5px; font-weight: bold; color: #333;">
+            MANDATORY POSTING AT ALL NURSING STATIONS, ICUS, OTS &amp; OPERATIONAL CORRIDORS (NABH FMS.4)
+          </div>
+          <div style="display: inline-block; background: #fee2e2; border: 2px solid #dc2626; padding: 3px 12px; border-radius: 4px; font-weight: 900; font-size: 11px; color: #991b1b; margin-top: 4px;">
+            INTERNAL EMERGENCY SPEED DIAL: EXT 2222 / EXT 3333
+          </div>
+        </div>
+
+        <table style="width: 100%; border-collapse: collapse; font-size: 9.5px; margin-bottom: 8px;">
+          <thead>
+            <tr style="background: #0f172a; color: #fff; text-align: left;">
+              <th style="padding: 4px; border: 1px solid #000; width: 18%;">Emergency Code</th>
+              <th style="padding: 4px; border: 1px solid #000; width: 22%;">Clinical / Crisis Event</th>
+              <th style="padding: 4px; border: 1px solid #000; width: 35%;">Immediate First-Responder Actions</th>
+              <th style="padding: 4px; border: 1px solid #000; width: 25%;">Primary Response Team</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: 900; background: #fee2e2; color: #991b1b;">
+                🔴 CODE RED
+              </td>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: bold;">
+                FIRE / SMOKE DETECTED
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                <b>R.A.C.E.:</b> Rescue patients in immediate danger &bull; Alarm (pull pull-station) &bull; Contain (close fire doors) &bull; Extinguish / Evacuate.
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                Fire Safety Team &bull; Ward Staff &bull; Security (Ext 2222)
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: 900; background: #dbeafe; color: #1e40af;">
+                🔵 CODE BLUE
+              </td>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: bold;">
+                CARDIAC / RESPIRATORY ARREST
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                Announce location via PA &bull; Initiate CPR immediately (30:2) &bull; Bring Crash Cart &amp; Defibrillator &bull; Maintain airway.
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                ICU Registrar &bull; Anaesthesiologist &bull; Code Blue Nurse Team
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: 900; background: #fce7f3; color: #9d174d;">
+                🌸 CODE PINK
+              </td>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: bold;">
+                INFANT / CHILD ABDUCTION
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                Lock all perimeter hospital exits immediately &bull; Stop and inspect all large bags, strollers, blankets &bull; Alert CCTV command.
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                Chief Security Officer &bull; Floor Wardens &bull; Local Police
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: 900; background: #ffedd5; color: #9a3412;">
+                🟠 CODE ORANGE
+              </td>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: bold;">
+                MASS CASUALTY DISASTER (MCI)
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                Clear Emergency Department bays &bull; Activate Incident Command System (ICS) &bull; Mobilize off-duty trauma surgeons &bull; Stock O-Neg blood.
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                Trauma &amp; Emergency HOD &bull; Nursing Superintendent
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: 900; background: #fef9c3; color: #854d0e;">
+                🟡 CODE YELLOW
+              </td>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: bold;">
+                HAZARDOUS MATERIAL / CHEMICAL SPILL
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                Evacuate spill zone immediately &bull; Do NOT touch substance &bull; Deploy Hazmat Spill Kit &bull; Neutralize acid/alkali per SDS.
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                Hospital Hazmat Team &bull; Housekeeping In-charge
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: 900; background: #f1f5f9; color: #000;">
+                ⚫ CODE BLACK
+              </td>
+              <td style="padding: 5px; border: 1px solid #000; font-weight: bold;">
+                ARMED INTRUDER / BOMB THREAT
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                Run, Hide, Fight protocol &bull; Lock and barricade doors &bull; Silence mobile phones &bull; Do NOT use elevators &bull; Await SWAT/Police all-clear.
+              </td>
+              <td style="padding: 5px; border: 1px solid #000;">
+                Armed Security &bull; Police Control Room (112)
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div style="border: 1px solid #000; padding: 5px; border-radius: 4px; font-size: 8.5px; background: #f8fafc; display: flex; justify-content: space-between;">
+          <div>Placard Serial: <b>ADM-CODE-PLACARD-V4</b> | Routing Category: <b>CLINICAL_A4</b></div>
+          <div>Approved by: <b>Medical Superintendent &amp; Safety Committee Chairman</b></div>
+          <div>Printed: ${timestamp}</div>
+        </div>
+      </div>
+    `;
+
+    printDocument(htmlContent, {
+      title: "Statutory Hospital Emergency Code Wall Placard",
+      docType: "CLINICAL_SUMMARY",
+      printerDevice: targetPrinter,
+    });
+  };
 
   // Custom Doctor Creation Form State with Revisit Rules
   const [newDocName, setNewDocName] = useState("");
@@ -667,6 +1256,82 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
       {/* TAB 1: EXECUTIVE COCKPIT & LAUNCHPAD */}
       {activeTab === "overview" && (
         <div className="space-y-6">
+          {/* Operational Continuity & Emergency Readiness HUD */}
+          <Card className={`p-4 border transition-all mt-4 ${
+            downtimeModeActive
+              ? "bg-rose-950/40 border-rose-500/70 shadow-lg shadow-rose-950/50"
+              : "bg-slate-900 border-slate-800"
+          }`}>
+            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                    <ShieldAlert size={15} className={downtimeModeActive ? "text-rose-400 animate-pulse" : "text-sky-400"} />
+                    Hospital Continuity &amp; Statutory Emergency Readiness Hub
+                  </span>
+                  <Badge variant={downtimeModeActive ? "danger" : "neutral"} size="sm" className="font-mono">
+                    {downtimeModeActive ? "⚠️ DOWNTIME BCP PROTOCOL ACTIVE" : "NORMAL HIS OPERATION"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Instant offline emergency documentation packs, NABH statutory facility compliance dossier, and emergency code protocol alerts routed dynamically to configured A4 laser printers.
+                </p>
+                {bcpPrintSuccess && (
+                  <div className="text-xs text-emerald-400 font-mono flex items-center gap-1 mt-1">
+                    <CheckCircle2 size={13} /> {bcpPrintSuccess}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={downtimeModeActive ? "danger" : "outline"}
+                  onClick={() => setDowntimeModeActive(!downtimeModeActive)}
+                  className="flex items-center gap-1.5 text-xs"
+                >
+                  <AlertOctagon size={13} /> {downtimeModeActive ? "Deactivate Downtime" : "Simulate Downtime Mode"}
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={handlePrintDowntimeBcpPack}
+                  className="flex items-center gap-1.5 text-xs bg-rose-600 hover:bg-rose-500 text-white"
+                >
+                  <Printer size={13} /> Print Offline BCP Pack (Form ADM-BCP-01)
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handlePrintEmergencyPlacard}
+                  className="flex items-center gap-1.5 text-xs text-amber-400 border-amber-500/40 hover:bg-amber-500/10"
+                >
+                  <Flame size={13} /> Emergency Code Placard
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handlePrintFacilityComplianceDossier}
+                  className="flex items-center gap-1.5 text-xs text-emerald-400 border-emerald-500/40 hover:bg-emerald-500/10"
+                >
+                  <FileText size={13} /> Statutory Facility Dossier
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setDrillModalOpen(true)}
+                  className="flex items-center gap-1.5 text-xs text-sky-400 border-sky-500/40 hover:bg-sky-500/10"
+                >
+                  <BellRing size={13} /> Log Code Drill
+                </Button>
+              </div>
+            </div>
+          </Card>
+
           {/* 1. Real-Time Hospital Operational KPIs */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
             <Card className="p-4 bg-slate-900/90 border-slate-800 space-y-2">
@@ -1013,6 +1678,67 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
       {/* TAB 3: STATUTORY REGISTERS & DPDP AUDIT LEDGER */}
       {activeTab === "registers" && (
         <div className="space-y-6 mt-6">
+          {/* Statutory Facility Safety & Environmental Compliance Dossier */}
+          <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-lg bg-emerald-950/60 border border-emerald-800/60 text-emerald-400">
+                  <ShieldCheck size={20} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-slate-100 text-sm">
+                      NABH 5th Edition / CPCB / AERB Statutory Facility Safety &amp; Environmental Audit Dossier
+                    </span>
+                    <Badge variant="success" size="sm" className="font-mono">
+                      FORM NABH-FMS-01
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Consolidated regulatory inspection report: CPCB Form IV Bio-Medical Waste return, Fire Service NOC &amp; hydrant tests, AERB radiation compliance, Cryogenic Liquid Oxygen (LMO) tank purity, and 15s DG ATS cutover.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={handlePrintFacilityComplianceDossier}
+                  className="flex items-center gap-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold"
+                >
+                  <Printer size={13} /> Print Statutory Dossier (CLINICAL_A4)
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1 text-xs">
+              <div className="p-2.5 rounded bg-slate-950 border border-slate-800">
+                <div className="text-[11px] text-slate-400 uppercase font-mono">CPCB Form IV Waste</div>
+                <div className="text-emerald-400 font-bold font-mono text-sm mt-0.5">14,280 kg / yr</div>
+                <div className="text-[10px] text-slate-500">100% Barcoded Bag Manifest</div>
+              </div>
+
+              <div className="p-2.5 rounded bg-slate-950 border border-slate-800">
+                <div className="text-[11px] text-slate-400 uppercase font-mono">Fire Service NOC</div>
+                <div className="text-sky-400 font-bold font-mono text-sm mt-0.5">Valid to Nov 2027</div>
+                <div className="text-[10px] text-slate-500">Pressure: 7.2 kg/cm² • Mock: Pass</div>
+              </div>
+
+              <div className="p-2.5 rounded bg-slate-950 border border-slate-800">
+                <div className="text-[11px] text-slate-400 uppercase font-mono">AERB Radiation QA</div>
+                <div className="text-purple-400 font-bold font-mono text-sm mt-0.5">24/24 Aprons Intact</div>
+                <div className="text-[10px] text-slate-500">RSO-III Reg #AERB-8821</div>
+              </div>
+
+              <div className="p-2.5 rounded bg-slate-950 border border-slate-800">
+                <div className="text-[11px] text-slate-400 uppercase font-mono">LMO Cryogenic Vessel</div>
+                <div className="text-amber-400 font-bold font-mono text-sm mt-0.5">10,000 L (99.4%)</div>
+                <div className="text-[10px] text-slate-500">Line: 4.2 Bar • 60 Cyl Backup</div>
+              </div>
+            </div>
+          </Card>
+
           {/* Statutory Hospital Operational Registers */}
           <div>
             <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 mb-4">
@@ -1221,11 +1947,21 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
                   <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
                     <Plus size={14} className="text-emerald-400" /> Add New Operational Bed to Campus Matrix
                   </h3>
-                  {bedSuccessMsg && (
-                    <span className="text-xs text-emerald-400 font-mono flex items-center gap-1">
-                      <CheckCircle2 size={12} /> {bedSuccessMsg}
-                    </span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setBatchModalOpen(true)}
+                      className="flex items-center gap-1.5 text-xs text-sky-400 border-sky-500/40 hover:bg-sky-500/10"
+                    >
+                      <Zap size={13} className="text-amber-400" /> Batch Provision Beds (Commission Wing)
+                    </Button>
+                    {bedSuccessMsg && (
+                      <span className="text-xs text-emerald-400 font-mono flex items-center gap-1">
+                        <CheckCircle2 size={12} /> {bedSuccessMsg}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-4 gap-3">
@@ -2957,6 +3693,305 @@ export const AdminWorkspace: React.FC<AdminWorkspaceProps> = ({ onSelectWorkspac
               >
                 Close Preview
               </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Batch Bed Provisioner Modal */}
+      {batchModalOpen && (
+        <Modal
+          isOpen={batchModalOpen}
+          onClose={() => setBatchModalOpen(false)}
+          title="⚡ Batch Provision Ward Beds (Commission New Wing / Ward)"
+        >
+          <div className="space-y-4 max-w-xl">
+            <p className="text-xs text-slate-400">
+              Rapidly commission multiple beds for a new wing or ward. Automatically generates sequenced bed numbers and links them into the campus matrix.
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Ward Name *</label>
+                <input
+                  type="text"
+                  value={batchWardName}
+                  onChange={(e) => setBatchWardName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                  placeholder="e.g. Surgical ICU Wing B"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Building / Tower *</label>
+                <select
+                  value={batchTower}
+                  onChange={(e) => setBatchTower(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                >
+                  <option value="Main Tower">Main Tower</option>
+                  <option value="Super Specialty Block">Super Specialty Block</option>
+                  <option value="Mother & Child Block">Mother &amp; Child Block</option>
+                  <option value="Trauma Centre">Trauma Centre</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Floor *</label>
+                <select
+                  value={batchFloor}
+                  onChange={(e) => setBatchFloor(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                >
+                  <option value="Ground Floor">Ground Floor</option>
+                  <option value="Floor 1">Floor 1</option>
+                  <option value="Floor 2">Floor 2</option>
+                  <option value="Floor 3">Floor 3</option>
+                  <option value="Floor 4">Floor 4</option>
+                  <option value="Floor 5">Floor 5</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Bed Category *</label>
+                <select
+                  value={batchCategory}
+                  onChange={(e) => setBatchCategory(e.target.value as "General" | "Semi-Private" | "Private" | "ICU")}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                >
+                  <option value="General">General Ward</option>
+                  <option value="Semi-Private">Semi-Private Bay</option>
+                  <option value="Private">Private AC Room</option>
+                  <option value="ICU">Intensive Care Unit (ICU)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Room Prefix *</label>
+                <input
+                  type="text"
+                  value={batchRoomPrefix}
+                  onChange={(e) => setBatchRoomPrefix(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                  placeholder="e.g. R-40"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Bed Prefix *</label>
+                <input
+                  type="text"
+                  value={batchBedPrefix}
+                  onChange={(e) => setBatchBedPrefix(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                  placeholder="e.g. ICU-"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Start Number *</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={batchStartNum}
+                  onChange={(e) => setBatchStartNum(Math.max(1, parseInt(e.target.value || "1", 10)))}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Number of Beds to Create *</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  value={batchCount}
+                  onChange={(e) => setBatchCount(Math.min(50, Math.max(1, parseInt(e.target.value || "1", 10))))}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Daily Tariff (₹) *</label>
+                <input
+                  type="number"
+                  value={batchTariff}
+                  onChange={(e) => setBatchTariff(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                  placeholder="e.g. 5500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Preview Sequencing</label>
+                <div className="p-2 rounded bg-slate-950 border border-slate-800 text-xs font-mono text-emerald-400">
+                  {batchBedPrefix}{batchStartNum.toString().padStart(2, "0")} → {batchBedPrefix}{(batchStartNum + batchCount - 1).toString().padStart(2, "0")} ({batchCount} beds)
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">Equipment &amp; Facilities (comma separated)</label>
+              <input
+                type="text"
+                value={batchFeatures}
+                onChange={(e) => setBatchFeatures(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                placeholder="e.g. Multi-Para Monitor, Ventilator Ready, O2 Wall Outlet"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setBatchModalOpen(false)}
+              >
+                Cancel
+              </Button>
+
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleBatchAddBeds}
+                className="flex items-center gap-1.5"
+              >
+                <Zap size={13} /> Provision {batchCount} Beds Now
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Emergency Code Drill Simulator Modal */}
+      {drillModalOpen && (
+        <Modal
+          isOpen={drillModalOpen}
+          onClose={() => setDrillModalOpen(false)}
+          title="🚨 Statutory Hospital Emergency Code Drill & Roster Evaluator"
+        >
+          <div className="space-y-4 max-w-xl">
+            <p className="text-xs text-slate-400">
+              Log mandatory unannounced emergency code drills per NABH Standard FMS.4 and OSHA standards. Evaluates team response times and audit compliance.
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Emergency Code *</label>
+                <select
+                  value={selectedDrillCode}
+                  onChange={(e) => setSelectedDrillCode(e.target.value as typeof selectedDrillCode)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-bold"
+                >
+                  <option value="CODE_RED">🔴 CODE RED (Fire / Smoke)</option>
+                  <option value="CODE_BLUE">🔵 CODE BLUE (Cardiac Arrest)</option>
+                  <option value="CODE_PINK">🌸 CODE PINK (Infant Abduction)</option>
+                  <option value="CODE_ORANGE">🟠 CODE ORANGE (Mass Casualty / MCI)</option>
+                  <option value="CODE_YELLOW">🟡 CODE YELLOW (Hazardous Spill)</option>
+                  <option value="CODE_BLACK">⚫ CODE BLACK (Armed Threat / Bomb)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Drill Staging Location *</label>
+                <input
+                  type="text"
+                  value={drillLocation}
+                  onChange={(e) => setDrillLocation(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
+                  placeholder="e.g. Ward 3B Corridor, ICU Bay 2"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Observed Response Time (Seconds) *</label>
+                <input
+                  type="number"
+                  value={drillResponseSecs}
+                  onChange={(e) => setDrillResponseSecs(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                  placeholder="e.g. 102"
+                />
+                <span className="text-[10px] text-slate-500 mt-0.5 block">
+                  NABH Benchmark: Code Blue &lt; 180s, Code Red &lt; 120s
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">First Responders Headcount *</label>
+                <input
+                  type="number"
+                  value={drillStaffCount}
+                  onChange={(e) => setDrillStaffCount(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono"
+                  placeholder="e.g. 14"
+                />
+              </div>
+            </div>
+
+            {/* Recent Drills History */}
+            <div className="pt-2">
+              <label className="block text-[11px] text-slate-400 uppercase font-mono mb-1.5">
+                Recent Statutory Drill Logs ({recentDrills.length} on Record)
+              </label>
+              <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-950">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead>
+                    <tr className="border-b border-slate-800 text-slate-400 text-[10px] uppercase bg-slate-900/60">
+                      <th className="p-2">Code</th>
+                      <th className="p-2">Location</th>
+                      <th className="p-2">Date</th>
+                      <th className="p-2">Response</th>
+                      <th className="p-2">Verdict</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/40">
+                    {recentDrills.map((d) => (
+                      <tr key={d.id} className="text-slate-300">
+                        <td className="p-2 font-bold text-sky-400">{d.code.replace("_", " ")}</td>
+                        <td className="p-2">{d.location}</td>
+                        <td className="p-2 text-slate-400">{d.date}</td>
+                        <td className="p-2 text-emerald-400">{d.responseTime}</td>
+                        <td className="p-2">
+                          <Badge variant="success" size="sm">
+                            {d.result}
+                          </Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handlePrintEmergencyPlacard}
+                className="flex items-center gap-1.5 text-xs text-amber-400 border-amber-500/40"
+              >
+                <Flame size={13} /> Print Wall Placard (CLINICAL_A4)
+              </Button>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDrillModalOpen(false)}
+                >
+                  Close
+                </Button>
+
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleRecordEmergencyDrill}
+                  className="flex items-center gap-1.5"
+                >
+                  <CheckCircle2 size={13} /> Commit Drill to Statutory Log
+                </Button>
+              </div>
             </div>
           </div>
         </Modal>

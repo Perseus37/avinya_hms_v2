@@ -500,6 +500,12 @@ To eliminate hospital-floor pain points and compliance risks, Avinya HMS systema
 14. **Outpatient Queue Management & Chamber Coordination ([`OPDQueueWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/opd/OPDQueueWorkspace.tsx)):**
     - **Bulk Doctor Queue Transfer & Emergency OT Roster Protocol:** Solves OPD floor bottlenecks when consultants are called to emergency surgery (`IN_OT`) or ward rounds, enabling 1-click bulk reassignment of all waiting tokens to on-duty colleagues with automated chamber synchronization and 4K TV lounge advisory.
 
+15. **Executive Command Center & Statutory Facility Administration ([`AdminWorkspace.tsx`](file:///v:/avinya_hms/hospital-ui/src/workspaces/admin/AdminWorkspace.tsx)):**
+    - **Hospital Downtime Business Continuity Pack (Form ADM-BCP-01):** Solves operational paralysis during server, cloud, or network outages with 1-click generation of standardized offline clinical packs (START Triage Vouchers, Doctor Order Sheets with allergy checks, Inpatient Vitals Flowsheets, STAT Uncrossmatched Blood Requisition, and Manual Cashier Counterfoils) routed dynamically to configured A4 laser printers.
+    - **NABH 5th Edition & Statutory Environmental/Safety Compliance Dossier (Form NABH-FMS-01):** 1-click consolidated audit certificate capturing CPCB Form IV Bio-Medical Waste Annual Return, Fire NOC & 7.2 kg/cm² hydrant tests, AERB radiation safety officer & lead apron inspections, Liquid Medical Oxygen (LMO 10,000L cryogenic tank, 99.4% purity) MGPS pressure, and 15-second Cummins DG ATS cutover.
+    - **Hospital Emergency Code Drill Simulator & Protocol Wall Placards (Form ADM-CODE-PLACARD):** Evaluator for unannounced drills (Code Red, Code Blue, Code Pink, Code Orange, Code Yellow, Code Black) tracking response seconds and NABH pass/fail verdicts, plus high-contrast color-coded printable wall charts for nursing station mounting.
+    - **Batch Bed Provisioner:** Eliminates administrative fatigue when opening or expanding hospital wings, provisioning up to 50 operational beds in 1 click with sequenced room and bed numbering.
+
 ---
 
 ## 5. Comprehensive AI Audit Scorecard & Evaluation
