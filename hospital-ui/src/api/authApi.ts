@@ -59,5 +59,19 @@ export const authApi = {
       body: JSON.stringify(prefs),
     });
   },
+
+  requestUnlock: async (email: string): Promise<{ message: string }> => {
+    return apiClient<{ message: string }>("/api/auth/unlock/request", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  },
+
+  requestPasswordReset: async (email: string): Promise<{ message: string }> => {
+    return apiClient<{ message: string }>("/api/auth/password/forgot", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  },
 };
 

@@ -1,28 +1,67 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense, lazy } from "react";
 import { WorkspaceId } from "../../types";
 import { usePermissions } from "../../core/context/PermissionsContext";
 import { TopNavbar } from "./TopNavbar";
 import { Sidebar } from "./Sidebar";
 import { PatientSafetyBanner } from "../clinical/PatientSafetyBanner";
 import { CommandPalette } from "../clinical/CommandPalette";
-
-import { PatientRegistrationWorkspace } from "../../workspaces/registration/PatientRegistrationWorkspace";
-import { PatientRecordWorkspace } from "../../workspaces/patient/PatientRecordWorkspace";
-import { OPDQueueWorkspace } from "../../workspaces/opd/OPDQueueWorkspace";
-import { InpatientAdmissionWorkspace } from "../../workspaces/adt/InpatientAdmissionWorkspace";
-import { DoctorCockpit } from "../../workspaces/doctor/DoctorCockpit";
-import { WardNursingStation } from "../../workspaces/nursing/WardNursingStation";
-import { EDTriageBoard } from "../../workspaces/triage/EDTriageBoard";
-import { SurgeryWorkspace } from "../../workspaces/surgery/SurgeryWorkspace";
-import { BloodBankWorkspace } from "../../workspaces/bloodbank/BloodBankWorkspace";
-import { PharmacyWorkspace } from "../../workspaces/pharmacy/PharmacyWorkspace";
-import { DiagnosticsWorkspace } from "../../workspaces/diagnostics/DiagnosticsWorkspace";
-import { CashierCounterWorkspace } from "../../workspaces/billing/CashierCounterWorkspace";
-import { InfectionControlWorkspace } from "../../workspaces/infection/InfectionControlWorkspace";
-import { BiomedicalWorkspace } from "../../workspaces/biomedical/BiomedicalWorkspace";
-import { AdminWorkspace } from "../../workspaces/admin/AdminWorkspace";
 import { MyWorkDrawer } from "./MyWorkDrawer";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
+
+// Lazy-loaded workspace modules for optimal code-splitting and sub-second initialization
+const PatientRegistrationWorkspace = lazy(() =>
+  import("../../workspaces/registration/PatientRegistrationWorkspace").then((m) => ({ default: m.PatientRegistrationWorkspace }))
+);
+const PatientRecordWorkspace = lazy(() =>
+  import("../../workspaces/patient/PatientRecordWorkspace").then((m) => ({ default: m.PatientRecordWorkspace }))
+);
+const OPDQueueWorkspace = lazy(() =>
+  import("../../workspaces/opd/OPDQueueWorkspace").then((m) => ({ default: m.OPDQueueWorkspace }))
+);
+const InpatientAdmissionWorkspace = lazy(() =>
+  import("../../workspaces/adt/InpatientAdmissionWorkspace").then((m) => ({ default: m.InpatientAdmissionWorkspace }))
+);
+const DoctorCockpit = lazy(() =>
+  import("../../workspaces/doctor/DoctorCockpit").then((m) => ({ default: m.DoctorCockpit }))
+);
+const WardNursingStation = lazy(() =>
+  import("../../workspaces/nursing/WardNursingStation").then((m) => ({ default: m.WardNursingStation }))
+);
+const EDTriageBoard = lazy(() =>
+  import("../../workspaces/triage/EDTriageBoard").then((m) => ({ default: m.EDTriageBoard }))
+);
+const SurgeryWorkspace = lazy(() =>
+  import("../../workspaces/surgery/SurgeryWorkspace").then((m) => ({ default: m.SurgeryWorkspace }))
+);
+const BloodBankWorkspace = lazy(() =>
+  import("../../workspaces/bloodbank/BloodBankWorkspace").then((m) => ({ default: m.BloodBankWorkspace }))
+);
+const PharmacyWorkspace = lazy(() =>
+  import("../../workspaces/pharmacy/PharmacyWorkspace").then((m) => ({ default: m.PharmacyWorkspace }))
+);
+const DiagnosticsWorkspace = lazy(() =>
+  import("../../workspaces/diagnostics/DiagnosticsWorkspace").then((m) => ({ default: m.DiagnosticsWorkspace }))
+);
+const CashierCounterWorkspace = lazy(() =>
+  import("../../workspaces/billing/CashierCounterWorkspace").then((m) => ({ default: m.CashierCounterWorkspace }))
+);
+const InfectionControlWorkspace = lazy(() =>
+  import("../../workspaces/infection/InfectionControlWorkspace").then((m) => ({ default: m.InfectionControlWorkspace }))
+);
+const BiomedicalWorkspace = lazy(() =>
+  import("../../workspaces/biomedical/BiomedicalWorkspace").then((m) => ({ default: m.BiomedicalWorkspace }))
+);
+const AdminWorkspace = lazy(() =>
+  import("../../workspaces/admin/AdminWorkspace").then((m) => ({ default: m.AdminWorkspace }))
+);
+
+const WorkspaceSkeleton: React.FC<{ activeWorkspace: WorkspaceId }> = ({ activeWorkspace }) => (
+  <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-950 text-slate-400">
+    <div className="w-8 h-8 border-2 border-sky-500 border-t-transparent rounded-full animate-spin mb-3" />
+    <span className="text-sm font-medium text-slate-200">Loading {activeWorkspace.toUpperCase()} Workspace...</span>
+    <span className="text-xs text-slate-500 mt-1 font-mono">Preparing clinical telemetry and cached state</span>
+  </div>
+);
 
 export const AppShell: React.FC = () => {
   const { isWorkspaceAllowed, roleDefinition } = usePermissions();
@@ -132,7 +171,9 @@ export const AppShell: React.FC = () => {
         <Sidebar activeWorkspace={activeWorkspace} onSelectWorkspace={setActiveWorkspace} />
         <main className="flex-1 flex overflow-hidden bg-slate-950">
           <ErrorBoundary moduleName={`Workspace: ${activeWorkspace}`}>
-            {renderActiveWorkspace()}
+            <Suspense fallback={<WorkspaceSkeleton activeWorkspace={activeWorkspace} />}>
+              {renderActiveWorkspace()}
+            </Suspense>
           </ErrorBoundary>
         </main>
       </div>
