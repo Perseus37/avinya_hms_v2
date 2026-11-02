@@ -274,21 +274,28 @@ def upload_tenant_brand_asset(
     signature, media_type = signature_info
     if not re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}$", tenant_context.subdomain_slug):
         raise HTTPException(status_code=404, detail="Brand asset not found.")
-    storage_root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-    tenant_directory = (storage_root / tenant_context.subdomain_slug).resolve()
     try:
+        storage_root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
+        tenant_directory = (storage_root / tenant_context.subdomain_slug).resolve()
         tenant_directory.relative_to(storage_root)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
-    tenant_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(tenant_directory, 0o700)
-    tenant_root = (tenant_directory / "branding-assets").resolve()
+    except OSError as exc:
+        logger.error("Tenant brand asset storage path is unavailable.", exc_info=True)
+        raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
+
     try:
+        tenant_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(tenant_directory, 0o700)
+        tenant_root = (tenant_directory / "branding-assets").resolve()
         tenant_root.relative_to(tenant_directory)
+        tenant_root.mkdir(exist_ok=True, mode=0o700)
+        os.chmod(tenant_root, 0o700)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
-    tenant_root.mkdir(exist_ok=True, mode=0o700)
-    os.chmod(tenant_root, 0o700)
+    except OSError as exc:
+        logger.error("Unable to prepare tenant brand asset storage.", exc_info=True)
+        raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
 
     asset_id = f"{uuid.uuid4().hex}{suffix}"
     temporary = tenant_root / f".{asset_id}.part"
