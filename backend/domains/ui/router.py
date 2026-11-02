@@ -7,6 +7,7 @@ and clinical cockpit summaries to eliminate frontend waterfall requests.
 
 from datetime import date, datetime, timezone
 import json
+import logging
 import os
 import re
 import uuid
@@ -44,6 +45,7 @@ from backend.control_plane.models import ControlPlaneAuditLog, TenantRegistry
 from backend.domains.procurement.documents import scan_file_with_clamav
 
 router = APIRouter(prefix="/api/ui", tags=["Clinical & Operational UI Aggregates"])
+logger = logging.getLogger(__name__)
 
 
 class TenantBrandingUpdate(BaseModel):
@@ -231,8 +233,13 @@ def _delete_tenant_brand_asset(tenant_slug: str, asset_id: str) -> None:
         asset_path.relative_to(tenant_root)
     except ValueError:
         return
-    if asset_path.is_file():
-        asset_path.unlink()
+    try:
+        if asset_path.is_file():
+            asset_path.unlink()
+    except OSError:
+        # Branding has already committed; cleanup is best-effort and must not
+        # turn a successful configuration update into a failed upload response.
+        logger.warning("Unable to remove replaced tenant brand asset: %s", asset_path, exc_info=True)
 
 
 
