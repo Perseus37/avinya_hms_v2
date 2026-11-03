@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { uiApi } from "../../api/uiApi";
-import { encounterApi } from "../../api/encounterApi";
+import { opdQueueApi, OPDQueueEntry, OPDQueueSummary } from "../../api/opdQueueApi";
 import { DoctorQueueSummary } from "../../types";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 import { Button } from "../../components/ui/Button";
@@ -55,6 +55,8 @@ export const DoctorCockpit: React.FC = () => {
 
   // Selected Appointment State
   const [selectedAppointmentId, setSelectedAppointmentId] = useState<number | null>(null);
+  const [activeQueueLink, setActiveQueueLink] = useState<{ queueId: number; entry: OPDQueueEntry } | null>(null);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [completionBanner, setCompletionBanner] = useState<{
     patientName: string;
@@ -281,26 +283,38 @@ export const DoctorCockpit: React.FC = () => {
     setSelectedAppointmentId(appt.appointment_id);
     selectPatient(appt.patient_id);
     setCompletionBanner(null);
-
-    // If patient is checked in / arrived, auto-transition to IN_CONSULTATION
-    if (appt.status === "ARRIVED" || appt.status === "CHECKED_IN") {
-      try {
-        await encounterApi.updateAppointmentStatus(appt.appointment_id, "IN_CONSULTATION");
-        if (queue) {
-          setQueue({
-            ...queue,
-            checked_in: Math.max(0, queue.checked_in - 1),
-            in_consultation: queue.in_consultation + 1,
-            appointments: queue.appointments.map((a) =>
-              a.appointment_id === appt.appointment_id
-                ? { ...a, status: "IN_CONSULTATION" }
-                : a
-            ),
-          });
-        }
-      } catch (err) {
-        console.warn("Status transition to IN_CONSULTATION remote call skipped:", err);
+    setWorkflowError(null);
+    setActiveQueueLink(null);
+    try {
+      const queues = await opdQueueApi.listQueues();
+      const snapshots = await Promise.all(queues.map(async (q: OPDQueueSummary) => ({
+        queue: q,
+        entries: await opdQueueApi.listEntries(q.id),
+      })));
+      let match: { queueId: number; entry: OPDQueueEntry } | undefined;
+      for (const snapshot of snapshots) {
+        const entry = snapshot.entries.find((item: OPDQueueEntry) => item.appointment_id === appt.appointment_id);
+        if (entry) { match = { queueId: snapshot.queue.id, entry }; break; }
       }
+      if (!match) {
+        setWorkflowError("This appointment has no OPD queue entry. Reception must complete check-in first.");
+        return;
+      }
+      if (!match.entry.encounter_id) {
+        setWorkflowError("Queue entry has no linked encounter. Repair the encounter linkage before consultation.");
+        return;
+      }
+      if (match.entry.state === "ARRIVED") {
+        await opdQueueApi.startConsultation(match.queueId, match.entry.id, { encounter_id: match.entry.encounter_id });
+        setActiveQueueLink({ ...match, entry: { ...match.entry, state: "IN_CONSULTATION" } });
+        await loadQueue();
+      } else if (match.entry.state === "IN_CONSULTATION") {
+        setActiveQueueLink(match);
+      } else {
+        setWorkflowError("Patient is " + match.entry.state.replaceAll("_", " ") + " in the OPD queue. Reception must mark the patient arrived first.");
+      }
+    } catch (err) {
+      setWorkflowError(err instanceof Error ? err.message : "Unable to start OPD consultation.");
     }
   };
 
@@ -311,12 +325,13 @@ export const DoctorCockpit: React.FC = () => {
   const handleConfirmAndComplete = async () => {
     setIsSubmitting(true);
     try {
-      // Do not report completion locally when the authoritative backend transition fails.
-      if (selectedAppointmentId) {
-        await encounterApi.updateAppointmentStatus(selectedAppointmentId, "COMPLETED");
-      } else {
-        throw new Error("No appointment is selected; the encounter cannot be completed.");
+      // Queue completion is separate from signing/closing the clinical encounter.
+      if (!selectedAppointmentId || !activeQueueLink) {
+        throw new Error("The selected patient is not linked to an active OPD queue consultation.");
       }
+      await opdQueueApi.completeConsultation(activeQueueLink.queueId, activeQueueLink.entry.id, {
+        reason_code: "CONSULTATION_COMPLETED",
+      });
 
       if (queue && patientSummary) {
         setQueue({
@@ -337,7 +352,11 @@ export const DoctorCockpit: React.FC = () => {
           timestamp: new Date().toLocaleTimeString(),
         });
       }
+      setActiveQueueLink(null);
+      await loadQueue();
       setIsSummarySlipOpen(false);
+    } catch (err) {
+      setWorkflowError(err instanceof Error ? err.message : "Unable to complete OPD consultation.");
     } finally {
       setIsSubmitting(false);
     }
@@ -545,6 +564,7 @@ export const DoctorCockpit: React.FC = () => {
 
   return (
     <div className="flex-1 flex overflow-hidden">
+      {workflowError && <div className="absolute top-3 left-1/2 z-40 -translate-x-1/2 max-w-xl rounded-lg border border-rose-800 bg-rose-950 px-4 py-2 text-xs text-rose-200 shadow-lg">{workflowError}<button className="ml-3 underline" onClick={() => setWorkflowError(null)}>Dismiss</button></div>}
       {/* Column 1: Today's Consultation Queue */}
       <div className="w-96 border-r border-slate-800 flex flex-col bg-slate-900/40">
         {/* Queue Header & Metrics */}
