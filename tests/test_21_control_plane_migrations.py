@@ -582,3 +582,36 @@ def test_schema_autocreate_requires_explicit_opt_in(tmp_path):
         ensure_metadata_schema(
             database_url, ControlBase.metadata, allow_create=False
         )
+
+
+def test_canary_refuses_to_autogenerate_or_apply_unreviewed_migration(
+    tmp_path, monkeypatch
+):
+    from backend.scripts import migrate
+
+    database_url = f"sqlite:///{(tmp_path / 'canary.sqlite').as_posix()}"
+    monkeypatch.setattr(migrate, "upgrade_control_plane_database", lambda: database_url)
+    monkeypatch.setattr(
+        migrate, "ensure_postgres_db_exists", lambda _db_name: database_url
+    )
+    monkeypatch.setattr(
+        migrate.settings, "TENANT_DATABASE_PREFIX", "tenant_"
+    )
+    monkeypatch.setattr(
+        migrate.settings, "DEFAULT_TENANT_SLUG", "default"
+    )
+    monkeypatch.setattr(
+        migrate, "upgrade_tenant_database_url", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(migrate.command, "upgrade", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        migrate, "detect_schema_diff", lambda *_args, **_kwargs: ["unreviewed add_column"]
+    )
+
+    def reject_autogeneration(*_args, **_kwargs):
+        raise AssertionError("Canary must never generate migration files")
+
+    monkeypatch.setattr(migrate.command, "revision", reject_autogeneration)
+
+    with pytest.raises(RuntimeError, match="No migration was generated or applied"):
+        migrate.migrate_default_canary(message="must-not-autogenerate")
