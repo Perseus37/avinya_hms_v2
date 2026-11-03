@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import DateTime, ForeignKey, Integer, String, event, func
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from backend.core.audit import AuditMixin
 from backend.core.database import Base
@@ -41,10 +41,24 @@ class FederationTransferLog(Base):
         String(50), nullable=True, index=True
     )
     patient_id: Mapped[int] = mapped_column(
-        ForeignKey("patients.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("patients.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     requested_identifier: Mapped[str] = mapped_column(String(100), nullable=False)
     purpose: Mapped[str] = mapped_column(String(255), nullable=False)
     accessed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+@event.listens_for(Session, "before_flush")
+def _protect_federation_transfer_logs(session: Session, flush_context, instances) -> None:
+    """Prevent application-level mutation or deletion of federation audit records."""
+    for entity in session.dirty:
+        if isinstance(entity, FederationTransferLog) and session.is_modified(
+            entity, include_collections=False
+        ):
+            raise ValueError("Federation transfer logs are immutable.")
+
+    for entity in session.deleted:
+        if isinstance(entity, FederationTransferLog):
+            raise ValueError("Federation transfer logs are immutable and cannot be deleted.")
