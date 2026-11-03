@@ -43,7 +43,9 @@ The import path therefore:
 7. Copies patient demographics and allergies from the source database, not from caller-supplied clinical fields.
 8. Uses ABHA first, then phone + date of birth + exact name, for local import idempotency.
 9. Adds allergy provenance using the source branch code and preserves an existing `[Source: ...]` marker.
-10. Writes a source-tenant `FederationTransferLog` for the import operation.
+10. Writes an immutable source-tenant `FederationTransferLog` event with purpose `CONTINUITY_OF_CARE_IMPORT_REQUESTED` before committing the receiving-tenant clone. If the source audit write fails, the local import transaction is rolled back and no patient clone is committed.
+
+The two databases cannot share one atomic transaction. The ordering therefore guarantees that a successful local import cannot exist without a prior durable source-side request record. If the later local commit fails, the source log remains an accurate record of an authorized import request/attempt, not proof that the destination clone completed. The explicit `REQUESTED` purpose avoids overstating the event. Retries can produce additional request events; the destination patient identity check still prevents duplicate local patient creation.
 
 This is intentionally a two-read workflow: discovery provides a point-in-time transfer candidate, while import revalidates the source of truth before creating the local clone.
 
