@@ -51,6 +51,7 @@ def test_02_invalid_federation_api_key_format_returns_401(client):
 
 def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
     client,
+    multi_tenant_env,
     superuser_headers,
     apollo_admin_headers,
     sunrise_admin_headers,
@@ -96,6 +97,21 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
         headers=superuser_headers,
         json=disc_from_a,
     ).json()
+
+    # The source branch must durably record the import request before the
+    # receiving tenant commits its local patient clone.
+    ApolloSession = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_apollo"])
+    with ApolloSession() as source_db:
+        import_log = (
+            source_db.query(FederationTransferLog)
+            .filter(
+                FederationTransferLog.patient_id == p_apollo["id"],
+                FederationTransferLog.purpose == "CONTINUITY_OF_CARE_IMPORT_REQUESTED",
+            )
+            .one()
+        )
+        assert import_log.requesting_branch_code == "HQ-HYD-01"
+        assert import_log.client_id is None
 
     client.put(
         f"/v1/api/patients/{p_default['id']}",
