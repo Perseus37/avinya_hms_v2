@@ -58,19 +58,22 @@ def run_migrations_online() -> None:
     url = config.get_main_option("sqlalchemy.url") or os.environ.get("DATABASE_URL") or settings.DATABASE_URL
     connectable = create_engine(url, poolclass=pool.NullPool)
 
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=Base.metadata,
-            compare_type=True,
-        )
-        with context.begin_transaction():
-            if connection.dialect.name == "postgresql":
-                connection.execute(
-                    text("SELECT pg_advisory_xact_lock(:lock_key)"),
-                    {"lock_key": 0x4156594E414D4947},
-                )
-            context.run_migrations()
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=Base.metadata,
+                compare_type=True,
+            )
+            with context.begin_transaction():
+                if connection.dialect.name == "postgresql":
+                    connection.execute(
+                        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                        {"lock_key": 0x4156594E414D4947},
+                    )
+                context.run_migrations()
+    finally:
+        connectable.dispose()
 
 if context.is_offline_mode():
     run_migrations_offline()
