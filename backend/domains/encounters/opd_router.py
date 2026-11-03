@@ -370,6 +370,16 @@ def update_appointment_status(
         AppointmentStatusEnum.NO_SHOW: [],
     }
 
+    if payload.status == AppointmentStatusEnum.IN_CONSULTATION:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Consultation must be started through the OPD queue workflow. "
+                "Use POST /api/opd/queues/{queue_id}/entries/{entry_id}/start-consultation "
+                "so queue and appointment state remain synchronized."
+            ),
+        )
+
     if payload.status not in valid_transitions[appointment.status]:
         raise HTTPException(
             status_code=400,
