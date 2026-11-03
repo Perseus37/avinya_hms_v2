@@ -642,7 +642,12 @@ def test_alembic_revision_graph_has_one_resolvable_head(config_path, expected_he
     revisions = list(script.walk_revisions())
     assert revisions, f"{config_path} contains no migration revisions"
     for revision in revisions:
-        for parent_id in revision.down_revision or ():
+        parent_ids = (
+            (revision.down_revision,)
+            if isinstance(revision.down_revision, str)
+            else revision.down_revision or ()
+        )
+        for parent_id in parent_ids:
             assert script.get_revision(parent_id) is not None, (
                 f"{config_path} revision {revision.revision} has missing "
                 f"parent {parent_id}"
