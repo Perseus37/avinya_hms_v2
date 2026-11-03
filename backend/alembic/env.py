@@ -3,7 +3,7 @@ from pathlib import Path
 import sys , os
 
 from alembic import context
-from sqlalchemy import create_engine, pool
+from sqlalchemy import create_engine, pool, text
 
 # Resolve the repository package namespace for Alembic subprocesses.
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -65,6 +65,11 @@ def run_migrations_online() -> None:
             compare_type=True,
         )
         with context.begin_transaction():
+            if connection.dialect.name == "postgresql":
+                connection.execute(
+                    text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                    {"lock_key": 0x4156594E414D4947},
+                )
             context.run_migrations()
 
 if context.is_offline_mode():
