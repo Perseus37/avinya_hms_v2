@@ -24,6 +24,7 @@ from backend.domains.clinical.models import (
     PatientComorbidity,
 )
 from backend.domains.encounters.models import DiagnosisTypeEnum, EncounterStatusEnum, PatientEncounter
+from backend.domains.encounters.opd_queue_models import OPDQueue, OPDQueueEntry, OPDQueueEntryStatus
 from backend.domains.identity.models import User
 from backend.domains.patients.models import AllergyMaster, ChiefComplaintMaster, ComorbidityMaster, DiagnosisMaster, PhysicalExaminationMaster, Patient
 
@@ -460,7 +461,37 @@ def record_encounter_vitals(
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("adt:write")),
 ):
-    _get_active_encounter_or_raise(db, encounter_id)
+    encounter = db.get(PatientEncounter, encounter_id)
+    if encounter is None:
+        raise HTTPException(status_code=404, detail="Encounter not found.")
+
+    # Nursing may chart pre-consultation vitals only for an OPD encounter that
+    # has been checked in and marked ARRIVED in this branch's queue. Other
+    # planned encounters remain closed to clinical chart writes.
+    if encounter.status != EncounterStatusEnum.ACTIVE:
+        branch_code = db.info.get("tenant_branch_code")
+        eligible_opd_arrival = False
+        if (
+            encounter.status == EncounterStatusEnum.PLANNED
+            and getattr(encounter.encounter_type, "value", encounter.encounter_type) == "OPD"
+            and branch_code
+        ):
+            eligible_opd_arrival = db.execute(
+                select(OPDQueueEntry.id)
+                .join(OPDQueue, OPDQueue.id == OPDQueueEntry.queue_id)
+                .where(
+                    OPDQueueEntry.encounter_id == encounter_id,
+                    OPDQueueEntry.state == OPDQueueEntryStatus.ARRIVED,
+                    OPDQueue.branch_code == str(branch_code),
+                )
+                .limit(1)
+            ).scalar_one_or_none() is not None
+
+        if not eligible_opd_arrival:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot record clinical chart entries on a {encounter.status.value} encounter unless it is an arrived OPD queue encounter.",
+            )
 
     calculated_bmi: Optional[float] = None
     if payload.weight_kg and payload.height_cm:
