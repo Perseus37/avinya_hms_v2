@@ -140,8 +140,8 @@ def check_in_appointment(
     ).scalar_one_or_none()
     if appointment is None:
         raise HTTPException(status_code=404, detail="Appointment not found.")
-    if appointment.status != AppointmentStatusEnum.SCHEDULED:
-        raise HTTPException(status_code=409, detail=f"Appointment cannot be checked in from {appointment.status.value}.")
+    if appointment.status not in (AppointmentStatusEnum.SCHEDULED, AppointmentStatusEnum.ARRIVED):
+        raise HTTPException(status_code=409, detail=f"Appointment cannot enter the queue from {appointment.status.value}.")
     if appointment.appointment_time.date() != date.today():
         raise HTTPException(status_code=409, detail="Only appointments scheduled for today can enter today's OPD queue.")
 
@@ -191,15 +191,16 @@ def check_in_appointment(
         checked_in_at=datetime.now(timezone.utc),
     )
     db.add(entry)
-    previous = appointment.status
-    appointment.status = AppointmentStatusEnum.ARRIVED
-    db.add(AppointmentStatusHistory(
-        appointment_id=appointment.id,
-        from_status=previous.value,
-        to_status=AppointmentStatusEnum.ARRIVED.value,
-        changed_by_id=current_user.id,
-        reason="OPD queue check-in",
-    ))
+    if appointment.status == AppointmentStatusEnum.SCHEDULED:
+        previous = appointment.status
+        appointment.status = AppointmentStatusEnum.ARRIVED
+        db.add(AppointmentStatusHistory(
+            appointment_id=appointment.id,
+            from_status=previous.value,
+            to_status=AppointmentStatusEnum.ARRIVED.value,
+            changed_by_id=current_user.id,
+            reason="OPD queue check-in",
+        ))
     db.flush()
     event = _record_event(
         db, queue, entry, current_user, "PATIENT_CHECKED_IN",
