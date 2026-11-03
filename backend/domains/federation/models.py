@@ -36,6 +36,11 @@ class FederationTransferLog(Base):
     __tablename__ = "federation_transfer_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    # FederatedNode lives in the separate control-plane database, so these
+    # identifiers are intentionally scalar audit snapshots rather than cross-DB FKs.
+    requesting_node_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    requesting_key_prefix: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # Retained for compatibility with legacy tenant-local client records.
     client_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("federated_clients.id"), nullable=True, index=True
     )
