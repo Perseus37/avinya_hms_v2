@@ -388,16 +388,16 @@ def migrate_default_canary(message: str | None = None) -> None:
     # any production database applies them.
     diffs = detect_schema_diff(default_db_url, Base.metadata)
     if diffs:
-        preview = "\\n".join(f"    -> {diff}" for diff in diffs[:10])
+        preview = "\n".join(f"    -> {diff}" for diff in diffs[:10])
         remaining = len(diffs) - 10
-        suffix = f"\\n    ... and {remaining} more." if remaining > 0 else ""
+        suffix = f"\n    ... and {remaining} more." if remaining > 0 else ""
         raise RuntimeError(
             f"Canary '{default_db_name}' has {len(diffs)} unversioned schema "
             "difference(s). No migration was generated or applied. Generate a "
             "revision in the development workflow with Alembic autogenerate, "
             "review the operations (including data migration and lock impact), "
-            "commit the migration, deploy that release, and rerun the canary.\\n"
-            f"Detected differences:\\n{preview}{suffix}"
+            "commit the migration, deploy that release, and rerun the canary.\n"
+            f"Detected differences:\n{preview}{suffix}"
         )
 
     rev = get_current_db_revision(default_db_url)
