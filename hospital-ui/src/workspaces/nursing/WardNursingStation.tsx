@@ -112,14 +112,8 @@ export const WardNursingStation: React.FC = () => {
   const [selectedOpdQueueId, setSelectedOpdQueueId] = useState<number | null>(null);
   const [opdEntries, setOpdEntries] = useState<OPDQueueEntry[]>([]);
   const [selectedOpdEntryId, setSelectedOpdEntryId] = useState<number | null>(null);
-  const [opdVitals, setOpdVitals] = useState<EncounterVitalInput>({
-    bp_systolic: 120,
-    bp_diastolic: 80,
-    pulse_bpm: 72,
-    temperature_f: 98.6,
-    respiratory_rate: 16,
-    spo2_percent: 98,
-  });
+  const [opdVitals, setOpdVitals] = useState<EncounterVitalInput>({});
+  const [opdVitalHistory, setOpdVitalHistory] = useState<Awaited<ReturnType<typeof encounterVitalsApi.list>>>([]);
   const [opdVitalsBusy, setOpdVitalsBusy] = useState(false);
   const [opdVitalsError, setOpdVitalsError] = useState<string | null>(null);
   const [opdVitalsSuccess, setOpdVitalsSuccess] = useState<string | null>(null);
@@ -261,6 +255,21 @@ export const WardNursingStation: React.FC = () => {
     if (activeTab === "opd-assessment" && selectedOpdQueueId) void loadOpdEntries(selectedOpdQueueId);
   }, [activeTab, selectedOpdQueueId]);
 
+  const loadSelectedOpdVitalHistory = async (entryId: number) => {
+    const entry = opdEntries.find((item) => item.id === entryId);
+    if (!entry?.encounter_id) {
+      setOpdVitalHistory([]);
+      return;
+    }
+    try {
+      const history = await encounterVitalsApi.list(entry.encounter_id);
+      setOpdVitalHistory(history);
+    } catch (error) {
+      setOpdVitalHistory([]);
+      setOpdVitalsError(error instanceof Error ? error.message : "Unable to load prior encounter observations.");
+    }
+  };
+
   const handleSaveOpdVitals = async (event: React.FormEvent) => {
     event.preventDefault();
     const entry = opdEntries.find((item) => item.id === selectedOpdEntryId);
@@ -282,6 +291,9 @@ export const WardNursingStation: React.FC = () => {
     try {
       const recorded = await encounterVitalsApi.record(entry.encounter_id, opdVitals);
       setOpdVitalsSuccess(`Observation #${recorded.id} saved for token ${entry.token_number} at ${new Date(recorded.created_at).toLocaleTimeString()}.`);
+      setOpdVitals({});
+      const history = await encounterVitalsApi.list(entry.encounter_id);
+      setOpdVitalHistory(history);
       await loadOpdEntries(selectedOpdQueueId!);
     } catch (error) {
       setOpdVitalsError(error instanceof Error ? error.message : "Unable to save encounter vitals.");
@@ -613,6 +625,8 @@ export const WardNursingStation: React.FC = () => {
               onChange={(event) => {
                 setSelectedOpdQueueId(event.target.value ? Number(event.target.value) : null);
                 setSelectedOpdEntryId(null);
+                setOpdVitals({});
+                setOpdVitalHistory([]);
                 setOpdVitalsSuccess(null);
               }}
               className="w-full rounded-lg border border-slate-700 bg-slate-950 p-2 text-sm text-slate-100"
@@ -632,8 +646,11 @@ export const WardNursingStation: React.FC = () => {
                   type="button"
                   onClick={() => {
                     setSelectedOpdEntryId(entry.id);
+                    setOpdVitals({});
+                    setOpdVitalHistory([]);
                     setOpdVitalsSuccess(null);
                     setOpdVitalsError(null);
+                    void loadSelectedOpdVitalHistory(entry.id);
                   }}
                   className={`w-full rounded-lg border p-3 text-left ${selectedOpdEntryId === entry.id ? "border-emerald-500 bg-emerald-950/30" : "border-slate-800 bg-slate-950 hover:border-slate-600"}`}
                 >
@@ -706,6 +723,23 @@ export const WardNursingStation: React.FC = () => {
               </label>
               {opdVitalsError && <p role="alert" className="text-xs text-rose-300">{opdVitalsError}</p>}
               {opdVitalsSuccess && <p role="status" className="text-xs text-emerald-300">{opdVitalsSuccess}</p>}
+              {opdVitalHistory.length > 0 && (
+                <div className="space-y-2 border-t border-slate-800 pt-3">
+                  <h3 className="text-xs font-semibold text-slate-300">Previously recorded observations</h3>
+                  <div className="max-h-44 space-y-2 overflow-y-auto">
+                    {[...opdVitalHistory].reverse().map((observation) => (
+                      <div key={observation.id} className="rounded-lg border border-slate-800 bg-slate-950 p-2 text-[11px] text-slate-400">
+                        <div className="mb-1 flex justify-between gap-2 text-slate-300">
+                          <span>Observation #{observation.id}</span>
+                          <span>{new Date(observation.created_at).toLocaleString()}</span>
+                        </div>
+                        BP {observation.bp_systolic ?? "—"}/{observation.bp_diastolic ?? "—"} · Pulse {observation.pulse_bpm ?? "—"} · SpO₂ {observation.spo2_percent ?? "—"}% · Temp {observation.temperature_f ?? "—"}°F · RR {observation.respiratory_rate ?? "—"}
+                        <div className="mt-1">Recorded by user #{observation.created_by_id ?? "unknown"}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="flex justify-end">
                 <Button type="submit" disabled={!selectedOpdEntryId || opdVitalsBusy}>
                   {opdVitalsBusy ? "Saving…" : "Save Encounter Observations"}
