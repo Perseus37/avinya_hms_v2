@@ -244,7 +244,7 @@ export const DoctorCockpit: React.FC = () => {
     loadQueue();
   }, []);
 
-  useEffect(() => {
+  const refreshEncounterVitals = async () => {
     const encounterId = activeQueueLink?.entry.encounter_id;
     if (!encounterId) {
       setEncounterVitals([]);
@@ -252,7 +252,27 @@ export const DoctorCockpit: React.FC = () => {
       return;
     }
 
+    setVitalsLoading(true);
+    setVitalsError(null);
+    try {
+      const records = await encounterVitalsApi.list(encounterId);
+      setEncounterVitals(records);
+    } catch (error) {
+      setVitalsError(error instanceof Error ? error.message : "Unable to load encounter vitals.");
+    } finally {
+      setVitalsLoading(false);
+    }
+  };
+
+  useEffect(() => {
     let cancelled = false;
+    const encounterId = activeQueueLink?.entry.encounter_id;
+    if (!encounterId) {
+      setEncounterVitals([]);
+      setVitalsError(null);
+      return;
+    }
+
     setVitalsLoading(true);
     setVitalsError(null);
     encounterVitalsApi.list(encounterId)
@@ -785,9 +805,22 @@ export const DoctorCockpit: React.FC = () => {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">Encounter Vitals</h3>
-                <span className="text-[10px] text-slate-500">
-                  {vitalsLoading ? "Loading…" : encounterVitals.length ? `${encounterVitals.length} recorded observation(s)` : "No observations recorded"}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-slate-500">
+                    {vitalsLoading ? "Loading…" : encounterVitals.length ? `${encounterVitals.length} recorded observation(s)` : "No observations recorded"}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={refreshEncounterVitals}
+                    disabled={vitalsLoading || !activeQueueLink?.entry.encounter_id}
+                    className="px-2 py-1"
+                  >
+                    <RefreshCw size={12} className={vitalsLoading ? "animate-spin" : ""} />
+                    <span className="ml-1">Refresh</span>
+                  </Button>
+                </div>
               </div>
               {vitalsError && <p className="text-xs text-rose-300">{vitalsError}</p>}
               {!activeQueueLink?.entry.encounter_id && (
