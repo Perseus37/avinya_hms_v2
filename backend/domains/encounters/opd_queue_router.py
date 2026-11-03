@@ -9,11 +9,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission
-from backend.domains.encounters.models import Appointment, AppointmentStatusEnum
+from backend.domains.encounters.models import (
+    Appointment, AppointmentStatusEnum, AppointmentStatusHistory,
+)
 from backend.domains.encounters.opd_queue_models import (
     OPDQueue, OPDQueueEntry, OPDQueueEntryStatus, OPDQueueEvent,
     OPDQueueStatus,
@@ -21,6 +24,11 @@ from backend.domains.encounters.opd_queue_models import (
 from backend.domains.identity.models import User
 
 router = APIRouter(prefix="/api/opd/queues", tags=["OPD Queue V1"])
+
+
+class CheckInPayload(BaseModel):
+    appointment_id: int = Field(gt=0)
+    room_label: Optional[str] = Field(default=None, max_length=100)
 
 
 class CallSpecificPayload(BaseModel):
@@ -119,6 +127,96 @@ def _response(queue, entry, event):
     )
 
 
+@router.post("/check-in", status_code=201)
+def check_in_appointment(
+    payload: CheckInPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("opd:write")),
+):
+    """Admit an existing appointment into its branch/doctor OPD queue."""
+    branch_code = _branch_code(db)
+    appointment = db.execute(
+        select(Appointment).where(Appointment.id == payload.appointment_id).with_for_update()
+    ).scalar_one_or_none()
+    if appointment is None:
+        raise HTTPException(status_code=404, detail="Appointment not found.")
+    if appointment.status != AppointmentStatusEnum.SCHEDULED:
+        raise HTTPException(status_code=409, detail=f"Appointment cannot be checked in from {appointment.status.value}.")
+    if appointment.appointment_time.date() != date.today():
+        raise HTTPException(status_code=409, detail="Only appointments scheduled for today can enter today's OPD queue.")
+
+    # Insert-on-conflict handles two receptionists creating the same doctor queue concurrently.
+    queue_insert = pg_insert(OPDQueue).values(
+        branch_code=branch_code,
+        service_date=date.today(),
+        department_id=appointment.department_id,
+        doctor_id=appointment.doctor_id,
+        room_label=payload.room_label,
+        status=OPDQueueStatus.OPEN,
+        version=1,
+    ).on_conflict_do_nothing(
+        constraint="uq_opd_queue_branch_date_department_doctor"
+    )
+    db.execute(queue_insert)
+    queue = db.execute(
+        select(OPDQueue).where(
+            OPDQueue.branch_code == branch_code,
+            OPDQueue.service_date == date.today(),
+            OPDQueue.department_id == appointment.department_id,
+            OPDQueue.doctor_id == appointment.doctor_id,
+        ).with_for_update()
+    ).scalar_one()
+
+    existing = db.execute(
+        select(OPDQueueEntry).where(OPDQueueEntry.appointment_id == appointment.id)
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="Appointment is already admitted to an OPD queue.")
+
+    max_position = db.scalar(
+        select(func.max(OPDQueueEntry.queue_position)).where(OPDQueueEntry.queue_id == queue.id)
+    ) or 0
+    max_token = db.scalar(
+        select(func.max(OPDQueueEntry.token_number)).where(OPDQueueEntry.queue_id == queue.id)
+    ) or 0
+    entry = OPDQueueEntry(
+        queue_id=queue.id,
+        appointment_id=appointment.id,
+        patient_id=appointment.patient_id,
+        encounter_id=appointment.encounter_id,
+        token_number=max_token + 1,
+        queue_position=max_position + 1,
+        priority=100,
+        state=OPDQueueEntryStatus.WAITING,
+        checked_in_at=datetime.now(timezone.utc),
+    )
+    db.add(entry)
+    previous = appointment.status
+    appointment.status = AppointmentStatusEnum.ARRIVED
+    db.add(AppointmentStatusHistory(
+        appointment_id=appointment.id,
+        from_status=previous.value,
+        to_status=AppointmentStatusEnum.ARRIVED.value,
+        changed_by_id=current_user.id,
+        reason="OPD queue check-in",
+    ))
+    db.flush()
+    event = _record_event(
+        db, queue, entry, current_user, "PATIENT_CHECKED_IN",
+        None, OPDQueueEntryStatus.WAITING.value,
+    )
+    db.flush()
+    result = {
+        "queue_id": queue.id, "entry_id": entry.id,
+        "appointment_id": appointment.id, "patient_id": appointment.patient_id,
+        "token_number": entry.token_number, "queue_position": entry.queue_position,
+        "state": entry.state.value, "queue_version": queue.version,
+        "event_id": event.id,
+    }
+    db.commit()
+    return result
+
+
 @router.get("")
 def list_queues(
     service_date: date = date.today(),
@@ -190,11 +288,9 @@ def _call_entry(db, queue, entry, actor, *, reason_code=None, reason_note=None, 
 @router.post("/{queue_id}/call-next", response_model=QueueCommandResponse)
 def call_next(
     queue_id: int,
-    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("opd:write")),
 ):
-    # Queue-row lock serializes all callers for this queue.
     queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
     if _active_call(db, queue.id):
         raise HTTPException(status_code=409, detail="A patient is already active in this queue.")
@@ -220,7 +316,6 @@ def call_specific(
     queue_id: int,
     entry_id: int,
     payload: CallSpecificPayload,
-    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("opd:write")),
 ):
