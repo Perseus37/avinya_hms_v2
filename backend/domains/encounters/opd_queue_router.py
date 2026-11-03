@@ -137,7 +137,7 @@ def check_in_appointment(payload: CheckInPayload, db: Session = Depends(get_db),
     db.flush()
     event = _record_event(db, queue, entry, current_user, "PATIENT_CHECKED_IN", None, OPDQueueEntryStatus.WAITING.value)
     db.flush()
-    result = {"queue_id": queue.id, "entry_id": entry.id, "appointment_id": appointment.id, "patient_id": appointment.patient_id, "token_number": entry.token_number, "queue_position": entry.queue_position, "state": entry.state.value, "queue_version": queue.version, "event_id": event.id}
+    result = {"queue_id": queue.id, "entry_id": entry.id, "appointment_id": appointment.id, "patient_id": appointment.patient_id, "encounter_id": entry.encounter_id, "token_number": entry.token_number, "queue_position": entry.queue_position, "state": entry.state.value, "queue_version": queue.version, "event_id": event.id}
     db.commit()
     _publish_queue_event(db, queue, entry, "OPD_PATIENT_CHECKED_IN")
     return result
@@ -155,7 +155,7 @@ def list_queues(service_date: Optional[date] = Query(default=None), db: Session 
 def list_queue_entries(queue_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:read"))):
     queue = _queue_or_404(db, queue_id, _branch_code(db))
     rows = db.execute(select(OPDQueueEntry).where(OPDQueueEntry.queue_id == queue.id).order_by(OPDQueueEntry.priority, OPDQueueEntry.queue_position)).scalars().all()
-    return [{"id": e.id, "appointment_id": e.appointment_id, "patient_id": e.patient_id, "token_number": e.token_number, "queue_position": e.queue_position, "priority": e.priority, "state": e.state.value, "version": e.version, "checked_in_at": e.checked_in_at.isoformat(), "first_called_at": e.first_called_at.isoformat() if e.first_called_at else None} for e in rows]
+    return [{"id": e.id, "appointment_id": e.appointment_id, "patient_id": e.patient_id, "encounter_id": e.encounter_id, "token_number": e.token_number, "queue_position": e.queue_position, "priority": e.priority, "state": e.state.value, "version": e.version, "checked_in_at": e.checked_in_at.isoformat(), "first_called_at": e.first_called_at.isoformat() if e.first_called_at else None} for e in rows]
 
 
 def _call_entry(db, queue, entry, actor, *, reason_code=None, reason_note=None, event_type="PATIENT_CALLED"):
