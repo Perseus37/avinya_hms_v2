@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { uiApi } from "../../api/uiApi";
+import { opdQueueApi, OPDQueueEntry, OPDQueueSummary } from "../../api/opdQueueApi";
+import { encounterVitalsApi, EncounterVitalInput } from "../../api/encounterVitalsApi";
 import { DetailedBedItem } from "../../types";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 import { Card } from "../../components/ui/Card";
@@ -43,7 +45,7 @@ interface ScheduledMedication {
 
 export const WardNursingStation: React.FC = () => {
   const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
-  const [activeTab, setActiveTab] = useState<"beds" | "emar" | "fluid-balance">("beds");
+  const [activeTab, setActiveTab] = useState<"beds" | "emar" | "fluid-balance" | "opd-assessment">("beds");
   const [beds, setBeds] = useState<DetailedBedItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedWardId] = useState(1);
@@ -104,6 +106,23 @@ export const WardNursingStation: React.FC = () => {
   const [pulse, setPulse] = useState(72);
   const [consciousness, setConsciousness] = useState<"ALERT" | "CVPU">("ALERT");
   const [temperature, setTemperature] = useState(37.0);
+
+  // OPD nursing assessment is deliberately separate from inpatient bed observations.
+  const [opdQueues, setOpdQueues] = useState<OPDQueueSummary[]>([]);
+  const [selectedOpdQueueId, setSelectedOpdQueueId] = useState<number | null>(null);
+  const [opdEntries, setOpdEntries] = useState<OPDQueueEntry[]>([]);
+  const [selectedOpdEntryId, setSelectedOpdEntryId] = useState<number | null>(null);
+  const [opdVitals, setOpdVitals] = useState<EncounterVitalInput>({
+    bp_systolic: 120,
+    bp_diastolic: 80,
+    pulse_bpm: 72,
+    temperature_f: 98.6,
+    respiratory_rate: 16,
+    spo2_percent: 98,
+  });
+  const [opdVitalsBusy, setOpdVitalsBusy] = useState(false);
+  const [opdVitalsError, setOpdVitalsError] = useState<string | null>(null);
+  const [opdVitalsSuccess, setOpdVitalsSuccess] = useState<string | null>(null);
 
   // eMAR State
   const [medications, setMedications] = useState<ScheduledMedication[]>([
@@ -206,6 +225,70 @@ export const WardNursingStation: React.FC = () => {
   };
 
   const calculatedScore = calculateNews2();
+
+  const loadOpdQueues = async () => {
+    setOpdVitalsError(null);
+    try {
+      const queues = await opdQueueApi.listQueues();
+      setOpdQueues(queues);
+      if (!selectedOpdQueueId && queues.length) setSelectedOpdQueueId(queues[0].id);
+      if (selectedOpdQueueId && !queues.some((queue) => queue.id === selectedOpdQueueId)) {
+        setSelectedOpdQueueId(queues[0]?.id ?? null);
+      }
+    } catch (error) {
+      setOpdVitalsError(error instanceof Error ? error.message : "Unable to load OPD queues.");
+    }
+  };
+
+  const loadOpdEntries = async (queueId: number) => {
+    try {
+      const entries = await opdQueueApi.listEntries(queueId);
+      setOpdEntries(entries);
+      if (selectedOpdEntryId && !entries.some((entry) => entry.id === selectedOpdEntryId && entry.state === "ARRIVED")) {
+        setSelectedOpdEntryId(null);
+      }
+    } catch (error) {
+      setOpdEntries([]);
+      setOpdVitalsError(error instanceof Error ? error.message : "Unable to load OPD queue entries.");
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === "opd-assessment") void loadOpdQueues();
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === "opd-assessment" && selectedOpdQueueId) void loadOpdEntries(selectedOpdQueueId);
+  }, [activeTab, selectedOpdQueueId]);
+
+  const handleSaveOpdVitals = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const entry = opdEntries.find((item) => item.id === selectedOpdEntryId);
+    if (!entry || entry.state !== "ARRIVED" || !entry.encounter_id) {
+      setOpdVitalsError("Select an arrived OPD patient with a linked encounter before recording observations.");
+      return;
+    }
+    const hasMeasurement = Object.entries(opdVitals).some(([key, value]) =>
+      key !== "notes" && value !== null && value !== undefined && value !== ""
+    );
+    if (!hasMeasurement) {
+      setOpdVitalsError("Enter at least one clinical measurement.");
+      return;
+    }
+
+    setOpdVitalsBusy(true);
+    setOpdVitalsError(null);
+    setOpdVitalsSuccess(null);
+    try {
+      const recorded = await encounterVitalsApi.record(entry.encounter_id, opdVitals);
+      setOpdVitalsSuccess(`Observation #${recorded.id} saved for token ${entry.token_number} at ${new Date(recorded.created_at).toLocaleTimeString()}.`);
+      await loadOpdEntries(selectedOpdQueueId!);
+    } catch (error) {
+      setOpdVitalsError(error instanceof Error ? error.message : "Unable to save encounter vitals.");
+    } finally {
+      setOpdVitalsBusy(false);
+    }
+  };
 
   const loadBeds = async () => {
     setIsLoading(true);
@@ -493,6 +576,18 @@ export const WardNursingStation: React.FC = () => {
 
         <button
           type="button"
+          onClick={() => setActiveTab("opd-assessment")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
+            activeTab === "opd-assessment"
+              ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+          }`}
+        >
+          <Activity size={14} /> OPD Nursing Assessment
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab("fluid-balance")}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all ${
             activeTab === "fluid-balance"
@@ -503,6 +598,124 @@ export const WardNursingStation: React.FC = () => {
           <Droplet size={14} /> Fluid Balance (Intake / Output 24h)
         </button>
       </div>
+
+      {/* OPD assessment uses only encounter-linked, arrived queue entries. */}
+      {activeTab === "opd-assessment" && (
+        <div className="mt-6 grid grid-cols-1 xl:grid-cols-3 gap-4">
+          <Card className="p-4 bg-slate-900 border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-100">OPD Queue</h2>
+              <Button size="sm" variant="outline" onClick={() => void loadOpdQueues()}>Refresh</Button>
+            </div>
+            <label className="block text-xs text-slate-400">Doctor / department queue</label>
+            <select
+              value={selectedOpdQueueId ?? ""}
+              onChange={(event) => {
+                setSelectedOpdQueueId(event.target.value ? Number(event.target.value) : null);
+                setSelectedOpdEntryId(null);
+                setOpdVitalsSuccess(null);
+              }}
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 p-2 text-sm text-slate-100"
+            >
+              <option value="">Select queue</option>
+              {opdQueues.map((queue) => (
+                <option key={queue.id} value={queue.id}>
+                  Queue #{queue.id} · Department {queue.department_id} · Doctor {queue.doctor_id} · {queue.room_label || "Room not assigned"}
+                </option>
+              ))}
+            </select>
+            <div className="space-y-2">
+              <div className="text-[11px] uppercase tracking-wider text-slate-500">Arrived patients awaiting consultation</div>
+              {opdEntries.filter((entry) => entry.state === "ARRIVED" && entry.encounter_id).map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedOpdEntryId(entry.id);
+                    setOpdVitalsSuccess(null);
+                    setOpdVitalsError(null);
+                  }}
+                  className={`w-full rounded-lg border p-3 text-left ${selectedOpdEntryId === entry.id ? "border-emerald-500 bg-emerald-950/30" : "border-slate-800 bg-slate-950 hover:border-slate-600"}`}
+                >
+                  <div className="flex items-center justify-between text-sm text-slate-100">
+                    <strong>Token {entry.token_number}</strong>
+                    <span className="text-[10px] text-emerald-300">ARRIVED</span>
+                  </div>
+                  <div className="mt-1 text-[10px] text-slate-500">Patient ID {entry.patient_id} · Encounter #{entry.encounter_id}</div>
+                </button>
+              ))}
+              {opdEntries.filter((entry) => entry.state === "ARRIVED" && entry.encounter_id).length === 0 && (
+                <p className="rounded-lg border border-slate-800 p-3 text-xs text-slate-500">No arrived patients with linked encounters in this queue.</p>
+              )}
+            </div>
+          </Card>
+
+          <Card className="xl:col-span-2 p-4 bg-slate-900 border-slate-800 space-y-4">
+            <div>
+              <h2 className="text-sm font-bold text-slate-100">Record OPD Observations</h2>
+              <p className="mt-1 text-xs text-slate-400">Each save creates a new, timestamped encounter observation. Previous readings are retained.</p>
+            </div>
+            {(() => {
+              const entry = opdEntries.find((item) => item.id === selectedOpdEntryId);
+              return entry ? (
+                <div className="rounded-lg border border-emerald-900 bg-emerald-950/20 p-3 text-xs text-emerald-200">
+                  Selected token {entry.token_number} · Patient ID {entry.patient_id} · Encounter #{entry.encounter_id}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-amber-900 bg-amber-950/20 p-3 text-xs text-amber-200">
+                  Select an ARRIVED patient. Called, waiting, held and completed entries cannot be assessed from this screen.
+                </div>
+              );
+            })()}
+            <form onSubmit={handleSaveOpdVitals} className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                {([
+                  ["bp_systolic", "Systolic BP", "mmHg"],
+                  ["bp_diastolic", "Diastolic BP", "mmHg"],
+                  ["pulse_bpm", "Pulse", "bpm"],
+                  ["temperature_f", "Temperature", "°F"],
+                  ["respiratory_rate", "Respiratory rate", "/min"],
+                  ["spo2_percent", "SpO₂", "%"],
+                  ["weight_kg", "Weight", "kg"],
+                  ["height_cm", "Height", "cm"],
+                ] as const).map(([key, label, unit]) => (
+                  <label key={key} className="space-y-1 text-xs text-slate-400">
+                    {label} <span className="text-slate-600">({unit})</span>
+                    <input
+                      type="number"
+                      step={key === "temperature_f" || key === "weight_kg" || key === "height_cm" ? "0.1" : "1"}
+                      value={opdVitals[key] ?? ""}
+                      onChange={(event) => setOpdVitals((previous) => ({
+                        ...previous,
+                        [key]: event.target.value === "" ? null : Number(event.target.value),
+                      }))}
+                      className="w-full rounded-lg border border-slate-700 bg-slate-950 p-2 text-sm text-slate-100"
+                    />
+                  </label>
+                ))}
+              </div>
+              <label className="block space-y-1 text-xs text-slate-400">
+                Clinical notes
+                <textarea
+                  rows={2}
+                  maxLength={500}
+                  value={opdVitals.notes ?? ""}
+                  onChange={(event) => setOpdVitals((previous) => ({ ...previous, notes: event.target.value }))}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 p-2 text-sm text-slate-100"
+                />
+              </label>
+              {opdVitalsError && <p role="alert" className="text-xs text-rose-300">{opdVitalsError}</p>}
+              {opdVitalsSuccess && <p role="status" className="text-xs text-emerald-300">{opdVitalsSuccess}</p>}
+              <div className="flex justify-end">
+                <Button type="submit" disabled={!selectedOpdEntryId || opdVitalsBusy}>
+                  {opdVitalsBusy ? "Saving…" : "Save Encounter Observations"}
+                </Button>
+              </div>
+              <p className="text-[10px] text-slate-500">Access is enforced by the clinical vitals API. If permission is denied, request the appropriate clinical chart-write grant from the tenant administrator.</p>
+            </form>
+          </Card>
+        </div>
+      )}
 
       {/* TAB 1: BED MATRIX */}
       {activeTab === "beds" && (
