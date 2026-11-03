@@ -57,6 +57,10 @@ Do not introduce shared cross-branch ORM references as part of federation. A suc
 
 Discovery transfer logs remain in the source tenant database. Requests log a PHI-minimized identifier where possible. **ABHA identifiers are never persisted in raw form in `FederationTransferLog`; the persistence-layer guard converts an `abha:<value>` identifier to a deterministic SHA-256 fingerprint.** This permits audit correlation without retaining the raw national identifier.
 
+Each discovery log also snapshots the authenticated `FederatedNode.id` and `api_key_prefix`, alongside the authenticated branch code. The node ID and key prefix are scalar audit values rather than foreign keys because the node lives in the separate control-plane database while the transfer log is written to the source tenant database. This allows an auditor to identify the exact federation credential that performed the lookup without introducing cross-database referential integrity assumptions. Historical rows created before this migration retain null node/key attribution; they are not backfilled with guessed identities.
+
+Local user-initiated imports are distinct from inbound federation discovery and therefore do not claim a remote node identity. Their requesting branch is recorded, while node/key attribution remains null.
+
 Allergy provenance is carried in the clinical summary so downstream federation hops can retain the original source rather than replacing it with the requesting hospital.
 
 `FederationTransferLog` is now treated as a true append-only audit record:
