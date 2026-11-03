@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from backend.core.config import settings
 from backend.core.database import get_db, get_redis
-from backend.domains.encounters import adt_router, opd_router
+from backend.domains.encounters import adt_router, opd_router, opd_queue_router
 from backend.domains.identity import auth_router
 from backend.domains.billing import router as billing_router
 from backend.domains.clinical import (
@@ -344,6 +344,7 @@ for target in (v1_app, app):
 
     # Modularly licensed clinical, surgical, diagnostic & financial domains
     target.include_router(opd_router.router, dependencies=[Depends(RequireLicensedModule("opd"))])
+    target.include_router(opd_queue_router.router, dependencies=[Depends(RequireLicensedModule("opd"))])
     target.include_router(ward_router.router, dependencies=[Depends(RequireLicensedModule("ipd_adt"))])
     target.include_router(adt_router.router, dependencies=[Depends(RequireLicensedModule("ipd_adt"))])
     target.include_router(vital_registries_router.router, dependencies=[Depends(RequireLicensedModule("ipd_adt"))])
