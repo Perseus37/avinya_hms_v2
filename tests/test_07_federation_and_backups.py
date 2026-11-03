@@ -152,6 +152,20 @@ def test_04_federation_transfer_logs_written_in_source_tenant_databases(
         assert "****" in log_entry.requested_identifier
         assert "9876543210" not in log_entry.requested_identifier
 
+        log_entry.purpose = "TAMPERED"
+        with pytest.raises(ValueError, match="immutable"):
+            adb.flush()
+        adb.rollback()
+
+        adb.delete(log_entry)
+        with pytest.raises(ValueError, match="immutable"):
+            adb.flush()
+        adb.rollback()
+
+        preserved = adb.get(FederationTransferLog, log_entry.id)
+        assert preserved is not None
+        assert preserved.purpose == "ICU_TRANSFER_AUDIT"
+
 
 def test_05_aes256_backup_key_derivation_and_lossless_roundtrip():
     """Scenario 5: derive_fernet_key + Fernet encrypts and decrypts backup payloads losslessly."""
