@@ -206,11 +206,12 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
     apollo_admin_headers,
     sunrise_admin_headers,
 ):
-    """Audit F-01: EMERGENCY_ALLERGIES_ONLY cannot be bypassed with a caller-controlled token string."""
+    """Audit F-01: EMERGENCY_ALLERGIES_ONLY cannot be bypassed with a caller-controlled token string or another patient's grant."""
     from datetime import datetime, timezone, timedelta
     from sqlalchemy.orm import Session
     from backend.domains.policies.models import FederationPolicyEnum, HospitalPolicySetting
-    from backend.domains.patients.models import BreakGlassGrant, User
+    from backend.domains.patients.models import BreakGlassGrant
+    from backend.domains.identity.models import User
 
     sun_client = client.post(
         "/v1/api/federation/clients",
@@ -236,6 +237,21 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
         headers=apollo_admin_headers,
         json={"allergy_id": 1, "severity": "SEVERE", "reaction": "Severe anaphylaxis"},
     )
+
+    # Create a second real patient. Its grant must never authorize disclosure of
+    # p_apollo, proving that the authorization is bound to the source patient ID.
+    p_other = client.post(
+        "/v1/api/patients",
+        headers=apollo_admin_headers,
+        json={
+            "full_name": "Other Emergency Patient",
+            "date_of_birth": "1992-02-02T00:00:00Z",
+            "gender": "MALE",
+            "phone_number": "9222233333",
+            "abha_number": "ABHA-OTHER-99",
+            "address": "456 Other Street, Hyderabad",
+        },
+    ).json()
 
     apollo_engine = multi_tenant_env["tenant_engines"]["hms_apollo"]
     with Session(apollo_engine) as db:
@@ -269,40 +285,31 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
                 review_due_at=datetime.now(timezone.utc) + timedelta(hours=24),
             )
-            db.add(grant)
+            other_grant = BreakGlassGrant(
+                patient_id=p_other["id"],
+                user_id=user.id,
+                reason="Unrelated emergency",
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
+                review_due_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            )
+            db.add_all([grant, other_grant])
             db.commit()
             db.refresh(grant)
+            db.refresh(other_grant)
             grant_id = grant.id
+            other_grant_id = other_grant.id
+
+        resp_other_grant = client.get(
+            f"/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY&break_glass_grant_id={other_grant_id}",
+            headers=fed_headers,
+        )
+        assert resp_other_grant.status_code == 404
 
         resp_grant = client.get(
             f"/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY&break_glass_grant_id={grant_id}",
             headers=fed_headers,
         )
         assert resp_grant.status_code == 200
-
-        # A grant for another patient must not authorize this patient's emergency disclosure.
-        with Session(apollo_engine) as db:
-            user = db.query(User).first()
-            other = BreakGlassGrant(
-                patient_id=p_apollo["id"] + 999999,
-                user_id=user.id,
-                reason="Unrelated emergency",
-                expires_at=datetime.now(timezone.utc) + timedelta(minutes=30),
-                review_due_at=datetime.now(timezone.utc) + timedelta(hours=24),
-            )
-            # Do not flush an invalid FK; instead reuse the real patient id only after
-            # the valid grant has been consumed by the assertion above.
-            other.patient_id = p_apollo["id"]
-            db.add(other)
-            db.commit()
-            db.refresh(other)
-            other_id = other.id
-
-        resp_other_grant = client.get(
-            f"/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY&break_glass_grant_id={other_id}",
-            headers=fed_headers,
-        )
-        assert resp_other_grant.status_code == 200
     finally:
         with Session(apollo_engine) as db:
             pol = db.query(HospitalPolicySetting).first()
