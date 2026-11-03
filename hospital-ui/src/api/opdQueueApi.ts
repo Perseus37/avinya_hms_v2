@@ -52,6 +52,11 @@ export interface OPDQueueReason {
   reason_note?: string;
 }
 
+export interface StartConsultationPayload {
+  encounter_id: number;
+  reason?: string;
+}
+
 export const opdQueueApi = {
   listQueues: (serviceDate?: string) =>
     apiClient<OPDQueueSummary[]>("/api/opd/queues", { params: { service_date: serviceDate } }),
@@ -60,7 +65,7 @@ export const opdQueueApi = {
     apiClient<OPDQueueEntry[]>(`/api/opd/queues/${queueId}/entries`),
 
   checkIn: (appointmentId: number, roomLabel?: string) =>
-    apiClient<{ queue_id: number; entry_id: number; appointment_id: number; patient_id: number; token_number: number; queue_position: number; state: OPDQueueState; queue_version: number; event_id: number }>(
+    apiClient<{ queue_id: number; entry_id: number; appointment_id: number; patient_id: number; encounter_id: number; token_number: number; queue_position: number; state: OPDQueueState; queue_version: number; event_id: number }>(
       "/api/opd/queues/check-in",
       { method: "POST", body: JSON.stringify({ appointment_id: appointmentId, room_label: roomLabel }) }
     ),
@@ -95,15 +100,15 @@ export const opdQueueApi = {
       body: JSON.stringify(reason),
     }),
 
-  startConsultation: (queueId: number, entryId: number, reason?: OPDQueueReason) =>
-    apiClient<OPDQueueCommandResponse>(`/api/opd/queues/${queueId}/entries/${entryId}/start`, {
+  startConsultation: (queueId: number, entryId: number, payload: StartConsultationPayload) =>
+    apiClient<OPDQueueCommandResponse>(`/api/opd/queues/${queueId}/entries/${entryId}/start-consultation`, {
       method: "POST",
-      body: JSON.stringify(reason ?? {}),
+      body: JSON.stringify(payload),
     }),
 
-  completeConsultation: (queueId: number, entryId: number, reason?: OPDQueueReason) =>
-    apiClient<OPDQueueCommandResponse>(`/api/opd/queues/${queueId}/entries/${entryId}/complete`, {
+  completeConsultation: (queueId: number, entryId: number, reason: OPDQueueReason) =>
+    apiClient<OPDQueueCommandResponse>(`/api/opd/queues/${queueId}/entries/${entryId}/complete-consultation`, {
       method: "POST",
-      body: JSON.stringify(reason ?? {}),
+      body: JSON.stringify(reason),
     }),
 };
