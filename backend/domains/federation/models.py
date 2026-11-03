@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime
 from typing import Optional
 
@@ -50,9 +51,33 @@ class FederationTransferLog(Base):
     )
 
 
+def _sanitize_federation_identifier(identifier: str) -> str:
+    """Prevent raw ABHA identifiers from entering the immutable audit trail.
+
+    Discovery historically supplied values such as ``branch->abha:<ABHA>``.
+    Preserve the caller/purpose context while replacing only the sensitive ABHA
+    value with a deterministic fingerprint so repeated lookups remain correlatable.
+    """
+    marker = "abha:"
+    if marker not in identifier.lower():
+        return identifier
+
+    prefix, value = identifier.split(marker, 1)
+    if not value:
+        return identifier
+    fingerprint = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"{prefix}abha_sha256:{fingerprint}"
+
+
 @event.listens_for(Session, "before_flush")
 def _protect_federation_transfer_logs(session: Session, flush_context, instances) -> None:
-    """Prevent application-level mutation or deletion of federation audit records."""
+    """Sanitize new records and prevent application-level mutation/deletion."""
+    for entity in session.new:
+        if isinstance(entity, FederationTransferLog):
+            entity.requested_identifier = _sanitize_federation_identifier(
+                entity.requested_identifier
+            )
+
     for entity in session.dirty:
         if isinstance(entity, FederationTransferLog) and session.is_modified(
             entity, include_collections=False
