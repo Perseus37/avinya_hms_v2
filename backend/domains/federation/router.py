@@ -570,6 +570,26 @@ def import_federated_patient_locally(
             .where(PatientAllergy.patient_id == source_patient.id, PatientAllergy.is_active.is_(True))
         ).all()
 
+        # Record every validated import request, including idempotent retries where
+        # the destination already has the patient. Source and destination databases
+        # cannot share one atomic transaction. If this source audit write fails, abort
+        # before returning an existing patient or committing a new local clone.
+        # REQUESTED is intentional: the subsequent destination commit may still fail.
+        source_db.add(
+            FederationTransferLog(
+                client_id=None,
+                requesting_branch_code=tenant.branch_code,
+                patient_id=source_patient.id,
+                requested_identifier=f"import:{tenant.branch_code}:{hashlib.sha256(source_patient.mrn.encode('utf-8')).hexdigest()[:16]}",
+                purpose="CONTINUITY_OF_CARE_IMPORT_REQUESTED",
+            )
+        )
+        try:
+            source_db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
         # Idempotency: ABHA is the strongest local identity; otherwise use the combination
         # of normalized phone, DOB and exact name to avoid repeated imports.
         existing = None
@@ -634,26 +654,6 @@ def import_federated_patient_locally(
                     updated_by_id=current_user.id,
                 )
             )
-
-        # Record the source-side disclosure/import request before committing the
-        # receiving-tenant clone. These databases cannot participate in one atomic
-        # transaction: if this audit write fails, do not commit the local patient.
-        # The immutable event is deliberately named REQUESTED because a later local
-        # commit can still fail after the source has durably recorded the request.
-        source_db.add(
-            FederationTransferLog(
-                client_id=None,
-                requesting_branch_code=tenant.branch_code,
-                patient_id=source_patient.id,
-                requested_identifier=f"import:{tenant.branch_code}:{hashlib.sha256(source_patient.mrn.encode('utf-8')).hexdigest()[:16]}",
-                purpose="CONTINUITY_OF_CARE_IMPORT_REQUESTED",
-            )
-        )
-        try:
-            source_db.commit()
-        except Exception:
-            db.rollback()
-            raise
 
         try:
             db.commit()
