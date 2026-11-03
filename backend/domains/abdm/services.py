@@ -293,16 +293,24 @@ def generate_abdm_fhir_health_data(
     entries: List[Dict[str, Any]] = []
 
     # 1. Patient Resource
+    patient_identifiers = [
+        {"system": "https://avinya.hospital/mrn", "value": patient.mrn},
+    ]
+    if patient.abha_number:
+        patient_identifiers.append(
+            {"system": "https://healthid.ndhm.gov.in", "value": patient.abha_number}
+        )
+    if patient.abha_address:
+        patient_identifiers.append(
+            {"system": "https://abdm.gov.in/abha-address", "value": patient.abha_address}
+        )
+
     patient_entry = {
         "fullUrl": f"urn:uuid:patient-{patient.id}",
         "resource": {
             "resourceType": "Patient",
             "id": f"patient-{patient.id}",
-            "identifier": [
-                {"system": "https://healthid.ndhm.gov.in", "value": patient.abha_number or ""},
-                {"system": "https://abdm.gov.in/abha-address", "value": patient.abha_address or ""},
-                {"system": "https://avinya.hospital/mrn", "value": patient.mrn},
-            ],
+            "identifier": patient_identifiers,
             "name": [{"text": patient.full_name}],
             "gender": str(patient.gender.value if hasattr(patient.gender, "value") else patient.gender).lower(),
             "birthDate": patient.date_of_birth.strftime("%Y-%m-%d"),
