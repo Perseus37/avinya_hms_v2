@@ -153,6 +153,18 @@ def test_04_federation_transfer_logs_written_in_source_tenant_databases(
     )
     assert res.status_code == 200
 
+    from backend.control_plane.models import FederatedNode
+
+    ControlSession = multi_tenant_env["control_session_factory"]
+    with ControlSession() as cdb:
+        authenticated_node = (
+            cdb.query(FederatedNode)
+            .filter(FederatedNode.branch_code == "SUN-BLR-01")
+            .one()
+        )
+        expected_node_id = authenticated_node.id
+        expected_key_prefix = authenticated_node.api_key_prefix
+
     ApolloSession = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_apollo"])
     with ApolloSession() as adb:
         log_entry = (
@@ -161,6 +173,8 @@ def test_04_federation_transfer_logs_written_in_source_tenant_databases(
             .first()
         )
         assert log_entry is not None
+        assert log_entry.requesting_node_id == expected_node_id
+        assert log_entry.requesting_key_prefix == expected_key_prefix
         assert log_entry.requesting_branch_code == "SUN-BLR-01"
         assert log_entry.purpose == "ICU_TRANSFER_AUDIT"
         expected_hash = hashlib.sha256(abha_number.encode("utf-8")).hexdigest()
