@@ -6,7 +6,7 @@ it before checking the single-active-call invariant.
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -219,11 +219,12 @@ def check_in_appointment(
 
 @router.get("")
 def list_queues(
-    service_date: date = date.today(),
+    service_date: Optional[date] = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("opd:read")),
 ):
     branch_code = _branch_code(db)
+    service_date = service_date or date.today()
     rows = db.execute(
         select(OPDQueue).where(
             OPDQueue.branch_code == branch_code,
