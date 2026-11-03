@@ -113,6 +113,26 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
         assert import_log.requesting_branch_code == "HQ-HYD-01"
         assert import_log.client_id is None
 
+    # Repeating the same import is idempotent for the destination patient, but
+    # the source still records the separately validated import request.
+    repeated_import = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=disc_from_a,
+    )
+    assert repeated_import.status_code == 201
+    assert repeated_import.json()["id"] == p_default["id"]
+    with ApolloSession() as source_db:
+        import_request_count = (
+            source_db.query(FederationTransferLog)
+            .filter(
+                FederationTransferLog.patient_id == p_apollo["id"],
+                FederationTransferLog.purpose == "CONTINUITY_OF_CARE_IMPORT_REQUESTED",
+            )
+            .count()
+        )
+        assert import_request_count == 2
+
     client.put(
         f"/v1/api/patients/{p_default['id']}",
         headers=superuser_headers,
