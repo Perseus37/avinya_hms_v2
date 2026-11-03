@@ -17,7 +17,25 @@ export interface EncounterVital {
   created_at: string;
 }
 
+export interface EncounterVitalInput {
+  temperature_f?: number | null;
+  pulse_bpm?: number | null;
+  bp_systolic?: number | null;
+  bp_diastolic?: number | null;
+  respiratory_rate?: number | null;
+  spo2_percent?: number | null;
+  weight_kg?: number | null;
+  height_cm?: number | null;
+  notes?: string | null;
+}
+
 export const encounterVitalsApi = {
   list: (encounterId: number) =>
     apiClient<EncounterVital[]>(`/api/clinical/encounters/${encounterId}/vitals`),
+
+  record: (encounterId: number, observation: EncounterVitalInput) =>
+    apiClient<EncounterVital>(`/api/clinical/encounters/${encounterId}/vitals`, {
+      method: "POST",
+      body: JSON.stringify(observation),
+    }),
 };
