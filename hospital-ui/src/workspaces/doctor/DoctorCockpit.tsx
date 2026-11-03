@@ -311,12 +311,11 @@ export const DoctorCockpit: React.FC = () => {
   const handleConfirmAndComplete = async () => {
     setIsSubmitting(true);
     try {
+      // Do not report completion locally when the authoritative backend transition fails.
       if (selectedAppointmentId) {
-        try {
-          await encounterApi.updateAppointmentStatus(selectedAppointmentId, "COMPLETED");
-        } catch (apiErr) {
-          console.warn("Could not patch appointment status remotely (using local state update):", apiErr);
-        }
+        await encounterApi.updateAppointmentStatus(selectedAppointmentId, "COMPLETED");
+      } else {
+        throw new Error("No appointment is selected; the encounter cannot be completed.");
       }
 
       if (queue && patientSummary) {
