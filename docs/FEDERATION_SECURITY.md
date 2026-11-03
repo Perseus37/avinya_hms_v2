@@ -6,6 +6,16 @@ Cross-branch discovery requires an active `FederatedNode` API key. Keys are stor
 
 The calling branch identity comes from the authenticated federation node, not from a request-supplied branch field.
 
+## Federation registration identity binding
+
+Federation credentials are issued by a tenant branch for that **same branch**. The `branch_code` supplied to `POST /api/federation/clients` must match the branch code resolved from the authenticated tenant context.
+
+The tenant ORM session carries the resolved branch identity in trusted session metadata, and the `FederatedClient` model rejects an attempted mismatch before the client transaction can commit. This prevents a tenant administrator from minting a federation credential that claims to represent another hospital branch.
+
+A rejected mismatch returns `403 Forbidden` and does not create the tenant-local `FederatedClient` record. The control-plane `FederatedNode` therefore cannot be created from the rejected request either.
+
+For the current topology, registered branch identities are sourced from the control-plane tenant registry. External partner onboarding must use a separate trusted partner-registration workflow rather than allowing arbitrary branch codes through a tenant-scoped endpoint.
+
 ## Emergency federation
 
 `EMERGENCY_ALLERGIES_ONLY` is intentionally fail-closed.
@@ -66,4 +76,5 @@ Federation security changes must preserve:
 - PHI-minimized audit identifiers, including fingerprinted ABHA values;
 - patient privacy opt-out and tenant federation policy checks;
 - branch/database isolation;
+- tenant-bound federation credential registration;
 - import idempotency and rollback on local database failure.
