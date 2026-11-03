@@ -635,23 +635,32 @@ def import_federated_patient_locally(
                 )
             )
 
-        try:
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-        db.refresh(new_patient)
-
+        # Record the source-side disclosure/import request before committing the
+        # receiving-tenant clone. These databases cannot participate in one atomic
+        # transaction: if this audit write fails, do not commit the local patient.
+        # The immutable event is deliberately named REQUESTED because a later local
+        # commit can still fail after the source has durably recorded the request.
         source_db.add(
             FederationTransferLog(
                 client_id=None,
                 requesting_branch_code=tenant.branch_code,
                 patient_id=source_patient.id,
                 requested_identifier=f"import:{tenant.branch_code}:{hashlib.sha256(source_patient.mrn.encode('utf-8')).hexdigest()[:16]}",
-                purpose="CONTINUITY_OF_CARE_IMPORT",
+                purpose="CONTINUITY_OF_CARE_IMPORT_REQUESTED",
             )
         )
-        source_db.commit()
+        try:
+            source_db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        db.refresh(new_patient)
 
     sync_patient_pointer(
         control_db=control_db,
