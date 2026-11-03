@@ -377,3 +377,107 @@ def mark_arrived(
     result = _response(queue, entry, event)
     db.commit()
     return result
+
+
+class QueueReasonPayload(BaseModel):
+    reason_code: str = Field(min_length=1, max_length=40)
+    reason_note: Optional[str] = Field(default=None, max_length=500)
+
+
+def _change_appointment_status(db, appointment_id, target_status, actor, reason):
+    appointment = db.execute(
+        select(Appointment).where(Appointment.id == appointment_id).with_for_update()
+    ).scalar_one_or_none()
+    if appointment is None:
+        raise HTTPException(status_code=409, detail="Linked appointment no longer exists.")
+    if appointment.status == target_status:
+        return
+    previous = appointment.status
+    appointment.status = target_status
+    db.add(AppointmentStatusHistory(
+        appointment_id=appointment.id,
+        from_status=previous.value,
+        to_status=target_status.value,
+        changed_by_id=actor.id,
+        reason=reason,
+    ))
+
+
+@router.post("/{queue_id}/entries/{entry_id}/hold", response_model=QueueCommandResponse)
+def hold_entry(
+    queue_id: int,
+    entry_id: int,
+    payload: QueueReasonPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("opd:write")),
+):
+    queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    entry = _entry_or_404(db, entry_id, queue.id, lock=True)
+    if entry.state not in (OPDQueueEntryStatus.WAITING, OPDQueueEntryStatus.CALLED):
+        raise HTTPException(status_code=409, detail="Only waiting or called patients can be placed on hold.")
+    previous = entry.state.value
+    entry.state = OPDQueueEntryStatus.ON_HOLD
+    entry.reason_code = payload.reason_code
+    entry.reason_note = payload.reason_note
+    event = _record_event(
+        db, queue, entry, current_user, "PATIENT_PUT_ON_HOLD",
+        previous, entry.state.value, payload.reason_code, payload.reason_note,
+    )
+    db.flush()
+    result = _response(queue, entry, event)
+    db.commit()
+    return result
+
+
+@router.post("/{queue_id}/entries/{entry_id}/release-hold", response_model=QueueCommandResponse)
+def release_hold(
+    queue_id: int,
+    entry_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("opd:write")),
+):
+    queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    entry = _entry_or_404(db, entry_id, queue.id, lock=True)
+    if entry.state != OPDQueueEntryStatus.ON_HOLD:
+        raise HTTPException(status_code=409, detail="Only patients on hold can be released.")
+    entry.state = OPDQueueEntryStatus.WAITING
+    entry.reason_code = None
+    entry.reason_note = None
+    event = _record_event(
+        db, queue, entry, current_user, "PATIENT_RELEASED_FROM_HOLD",
+        OPDQueueEntryStatus.ON_HOLD.value, OPDQueueEntryStatus.WAITING.value,
+    )
+    db.flush()
+    result = _response(queue, entry, event)
+    db.commit()
+    return result
+
+
+@router.post("/{queue_id}/entries/{entry_id}/no-show", response_model=QueueCommandResponse)
+def mark_no_show(
+    queue_id: int,
+    entry_id: int,
+    payload: QueueReasonPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("opd:write")),
+):
+    queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    entry = _entry_or_404(db, entry_id, queue.id, lock=True)
+    if entry.state not in (OPDQueueEntryStatus.WAITING, OPDQueueEntryStatus.CALLED):
+        raise HTTPException(status_code=409, detail="Only waiting or called patients can be marked no-show.")
+    previous = entry.state.value
+    entry.state = OPDQueueEntryStatus.NO_SHOW
+    entry.reason_code = payload.reason_code
+    entry.reason_note = payload.reason_note
+    _change_appointment_status(
+        db, entry.appointment_id, AppointmentStatusEnum.NO_SHOW, current_user,
+        f"OPD no-show: {payload.reason_code} {payload.reason_note or ''}".strip(),
+    )
+    event = _record_event(
+        db, queue, entry, current_user, "PATIENT_MARKED_NO_SHOW",
+        previous, entry.state.value, payload.reason_code, payload.reason_note,
+    )
+    db.flush()
+    result = _response(queue, entry, event)
+    db.commit()
+    return result
