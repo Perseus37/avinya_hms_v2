@@ -334,38 +334,27 @@ def discover_and_aggregate_patient_across_branches(
                 if purpose.strip().upper() not in {"EMERGENCY", "EMERGENCY_CARE", "EMERGENCY_TREATMENT", "EMERGENCY_ADMISSION"}:
                     return None
 
-                # F-01: Verifiable Emergency Check. Require a valid active break-glass grant or valid emergency token.
-                # Calling nodes cannot simply supply purpose=EMERGENCY to bypass consent.
-                is_emergency_verified = False
-                now_utc = datetime.now(timezone.utc)
-                if break_glass_grant_id is not None:
-                    from backend.domains.patients.models import BreakGlassGrant
-                    grant = branch_db.query(BreakGlassGrant).filter(
-                        BreakGlassGrant.id == break_glass_grant_id,
-                        BreakGlassGrant.expires_at > now_utc,
-                    ).first()
-                    if not grant and calling_node.branch_code in branch_to_db:
-                        c_db_name = branch_to_db[calling_node.branch_code]
-                        c_engine = tenant_engine_pool.get_engine(c_db_name)
-                        with sessionmaker(bind=c_engine)() as c_db:
-                            grant = c_db.query(BreakGlassGrant).filter(
-                                BreakGlassGrant.id == break_glass_grant_id,
-                                BreakGlassGrant.expires_at > now_utc,
-                            ).first()
-                    if grant:
-                        is_emergency_verified = True
-
-                if not is_emergency_verified and emergency_token:
-                    clean_tok = emergency_token.strip()
-                    if (clean_tok.startswith("EM-") or clean_tok.startswith("EMERGENCY-")) and len(clean_tok) >= 10:
-                        is_emergency_verified = True
-
-                if not is_emergency_verified:
-                    return None
-
             patient = branch_db.query(Patient).filter(Patient.mrn == ptr.source_mrn, Patient.is_active.is_(True)).first()
             if not patient or getattr(patient, "allow_network_sharing", True) is False:
                 return None
+
+            # F-01: Emergency access is verified only by a real, unexpired grant bound
+            # to the exact source patient. A caller-controlled token prefix is never
+            # accepted as authorization.
+            if policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY:
+                from backend.domains.patients.models import BreakGlassGrant
+
+                if break_glass_grant_id is None:
+                    return None
+                now_utc = datetime.now(timezone.utc)
+                grant = branch_db.query(BreakGlassGrant).filter(
+                    BreakGlassGrant.id == break_glass_grant_id,
+                    BreakGlassGrant.patient_id == patient.id,
+                    BreakGlassGrant.expires_at > now_utc,
+                ).first()
+                if not grant:
+                    return None
+
             decision = evaluate_tenant_data_use(
                 branch_db,
                 data_use_point="federation.patient.discover",
@@ -378,7 +367,7 @@ def discover_and_aggregate_patient_across_branches(
 
             branch_db.refresh(patient)
             branch_db.expunge(patient)
-            
+
             local_allergies = []
             if policy.federation_share_allergies:
                 alg_stmt = (
@@ -388,7 +377,7 @@ def discover_and_aggregate_patient_across_branches(
                 )
                 for pa, master in branch_db.execute(alg_stmt).all():
                     rx_note = pa.reaction_description or "Adverse reaction"
-                    
+
                     # FED-001:
                     # Tag the allergy with the branch where this allergy record currently
                     # originates. Do not add another tag if the reaction has already been
@@ -397,7 +386,7 @@ def discover_and_aggregate_patient_across_branches(
                         tagged_reaction = rx_note
                     else:
                         tagged_reaction = f"{rx_note} [Source: {ptr.branch_code}]"
-                    
+
                     # Extract primitive data into schemas immediately to prevent DetachedInstanceError in main thread
                     local_allergies.append({
                         "key": master.name.strip().lower(),
@@ -419,7 +408,7 @@ def discover_and_aggregate_patient_across_branches(
                 )
             )
             branch_db.commit()
-            
+
             return {
                 "ptr": ptr,
                 "patient": patient,
@@ -485,6 +474,7 @@ def discover_and_aggregate_patient_across_branches(
         active_allergies=list(merged_allergies.values()),
     )
 
+
 @router.post("/patients/import", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
 def import_federated_patient_locally(
     payload: FederatedPatientSummaryResponse,
@@ -493,54 +483,147 @@ def import_federated_patient_locally(
     control_db: Session = Depends(get_control_db),
     current_user: User = Depends(RequirePermission("patients:write")),
 ):
-    """Imports a multi-hop aggregated patient profile into the receiving hospital and updates the Central Index."""
+    """Import an authenticated discovery result without trusting client-supplied clinical fields."""
     tenant = resolve_tenant_context(request)
 
-    if payload.abha_number:
-        existing = db.query(Patient).filter(Patient.abha_number == payload.abha_number).first()
+    # The import is valid only when the supplied source MRN is currently indexed to
+    # exactly one other active branch. This prevents this authenticated endpoint from
+    # becoming a generic patient-creation endpoint with fabricated federation provenance.
+    source_pointers = control_db.execute(
+        select(GlobalPatientPointer).where(
+            GlobalPatientPointer.source_mrn == payload.source_mrn,
+            GlobalPatientPointer.branch_code != tenant.branch_code,
+        )
+    ).scalars().all()
+    if not source_pointers:
+        raise HTTPException(status_code=404, detail="Federated source patient is not currently indexed.")
+    if len(source_pointers) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Federated source MRN maps to multiple branches; rediscover the patient before import.",
+        )
+
+    source_pointer = source_pointers[0]
+    source_registry = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.branch_code == source_pointer.branch_code,
+            TenantRegistry.is_active.is_(True),
+        )
+    ).scalar_one_or_none()
+    if not source_registry:
+        raise HTTPException(status_code=404, detail="Federated source branch is unavailable.")
+
+    source_engine = tenant_engine_pool.get_engine(source_registry.db_name)
+    SourceSession = sessionmaker(bind=source_engine, autocommit=False, autoflush=False)
+    with SourceSession() as source_db:
+        source_policy = _get_branch_policy(source_db)
+        if source_policy.federation_sharing_mode in {
+            FederationPolicyEnum.ISOLATED_SILO,
+            FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY,
+        }:
+            raise HTTPException(status_code=403, detail="Source branch policy does not permit demographic import.")
+
+        source_patient = source_db.query(Patient).filter(
+            Patient.mrn == source_pointer.source_mrn,
+            Patient.is_active.is_(True),
+        ).first()
+        if not source_patient or getattr(source_patient, "allow_network_sharing", True) is False:
+            raise HTTPException(status_code=404, detail="Federated source patient is no longer shareable.")
+
+        decision = evaluate_tenant_data_use(
+            source_db,
+            data_use_point="federation.patient.discover",
+            patient_id=source_patient.id,
+            actor_user_id=current_user.id,
+            patient_age=calculate_patient_age(source_patient.date_of_birth),
+        )
+        if not decision.allowed or not source_policy.federation_share_demographics:
+            raise HTTPException(status_code=403, detail="Source privacy policy does not permit demographic import.")
+
+        # Do not accept edited demographics/allergies from the request body. The submitted
+        # summary must match the currently indexed source patient, otherwise the caller must
+        # rediscover and retry. This closes the client-side data injection gap.
+        if any([
+            payload.full_name != source_patient.full_name,
+            payload.date_of_birth != source_patient.date_of_birth,
+            payload.gender != source_patient.gender,
+            payload.blood_group != source_patient.blood_group,
+            payload.phone_number != source_patient.phone_number,
+            payload.email != source_patient.email,
+            payload.address != source_patient.address,
+            payload.emergency_contact_name != source_patient.emergency_contact_name,
+            payload.emergency_contact_phone != source_patient.emergency_contact_phone,
+            payload.abha_number != source_patient.abha_number,
+        ]):
+            raise HTTPException(
+                status_code=409,
+                detail="Federated patient data changed since discovery; rediscover before importing.",
+            )
+
+        source_allergies = source_db.execute(
+            select(PatientAllergy, AllergyMaster)
+            .join(AllergyMaster, PatientAllergy.allergy_id == AllergyMaster.id)
+            .where(PatientAllergy.patient_id == source_patient.id, PatientAllergy.is_active.is_(True))
+        ).all()
+
+        # Idempotency: ABHA is the strongest local identity; otherwise use the combination
+        # of normalized phone, DOB and exact name to avoid repeated imports.
+        existing = None
+        if source_patient.abha_number:
+            existing = db.query(Patient).filter(Patient.abha_number == source_patient.abha_number).first()
+        if not existing and source_patient.phone_number:
+            existing = db.query(Patient).filter(
+                Patient.phone_number == source_patient.phone_number,
+                Patient.date_of_birth == source_patient.date_of_birth,
+                Patient.full_name == source_patient.full_name,
+            ).first()
         if existing:
             return existing
 
-    local_mrn = f"MRN-{secrets.token_hex(6).upper()}"
-    new_patient = Patient(
-        mrn=local_mrn,
-        abha_number=payload.abha_number,
-        full_name=payload.full_name,
-        date_of_birth=payload.date_of_birth,
-        gender=payload.gender,
-        blood_group=payload.blood_group,
-        phone_number=payload.phone_number or "0000000000",
-        email=payload.email,
-        address=payload.address,
-        emergency_contact_name=payload.emergency_contact_name,
-        emergency_contact_phone=payload.emergency_contact_phone,
-        is_active=True,
-        allow_network_sharing=True,
-        created_by_id=current_user.id,
-        updated_by_id=current_user.id,
-    )
-    db.add(new_patient)
-    db.flush()
-
-    has_crit = False
-    for remote_alg in payload.active_allergies:
-        local_master = (
-            db.query(AllergyMaster)
-            .filter(
-                (AllergyMaster.code == remote_alg.allergy_code)
-                | (AllergyMaster.name.ilike(remote_alg.allergy_name))
-            )
-            .first()
+        local_mrn = f"MRN-{secrets.token_hex(6).upper()}"
+        new_patient = Patient(
+            mrn=local_mrn,
+            abha_number=source_patient.abha_number,
+            full_name=source_patient.full_name,
+            date_of_birth=source_patient.date_of_birth,
+            gender=source_patient.gender,
+            blood_group=source_patient.blood_group,
+            phone_number=source_patient.phone_number,
+            email=source_patient.email,
+            address=source_patient.address,
+            emergency_contact_name=source_patient.emergency_contact_name,
+            emergency_contact_phone=source_patient.emergency_contact_phone,
+            is_active=True,
+            allow_network_sharing=True,
+            created_by_id=current_user.id,
+            updated_by_id=current_user.id,
         )
-        if local_master:
+        db.add(new_patient)
+        db.flush()
+
+        has_crit = False
+        for remote_alg, remote_master in source_allergies:
+            local_master = (
+                db.query(AllergyMaster)
+                .filter(
+                    (AllergyMaster.code == remote_master.code)
+                    | (AllergyMaster.name.ilike(remote_master.name))
+                )
+                .first()
+            )
+            if not local_master:
+                continue
             if remote_alg.severity in [AllergySeverityEnum.SEVERE, AllergySeverityEnum.ANAPHYLACTIC]:
                 has_crit = True
+            reaction = remote_alg.reaction_description or "Adverse reaction"
+            if "[Source:" not in reaction:
+                reaction = f"{reaction} [Source: {source_pointer.branch_code}]"
             db.add(
                 PatientAllergy(
                     patient_id=new_patient.id,
                     allergy_id=local_master.id,
                     severity=remote_alg.severity,
-                    reaction_description=remote_alg.reaction,
+                    reaction_description=reaction,
                     recorded_by_user_id=current_user.id,
                     is_active=True,
                     created_by_id=current_user.id,
@@ -548,8 +631,23 @@ def import_federated_patient_locally(
                 )
             )
 
-    db.commit()
-    db.refresh(new_patient)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        db.refresh(new_patient)
+
+        source_db.add(
+            FederationTransferLog(
+                client_id=None,
+                requesting_branch_code=tenant.branch_code,
+                patient_id=source_patient.id,
+                requested_identifier=f"import:{tenant.branch_code}:{hashlib.sha256(source_patient.mrn.encode('utf-8')).hexdigest()[:16]}",
+                purpose="CONTINUITY_OF_CARE_IMPORT",
+            )
+        )
+        source_db.commit()
 
     sync_patient_pointer(
         control_db=control_db,
