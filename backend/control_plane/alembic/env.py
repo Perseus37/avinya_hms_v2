@@ -1,7 +1,7 @@
 from logging.config import fileConfig
 from pathlib import Path
-import sys
 import os
+import sys
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool, text
@@ -33,6 +33,7 @@ def _configure_postgresql_migration_limits(connection) -> None:
         text("SELECT set_config('statement_timeout', :value, true)"),
         {"value": os.environ.get("ALEMBIC_STATEMENT_TIMEOUT", "30min").strip()},
     )
+
 
 def get_database_url() -> str:
     # Programmatic callers target individual databases through this config.
