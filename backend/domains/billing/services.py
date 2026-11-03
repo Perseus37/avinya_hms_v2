@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import math
 from typing import List, Optional
 import uuid
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -67,6 +68,43 @@ def get_or_create_draft_encounter_invoice(
     return invoice
 
 
+def assert_opd_consultation_paid(db: Session, encounter_id: int, patient_id: int) -> Optional[Invoice]:
+    """Require the appointment-linked OPD consultation invoice to be fully settled.
+
+    The invoice row is locked so payment reversal/finalization cannot race queue admission.
+    A missing invoice is permitted only for a genuinely free consultation (the billing
+    service creates an invoice only when the configured consultation fee is positive).
+    """
+    stmt = (
+        select(Invoice)
+        .where(
+            Invoice.encounter_id == encounter_id,
+            Invoice.patient_id == patient_id,
+        )
+        .order_by(Invoice.id.desc())
+        .with_for_update()
+    )
+    invoices = list(db.execute(stmt).scalars().all())
+    if not invoices:
+        return None
+
+    invoice = next((inv for inv in invoices if inv.status != InvoiceStatusEnum.VOID), invoices[0])
+    if invoice.status != InvoiceStatusEnum.PAID or invoice.amount_paid_paise < invoice.net_amount_paise:
+        outstanding = max(0, invoice.net_amount_paise - invoice.amount_paid_paise)
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "code": "OPD_CONSULTATION_PAYMENT_REQUIRED",
+                "message": "Consultation payment must be fully settled before OPD queue admission or consultation start.",
+                "invoice_id": invoice.id,
+                "invoice_number": invoice.invoice_number,
+                "invoice_status": invoice.status.value,
+                "outstanding_paise": outstanding,
+            },
+        )
+    return invoice
+
+
 def auto_bill_opd_consultation(db: Session, patient_id: int, encounter_id: int, doctor_user_id: int) -> None:
     """Appends the doctor's consultation_fee_paise to the encounter's DRAFT invoice (idempotent per encounter)."""
     doc_profile = (
@@ -83,7 +121,6 @@ def auto_bill_opd_consultation(db: Session, patient_id: int, encounter_id: int, 
     invoice = get_or_create_draft_encounter_invoice(db, patient_id, encounter_id)
     desc = f"OPD CONSULTATION: {doc_profile.user.full_name} ({doc_profile.specialization})"
 
-    # CLIN-003: Use a wildcard LIKE match to decouple idempotency from volatile doctor profile strings
     existing = (
         db.execute(
             select(InvoiceLineItem).where(
@@ -147,12 +184,9 @@ def auto_bill_ipd_bed_stay(db: Session, admission: InpatientAdmission, discharge
 
         elapsed_hours = max(0.0, (seg_end - seg_start).total_seconds() / 3600.0)
         billable_days = max(1, math.ceil(elapsed_hours / 24.0))
-        
-        # FIN-002: Use the locked-in historical rate from BedTransferLog, falling back if it was recorded as 0
         historical_rate = getattr(log, "unit_price_paise", 0)
         if historical_rate <= 0:
             historical_rate = bed.base_daily_rate_paise
-            
         total_paise = billable_days * historical_rate
 
         desc = f"IPD BED CHARGE: Bed {bed.bed_number} ({bed.bed_type.value}) [Transfer #{log.id}]"
@@ -175,6 +209,7 @@ def auto_bill_ipd_bed_stay(db: Session, admission: InpatientAdmission, discharge
         )
         db.add(line_item)
         invoice.total_amount_paise += total_paise
+
 
 def resolve_patient_service_price_paise(db: Session, patient_id: int, service: ServiceCatalog) -> int:
     """
@@ -215,6 +250,7 @@ def resolve_patient_service_price_paise(db: Session, patient_id: int, service: S
             return tariff.tariff_price_paise
 
     return service.base_price_paise
+
 
 def auto_bill_diagnostic_order(db: Session, order: DiagnosticOrder, ordered_service_ids: List[int]) -> None:
     """
@@ -281,6 +317,7 @@ def reverse_cancelled_diagnostic_order_billing(db: Session, order: DiagnosticOrd
         if inv.discount_amount_paise > inv.total_amount_paise:
             inv.discount_amount_paise = inv.total_amount_paise
 
+
 def auto_bill_completed_surgery(db: Session, surgery: SurgicalSchedule) -> None:
     """
     Upon surgery completion:
@@ -290,8 +327,6 @@ def auto_bill_completed_surgery(db: Session, surgery: SurgicalSchedule) -> None:
     """
     invoice = get_or_create_draft_encounter_invoice(db, surgery.patient_id, surgery.encounter_id)
     case_prefix = f"SURGERY [Case #{surgery.case_number}]:"
-
-    # Idempotency guard: ensure surgery is only billed once
     already_billed = (
         db.execute(
             select(InvoiceLineItem).where(
@@ -305,65 +340,31 @@ def auto_bill_completed_surgery(db: Session, surgery: SurgicalSchedule) -> None:
     if already_billed:
         return
 
-    # 1. Primary Surgical Procedure Fee (with Plan Tariff lookup)
     proc_svc = surgery.procedure_service
     if proc_svc and proc_svc.base_price_paise > 0:
         proc_price = resolve_patient_service_price_paise(db, surgery.patient_id, proc_svc)
         if proc_price > 0:
-            db.add(
-                InvoiceLineItem(
-                    invoice_id=invoice.id,
-                    service_id=proc_svc.id,
-                    description=f"{case_prefix} {proc_svc.name} ({proc_svc.code})",
-                    quantity=1,
-                    unit_price_paise=proc_price,
-                    total_price_paise=proc_price,
-                )
-            )
+            db.add(InvoiceLineItem(invoice_id=invoice.id, service_id=proc_svc.id, description=f"{case_prefix} {proc_svc.name} ({proc_svc.code})", quantity=1, unit_price_paise=proc_price, total_price_paise=proc_price))
             invoice.total_amount_paise += proc_price
 
-    # 2. Operation Theatre Facility Hourly Charge
     theatre = surgery.theatre
     if theatre and theatre.hourly_rate_paise > 0:
         def _to_utc(dt: datetime) -> datetime:
             return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-
         start_t = _to_utc(surgery.actual_start_time or surgery.scheduled_start_time)
         end_t = _to_utc(surgery.actual_end_time or surgery.scheduled_end_time)
         hours = max(1, math.ceil(max(0.1, (end_t - start_t).total_seconds() / 3600.0)))
         ot_total = hours * theatre.hourly_rate_paise
-
-        db.add(
-            InvoiceLineItem(
-                invoice_id=invoice.id,
-                service_id=None,
-                description=f"{case_prefix} OT Room Charge - {theatre.name} ({theatre.code})",
-                quantity=hours,
-                unit_price_paise=theatre.hourly_rate_paise,
-                total_price_paise=ot_total,
-            )
-        )
+        db.add(InvoiceLineItem(invoice_id=invoice.id, service_id=None, description=f"{case_prefix} OT Room Charge - {theatre.name} ({theatre.code})", quantity=hours, unit_price_paise=theatre.hourly_rate_paise, total_price_paise=ot_total))
         invoice.total_amount_paise += ot_total
 
-    # 3. Surgical Implants / Prosthetics / Stents
     for imp in surgery.implants:
         if imp.unit_price_paise <= 0:
             continue
         imp_total = imp.quantity * imp.unit_price_paise
-        db.add(
-            InvoiceLineItem(
-                invoice_id=invoice.id,
-                service_id=None,
-                description=(
-                    f"SURGICAL IMPLANT [Case #{surgery.case_number}]: "
-                    f"{imp.implant_name} (S/N: {imp.serial_or_batch_number})"
-                ),
-                quantity=imp.quantity,
-                unit_price_paise=imp.unit_price_paise,
-                total_price_paise=imp_total,
-            )
-        )
+        db.add(InvoiceLineItem(invoice_id=invoice.id, service_id=None, description=f"SURGICAL IMPLANT [Case #{surgery.case_number}]: {imp.implant_name} (S/N: {imp.serial_or_batch_number})", quantity=imp.quantity, unit_price_paise=imp.unit_price_paise, total_price_paise=imp_total))
         invoice.total_amount_paise += imp_total
+
 
 def auto_bill_blood_transfusion_issue(db: Session, cross_match: BloodCrossMatchOrder) -> None:
     """Automatically bills the blood bag processing fee onto the encounter's DRAFT invoice upon issue."""
@@ -372,33 +373,11 @@ def auto_bill_blood_transfusion_issue(db: Session, cross_match: BloodCrossMatchO
         return
 
     invoice = get_or_create_draft_encounter_invoice(db, cross_match.patient_id, cross_match.encounter_id)
-    desc = (
-        f"BLOOD BANK [Bag #{bag.bag_number}]: "
-        f"{bag.component_type.value} ({bag.blood_group.value}, {bag.volume_ml}mL)"
-    )
-
-    existing = (
-        db.execute(
-            select(InvoiceLineItem).where(
-                InvoiceLineItem.invoice_id == invoice.id,
-                InvoiceLineItem.description == desc,
-            )
-        )
-        .scalars()
-        .first()
-    )
+    desc = f"BLOOD BANK [Bag #{bag.bag_number}]: {bag.component_type.value} ({bag.blood_group.value}, {bag.volume_ml}mL)"
+    existing = db.execute(select(InvoiceLineItem).where(InvoiceLineItem.invoice_id == invoice.id, InvoiceLineItem.description == desc)).scalars().first()
     if existing:
         return
 
     fee = bag.processing_fee_paise
-    db.add(
-        InvoiceLineItem(
-            invoice_id=invoice.id,
-            service_id=None,
-            description=desc,
-            quantity=1,
-            unit_price_paise=fee,
-            total_price_paise=fee,
-        )
-    )
+    db.add(InvoiceLineItem(invoice_id=invoice.id, service_id=None, description=desc, quantity=1, unit_price_paise=fee, total_price_paise=fee))
     invoice.total_amount_paise += fee
