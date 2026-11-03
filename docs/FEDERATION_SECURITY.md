@@ -47,11 +47,19 @@ Do not introduce shared cross-branch ORM references as part of federation. A suc
 
 Discovery transfer logs remain in the source tenant database. Requests log a PHI-minimized identifier where possible. Allergy provenance is carried in the clinical summary so downstream federation hops can retain the original source rather than replacing it with the requesting hospital.
 
+`FederationTransferLog` is now treated as a true append-only audit record:
+
+- ORM mutation and deletion are rejected.
+- The patient foreign key uses `RESTRICT`, preventing hard deletion of a patient from silently erasing transfer history.
+- PostgreSQL has a `BEFORE UPDATE OR DELETE` trigger as a database-level defense against bulk SQL/ORM bypasses.
+- Normal patient lifecycle should therefore use the application's existing soft-deactivation/retention mechanisms rather than hard deletion when transfer history exists.
+
 Federation security changes must preserve:
 
 - revoked/invalid federation keys returning `401`;
 - one `[Source: ...]` marker per allergy reaction;
 - source-tenant transfer logs;
+- immutable transfer history;
 - patient privacy opt-out and tenant federation policy checks;
 - branch/database isolation;
 - import idempotency and rollback on local database failure.
