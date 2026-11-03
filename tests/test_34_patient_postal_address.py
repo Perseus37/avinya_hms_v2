@@ -43,6 +43,37 @@ def test_patient_address_fields_are_optional_and_persisted(client, doctor_header
     assert legacy_response.json()["village"] is None
 
 
+def test_patient_registration_does_not_require_abha_number(client, doctor_headers):
+    response = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={
+            "full_name": "No ABHA Registration Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    patient = response.json()
+    assert patient["mrn"]
+    assert patient["abha_number"] is None
+
+    blank_abha_response = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={
+            "full_name": "Blank ABHA Registration Patient",
+            "date_of_birth": "1992-02-02T00:00:00Z",
+            "gender": "MALE",
+            "abha_number": "   ",
+        },
+    )
+
+    assert blank_abha_response.status_code == 201, blank_abha_response.text
+    assert blank_abha_response.json()["abha_number"] is None
+
+
 def test_patient_pincode_suggestions_return_locality_fields(client, doctor_headers, monkeypatch):
     class FakeResponse:
         def raise_for_status(self):
