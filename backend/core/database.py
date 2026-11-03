@@ -94,7 +94,7 @@ class TenantEngineRegistry:
                 oldest_engine.dispose()
 
             from sqlalchemy.pool import NullPool
-            
+
             # ARCH-001 / PR-05: Prevent connection pool exhaustion across 4x Gunicorn workers and enforce DB timeouts
             url = build_db_url(db_name)
             tenant_engine = create_engine(
@@ -260,6 +260,11 @@ def get_db(request: Request):
     engine = tenant_engine_pool.get_engine(ctx.db_name)
     TenantSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db: Session = TenantSession()
+    # Security invariant: tenant-local ORM writes must carry the resolved branch identity.
+    # Model-level guards use this trusted session metadata to prevent a tenant from
+    # minting federation credentials for an arbitrary branch code.
+    db.info["tenant_branch_code"] = ctx.branch_code
+    db.info["tenant_subdomain_slug"] = ctx.subdomain_slug
     try:
         yield db
     finally:
