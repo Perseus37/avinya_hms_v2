@@ -11,7 +11,7 @@ import { ErrorBoundary } from "../ui/ErrorBoundary";
 const HospitalAdminDashboard = lazy(() => import("../../workspaces/overview/HospitalAdminDashboard").then((m) => ({ default: m.HospitalAdminDashboard })));
 const PatientRegistrationWorkspace = lazy(() => import("../../workspaces/registration/PatientRegistrationWorkspace").then((m) => ({ default: m.PatientRegistrationWorkspace })));
 const PatientRecordWorkspace = lazy(() => import("../../workspaces/patient/PatientRecordWorkspace").then((m) => ({ default: m.PatientRecordWorkspace })));
-const OPDQueueWorkspace = lazy(() => import("../../workspaces/opd/OPDQueueWorkspace").then((m) => ({ default: m.OPDQueueWorkspace })));
+const OPDQueueWorkspace = lazy(() => import("../../workspaces/opd/OPDQueueLiveWorkspace").then((m) => ({ default: m.OPDQueueLiveWorkspace })));
 const InpatientAdmissionWorkspace = lazy(() => import("../../workspaces/adt/InpatientAdmissionWorkspace").then((m) => ({ default: m.InpatientAdmissionWorkspace })));
 const DoctorCockpit = lazy(() => import("../../workspaces/doctor/DoctorCockpit").then((m) => ({ default: m.DoctorCockpit })));
 const WardNursingStation = lazy(() => import("../../workspaces/nursing/WardNursingStation").then((m) => ({ default: m.WardNursingStation })));
