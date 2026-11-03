@@ -17,12 +17,14 @@ from backend.core.dependencies import RequirePermission
 from backend.core.event_bus import publish_tenant_event
 from backend.domains.encounters.models import (
     Appointment, AppointmentStatusEnum, AppointmentStatusHistory,
+    EncounterStatusEnum, PatientEncounter,
 )
 from backend.domains.encounters.opd_queue_models import (
     OPDQueue, OPDQueueEntry, OPDQueueEntryStatus, OPDQueueEvent,
     OPDQueueStatus,
 )
 from backend.domains.identity.models import User
+from backend.domains.billing.services import auto_bill_opd_consultation
 
 router = APIRouter(prefix="/api/opd/queues", tags=["OPD Queue V1"])
 
@@ -405,6 +407,11 @@ def mark_arrived(
     return result
 
 
+class StartConsultationPayload(BaseModel):
+    encounter_id: int = Field(gt=0)
+    reason: Optional[str] = Field(default="OPD consultation started", max_length=500)
+
+
 class QueueReasonPayload(BaseModel):
     reason_code: str = Field(min_length=1, max_length=40)
     reason_note: Optional[str] = Field(default=None, max_length=500)
@@ -509,6 +516,108 @@ def mark_no_show(
     result = _response(queue, entry, event)
     db.commit()
     _publish_queue_event(db, queue, entry, "OPD_PATIENT_MARKED_NO_SHOW")
+    return result
+
+
+@router.post("/{queue_id}/entries/{entry_id}/start-consultation", response_model=QueueCommandResponse)
+def start_consultation(
+    queue_id: int,
+    entry_id: int,
+    payload: StartConsultationPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("opd:write")),
+):
+    """Start encounter billing, appointment and queue state atomically."""
+    queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    entry = _entry_or_404(db, entry_id, queue.id, lock=True)
+    if entry.state != OPDQueueEntryStatus.ARRIVED:
+        raise HTTPException(status_code=409, detail="Patient must be marked arrived before consultation starts.")
+
+    appointment = db.execute(
+        select(Appointment).where(Appointment.id == entry.appointment_id).with_for_update()
+    ).scalar_one_or_none()
+    if appointment is None or appointment.status != AppointmentStatusEnum.ARRIVED:
+        raise HTTPException(status_code=409, detail="Linked appointment is not in ARRIVED state.")
+
+    encounter = db.execute(
+        select(PatientEncounter).where(PatientEncounter.id == payload.encounter_id).with_for_update()
+    ).scalar_one_or_none()
+    if (
+        encounter is None
+        or encounter.patient_id != appointment.patient_id
+        or encounter.primary_doctor_id != appointment.doctor_id
+        or encounter.department_id != appointment.department_id
+        or encounter.status != EncounterStatusEnum.ACTIVE
+    ):
+        raise HTTPException(status_code=409, detail="Encounter must be active and match the appointment patient, doctor and department.")
+
+    auto_bill_opd_consultation(db, appointment.patient_id, encounter.id, appointment.doctor_id)
+    previous_appointment_status = appointment.status
+    appointment.status = AppointmentStatusEnum.IN_CONSULTATION
+    appointment.encounter_id = encounter.id
+    db.add(AppointmentStatusHistory(
+        appointment_id=appointment.id,
+        from_status=previous_appointment_status.value,
+        to_status=appointment.status.value,
+        changed_by_id=current_user.id,
+        reason=payload.reason or "OPD consultation started",
+    ))
+
+    previous_queue_state = entry.state.value
+    entry.state = OPDQueueEntryStatus.IN_CONSULTATION
+    entry.encounter_id = encounter.id
+    entry.consultation_started_at = datetime.now(timezone.utc)
+    event = _record_event(
+        db, queue, entry, current_user, "CONSULTATION_STARTED",
+        previous_queue_state, entry.state.value,
+    )
+    db.flush()
+    result = _response(queue, entry, event)
+    db.commit()
+    _publish_queue_event(db, queue, entry, "OPD_CONSULTATION_STARTED")
+    return result
+
+
+@router.post("/{queue_id}/entries/{entry_id}/complete-consultation", response_model=QueueCommandResponse)
+def complete_consultation(
+    queue_id: int,
+    entry_id: int,
+    payload: QueueReasonPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("opd:write")),
+):
+    """Complete the OPD encounter slot; downstream orders remain independent."""
+    queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    entry = _entry_or_404(db, entry_id, queue.id, lock=True)
+    if entry.state != OPDQueueEntryStatus.IN_CONSULTATION:
+        raise HTTPException(status_code=409, detail="Only an active consultation can be completed.")
+
+    appointment = db.execute(
+        select(Appointment).where(Appointment.id == entry.appointment_id).with_for_update()
+    ).scalar_one_or_none()
+    if appointment is None or appointment.status != AppointmentStatusEnum.IN_CONSULTATION:
+        raise HTTPException(status_code=409, detail="Linked appointment is not in consultation.")
+
+    previous_appointment_status = appointment.status
+    appointment.status = AppointmentStatusEnum.COMPLETED
+    db.add(AppointmentStatusHistory(
+        appointment_id=appointment.id,
+        from_status=previous_appointment_status.value,
+        to_status=appointment.status.value,
+        changed_by_id=current_user.id,
+        reason=payload.reason_code + (": " + payload.reason_note if payload.reason_note else ""),
+    ))
+    previous_queue_state = entry.state.value
+    entry.state = OPDQueueEntryStatus.COMPLETED
+    entry.completed_at = datetime.now(timezone.utc)
+    event = _record_event(
+        db, queue, entry, current_user, "CONSULTATION_COMPLETED",
+        previous_queue_state, entry.state.value, payload.reason_code, payload.reason_note,
+    )
+    db.flush()
+    result = _response(queue, entry, event)
+    db.commit()
+    _publish_queue_event(db, queue, entry, "OPD_CONSULTATION_COMPLETED")
     return result
 
 
