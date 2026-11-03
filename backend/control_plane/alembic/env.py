@@ -22,6 +22,18 @@ if config.config_file_name:
 
 target_metadata = ControlBase.metadata
 
+
+def _configure_postgresql_migration_limits(connection) -> None:
+    """Apply transaction-local safety limits to this migration connection."""
+    connection.execute(
+        text("SELECT set_config('lock_timeout', :value, true)"),
+        {"value": os.environ.get("ALEMBIC_LOCK_TIMEOUT", "5s").strip()},
+    )
+    connection.execute(
+        text("SELECT set_config('statement_timeout', :value, true)"),
+        {"value": os.environ.get("ALEMBIC_STATEMENT_TIMEOUT", "30min").strip()},
+    )
+
 def get_database_url() -> str:
     # Programmatic callers target individual databases through this config.
     configured_url = config.get_main_option("sqlalchemy.url")
@@ -70,6 +82,7 @@ def run_migrations_online() -> None:
             )
             with context.begin_transaction():
                 if connection.dialect.name == "postgresql":
+                    _configure_postgresql_migration_limits(connection)
                     connection.execute(
                         text("SELECT pg_advisory_xact_lock(:lock_key)"),
                         {"lock_key": 0x4156594E414D4947},
