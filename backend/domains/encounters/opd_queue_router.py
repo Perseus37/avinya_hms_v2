@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission
+from backend.core.event_bus import publish_tenant_event
 from backend.domains.encounters.models import (
     Appointment, AppointmentStatusEnum, AppointmentStatusHistory,
 )
@@ -127,6 +128,25 @@ def _response(queue, entry, event):
     )
 
 
+def _publish_queue_event(db: Session, queue, entry, event_type: str) -> None:
+    """Best-effort post-commit event; TV payload intentionally contains no patient PHI."""
+    tenant_slug = db.info.get("tenant_subdomain_slug")
+    if not tenant_slug:
+        return
+    publish_tenant_event(
+        tenant_slug=str(tenant_slug),
+        stream="waiting_room",
+        event_type=event_type,
+        payload={
+            "queue_id": queue.id,
+            "entry_id": entry.id,
+            "token_number": entry.token_number,
+            "room_label": queue.room_label,
+            "queue_version": queue.version,
+        },
+    )
+
+
 @router.post("/check-in", status_code=201)
 def check_in_appointment(
     payload: CheckInPayload,
@@ -215,6 +235,7 @@ def check_in_appointment(
         "event_id": event.id,
     }
     db.commit()
+    _publish_queue_event(db, queue, entry, "OPD_PATIENT_CHECKED_IN")
     return result
 
 
@@ -310,6 +331,7 @@ def call_next(
         raise HTTPException(status_code=404, detail="No waiting patients in this queue.")
     result = _call_entry(db, queue, entry, current_user)
     db.commit()
+    _publish_queue_event(db, queue, entry, "OPD_PATIENT_CALLED")
     return result
 
 
@@ -334,6 +356,7 @@ def call_specific(
         event_type="PATIENT_CALLED_OUT_OF_SEQUENCE",
     )
     db.commit()
+    _publish_queue_event(db, queue, entry, "OPD_PATIENT_CALLED_OUT_OF_SEQUENCE")
     return result
 
 
@@ -356,6 +379,7 @@ def repeat_call(
     db.flush()
     result = _response(queue, entry, event)
     db.commit()
+    _publish_queue_event(db, queue, entry, "OPD_PATIENT_CALL_REPEATED")
     return result
 
 
@@ -377,6 +401,7 @@ def mark_arrived(
     db.flush()
     result = _response(queue, entry, event)
     db.commit()
+    _publish_queue_event(db, queue, entry, "OPD_PATIENT_ARRIVED")
     return result
 
 
@@ -427,6 +452,7 @@ def hold_entry(
     db.flush()
     result = _response(queue, entry, event)
     db.commit()
+    _publish_queue_event(db, queue, entry, "OPD_PATIENT_PUT_ON_HOLD")
     return result
 
 
@@ -451,6 +477,7 @@ def release_hold(
     db.flush()
     result = _response(queue, entry, event)
     db.commit()
+    _publish_queue_event(db, queue, entry, "OPD_PATIENT_RELEASED_FROM_HOLD")
     return result
 
 
@@ -481,6 +508,7 @@ def mark_no_show(
     db.flush()
     result = _response(queue, entry, event)
     db.commit()
+    _publish_queue_event(db, queue, entry, "OPD_PATIENT_MARKED_NO_SHOW")
     return result
 
 
