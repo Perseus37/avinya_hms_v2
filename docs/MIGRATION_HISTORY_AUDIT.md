@@ -67,11 +67,9 @@ The root revision `6f591125aedc_baseline.py` creates the initial tenant schema a
 
 ## Migration graph and runtime verification still required
 
-The branch tree contains 39 revision files and the inspected chain includes:
+The branch tree contains 39 tenant revision files. Targeted inspection confirms these parent relationships: `3605df409a44` descends from the baseline `6f591125aedc`; `8c14e73a92bf` descends from `3605df409a44`; `c74e11ab42d9` descends from `8c14e73a92bf`; `d8a2f1c4e705` descends from `c1f4e8b2a937`; `e1a3c7b5d902` descends from `d8a2f1c4e705`; `f9b7c3d1e205` descends from `e1a3c7b5d902`; and `a7c4e9d2b615` descends from `f9b7c3d1e205`. This is not a complete graph traversal and does not establish that there is exactly one head or that every parent resolves.
 
-`6f591125aedc` → `3605df409a44` → `8c14e73a92bf` → `c74e11ab42d9` → … → `c1f4e8b2a937` → `d8a2f1c4e705` → `e1a3c7b5d902` → `f9b7c3d1e205` → `a7c4e9d2b615`.
-
-This abbreviated chain is not a substitute for running `alembic history`, `alembic heads`, and `alembic branches` in the actual backend environment. CI should assert exactly one intended tenant head and one intended control-plane head, and verify every revision has a resolvable parent. A PostgreSQL 17 migration-parity run should apply the full chain from empty state and compare the final schema to ORM metadata.
+Run `alembic history`, `alembic heads`, and `alembic branches` in the actual backend environment. CI should assert exactly one intended tenant head and one intended control-plane head, and verify every revision has a resolvable parent. A PostgreSQL 17 migration-parity run should apply the full chain from empty state and compare the final schema to ORM metadata.
 
 ## Release decision
 
