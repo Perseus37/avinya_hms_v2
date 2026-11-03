@@ -482,3 +482,32 @@ def mark_no_show(
     result = _response(queue, entry, event)
     db.commit()
     return result
+
+
+@router.get("/{queue_id}/events")
+def list_queue_events(
+    queue_id: int,
+    limit: int = Query(default=100, ge=1, le=500),
+    before_id: Optional[int] = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("opd:read")),
+):
+    """Return a bounded, newest-first audit/event history for a branch queue."""
+    queue = _queue_or_404(db, queue_id, _branch_code(db))
+    stmt = select(OPDQueueEvent).where(OPDQueueEvent.queue_id == queue.id)
+    if before_id is not None:
+        stmt = stmt.where(OPDQueueEvent.id < before_id)
+    rows = db.execute(
+        stmt.order_by(OPDQueueEvent.id.desc()).limit(limit)
+    ).scalars().all()
+    return [{
+        "id": event.id,
+        "entry_id": event.entry_id,
+        "actor_id": event.actor_id,
+        "event_type": event.event_type,
+        "from_state": event.from_state,
+        "to_state": event.to_state,
+        "reason_code": event.reason_code,
+        "reason_note": event.reason_note,
+        "created_at": event.created_at.isoformat(),
+    } for event in rows]
