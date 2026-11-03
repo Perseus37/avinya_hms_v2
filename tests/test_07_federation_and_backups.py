@@ -8,11 +8,11 @@ from backend.domains.federation.models import FederationTransferLog
 
 
 def test_01_register_and_revoke_federation_partner_key(client, superuser_headers):
-    """Scenario 1: Registering a partner branch issues a fed_live_ key; revoking it blocks /discover with 401."""
+    """Scenario 1: Registering the current tenant branch issues a fed_live_ key; revoking it blocks /discover with 401."""
     reg_res = client.post(
         "/v1/api/federation/clients",
         headers=superuser_headers,
-        json={"branch_code": "PARTNER-MUM-01", "name": "Mumbai Partner Hospital"},
+        json={"branch_code": "HQ-HYD-01", "name": "Hyderabad Headquarters"},
     )
     assert reg_res.status_code == 201
     raw_key = reg_res.json()["raw_api_key"]
@@ -27,6 +27,17 @@ def test_01_register_and_revoke_federation_partner_key(client, superuser_headers
         headers={"X-Federation-API-Key": raw_key},
     )
     assert disc_res.status_code == 401
+
+
+def test_01b_federation_registration_cannot_mint_an_arbitrary_branch_identity(client, superuser_headers):
+    """A tenant administrator cannot register a federation credential for another branch code."""
+    reg_res = client.post(
+        "/v1/api/federation/clients",
+        headers=superuser_headers,
+        json={"branch_code": "PARTNER-MUM-01", "name": "Mumbai Partner Hospital"},
+    )
+    assert reg_res.status_code == 403
+    assert "current tenant branch" in reg_res.json()["detail"].lower()
 
 
 def test_02_invalid_federation_api_key_format_returns_401(client):
@@ -120,7 +131,7 @@ def test_04_federation_transfer_logs_written_in_source_tenant_databases(
     sun_client = client.post(
         "/v1/api/federation/clients",
         headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-AUDIT-01", "name": "Sunrise Audit Node"},
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Audit Node"},
     ).json()
 
     abha_number = "ABHA-AUDIT-SECRET-01"
@@ -150,7 +161,7 @@ def test_04_federation_transfer_logs_written_in_source_tenant_databases(
             .first()
         )
         assert log_entry is not None
-        assert log_entry.requesting_branch_code == "SUN-AUDIT-01"
+        assert log_entry.requesting_branch_code == "SUN-BLR-01"
         assert log_entry.purpose == "ICU_TRANSFER_AUDIT"
         expected_hash = hashlib.sha256(abha_number.encode("utf-8")).hexdigest()
         assert f"abha_sha256:{expected_hash}" in log_entry.requested_identifier
@@ -177,7 +188,6 @@ def test_05_aes256_backup_key_derivation_and_lossless_roundtrip():
     secret = "apollo_backup_key_32_chars_minimum_len!"
     fernet_key = derive_fernet_key(secret)
     cipher = Fernet(fernet_key)
-
     sample_pg_dump = b"PGDMP\x01\x0e\x00\x04\x08-- Sample Binary PostgreSQL Dump Payload --"
     encrypted = cipher.encrypt(sample_pg_dump)
     assert encrypted != sample_pg_dump
@@ -221,7 +231,7 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
     sun_client = client.post(
         "/v1/api/federation/clients",
         headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-EMERG-01", "name": "Sunrise Emergency Wing"},
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Emergency Wing"},
     ).json()
     fed_headers = {"X-Federation-API-Key": sun_client["raw_api_key"]}
 
