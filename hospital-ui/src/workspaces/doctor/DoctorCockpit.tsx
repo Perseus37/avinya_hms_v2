@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { uiApi } from "../../api/uiApi";
 import { opdQueueApi, OPDQueueEntry, OPDQueueSummary } from "../../api/opdQueueApi";
+import { encounterVitalsApi, EncounterVital } from "../../api/encounterVitalsApi";
 import { DoctorQueueSummary } from "../../types";
 import { useActivePatient } from "../../core/context/ActivePatientContext";
 import { Button } from "../../components/ui/Button";
@@ -57,6 +58,9 @@ export const DoctorCockpit: React.FC = () => {
   const [selectedAppointmentId, setSelectedAppointmentId] = useState<number | null>(null);
   const [activeQueueLink, setActiveQueueLink] = useState<{ queueId: number; entry: OPDQueueEntry } | null>(null);
   const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [encounterVitals, setEncounterVitals] = useState<EncounterVital[]>([]);
+  const [vitalsLoading, setVitalsLoading] = useState(false);
+  const [vitalsError, setVitalsError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [completionBanner, setCompletionBanner] = useState<{
     patientName: string;
@@ -239,6 +243,34 @@ export const DoctorCockpit: React.FC = () => {
   useEffect(() => {
     loadQueue();
   }, []);
+
+  useEffect(() => {
+    const encounterId = activeQueueLink?.entry.encounter_id;
+    if (!encounterId) {
+      setEncounterVitals([]);
+      setVitalsError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setVitalsLoading(true);
+    setVitalsError(null);
+    encounterVitalsApi.list(encounterId)
+      .then((records) => {
+        if (!cancelled) setEncounterVitals(records);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setEncounterVitals([]);
+          setVitalsError(error instanceof Error ? error.message : "Unable to load encounter vitals.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setVitalsLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [activeQueueLink?.entry.encounter_id]);
 
   const handleAddMedication = (e: React.FormEvent) => {
     e.preventDefault();
@@ -749,36 +781,52 @@ export const DoctorCockpit: React.FC = () => {
               </div>
             </div>
 
-            {/* Quick Vitals & Alert Bar */}
-            <div className="grid grid-cols-4 gap-4">
-              <Card className="p-3 bg-slate-900 border-slate-800">
-                <div className="text-xs text-slate-400">Blood Pressure</div>
-                <div className="text-lg font-mono font-bold text-slate-100 mt-1">
-                  {patientSummary.latest_vitals?.blood_pressure || "120/80"}
-                </div>
-                <div className="text-[10px] text-slate-500">mmHg</div>
-              </Card>
-              <Card className="p-3 bg-slate-900 border-slate-800">
-                <div className="text-xs text-slate-400">Heart Rate</div>
-                <div className="text-lg font-mono font-bold text-slate-100 mt-1">
-                  {patientSummary.latest_vitals?.heart_rate_bpm || "72"}
-                </div>
-                <div className="text-[10px] text-slate-500">bpm</div>
-              </Card>
-              <Card className="p-3 bg-slate-900 border-slate-800">
-                <div className="text-xs text-slate-400">Oxygen Saturation</div>
-                <div className="text-lg font-mono font-bold text-emerald-400 mt-1">
-                  {patientSummary.latest_vitals?.spo2_percent ? `${patientSummary.latest_vitals.spo2_percent}%` : "98%"}
-                </div>
-                <div className="text-[10px] text-slate-500">SpO2</div>
-              </Card>
-              <Card className="p-3 bg-slate-900 border-slate-800">
-                <div className="text-xs text-slate-400">NEWS2 Score</div>
-                <div className="text-lg font-mono font-bold text-emerald-400 mt-1">
-                  {patientSummary.latest_vitals?.news2_total_score ?? "0"}
-                </div>
-                <div className="text-[10px] text-slate-500">Low Risk</div>
-              </Card>
+            {/* Encounter-linked observations; never substitute demo values for missing clinical data. */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">Encounter Vitals</h3>
+                <span className="text-[10px] text-slate-500">
+                  {vitalsLoading ? "Loading…" : encounterVitals.length ? `${encounterVitals.length} recorded observation(s)` : "No observations recorded"}
+                </span>
+              </div>
+              {vitalsError && <p className="text-xs text-rose-300">{vitalsError}</p>}
+              {!activeQueueLink?.entry.encounter_id && (
+                <p className="rounded-lg border border-amber-800/60 bg-amber-950/20 p-3 text-xs text-amber-200">
+                  Vitals are shown only after this patient is linked to an active OPD encounter.
+                </p>
+              )}
+              {(() => {
+                const latest = encounterVitals[encounterVitals.length - 1];
+                const display = (value: number | null | undefined, suffix = "") =>
+                  value === null || value === undefined ? "—" : `${value}${suffix}`;
+                return (
+                  <>
+                    <div className="grid grid-cols-4 gap-4">
+                      {[
+                        { label: "Blood Pressure", value: latest?.bp_systolic != null && latest?.bp_diastolic != null ? `${latest.bp_systolic}/${latest.bp_diastolic}` : "—", unit: "mmHg" },
+                        { label: "Heart Rate", value: display(latest?.pulse_bpm), unit: "bpm" },
+                        { label: "SpO₂", value: display(latest?.spo2_percent, "%"), unit: "oxygen saturation" },
+                        { label: "Temperature", value: display(latest?.temperature_f, "°F"), unit: "temperature" },
+                      ].map((item) => (
+                        <Card key={item.label} className="p-3 bg-slate-900 border-slate-800">
+                          <div className="text-xs text-slate-400">{item.label}</div>
+                          <div className="text-lg font-mono font-bold text-slate-100 mt-1">{item.value}</div>
+                          <div className="text-[10px] text-slate-500">{item.unit}</div>
+                        </Card>
+                      ))}
+                    </div>
+                    {latest && (
+                      <div className="text-[10px] text-slate-500">
+                        Latest observation: {new Date(latest.created_at).toLocaleString()} · Recorded by user #{latest.created_by_id ?? "unknown"}
+                        {latest.respiratory_rate != null ? ` · RR ${latest.respiratory_rate}/min` : ""}
+                        {latest.weight_kg != null ? ` · ${latest.weight_kg} kg` : ""}
+                        {latest.height_cm != null ? ` · ${latest.height_cm} cm` : ""}
+                        {latest.bmi != null ? ` · BMI ${latest.bmi}` : ""}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
 
             {/* Clinical Perspectives Sub-Tabs */}
