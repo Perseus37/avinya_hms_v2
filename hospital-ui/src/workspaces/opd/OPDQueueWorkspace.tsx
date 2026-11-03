@@ -296,15 +296,11 @@ export const OPDQueueWorkspace: React.FC = () => {
 
   const handleCallPatient = (item: OPDQueueItem) => {
     setCalledToken(item);
-    setQueueItems((prev) =>
-      prev.map((q) =>
-        q.id === item.id
-          ? { ...q, status: "IN_CONSULT" }
-          : q.doctorId === item.doctorId && q.status === "IN_CONSULT"
-          ? { ...q, status: "COMPLETED" }
-          : q
-      )
-    );
+    // Do not mutate consultation lifecycle in local UI state.
+    // Calling a patient is an announcement, not proof that the patient entered
+    // the chamber or that a previous consultation has been completed.
+    // The backend queue command will own these transitions once this workspace
+    // is connected to the OPD queue API.
 
     // Play chime then voice announcement
     playChimeTone();
