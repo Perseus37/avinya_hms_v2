@@ -615,3 +615,36 @@ def test_canary_refuses_to_autogenerate_or_apply_unreviewed_migration(
 
     with pytest.raises(RuntimeError, match="No migration was generated or applied"):
         migrate.migrate_default_canary(message="must-not-autogenerate")
+
+@pytest.mark.parametrize(
+    ("config_path", "expected_head"),
+    [
+        ("backend/alembic.ini", None),
+        ("backend/control_plane/alembic.ini", CONTROL_PLANE_HEAD),
+    ],
+)
+def test_alembic_revision_graph_has_one_resolvable_head(config_path, expected_head):
+    """Reject ambiguous or broken migration graphs before a release is built."""
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(config_path))
+    heads = script.get_heads()
+
+    assert len(heads) == 1, (
+        f"{config_path} must have exactly one Alembic head; found {heads!r}. "
+        "Create and review an explicit merge revision before release."
+    )
+    if expected_head is not None:
+        assert heads[0] == expected_head
+
+    # Force traversal of the complete graph and verify every declared parent
+    # resolves from the checked-in revision directory.
+    revisions = list(script.walk_revisions())
+    assert revisions, f"{config_path} contains no migration revisions"
+    for revision in revisions:
+        for parent_id in revision.down_revision or ():
+            assert script.get_revision(parent_id) is not None, (
+                f"{config_path} revision {revision.revision} has missing "
+                f"parent {parent_id}"
+            )
+
