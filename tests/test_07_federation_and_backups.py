@@ -1,4 +1,5 @@
 from cryptography.fernet import Fernet, InvalidToken
+import hashlib
 import pytest
 from sqlalchemy.orm import sessionmaker
 
@@ -115,13 +116,14 @@ def test_04_federation_transfer_logs_written_in_source_tenant_databases(
     apollo_admin_headers,
     sunrise_admin_headers,
 ):
-    """Scenario 4: Every /discover lookup writes an immutable FederationTransferLog inside the source hospital's DB."""
+    """Scenario 4: Every /discover lookup writes an immutable, PHI-minimized FederationTransferLog."""
     sun_client = client.post(
         "/v1/api/federation/clients",
         headers=sunrise_admin_headers,
         json={"branch_code": "SUN-AUDIT-01", "name": "Sunrise Audit Node"},
     ).json()
 
+    abha_number = "ABHA-AUDIT-SECRET-01"
     p_apollo = client.post(
         "/v1/api/patients",
         headers=apollo_admin_headers,
@@ -130,11 +132,12 @@ def test_04_federation_transfer_logs_written_in_source_tenant_databases(
             "date_of_birth": "1991-01-01T00:00:00Z",
             "gender": "FEMALE",
             "phone_number": "9666655555",
+            "abha_number": abha_number,
         },
     ).json()
 
     res = client.get(
-        "/v1/api/federation/patients/discover?phone_number=9666655555&purpose=ICU_TRANSFER_AUDIT",
+        f"/v1/api/federation/patients/discover?abha_number={abha_number}&purpose=ICU_TRANSFER_AUDIT",
         headers={"X-Federation-API-Key": sun_client["raw_api_key"]},
     )
     assert res.status_code == 200
@@ -149,7 +152,9 @@ def test_04_federation_transfer_logs_written_in_source_tenant_databases(
         assert log_entry is not None
         assert log_entry.requesting_branch_code == "SUN-AUDIT-01"
         assert log_entry.purpose == "ICU_TRANSFER_AUDIT"
-        assert "****" in log_entry.requested_identifier
+        expected_hash = hashlib.sha256(abha_number.encode("utf-8")).hexdigest()
+        assert f"abha_sha256:{expected_hash}" in log_entry.requested_identifier
+        assert abha_number not in log_entry.requested_identifier
         assert "9876543210" not in log_entry.requested_identifier
 
         log_entry.purpose = "TAMPERED"
@@ -269,7 +274,6 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
         )
         assert resp_unverified.status_code == 404
 
-        # A syntactically valid-looking token is not an authorization credential.
         resp_fake_token = client.get(
             "/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY&emergency_token=EMERGENCY-SECURE-TOKEN-1",
             headers=fed_headers,
