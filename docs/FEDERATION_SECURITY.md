@@ -45,10 +45,13 @@ Do not introduce shared cross-branch ORM references as part of federation. A suc
 
 ## Provenance and audit
 
-Discovery transfer logs remain in the source tenant database. Requests log a PHI-minimized identifier where possible. Allergy provenance is carried in the clinical summary so downstream federation hops can retain the original source rather than replacing it with the requesting hospital.
+Discovery transfer logs remain in the source tenant database. Requests log a PHI-minimized identifier where possible. **ABHA identifiers are never persisted in raw form in `FederationTransferLog`; the persistence-layer guard converts an `abha:<value>` identifier to a deterministic SHA-256 fingerprint.** This permits audit correlation without retaining the raw national identifier.
+
+Allergy provenance is carried in the clinical summary so downstream federation hops can retain the original source rather than replacing it with the requesting hospital.
 
 `FederationTransferLog` is now treated as a true append-only audit record:
 
+- New audit records sanitize raw ABHA identifiers before persistence.
 - ORM mutation and deletion are rejected.
 - The patient foreign key uses `RESTRICT`, preventing hard deletion of a patient from silently erasing transfer history.
 - PostgreSQL has a `BEFORE UPDATE OR DELETE` trigger as a database-level defense against bulk SQL/ORM bypasses.
@@ -60,6 +63,7 @@ Federation security changes must preserve:
 - one `[Source: ...]` marker per allergy reaction;
 - source-tenant transfer logs;
 - immutable transfer history;
+- PHI-minimized audit identifiers, including fingerprinted ABHA values;
 - patient privacy opt-out and tenant federation policy checks;
 - branch/database isolation;
 - import idempotency and rollback on local database failure.
