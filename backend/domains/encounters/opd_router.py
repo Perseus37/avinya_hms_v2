@@ -362,6 +362,7 @@ def update_appointment_status(
         AppointmentStatusEnum.ARRIVED: [
             AppointmentStatusEnum.IN_CONSULTATION,
             AppointmentStatusEnum.CANCELLED,
+            AppointmentStatusEnum.NO_SHOW,
         ],
         AppointmentStatusEnum.IN_CONSULTATION: [AppointmentStatusEnum.COMPLETED],
         AppointmentStatusEnum.COMPLETED: [],
