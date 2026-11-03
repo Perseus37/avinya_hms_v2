@@ -400,7 +400,11 @@ def discover_and_aggregate_patient_across_branches(
 
             branch_db.add(
                 FederationTransferLog(
-                    client_id=None,
+                    # Snapshot the exact credential identity authenticated by
+                    # get_federated_node. No cross-database FK is used because this
+                    # audit row is written into the source tenant database.
+                    requesting_node_id=calling_node.id,
+                    requesting_key_prefix=calling_node.api_key_prefix,
                     requesting_branch_code=calling_node.branch_code,
                     patient_id=patient.id,
                     requested_identifier=f"{calling_node.branch_code}->{identifier_used}",
