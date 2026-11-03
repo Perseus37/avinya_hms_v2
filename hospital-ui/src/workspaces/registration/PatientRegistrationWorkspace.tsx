@@ -263,7 +263,7 @@ export const PatientRegistrationWorkspace: React.FC = () => {
         phone_number: phone || "9999999999",
         email: email || undefined,
         blood_group: bloodGroup,
-        abha_number: abhaNumber || undefined,
+        abha_number: abhaNumber.trim() || undefined,
         address: address || undefined,
         pincode: pincode || undefined,
         city: city || undefined,
@@ -608,11 +608,11 @@ export const PatientRegistrationWorkspace: React.FC = () => {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  ABHA ID (Ayushman Bharat Digital Mission)
+                  ABHA Number <span className="text-slate-500 font-normal">(Optional)</span>
                 </label>
                 <input
                   type="text"
-                  placeholder="14-digit ABHA (e.g. 91-4821-9921-0021)"
+                  placeholder="Enter ABHA number if available"
                   value={abhaNumber}
                   onChange={(e) => setAbhaNumber(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
