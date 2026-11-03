@@ -1,6 +1,7 @@
 from logging.config import fileConfig
 from pathlib import Path
-import sys , os
+import os
+import sys
 
 from alembic import context
 from sqlalchemy import create_engine, pool, text
@@ -50,6 +51,7 @@ def _configure_postgresql_migration_limits(connection) -> None:
         text("SELECT set_config('statement_timeout', :value, true)"),
         {"value": os.environ.get("ALEMBIC_STATEMENT_TIMEOUT", "30min").strip()},
     )
+
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
