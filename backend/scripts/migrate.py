@@ -362,7 +362,7 @@ def upgrade_single_database(db_name: str) -> str:
 def migrate_default_canary(message: str | None = None) -> None:
     """
     STAGE 1: Migrates ONLY the configured default tenant (Canary DB).
-    Generates a new revision if unversioned model changes are detected.
+    Applies checked-in revisions only; unversioned schema changes stop the canary.
     """
     default_db_name = (
         f"{settings.TENANT_DATABASE_PREFIX}{settings.DEFAULT_TENANT_SLUG}"
@@ -561,7 +561,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Stage 2: Push verified head revision to all tenant DBs",
     )
     parser.add_argument("--tenant", type=str, default=None, help="Push head revision to one specific tenant slug")
-    parser.add_argument("-m", "--message", type=str, default=None, help="Revision comment (non-interactive)")
+    parser.add_argument("-m", "--message", type=str, default=None, help="Deprecated compatibility flag; canary never generates migration files")
     args = parser.parse_args(argv)
 
     if args.fleet or args.tenant:
