@@ -2,6 +2,7 @@ import hashlib
 from datetime import datetime
 from typing import Optional
 
+from fastapi import HTTPException, status
 from sqlalchemy import DateTime, ForeignKey, Integer, String, event, func
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -71,8 +72,17 @@ def _sanitize_federation_identifier(identifier: str) -> str:
 
 @event.listens_for(Session, "before_flush")
 def _protect_federation_transfer_logs(session: Session, flush_context, instances) -> None:
-    """Sanitize new records and prevent application-level mutation/deletion."""
+    """Enforce federation identity binding and protect immutable transfer logs."""
+    expected_branch = session.info.get("tenant_branch_code")
+
     for entity in session.new:
+        if isinstance(entity, FederatedClient):
+            if expected_branch and entity.branch_code.strip().upper() != expected_branch.strip().upper():
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Federation identity must match the current tenant branch.",
+                )
+
         if isinstance(entity, FederationTransferLog):
             entity.requested_identifier = _sanitize_federation_identifier(
                 entity.requested_identifier
