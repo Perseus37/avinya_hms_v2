@@ -76,10 +76,21 @@ class PharmacyLocation(AuditMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class PharmacyLocationAccess(AuditMixin, Base):
+    __tablename__ = "pharmacy_location_access"
+    __table_args__ = (UniqueConstraint("location_id", "user_id", name="uq_pharmacy_location_user"),)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    location_id: Mapped[int] = mapped_column(ForeignKey("pharmacy_locations.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    location: Mapped[PharmacyLocation] = relationship()
+    user: Mapped[User] = relationship()
+
+
 class InventoryBatch(AuditMixin, Base):
     __tablename__ = "inventory_batches"
     __table_args__ = (
-        UniqueConstraint("medication_id", "batch_number", name="uq_med_batch_number"),
+        UniqueConstraint("medication_id", "batch_number", "location_id", name="uq_med_batch_location_batch"),
         CheckConstraint("stock_quantity >= 0", name="ck_batch_stock_non_neg"),
         CheckConstraint("unit_price_paise >= 0", name="ck_batch_price_non_neg"),
         Index("ix_inventory_batches_medication_id", "medication_id"),
@@ -95,6 +106,40 @@ class InventoryBatch(AuditMixin, Base):
 
     medication: Mapped[MedicationMaster] = relationship()
     location: Mapped[PharmacyLocation] = relationship()
+
+
+class InventoryTransferStatusEnum(str, PyEnum):
+    REQUESTED = "REQUESTED"
+    APPROVED = "APPROVED"
+    DISPATCHED = "DISPATCHED"
+    RECEIVED = "RECEIVED"
+    CANCELLED = "CANCELLED"
+
+
+class InventoryTransfer(AuditMixin, Base):
+    __tablename__ = "inventory_transfers"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_inventory_transfer_qty_pos"),
+        CheckConstraint("source_location_id != destination_location_id", name="ck_inventory_transfer_distinct_locations"),
+        Index("ix_inventory_transfers_status_created", "status", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source_batch_id: Mapped[int] = mapped_column(ForeignKey("inventory_batches.id"), nullable=False, index=True)
+    source_location_id: Mapped[int] = mapped_column(ForeignKey("pharmacy_locations.id"), nullable=False)
+    destination_location_id: Mapped[int] = mapped_column(ForeignKey("pharmacy_locations.id"), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="REQUESTED", nullable=False)
+    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    approved_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    dispatched_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    received_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    received_batch_id: Mapped[Optional[int]] = mapped_column(ForeignKey("inventory_batches.id"))
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    dispatched_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[Optional[str]] = mapped_column(String(500))
+    source_batch: Mapped[InventoryBatch] = relationship(foreign_keys=[source_batch_id])
+    received_batch: Mapped[Optional[InventoryBatch]] = relationship(foreign_keys=[received_batch_id])
 
 
 class Prescription(AuditMixin, Base):
