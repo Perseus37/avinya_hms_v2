@@ -38,6 +38,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("tenant_registry_id", name="uq_org_branch_tenant_registry"),
         sa.UniqueConstraint("group_id", "code", name="uq_org_branch_group_code"),
+        sa.UniqueConstraint("id", "group_id", name="uq_org_branch_id_group"),
     )
     op.create_index("ix_org_branches_group_status", "organization_branches", ["group_id", "status"])
 
@@ -58,6 +59,7 @@ def upgrade() -> None:
         sa.Column("locked_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("group_id", "email_normalized", name="uq_org_user_group_email"),
+        sa.UniqueConstraint("id", "group_id", name="uq_org_user_id_group"),
     )
     op.create_index("ix_org_users_group_status", "organization_users", ["group_id", "status"])
 
@@ -65,11 +67,15 @@ def upgrade() -> None:
         "branch_memberships",
         sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("organization_user_id", sa.Integer(), sa.ForeignKey("organization_users.id", ondelete="RESTRICT"), nullable=False),
-        sa.Column("branch_id", sa.Integer(), sa.ForeignKey("organization_branches.id", ondelete="RESTRICT"), nullable=False),
+        sa.Column("branch_id", sa.Integer(), nullable=False),
+        sa.Column("group_id", sa.Integer(), nullable=False),
         sa.Column("status", sa.String(20), server_default="INVITED", nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.UniqueConstraint("organization_user_id", "branch_id", name="uq_branch_membership_user_branch"),
+        sa.UniqueConstraint("id", "organization_user_id", "branch_id", name="uq_branch_membership_link_target"),
+        sa.ForeignKeyConstraint(["organization_user_id", "group_id"], ["organization_users.id", "organization_users.group_id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["branch_id", "group_id"], ["organization_branches.id", "organization_branches.group_id"], ondelete="RESTRICT"),
     )
     op.create_index("ix_branch_memberships_branch_status", "branch_memberships", ["branch_id", "status"])
 
@@ -94,14 +100,15 @@ def upgrade() -> None:
     op.create_table(
         "branch_user_links",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("membership_id", sa.Integer(), sa.ForeignKey("branch_memberships.id", ondelete="RESTRICT"), nullable=False),
-        sa.Column("organization_user_id", sa.Integer(), sa.ForeignKey("organization_users.id", ondelete="RESTRICT"), nullable=False),
-        sa.Column("branch_id", sa.Integer(), sa.ForeignKey("organization_branches.id", ondelete="RESTRICT"), nullable=False),
+        sa.Column("membership_id", sa.Integer(), nullable=False),
+        sa.Column("organization_user_id", sa.Integer(), nullable=False),
+        sa.Column("branch_id", sa.Integer(), nullable=False),
         sa.Column("local_user_id", sa.Integer(), nullable=False),
         sa.Column("verified_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("membership_id", name="uq_branch_user_link_membership"),
         sa.UniqueConstraint("branch_id", "local_user_id", name="uq_branch_user_link_local_user"),
+        sa.ForeignKeyConstraint(["membership_id", "organization_user_id", "branch_id"], ["branch_memberships.id", "branch_memberships.organization_user_id", "branch_memberships.branch_id"], ondelete="RESTRICT"),
     )
     op.create_index("ix_branch_user_links_org_user", "branch_user_links", ["organization_user_id"])
 
