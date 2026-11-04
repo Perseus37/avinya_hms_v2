@@ -174,8 +174,6 @@ def create_medication_pack_configuration(
     base_uom = db.get(ProcurementUnitOfMeasure, payload.base_uom_id)
     if purchase_uom is None or base_uom is None or not purchase_uom.is_active or not base_uom.is_active:
         raise HTTPException(status_code=422, detail="Both units must be active registered units of measure.")
-    if purchase_uom.id == base_uom.id:
-        raise HTTPException(status_code=422, detail="Purchase unit and stock base unit must be different; use a conversion of 1 only when a distinct pack unit is defined.")
     if purchase_uom.dimension != base_uom.dimension:
         raise HTTPException(status_code=422, detail="Purchase and base units must belong to the same measurement dimension.")
     existing_medication_base = db.query(MedicationPackConfiguration.base_uom_id).filter(
@@ -189,6 +187,8 @@ def create_medication_pack_configuration(
         raise HTTPException(status_code=422, detail="Pack conversion must be greater than zero.")
     if Decimal(str(payload.units_per_purchase_unit)) != Decimal(str(payload.units_per_purchase_unit)).to_integral_value():
         raise HTTPException(status_code=422, detail="Stock base-unit conversions must be whole numbers because current inventory quantities are stored as integer units.")
+    if purchase_uom.id == base_uom.id and Decimal(str(payload.units_per_purchase_unit)) != Decimal("1"):
+        raise HTTPException(status_code=422, detail="Identical purchase and base units require a conversion factor of exactly 1.")
     existing = db.query(MedicationPackConfiguration.id).filter(
         MedicationPackConfiguration.medication_id == medication_id,
         MedicationPackConfiguration.purchase_uom_id == purchase_uom.id,
