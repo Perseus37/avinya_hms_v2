@@ -1629,6 +1629,8 @@ def print_purchase_order(
             "status": po.status.value,
             "delivery_due_date": po.delivery_due_date.strftime("%Y-%m-%d"),
             "payment_terms": po.payment_terms,
+            "subtotal": format_amount(po.subtotal_paise),
+            "tax_amount": format_amount(po.tax_amount_paise),
             "total_amount": format_amount(po.total_amount_paise),
         },
         "items": [
@@ -1636,7 +1638,11 @@ def print_purchase_order(
                 "description": item.item_description,
                 "quantity_ordered": item.quantity_ordered,
                 "unit_price": format_amount(item.unit_price_paise),
-                "total_price": format_amount(item.total_price_paise),
+                "tax_percentage": item.tax_percentage,
+                "net_total_price": format_amount(item.total_price_paise),
+                "tax_amount": format_amount(item.tax_amount_paise),
+                "total_price": format_amount(item.gross_total_paise),
+                "gross_total": format_amount(item.gross_total_paise),
             }
             for item in po.items
         ]
