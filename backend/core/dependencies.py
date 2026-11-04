@@ -10,7 +10,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
-from backend.control_plane.models import (\n    Branch, BranchAccessSession, BranchDepartmentAssignment, BranchMembership,\n    BranchMembershipRole, BranchUserLink, FederatedNode, HospitalGroup,\n    OrganizationSession, OrganizationUser, TenantRegistry,\n)\nfrom backend.core.database import (\n    ControlSessionLocal, TenantContext, get_control_db, get_db, get_redis,\n    resolve_tenant_context,\n)
+from backend.control_plane.models import (
+    Branch, BranchAccessSession, BranchDepartmentAssignment, BranchMembership,
+    BranchMembershipRole, BranchUserLink, FederatedNode, HospitalGroup,
+    OrganizationSession, OrganizationUser, TenantRegistry,
+)
+from backend.core.database import (
+    ControlSessionLocal, TenantContext, get_control_db, get_db, get_redis,
+    resolve_tenant_context,
+)
 from backend.domains.facility.models import Bed
 from backend.domains.identity.models import AuthSession, Permission, Role, User, UserStatusEnum
 
