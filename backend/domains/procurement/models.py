@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum as PyEnum
 from typing import List, Optional
 from sqlalchemy import (
@@ -227,9 +228,9 @@ class PurchaseOrderItem(AuditMixin, Base):
     # Immutable unit snapshots; NULL means the historical/entered unit is unknown.
     purchase_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     base_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
-    units_per_purchase_unit: Mapped[Optional[float]] = mapped_column(Numeric(18, 6), nullable=True)
-    base_quantity: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)
-    base_unit_price_paise: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)
+    units_per_purchase_unit: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 6), nullable=True)
+    base_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 6), nullable=True)
+    base_unit_price_paise: Mapped[Optional[Decimal]] = mapped_column(Numeric(24, 8), nullable=True)
 
     purchase_order: Mapped["PurchaseOrder"] = relationship(back_populates="items")
     medication: Mapped[Optional["MedicationMaster"]] = relationship()
@@ -613,7 +614,7 @@ class MedicationPackConfiguration(AuditMixin, Base):
     medication_id: Mapped[int] = mapped_column(ForeignKey("medication_master.id", ondelete="RESTRICT"), nullable=False)
     purchase_uom_id: Mapped[int] = mapped_column(ForeignKey("procurement_units_of_measure.id", ondelete="RESTRICT"), nullable=False)
     base_uom_id: Mapped[int] = mapped_column(ForeignKey("procurement_units_of_measure.id", ondelete="RESTRICT"), nullable=False)
-    units_per_purchase_unit: Mapped[float] = mapped_column(Numeric(18, 6), nullable=False)
+    units_per_purchase_unit: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
     effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     effective_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
