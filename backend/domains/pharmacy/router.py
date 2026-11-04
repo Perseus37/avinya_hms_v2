@@ -1378,11 +1378,10 @@ def dispense_medication(
             )
             rx_item.dispensed_quantity += disp_item.quantity_to_dispense
 
-            line_cost = int(
-                (Decimal(disp_item.quantity_to_dispense) * Decimal(str(batch.unit_price_paise))).quantize(
-                    Decimal("1"), rounding=ROUND_HALF_UP
-                )
+            billable_unit_price_paise = int(
+                Decimal(str(batch.unit_price_paise)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
             )
+            line_cost = disp_item.quantity_to_dispense * billable_unit_price_paise
             total_dispensed_cost_paise += line_cost
 
             med = db.get(MedicationMaster, rx_item.medication_id)
@@ -1398,7 +1397,7 @@ def dispense_medication(
                     f"Batch: {batch.batch_number} [RxItem:{rx_item.id}] [DispensedBy:{current_user.id}]"
                 ),
                 quantity=disp_item.quantity_to_dispense,
-                unit_price_paise=int(Decimal(str(batch.unit_price_paise)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
+                unit_price_paise=billable_unit_price_paise,
                 total_price_paise=line_cost,
             )
             db.add(line_item)
