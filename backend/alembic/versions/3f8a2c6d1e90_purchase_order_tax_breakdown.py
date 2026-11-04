@@ -42,6 +42,24 @@ def upgrade() -> None:
         "gross_total_paise = total_price_paise"
     )
 
+    op.add_column(
+        "procurement_supplier_quotation_items",
+        sa.Column("tax_amount_paise", sa.Integer(), nullable=False, server_default="0"),
+    )
+    op.execute(
+        "UPDATE procurement_supplier_quotation_items "
+        "SET tax_amount_paise = "
+        "((quantity_quoted * unit_price_paise * tax_percentage + 50) / 100)"
+    )
+    op.create_check_constraint(
+        "ck_proc_quote_tax_non_neg", "procurement_supplier_quotation_items",
+        "tax_amount_paise >= 0",
+    )
+    op.create_check_constraint(
+        "ck_proc_quote_line_total", "procurement_supplier_quotation_items",
+        "line_total_paise = quantity_quoted * unit_price_paise + tax_amount_paise",
+    )
+
     op.create_check_constraint(
         "ck_po_subtotal_non_neg", "procurement_purchase_orders", "subtotal_paise >= 0"
     )
@@ -73,11 +91,15 @@ def upgrade() -> None:
         ("procurement_po_items", "tax_percentage"),
         ("procurement_po_items", "tax_amount_paise"),
         ("procurement_po_items", "gross_total_paise"),
+        ("procurement_supplier_quotation_items", "tax_amount_paise"),
     ]:
         op.alter_column(table, column, server_default=None)
 
 
 def downgrade() -> None:
+    op.drop_constraint("ck_proc_quote_line_total", "procurement_supplier_quotation_items", type_="check")
+    op.drop_constraint("ck_proc_quote_tax_non_neg", "procurement_supplier_quotation_items", type_="check")
+    op.drop_column("procurement_supplier_quotation_items", "tax_amount_paise")
     op.drop_constraint("ck_po_item_financial_totals", "procurement_po_items", type_="check")
     op.drop_constraint("ck_po_item_gross_non_neg", "procurement_po_items", type_="check")
     op.drop_constraint("ck_po_item_tax_non_neg", "procurement_po_items", type_="check")
