@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -40,6 +41,12 @@ class PurchaseRequisitionStatusEnum(str, PyEnum):
     PARTIALLY_ORDERED = "PARTIALLY_ORDERED"
     CONVERTED = "CONVERTED"
     CANCELLED = "CANCELLED"
+
+
+class POAmendmentStatusEnum(str, PyEnum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
 
 
 class POStatusEnum(str, PyEnum):
@@ -166,6 +173,7 @@ class PurchaseOrder(AuditMixin, Base):
     total_amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     approved_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    amendment_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     vendor: Mapped["VendorMaster"] = relationship()
     requisition: Mapped[Optional["PurchaseRequisition"]] = relationship(back_populates="purchase_orders")
@@ -449,3 +457,28 @@ class PurchaseOrderApprovalAuthority(AuditMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     role: Mapped["Role"] = relationship()
+
+
+class PurchaseOrderAmendment(AuditMixin, Base):
+    """Proposed revision with immutable before/after snapshots and independent review."""
+    __tablename__ = "procurement_po_amendments"
+    __table_args__ = (
+        UniqueConstraint("po_id", "version", name="uq_po_amendment_version"),
+        Index("ix_po_amendment_po_status", "po_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    po_id: Mapped[int] = mapped_column(ForeignKey("procurement_purchase_orders.id", ondelete="CASCADE"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    prior_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    proposed_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[POAmendmentStatusEnum] = mapped_column(
+        Enum(POAmendmentStatusEnum), default=POAmendmentStatusEnum.PENDING, nullable=False
+    )
+    reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    purchase_order: Mapped["PurchaseOrder"] = relationship()
+    reviewed_by: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewed_by_id])
