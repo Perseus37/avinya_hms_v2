@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -579,6 +580,11 @@ class MedicationPackConfiguration(AuditMixin, Base):
         CheckConstraint("effective_to IS NULL OR effective_to > effective_from", name="ck_med_pack_effective_window"),
         UniqueConstraint("medication_id", "purchase_uom_id", "effective_from", name="uq_med_pack_effective_start"),
         Index("ix_med_pack_medication_active", "medication_id", "is_active"),
+        Index(
+            "uq_med_pack_active_purchase_uom", "medication_id", "purchase_uom_id",
+            unique=True, postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
