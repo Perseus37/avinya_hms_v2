@@ -26,7 +26,19 @@ from backend.core.database import get_db, get_redis, resolve_tenant_context
 from fastapi.security import OAuth2PasswordRequestForm
 from backend.core import database
 from backend.core.database import TenantContext
-from backend.control_plane.models import TenantRegistry
+from backend.control_plane.models import (
+    Branch,
+    BranchAccessSession,
+    BranchDepartmentAssignment,
+    BranchMembership,
+    BranchMembershipRole,
+    BranchUserLink,
+    ControlPlaneAuditLog,
+    HospitalGroup,
+    OrganizationSession,
+    OrganizationUser,
+    TenantRegistry,
+)
 from backend.security.envelope import decrypt_tenant_secret, encrypt_tenant_secret
 from backend.core.dependencies import (
     RateLimiter,
@@ -383,6 +395,144 @@ class CustomPermissionCreate(BaseModel):
 # -----------------------------------------------------------------------------
 # Authentication and session domain
 # -----------------------------------------------------------------------------
+@router.post("/organization-branch-exchange")
+def exchange_organization_branch_grant(
+    request: Request,
+    x_branch_access_token: str = Header(..., alias="X-Branch-Access-Token"),
+    db: Session = Depends(get_db),
+):
+    """Consume a one-time central grant and establish a native session in this branch."""
+    tenant = resolve_tenant_context(request)
+    if not x_branch_access_token.startswith("br_access_") or len(x_branch_access_token) < 48:
+        raise HTTPException(status_code=401, detail="Invalid branch access grant.")
+
+    token_hash = hashlib.sha256(x_branch_access_token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc)
+    with database.ControlSessionLocal() as control_db:
+        grant_row = control_db.execute(
+            select(
+                BranchAccessSession,
+                OrganizationSession,
+                BranchMembership,
+                OrganizationUser,
+                Branch,
+                HospitalGroup,
+                TenantRegistry,
+                BranchUserLink,
+            )
+            .join(OrganizationSession, OrganizationSession.id == BranchAccessSession.organization_session_id)
+            .join(BranchMembership, BranchMembership.id == BranchAccessSession.membership_id)
+            .join(OrganizationUser, OrganizationUser.id == BranchMembership.organization_user_id)
+            .join(Branch, Branch.id == BranchMembership.branch_id)
+            .join(HospitalGroup, HospitalGroup.id == BranchMembership.group_id)
+            .join(TenantRegistry, TenantRegistry.id == Branch.tenant_registry_id)
+            .join(BranchUserLink, BranchUserLink.membership_id == BranchMembership.id)
+            .where(BranchAccessSession.token_hash == token_hash)
+            .with_for_update()
+        ).first()
+        if not grant_row:
+            raise HTTPException(status_code=401, detail="Branch access grant is invalid or unavailable.")
+
+        grant, org_session, membership, org_user, branch, group, registry, user_link = grant_row
+        grant_expiry = grant.expires_at
+        if grant_expiry.tzinfo is None:
+            grant_expiry = grant_expiry.replace(tzinfo=timezone.utc)
+        org_expiry = org_session.expires_at
+        if org_expiry.tzinfo is None:
+            org_expiry = org_expiry.replace(tzinfo=timezone.utc)
+
+        valid = (
+            grant.revoked_at is None
+            and grant_expiry > now
+            and org_session.revoked_at is None
+            and org_expiry > now
+            and membership.status == "ACTIVE"
+            and membership.revoked_at is None
+            and org_user.status == "ACTIVE"
+            and group.status == "ACTIVE"
+            and branch.status == "ACTIVE"
+            and registry.is_active
+            and user_link.verified_at is not None
+            and branch.id == membership.branch_id
+            and registry.subdomain_slug == tenant.subdomain_slug
+            and registry.branch_code == tenant.branch_code
+            and user_link.branch_id == branch.id
+            and user_link.organization_user_id == org_user.id
+            and user_link.local_user_id > 0
+        )
+        if not valid:
+            raise HTTPException(status_code=401, detail="Branch access grant is expired, revoked, or not valid for this hospital branch.")
+
+        local_user = db.get(User, user_link.local_user_id)
+        if (
+            not local_user
+            or local_user.status != UserStatusEnum.ACTIVE
+            or local_user.is_superuser
+            or local_user.email.strip().lower() != org_user.email_normalized
+        ):
+            raise HTTPException(status_code=403, detail="The linked branch-local account is unavailable or does not match the organization identity.")
+
+        assigned_role_codes = set(control_db.execute(
+            select(BranchMembershipRole.role_code)
+            .where(BranchMembershipRole.membership_id == membership.id)
+        ).scalars().all())
+        local_role_codes = {role.code for role in local_user.roles}
+        if assigned_role_codes != local_role_codes:
+            raise HTTPException(
+                status_code=403,
+                detail="Branch role assignments differ from the centrally approved membership. Reconcile the branch roles before using organization sign-in.",
+            )
+
+        assigned_department_codes = set(control_db.execute(
+            select(BranchDepartmentAssignment.department_code)
+            .where(BranchDepartmentAssignment.membership_id == membership.id)
+        ).scalars().all())
+        local_department_ids = db.execute(
+            select(UserRole.department_id)
+            .where(UserRole.user_id == local_user.id, UserRole.department_id.is_not(None))
+        ).scalars().all()
+        local_department_codes = set(db.execute(
+            select(Department.code).where(Department.id.in_(set(local_department_ids)))
+        ).scalars().all()) if local_department_ids else set()
+        if assigned_department_codes != local_department_codes:
+            raise HTTPException(
+                status_code=403,
+                detail="Branch department assignments differ from the centrally approved membership. Reconcile the branch assignments before using organization sign-in.",
+            )
+
+        # Consume before creating the branch session. If the branch transaction subsequently
+        # fails, the user requests a fresh grant; the same central grant cannot be replayed.
+        grant.revoked_at = now
+        control_db.add(ControlPlaneAuditLog(
+            action="ORGANIZATION_BRANCH_ACCESS_GRANT_EXCHANGED",
+            target_slug=registry.subdomain_slug,
+            actor=str(org_user.id),
+            details=f"One-time branch access grant {grant.id} exchanged for local user {local_user.id}.",
+        ))
+        control_db.commit()
+
+    local_user.last_login_at = now
+    if local_user.first_login_at is None:
+        local_user.first_login_at = now
+    token = _issue_access_session(local_user, tenant, db)
+    db.commit()
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "user": {
+            "id": local_user.id,
+            "login_id": local_user.login_id,
+            "email": local_user.email,
+            "full_name": local_user.full_name,
+        },
+        "branch": {
+            "code": tenant.branch_code,
+            "subdomain_slug": tenant.subdomain_slug,
+        },
+    }
+
+
 @router.post("/login")
 def login(
     payload: UserLogin,
