@@ -383,6 +383,23 @@ def create_purchase_order_from_requisition(
     vendor = db.get(VendorMaster, payload.vendor_id)
     if vendor is None or not vendor.is_active:
         raise HTTPException(status_code=409, detail="An active registered vendor is required.")
+    selected_quotes = db.query(SupplierQuotation).options(
+        selectinload(SupplierQuotation.items)
+    ).filter(
+        SupplierQuotation.requisition_id == requisition.id,
+        SupplierQuotation.status == SupplierQuotationStatusEnum.SELECTED,
+    ).with_for_update().all()
+    if len(selected_quotes) > 1:
+        raise HTTPException(status_code=409, detail="Multiple selected quotations exist for this requisition; resolve the selection conflict before ordering.")
+    selected_quote = selected_quotes[0] if selected_quotes else None
+    selected_quote_lines = {
+        line.requisition_item_id: line for line in selected_quote.items
+    } if selected_quote else {}
+    if selected_quote is not None:
+        if selected_quote.vendor_id != vendor.id:
+            raise HTTPException(status_code=409, detail="Purchase orders must use the supplier selected through the quotation evaluation.")
+        if selected_quote.valid_until and selected_quote.valid_until < datetime.now(timezone.utc):
+            raise HTTPException(status_code=409, detail="The selected supplier quotation has expired; obtain and select a valid quotation.")
     item_map = {item.id: item for item in requisition.items}
     requested_ids = [item.requisition_item_id for item in payload.items]
     if len(requested_ids) != len(set(requested_ids)):
@@ -390,6 +407,10 @@ def create_purchase_order_from_requisition(
     prepared = []
     for item in payload.items:
         req_item = item_map.get(item.requisition_item_id)
+        if selected_quote is not None:
+            quoted_line = selected_quote_lines.get(item.requisition_item_id)
+            if quoted_line is None or item.unit_price_paise != quoted_line.unit_price_paise:
+                raise HTTPException(status_code=409, detail="Purchase order line pricing must match the selected supplier quotation.")
         if req_item is None or req_item.approved_quantity is None:
             raise HTTPException(status_code=422, detail="Every purchase order line must reference an approved requisition line.")
         ordered = db.query(func.coalesce(func.sum(PurchaseOrderItem.quantity_ordered), 0)).join(
@@ -480,6 +501,12 @@ def record_supplier_quotation(
         raise HTTPException(status_code=422, detail="A quotation can contain each requisition line only once.")
     if set(line_ids) - set(line_map):
         raise HTTPException(status_code=422, detail="Quotation lines must belong to the selected requisition.")
+    required_line_ids = {
+        line.id for line in requisition.items
+        if line.approved_quantity is not None and line.approved_quantity > 0
+    }
+    if set(line_ids) != required_line_ids:
+        raise HTTPException(status_code=422, detail="A supplier quotation must price every positively approved requisition line to keep comparisons complete.")
     total = 0
     prepared = []
     for line in payload.items:
@@ -574,6 +601,12 @@ def select_supplier_quotation(
         raise HTTPException(status_code=409, detail="Only a received quotation for this requisition can be selected.")
     if quote.created_by_id == current_user.id:
         raise HTTPException(status_code=409, detail="The quotation recorder cannot select their own quotation.")
+    existing_selection = db.query(SupplierQuotation.id).filter(
+        SupplierQuotation.requisition_id == requisition_id,
+        SupplierQuotation.status == SupplierQuotationStatusEnum.SELECTED,
+    ).with_for_update().first()
+    if existing_selection is not None:
+        raise HTTPException(status_code=409, detail="A supplier quotation has already been selected for this requisition.")
     if quote.valid_until and quote.valid_until < datetime.now(timezone.utc):
         raise HTTPException(status_code=409, detail="The supplier quotation has expired.")
     quote.status = SupplierQuotationStatusEnum.SELECTED
