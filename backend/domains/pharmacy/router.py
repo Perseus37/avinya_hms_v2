@@ -217,7 +217,7 @@ def create_pharmacy_location(payload: PharmacyLocationCreate, db: Session = Depe
 
 
 @router.post("/locations/{location_id}/staff", status_code=status.HTTP_201_CREATED)
-def grant_pharmacy_location_access(location_id: int, payload: PharmacyLocationAccessCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:void"))):
+def grant_pharmacy_location_access(location_id: int, payload: PharmacyLocationAccessCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:location:manage"))):
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     location = _get_active_pharmacy_location(db, location_id)
     user = db.get(User, payload.user_id)
@@ -235,7 +235,7 @@ def grant_pharmacy_location_access(location_id: int, payload: PharmacyLocationAc
 
 
 @router.delete("/locations/{location_id}/staff/{user_id}", status_code=status.HTTP_200_OK)
-def revoke_pharmacy_location_access(location_id: int, user_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:void"))):
+def revoke_pharmacy_location_access(location_id: int, user_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:location:manage"))):
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     assignment = db.execute(select(PharmacyLocationAccess).where(
         PharmacyLocationAccess.location_id == location_id, PharmacyLocationAccess.user_id == user_id,
