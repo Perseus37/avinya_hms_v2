@@ -47,7 +47,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["requested_by_id"], ["users.id"]),
         sa.ForeignKeyConstraint(["reviewed_by_id"], ["users.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("requisition_number", name="uq_procurement_requisitions_number"),
     )
     op.create_index("ix_procurement_requisitions_requisition_number", "procurement_requisitions", ["requisition_number"], unique=True)
     op.create_index("ix_procurement_requisitions_requesting_department_id", "procurement_requisitions", ["requesting_department_id"])
@@ -76,7 +75,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["medication_id"], ["medication_master.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_procurement_requisition_items_requisition_id", "procurement_requisition_items", ["requisition_id"])
     op.create_index("ix_procurement_requisition_items_medication_id", "procurement_requisition_items", ["medication_id"])
     op.create_index("ix_proc_req_items_requisition", "procurement_requisition_items", ["requisition_id"])
 
@@ -112,7 +110,6 @@ def downgrade() -> None:
 
     op.drop_index("ix_proc_req_items_requisition", table_name="procurement_requisition_items")
     op.drop_index("ix_procurement_requisition_items_medication_id", table_name="procurement_requisition_items")
-    op.drop_index("ix_procurement_requisition_items_requisition_id", table_name="procurement_requisition_items")
     op.drop_table("procurement_requisition_items")
 
     op.drop_index("ix_proc_requisition_department_status", table_name="procurement_requisitions")
