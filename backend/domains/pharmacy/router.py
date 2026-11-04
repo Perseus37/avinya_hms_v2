@@ -1053,7 +1053,7 @@ def return_dispensed_medication(
         raise HTTPException(status_code=404, detail="Prescription not found.")
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
 
-    return_logs: list[PharmacyReturnLog] =
+    return_logs: list[PharmacyReturnLog] = []
     total_credit_paise = 0
 
     inv_stmt = (
