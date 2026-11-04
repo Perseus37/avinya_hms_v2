@@ -571,3 +571,45 @@ def test_diagnostic_task_access_uses_service_department_scope(branch_grant_envir
                 tenant_db, task.id, user
             )
         assert exc.value.status_code == 403
+
+
+
+def test_pharmacy_operations_require_both_local_and_central_department_assignment(
+    branch_grant_environment,
+):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        pharmacy = Department(code="PHARMACY", name="Pharmacy")
+        pharmacist_role = Role(code="ROLE_PHARMACIST", name="Clinical Pharmacist")
+        tenant_db.add_all([pharmacy, pharmacist_role])
+        tenant_db.flush()
+        user.roles.append(pharmacist_role)
+        tenant_db.flush()
+        assignment = tenant_db.query(UserRole).filter_by(
+            user_id=user.id, role_id=pharmacist_role.id
+        ).one()
+        assignment.department_id = pharmacy.id
+        tenant_db.flush()
+
+        tenant_db.info["central_branch_department_codes"] = frozenset({"PHARMACY"})
+        dependencies.ensure_department_code_access(
+            tenant_db, {"PHARMACY", "DEPT_PHARMACY"}, user
+        )
+
+        tenant_db.info["central_branch_department_codes"] = frozenset({"CARDIOLOGY"})
+        with pytest.raises(HTTPException) as exc:
+            dependencies.ensure_department_code_access(
+                tenant_db, {"PHARMACY", "DEPT_PHARMACY"}, user
+            )
+        assert exc.value.status_code == 403
+
+        tenant_db.info["central_branch_department_codes"] = frozenset({"PHARMACY"})
+        assignment.department_id = None
+        with pytest.raises(HTTPException) as local_exc:
+            dependencies.ensure_department_code_access(
+                tenant_db, {"PHARMACY", "DEPT_PHARMACY"}, user
+            )
+        assert local_exc.value.status_code == 403
