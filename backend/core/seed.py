@@ -191,6 +191,8 @@ def seed_universal_hospital_data(
         existing_admin_role = db.query(Role).filter(Role.code == "ROLE_ADMIN").first()
         if existing_admin_role and perm_map["config:write"] not in existing_admin_role.permissions:
             existing_admin_role.permissions.append(perm_map["config:write"])
+        if existing_admin_role and perm_map["pharmacy:location:manage"] not in existing_admin_role.permissions:
+            existing_admin_role.permissions.append(perm_map["pharmacy:location:manage"])
         db.commit()
         return False
 
