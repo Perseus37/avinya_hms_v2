@@ -715,3 +715,110 @@ def test_purchase_order_amendment_requires_independent_review_and_reapproval(
     )
     assert reapproved.status_code == 200, reapproved.text
     assert reapproved.json()["status"] == "APPROVED"
+
+
+def test_purchase_order_shipment_tracking_and_overdue_queue(
+    client, pharmacist_headers, superuser_headers
+):
+    vendor = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-SHIP-01",
+            "name": "Shipment Tracking Supplier",
+            "category": "GENERAL_SUPPLIES",
+            "contact_person": "Dispatch Desk",
+            "phone": "9876501234",
+            "email": "shipment-supplier@example.com",
+            "address": "Logistics Park",
+        },
+    )
+    assert vendor.status_code == 201, vendor.text
+
+    due_date = datetime.now(timezone.utc) - timedelta(days=3)
+    po = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor.json()["id"],
+            "delivery_due_date": due_date.isoformat(),
+            "payment_terms": "Net 30",
+            "items": [{
+                "item_description": "Surgical dressing packs",
+                "quantity_ordered": 12,
+                "unit_price_paise": 2500,
+            }],
+        },
+    )
+    assert po.status_code == 201, po.text
+    po_id = po.json()["id"]
+    approved = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/approve",
+        headers=superuser_headers,
+    )
+    assert approved.status_code == 200, approved.text
+
+    shipment = client.post(
+        f"/v1/api/procurement/purchase-orders/{po_id}/shipments",
+        headers=pharmacist_headers,
+        json={
+            "carrier": "Regional Logistics",
+            "tracking_number": "TRACK-PO-001",
+            "expected_delivery_at": due_date.isoformat(),
+            "notes": "Supplier dispatch expected in three days.",
+        },
+    )
+    assert shipment.status_code == 201, shipment.text
+    shipment_id = shipment.json()["id"]
+    assert shipment.json()["status"] == "PLANNED"
+
+    dispatched = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/shipments/{shipment_id}",
+        headers=pharmacist_headers,
+        json={"status": "DISPATCHED", "location": "Supplier warehouse"},
+    )
+    assert dispatched.status_code == 200, dispatched.text
+    in_transit = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/shipments/{shipment_id}",
+        headers=pharmacist_headers,
+        json={"status": "IN_TRANSIT", "location": "Hyderabad transit hub"},
+    )
+    assert in_transit.status_code == 200, in_transit.text
+    invalid_transition = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/shipments/{shipment_id}",
+        headers=pharmacist_headers,
+        json={"status": "PLANNED", "location": "Invalid regression"},
+    )
+    assert invalid_transition.status_code == 409, invalid_transition.text
+
+    events = client.get(
+        f"/v1/api/procurement/purchase-orders/{po_id}/shipments",
+        headers=superuser_headers,
+    )
+    assert events.status_code == 200, events.text
+    assert [event["status"] for event in events.json()[0]["events"]] == [
+        "PLANNED", "DISPATCHED", "IN_TRANSIT"
+    ]
+
+    overdue = client.get(
+        "/v1/api/procurement/purchase-orders/overdue",
+        headers=superuser_headers,
+    )
+    assert overdue.status_code == 200, overdue.text
+    match = next(item for item in overdue.json() if item["po_id"] == po_id)
+    assert match["days_overdue"] >= 3
+    assert match["outstanding_quantity"] == 12
+
+    confirmed = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/shipments/{shipment_id}",
+        headers=pharmacist_headers,
+        json={"status": "DELIVERY_CONFIRMED", "location": "Hospital receiving gate"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    # Carrier confirmation is not a GRN; PO remains open until formal goods receipt.
+    current_po = client.get(
+        f"/v1/api/procurement/purchase-orders/{po_id}",
+        headers=superuser_headers,
+    )
+    assert current_po.status_code == 200, current_po.text
+    assert current_po.json()["status"] == "APPROVED"
