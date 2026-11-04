@@ -1490,11 +1490,10 @@ def return_dispensed_medication(
         _ensure_pharmacy_location_access(db, batch.location_id, current_user)
 
         med = db.get(MedicationMaster, rx_item.medication_id)
-        credit_paise = int(
-            (Decimal(ret.quantity_to_return) * Decimal(str(batch.unit_price_paise))).quantize(
-                Decimal("1"), rounding=ROUND_HALF_UP
-            )
+        billable_unit_price_paise = int(
+            Decimal(str(batch.unit_price_paise)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
         )
+        credit_paise = ret.quantity_to_return * billable_unit_price_paise
         total_credit_paise += credit_paise
 
         # 1. Restore physical stock & decrement dispensed count
