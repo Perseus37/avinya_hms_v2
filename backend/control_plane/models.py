@@ -378,10 +378,11 @@ class BranchUserLink(ControlBase):
 class OrganizationSession(ControlBase):
     """Central authentication session. Store only a token/JTI hash, never the bearer token."""
     __tablename__ = "organization_sessions"
+    __table_args__ = (UniqueConstraint("token_hash", name="uq_organization_sessions_token_hash"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_user_id: Mapped[int] = mapped_column(ForeignKey("organization_users.id", ondelete="CASCADE"), nullable=False, index=True)
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -390,12 +391,15 @@ class OrganizationSession(ControlBase):
 class BranchAccessSession(ControlBase):
     """Short-lived branch selection grant bound to one membership and central session."""
     __tablename__ = "branch_access_sessions"
-    __table_args__ = (Index("ix_branch_access_membership_expiry", "membership_id", "expires_at"),)
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_branch_access_sessions_token_hash"),
+        Index("ix_branch_access_membership_expiry", "membership_id", "expires_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_session_id: Mapped[int] = mapped_column(ForeignKey("organization_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     membership_id: Mapped[int] = mapped_column(ForeignKey("branch_memberships.id", ondelete="RESTRICT"), nullable=False)
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
