@@ -440,6 +440,153 @@ def create_purchase_order_from_requisition(
     return po
 
 
+
+# --- Supplier quotation collection and evaluation ---
+@router.post(
+    "/purchase-requisitions/{requisition_id}/quotations",
+    response_model=SupplierQuotationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def record_supplier_quotation(
+    requisition_id: int,
+    payload: SupplierQuotationCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    requisition = db.query(PurchaseRequisition).options(
+        selectinload(PurchaseRequisition.items)
+    ).filter(PurchaseRequisition.id == requisition_id).with_for_update().one_or_none()
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Purchase requisition not found.")
+    if requisition.status not in {
+        PurchaseRequisitionStatusEnum.APPROVED,
+        PurchaseRequisitionStatusEnum.PARTIALLY_ORDERED,
+    }:
+        raise HTTPException(status_code=409, detail="Quotations can only be recorded for approved requisitions.")
+    vendor = db.get(VendorMaster, payload.vendor_id)
+    if vendor is None or not vendor.is_active:
+        raise HTTPException(status_code=409, detail="An active registered vendor is required.")
+    line_map = {line.id: line for line in requisition.items}
+    line_ids = [line.requisition_item_id for line in payload.items]
+    if len(line_ids) != len(set(line_ids)):
+        raise HTTPException(status_code=422, detail="A quotation can contain each requisition line only once.")
+    if set(line_ids) - set(line_map):
+        raise HTTPException(status_code=422, detail="Quotation lines must belong to the selected requisition.")
+    total = 0
+    prepared = []
+    for line in payload.items:
+        req_line = line_map[line.requisition_item_id]
+        if req_line.approved_quantity is None or req_line.approved_quantity <= 0:
+            raise HTTPException(status_code=422, detail="A quotation cannot price a line with no approved quantity.")
+        if line.quantity_quoted != req_line.approved_quantity:
+            raise HTTPException(status_code=422, detail="Quoted quantity must equal the approved requisition quantity for that line.")
+        line_total = line.quantity_quoted * line.unit_price_paise
+        line_total += (line_total * line.tax_percentage + 50) // 100
+        total += line_total
+        prepared.append((line, line_total))
+    quote = SupplierQuotation(
+        requisition_id=requisition.id,
+        vendor_id=vendor.id,
+        quotation_number=payload.quotation_number.strip(),
+        quoted_at=payload.quoted_at,
+        valid_until=payload.valid_until,
+        delivery_days=payload.delivery_days,
+        payment_terms=payload.payment_terms,
+        notes=payload.notes,
+        total_amount_paise=total,
+        status=SupplierQuotationStatusEnum.RECEIVED,
+        created_by_id=current_user.id,
+    )
+    db.add(quote)
+    db.flush()
+    for line, line_total in prepared:
+        db.add(SupplierQuotationItem(
+            quotation_id=quote.id,
+            requisition_item_id=line.requisition_item_id,
+            quantity_quoted=line.quantity_quoted,
+            unit_price_paise=line.unit_price_paise,
+            tax_percentage=line.tax_percentage,
+            line_total_paise=line_total,
+            created_by_id=current_user.id,
+        ))
+    db.commit()
+    return db.query(SupplierQuotation).options(
+        selectinload(SupplierQuotation.items)
+    ).filter(SupplierQuotation.id == quote.id).one()
+
+
+@router.get(
+    "/purchase-requisitions/{requisition_id}/quotations",
+    response_model=list[SupplierQuotationResponse],
+)
+def compare_supplier_quotations(
+    requisition_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    requisition = db.get(PurchaseRequisition, requisition_id)
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Purchase requisition not found.")
+    return db.query(SupplierQuotation).options(
+        joinedload(SupplierQuotation.vendor),
+        selectinload(SupplierQuotation.items),
+    ).filter(
+        SupplierQuotation.requisition_id == requisition_id,
+        SupplierQuotation.status != SupplierQuotationStatusEnum.WITHDRAWN,
+    ).order_by(
+        SupplierQuotation.total_amount_paise.asc(),
+        SupplierQuotation.delivery_days.asc().nullslast(),
+        SupplierQuotation.id.asc(),
+    ).all()
+
+
+@router.patch(
+    "/purchase-requisitions/{requisition_id}/quotations/{quotation_id}/select",
+    response_model=SupplierQuotationResponse,
+)
+def select_supplier_quotation(
+    requisition_id: int,
+    quotation_id: int,
+    payload: SupplierQuotationSelection,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    requisition = db.query(PurchaseRequisition).filter(
+        PurchaseRequisition.id == requisition_id
+    ).with_for_update().one_or_none()
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Purchase requisition not found.")
+    quote = db.query(SupplierQuotation).options(
+        selectinload(SupplierQuotation.items)
+    ).filter(
+        SupplierQuotation.id == quotation_id,
+        SupplierQuotation.requisition_id == requisition_id,
+    ).with_for_update().one_or_none()
+    if quote is None or quote.status != SupplierQuotationStatusEnum.RECEIVED:
+        raise HTTPException(status_code=409, detail="Only a received quotation for this requisition can be selected.")
+    if quote.created_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The quotation recorder cannot select their own quotation.")
+    if quote.valid_until and quote.valid_until < datetime.now(timezone.utc):
+        raise HTTPException(status_code=409, detail="The supplier quotation has expired.")
+    quote.status = SupplierQuotationStatusEnum.SELECTED
+    quote.selected_by_id = current_user.id
+    quote.selected_at = datetime.now(timezone.utc)
+    quote.selection_reason = payload.selection_reason.strip()
+    quote.updated_by_id = current_user.id
+    alternatives = db.query(SupplierQuotation).filter(
+        SupplierQuotation.requisition_id == requisition_id,
+        SupplierQuotation.id != quotation_id,
+        SupplierQuotation.status == SupplierQuotationStatusEnum.RECEIVED,
+    ).with_for_update().all()
+    for alternative in alternatives:
+        alternative.status = SupplierQuotationStatusEnum.NOT_SELECTED
+        alternative.updated_by_id = current_user.id
+    db.commit()
+    return db.query(SupplierQuotation).options(
+        selectinload(SupplierQuotation.items)
+    ).filter(SupplierQuotation.id == quotation_id).one()
+
+
 # --- Purchase Orders ---
 @router.post("/purchase-orders", response_model=POResponse, status_code=status.HTTP_201_CREATED)
 def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
