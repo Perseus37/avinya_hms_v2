@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 from backend.domains.procurement.models import (
@@ -145,9 +146,9 @@ class POItemResponse(POItemCreate):
     gross_total_paise: int
     purchase_uom_code: Optional[str] = None
     base_uom_code: Optional[str] = None
-    units_per_purchase_unit: Optional[float] = None
-    base_quantity: Optional[float] = None
-    base_unit_price_paise: Optional[float] = None
+    units_per_purchase_unit: Optional[Decimal] = None
+    base_quantity: Optional[Decimal] = None
+    base_unit_price_paise: Optional[Decimal] = None
     model_config = ConfigDict(from_attributes=True)
 
 class POResponse(BaseModel):
@@ -476,7 +477,7 @@ class ProcurementUnitOfMeasureResponse(BaseModel):
 class MedicationPackConfigurationCreate(BaseModel):
     purchase_uom_id: int
     base_uom_id: int
-    units_per_purchase_unit: float = Field(gt=0, le=1000000000)
+    units_per_purchase_unit: Decimal = Field(gt=0, le=1000000000)
     effective_from: datetime
 
 
