@@ -280,6 +280,23 @@ def test_purchase_requisition_draft_edit_and_rejection(
     assert rejected.status_code == 200, rejected.text
     assert rejected.json()["status"] == "REJECTED"
 
+    cancellable = client.post(
+        "/v1/api/procurement/purchase-requisitions",
+        headers=pharmacist_headers,
+        json={
+            "requesting_department_id": department_id,
+            "justification": "The department no longer requires this replacement item.",
+            "items": [{"item_description": "Spare examination lamp", "requested_quantity": 1}],
+        },
+    )
+    assert cancellable.status_code == 201, cancellable.text
+    cancelled = client.post(
+        f"/v1/api/procurement/purchase-requisitions/{cancellable.json()['id']}/cancel",
+        headers=pharmacist_headers,
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "CANCELLED"
+
 
 def test_01_vendor_and_purchase_order_lifecycle(client, superuser_headers, pharmacist_headers):
     """Scenario 1: Register a vendor, draft a PO, and approve it via Maker-Checker."""
