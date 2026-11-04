@@ -716,6 +716,14 @@ def approve_inventory_count_session(
         .order_by(InventoryCountLine.inventory_batch_id.asc())
     ).scalars().all())
     batch_ids = [line.inventory_batch_id for line in lines]
+    current_location_batch_ids = set(db.execute(
+        select(InventoryBatch.id).where(InventoryBatch.location_id == session.location_id)
+    ).scalars().all())
+    if current_location_batch_ids != set(batch_ids):
+        raise HTTPException(
+            status_code=409,
+            detail="The location's batch catalogue changed after the count began; cancel and recount this session.",
+        )
     batches = list(db.execute(
         select(InventoryBatch)
         .where(InventoryBatch.id.in_(batch_ids))
