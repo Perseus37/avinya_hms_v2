@@ -332,6 +332,54 @@ def ensure_department_id_access(db: Session, department_id: int, actor: User) ->
         )
 
 
+
+def ensure_diagnostic_order_access(db: Session, order_id: int, actor: User) -> None:
+    """Allow access through an assigned clinical encounter or service department."""
+    allowed_ids = get_user_assigned_department_ids(db, actor)
+    if allowed_ids is None:
+        return
+    if not allowed_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Diagnostic order is outside your assigned department scope.")
+    from backend.domains.diagnostics.models import DiagnosticOrder, DiagnosticTask, ServiceCatalog, ServiceCategory
+    from backend.domains.encounters.models import PatientEncounter
+
+    order_exists = db.execute(select(DiagnosticOrder.id).where(DiagnosticOrder.id == order_id)).scalar_one_or_none()
+    if order_exists is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Diagnostic order not found.")
+    clinical_match = db.execute(
+        select(PatientEncounter.id)
+        .join(DiagnosticOrder, DiagnosticOrder.patient_id == PatientEncounter.patient_id)
+        .where(DiagnosticOrder.id == order_id, PatientEncounter.department_id.in_(allowed_ids))
+        .limit(1)
+    ).scalar_one_or_none()
+    service_match = db.execute(
+        select(DiagnosticTask.id)
+        .join(ServiceCatalog, ServiceCatalog.id == DiagnosticTask.service_id)
+        .join(ServiceCategory, ServiceCategory.id == ServiceCatalog.category_id)
+        .where(DiagnosticTask.order_id == order_id, ServiceCategory.department_id.in_(allowed_ids))
+        .limit(1)
+    ).scalar_one_or_none()
+    if clinical_match is None and service_match is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Diagnostic order is outside your assigned department scope.")
+
+
+def ensure_diagnostic_task_department_access(db: Session, task_id: int, actor: User) -> None:
+    """Require assignment to the department that owns the diagnostic service."""
+    allowed_ids = get_user_assigned_department_ids(db, actor)
+    if allowed_ids is None:
+        return
+    from backend.domains.diagnostics.models import DiagnosticTask, ServiceCatalog, ServiceCategory
+    department_id = db.execute(
+        select(ServiceCategory.department_id)
+        .join(ServiceCatalog, ServiceCatalog.category_id == ServiceCategory.id)
+        .join(DiagnosticTask, DiagnosticTask.service_id == ServiceCatalog.id)
+        .where(DiagnosticTask.id == task_id)
+    ).scalar_one_or_none()
+    if department_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Diagnostic task not found.")
+    if department_id not in allowed_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Diagnostic task is outside your assigned service department.")
+
 def ensure_queue_department_access(db: Session, queue_id: int, actor: User) -> None:
     from backend.domains.encounters.opd_queue_models import OPDQueue
 
