@@ -353,7 +353,6 @@ def list_diagnostic_orders(
         if not assigned_department_ids:
             query = query.filter(DiagnosticOrder.id == -1)
         else:
-            from sqlalchemy import or_
             from backend.domains.encounters.models import PatientEncounter
             clinical_scope = db.query(PatientEncounter.id).filter(
                 PatientEncounter.patient_id == DiagnosticOrder.patient_id,
