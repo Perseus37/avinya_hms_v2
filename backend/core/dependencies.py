@@ -10,8 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
-from backend.control_plane.models import FederatedNode
-from backend.core.database import TenantContext, get_control_db, get_db, get_redis, resolve_tenant_context
+from backend.control_plane.models import (\n    Branch, BranchAccessSession, BranchDepartmentAssignment, BranchMembership,\n    BranchMembershipRole, BranchUserLink, FederatedNode, HospitalGroup,\n    OrganizationSession, OrganizationUser, TenantRegistry,\n)\nfrom backend.core.database import (\n    ControlSessionLocal, TenantContext, get_control_db, get_db, get_redis,\n    resolve_tenant_context,\n)
 from backend.domains.facility.models import Bed
 from backend.domains.identity.models import AuthSession, Permission, Role, User, UserStatusEnum
 
@@ -46,19 +45,123 @@ def validate_pagination(page: int = 1, page_size: int = 20) -> tuple[int, int]:
     return page, page_size
 
 
+def _authenticate_branch_access_token(
+    raw_token: str,
+    tenant: TenantContext,
+    local_db: Session,
+) -> User:
+    """Resolve a central short-lived grant against this request's trusted branch context."""
+    if not raw_token.startswith("br_access_") or len(raw_token) < 50:
+        raise HTTPException(status_code=401, detail="Invalid branch access credential.")
+
+    digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc)
+    try:
+        with ControlSessionLocal() as control_db:
+            row = control_db.execute(
+                select(
+                    BranchAccessSession,
+                    BranchMembership,
+                    Branch,
+                    TenantRegistry,
+                    BranchUserLink,
+                    OrganizationSession,
+                    OrganizationUser,
+                    HospitalGroup,
+                )
+                .join(BranchMembership, BranchMembership.id == BranchAccessSession.membership_id)
+                .join(Branch, Branch.id == BranchMembership.branch_id)
+                .join(TenantRegistry, TenantRegistry.id == Branch.tenant_registry_id)
+                .join(BranchUserLink, BranchUserLink.membership_id == BranchMembership.id)
+                .join(OrganizationSession, OrganizationSession.id == BranchAccessSession.organization_session_id)
+                .join(OrganizationUser, OrganizationUser.id == BranchMembership.organization_user_id)
+                .join(HospitalGroup, HospitalGroup.id == BranchMembership.group_id)
+                .where(
+                    BranchAccessSession.token_hash == digest,
+                    BranchAccessSession.revoked_at.is_(None),
+                    BranchAccessSession.expires_at > now,
+                    BranchMembership.status == "ACTIVE",
+                    Branch.status == "ACTIVE",
+                    TenantRegistry.is_active.is_(True),
+                    TenantRegistry.subdomain_slug == tenant.subdomain_slug,
+                    TenantRegistry.branch_code == tenant.branch_code,
+                    OrganizationSession.revoked_at.is_(None),
+                    OrganizationSession.expires_at > now,
+                    OrganizationUser.status == "ACTIVE",
+                    HospitalGroup.status == "ACTIVE",
+                    BranchUserLink.verified_at.is_not(None),
+                )
+            ).one_or_none()
+            if not row:
+                raise HTTPException(status_code=401, detail="Branch access grant is invalid, expired, revoked, or not valid for this branch.")
+
+            grant, membership, branch, registry, link, org_session, org_user, group = row
+            if (
+                branch.group_id != group.id
+                or membership.group_id != group.id
+                or membership.organization_user_id != org_user.id
+                or org_session.organization_user_id != org_user.id
+            ):
+                raise HTTPException(status_code=401, detail="Branch access grant identity binding is invalid.")
+
+            local_user = local_db.get(User, link.local_user_id)
+            if not local_user or local_user.status != UserStatusEnum.ACTIVE:
+                raise HTTPException(status_code=401, detail="Linked branch user is unavailable.")
+
+            assigned_roles = control_db.execute(
+                select(BranchMembershipRole.role_code)
+                .where(BranchMembershipRole.membership_id == membership.id)
+            ).scalars().all()
+            assigned_departments = control_db.execute(
+                select(BranchDepartmentAssignment.department_code)
+                .where(BranchDepartmentAssignment.membership_id == membership.id)
+            ).scalars().all()
+
+            local_role_codes = set(
+                local_db.execute(
+                    select(Role.code).where(Role.code.in_(assigned_roles))
+                ).scalars().all()
+            ) if assigned_roles else set()
+            if local_role_codes != set(assigned_roles):
+                raise HTTPException(status_code=403, detail="A centrally assigned role no longer exists in this branch.")
+
+            # Central membership narrows existing local permissions; it never creates or
+            # elevates local role assignments. Superuser bypass is disabled for this mode.
+            local_db.info["central_branch_role_codes"] = frozenset(assigned_roles)
+            local_db.info["central_branch_department_codes"] = frozenset(assigned_departments)
+            local_db.info["central_branch_membership_id"] = membership.id
+            local_db.info["central_branch_grant_id"] = grant.id
+            local_db.info["audit_user_id"] = local_user.id
+            return local_user
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Central branch authorization is temporarily unavailable.",
+        ) from exc
+
+
 def get_current_user(
     request: Request,
     token: Any = Depends(http_bearer),
     oauth2_token: Optional[str] = Depends(oauth2_scheme),
     _tenant_header: Optional[str] = Depends(tenant_header_scheme),
+    branch_access_token: Optional[str] = Header(default=None, alias="X-Branch-Access-Token"),
     db: Session = Depends(get_db),
 ) -> User:
-    """Verifies the JWT using the specific hospital tenant's cryptographic signing key."""
+    """Validates either a tenant JWT or an explicitly supplied central branch grant."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials for this hospital instance.",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    # Explicit branch-grant mode is opt-in and takes precedence. An invalid grant
+    # must never fall back to a simultaneously supplied legacy JWT.
+    if branch_access_token:
+        tenant: TenantContext = resolve_tenant_context(request)
+        return _authenticate_branch_access_token(branch_access_token.strip(), tenant, db)
+
     raw_token = None
     if token and hasattr(token, "credentials") and token.credentials:
         raw_token = token.credentials
@@ -117,8 +220,11 @@ def get_current_user(
 
 def user_has_permission(db: Session, user: User, *permission_codes: str) -> bool:
     """Helper to check if an authenticated user holds at least one of the specified granular permissions."""
-    if user.is_superuser:
+    central_role_codes = db.info.get("central_branch_role_codes")
+    if user.is_superuser and central_role_codes is None:
         return True
+    if central_role_codes is not None and not central_role_codes:
+        return False
     required_set = set(permission_codes)
     stmt = (
         select(Permission.id)
@@ -128,6 +234,8 @@ def user_has_permission(db: Session, user: User, *permission_codes: str) -> bool
         .where(Permission.code.in_(required_set))
         .limit(1)
     )
+    if central_role_codes is not None:
+        stmt = stmt.where(Role.code.in_(central_role_codes))
     return db.execute(stmt).scalar_one_or_none() is not None
 
 
