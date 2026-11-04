@@ -421,3 +421,30 @@ def test_pharmacy_stock_transfer_lifecycle_preserves_batch_traceability(client, 
     assert source_stock[0]["stock_quantity"] == 80
     assert destination_stock[0]["stock_quantity"] == 20
     assert destination_stock[0]["batch_number"] == source_batch["batch_number"]
+
+    ledger = client.get(
+        f"/v1/api/pharmacy/inventory/movements?medication_id={med['id']}&page_size=100",
+        headers=pharmacist_headers,
+    )
+    assert ledger.status_code == 200
+    movements = ledger.json()["items"]
+    movement_types = {movement["movement_type"] for movement in movements}
+    assert {"RECEIPT", "TRANSFER_DISPATCH", "TRANSFER_RECEIVE"}.issubset(movement_types)
+
+    dispatch_movement = next(item for item in movements if item["movement_type"] == "TRANSFER_DISPATCH")
+    receive_movement = next(item for item in movements if item["movement_type"] == "TRANSFER_RECEIVE")
+    assert dispatch_movement["quantity_delta"] == -20
+    assert dispatch_movement["stock_before"] == 100
+    assert dispatch_movement["stock_after"] == 80
+    assert receive_movement["quantity_delta"] == 20
+    assert receive_movement["stock_before"] == 0
+    assert receive_movement["stock_after"] == 20
+    assert dispatch_movement["reference_type"] == "INVENTORY_TRANSFER"
+    assert dispatch_movement["reference_id"] == str(transfer_id)
+
+    source_only = client.get(
+        f"/v1/api/pharmacy/inventory/movements?location_id={source_batch['location_id']}&batch_id={source_batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert source_only.status_code == 200
+    assert all(item["location_id"] == source_batch["location_id"] for item in source_only.json()["items"])
