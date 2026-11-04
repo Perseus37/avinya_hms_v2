@@ -1192,6 +1192,14 @@ def test_pack_unit_purchase_receipt_and_supplier_return_convert_to_stock_base_un
     batch = next(item for item in batches.json()["items"] if item["batch_number"] == "PACK-BASE-BATCH-01")
     assert batch["stock_quantity"] == 100
     assert float(batch["unit_price_paise"]) == 100.0
+    assert batch["base_uom_code"] == "TAB"
+
+    movements = client.get(
+        f"/v1/api/pharmacy/inventory/movements?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert movements.status_code == 200, movements.text
+    assert all(item["base_uom_code"] == "TAB" for item in movements.json()["items"])
 
     grns = client.get(f"/v1/api/procurement/grn?po_id={po['id']}", headers=superuser_headers)
     assert grns.status_code == 200, grns.text
