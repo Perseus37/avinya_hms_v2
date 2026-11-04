@@ -12,7 +12,7 @@ from backend.core.database import get_control_db, get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePatientDepartmentAccess, RequirePermission, get_user_assigned_department_ids, validate_pagination
 from backend.core.export import stream_csv_response, chunked_query_fetcher
-from backend.domains.identity.models import Department, User
+from backend.domains.identity.models import User
 from backend.domains.encounters.models import PatientEncounter
 from backend.domains.patients.models import (
     AllergyMaster,
