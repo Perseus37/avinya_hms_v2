@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -103,7 +104,7 @@ class InventoryBatch(AuditMixin, Base):
     batch_number: Mapped[str] = mapped_column(String(50), nullable=False)
     expiry_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     stock_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
-    unit_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_price_paise: Mapped[float] = mapped_column(Numeric(24, 8), nullable=False)
 
     medication: Mapped[MedicationMaster] = relationship()
     location: Mapped[PharmacyLocation] = relationship()
