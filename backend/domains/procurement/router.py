@@ -2200,7 +2200,9 @@ def get_procurement_cost_intelligence(
         ),
         "supplier_returns": {
             "movement_count": len(return_movements),
-            "returned_quantity": returned_quantity,
+            "returned_quantity": returned_quantity if medication_id is not None else None,
+            "returned_quantity_base_units": returned_quantity if medication_id is not None else None,
+            "quantity_note": "Quantity is reported only when filtered to one medication; unfiltered totals span incompatible base units.",
             "returned_value_paise": float(returned_value_paise),
             "by_medication": list(return_by_medication.values()),
             "definition": "Value uses immutable PURCHASE_RETURN movement quantity and unit-price snapshots; it is not a supplier credit-note settlement balance.",
