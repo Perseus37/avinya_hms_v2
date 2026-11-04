@@ -1,4 +1,5 @@
 import secrets
+from decimal import Decimal
 
 from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, BackgroundTasks, Response, Query, Request
@@ -81,6 +82,50 @@ def _utc_aware(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _resolve_medication_unit_snapshot(
+    db: Session,
+    *,
+    medication_id: Optional[int],
+    purchase_uom_id: Optional[int],
+    quantity: int,
+    unit_price_paise: int,
+    effective_at: datetime,
+) -> dict:
+    """Resolve an effective medication pack definition and calculate precise base-unit economics."""
+    if purchase_uom_id is None:
+        return {
+            "purchase_uom_code": None,
+            "base_uom_code": None,
+            "units_per_purchase_unit": None,
+            "base_quantity": None,
+            "base_unit_price_paise": None,
+        }
+    if medication_id is None:
+        raise HTTPException(status_code=422, detail="A purchasing unit can only be assigned to a medication catalogue line.")
+    configuration = db.query(MedicationPackConfiguration).filter(
+        MedicationPackConfiguration.medication_id == medication_id,
+        MedicationPackConfiguration.purchase_uom_id == purchase_uom_id,
+        MedicationPackConfiguration.is_active.is_(True),
+        MedicationPackConfiguration.effective_from <= effective_at,
+        (MedicationPackConfiguration.effective_to.is_(None) | (MedicationPackConfiguration.effective_to > effective_at)),
+    ).options(
+        joinedload(MedicationPackConfiguration.purchase_uom),
+        joinedload(MedicationPackConfiguration.base_uom),
+    ).one_or_none()
+    if configuration is None:
+        raise HTTPException(status_code=422, detail="No active medication pack configuration exists for this purchase unit and transaction date.")
+    factor = Decimal(str(configuration.units_per_purchase_unit))
+    if factor <= 0:
+        raise HTTPException(status_code=422, detail="Medication pack conversion must be positive.")
+    return {
+        "purchase_uom_code": configuration.purchase_uom.code,
+        "base_uom_code": configuration.base_uom.code,
+        "units_per_purchase_unit": factor,
+        "base_quantity": Decimal(quantity) * factor,
+        "base_unit_price_paise": Decimal(unit_price_paise) / factor,
+    }
 
 
 # --- Procurement units and medication pack configurations ---
