@@ -363,7 +363,7 @@ def test_patient_visibility_denies_patient_without_assigned_department_encounter
         tenant_db.commit()
 
         with pytest.raises(HTTPException) as exc:
-            dependencies.ensure_patient_department_access(tenant_db, patient.id)
+            dependencies.ensure_patient_department_access(tenant_db, patient.id, user)
         assert exc.value.status_code == 404
 
 
