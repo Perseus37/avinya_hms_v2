@@ -404,6 +404,7 @@ def list_my_branch_access(
         .join(Branch, Branch.id == BranchMembership.branch_id)
         .join(TenantRegistry, TenantRegistry.id == Branch.tenant_registry_id)
         .join(OrganizationUser, OrganizationUser.id == BranchMembership.organization_user_id)
+        .join(HospitalGroup, HospitalGroup.id == BranchMembership.group_id)
         .join(BranchUserLink, BranchUserLink.membership_id == BranchMembership.id)
         .where(
             BranchMembership.organization_user_id == identity["user_id"],
@@ -485,6 +486,7 @@ def create_branch_access_grant(
         expires_at=expires_at,
     )
     db.add(grant)
+    db.flush()
     roles = db.execute(
         select(BranchMembershipRole.role_code)
         .where(BranchMembershipRole.membership_id == membership.id)
@@ -499,7 +501,7 @@ def create_branch_access_grant(
         action="ORGANIZATION_BRANCH_ACCESS_GRANT_ISSUED",
         target_slug=registry.subdomain_slug,
         actor=str(identity["user_id"]),
-        details=f"Short-lived branch access grant issued for membership {membership.id}; grant_id is {grant.id}.",
+        details=f"Short-lived branch access grant issued for membership {membership.id}; grant_id={grant.id}.",
     ))
     db.commit()
     return {
