@@ -33,18 +33,18 @@ def upgrade() -> None:
         "organization_sessions",
         sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.create_unique_constraint(
+    op.create_index(
         "uq_organization_sessions_refresh_token_hash",
         "organization_sessions",
         ["refresh_token_hash"],
+        unique=True,
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
+    op.drop_index(
         "uq_organization_sessions_refresh_token_hash",
-        "organization_sessions",
-        type_="unique",
+        table_name="organization_sessions",
     )
     op.drop_column("organization_sessions", "last_used_at")
     op.drop_column("organization_sessions", "device_label")
