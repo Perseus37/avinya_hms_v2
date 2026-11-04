@@ -111,6 +111,7 @@ class PurchaseOrderFromRequisitionItem(BaseModel):
     quantity_ordered: int = Field(gt=0)
     unit_price_paise: int = Field(ge=0)
     tax_percentage: Optional[int] = Field(default=None, ge=0, le=100)
+    purchase_uom_id: Optional[int] = None
 
 
 class PurchaseOrderFromRequisitionCreate(BaseModel):
@@ -127,6 +128,7 @@ class POItemCreate(BaseModel):
     quantity_ordered: int = Field(gt=0)
     unit_price_paise: int = Field(ge=0)
     tax_percentage: int = Field(default=0, ge=0, le=100)
+    purchase_uom_id: Optional[int] = None
 
 class POCreate(BaseModel):
     vendor_id: int
@@ -141,6 +143,11 @@ class POItemResponse(POItemCreate):
     total_price_paise: int
     tax_amount_paise: int
     gross_total_paise: int
+    purchase_uom_code: Optional[str] = None
+    base_uom_code: Optional[str] = None
+    units_per_purchase_unit: Optional[float] = None
+    base_quantity: Optional[float] = None
+    base_unit_price_paise: Optional[float] = None
     model_config = ConfigDict(from_attributes=True)
 
 class POResponse(BaseModel):
@@ -185,6 +192,11 @@ class VendorInvoiceItemResponse(BaseModel):
     unit_price_paise: int
     tax_percentage: int
     total_price_paise: int
+    purchase_uom_code: Optional[str] = None
+    base_uom_code: Optional[str] = None
+    units_per_purchase_unit: Optional[float] = None
+    base_quantity: Optional[float] = None
+    base_unit_price_paise: Optional[float] = None
     model_config = ConfigDict(from_attributes=True)
 
 class VendorInvoiceResponse(BaseModel):
@@ -207,6 +219,7 @@ class VendorInvoiceResponse(BaseModel):
 class VendorInvoiceItemReview(BaseModel):
     po_item_id: Optional[int] = None
     medication_id: Optional[int] = None
+    purchase_uom_code: Optional[str] = Field(default=None, max_length=24)
     item_description: str = Field(min_length=1, max_length=200)
     batch_number: str = Field(min_length=1, max_length=50)
     expiry_date: datetime
@@ -300,6 +313,7 @@ class SupplierQuotationItemCreate(BaseModel):
     quantity_quoted: int = Field(gt=0)
     unit_price_paise: int = Field(ge=0)
     tax_percentage: int = Field(default=0, ge=0, le=100)
+    purchase_uom_id: Optional[int] = None
 
 
 class SupplierQuotationCreate(BaseModel):
@@ -321,6 +335,11 @@ class SupplierQuotationItemResponse(BaseModel):
     tax_percentage: int
     tax_amount_paise: int
     line_total_paise: int
+    purchase_uom_code: Optional[str] = None
+    base_uom_code: Optional[str] = None
+    units_per_purchase_unit: Optional[float] = None
+    base_quantity: Optional[float] = None
+    base_unit_price_paise: Optional[float] = None
     model_config = ConfigDict(from_attributes=True)
 
 
