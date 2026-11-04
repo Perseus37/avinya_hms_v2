@@ -223,6 +223,12 @@ class PurchaseOrderItem(AuditMixin, Base):
     tax_percentage: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     tax_amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     gross_total_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Immutable unit snapshots; NULL means the historical/entered unit is unknown.
+    purchase_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    base_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    units_per_purchase_unit: Mapped[Optional[float]] = mapped_column(Numeric(18, 6), nullable=True)
+    base_quantity: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)
+    base_unit_price_paise: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)
 
     purchase_order: Mapped["PurchaseOrder"] = relationship(back_populates="items")
     medication: Mapped[Optional["MedicationMaster"]] = relationship()
@@ -271,6 +277,11 @@ class GoodsReceiptItem(AuditMixin, Base):
     rejected_quantity: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     rejection_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     unit_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    purchase_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    base_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    units_per_purchase_unit: Mapped[Optional[float]] = mapped_column(Numeric(18, 6), nullable=True)
+    base_quantity: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)
+    base_unit_price_paise: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)
     created_batch_id: Mapped[Optional[int]] = mapped_column(ForeignKey("inventory_batches.id"), nullable=True, index=True)
 
     grn: Mapped["GoodsReceiptNote"] = relationship(back_populates="items")
@@ -405,6 +416,11 @@ class VendorInvoiceItem(AuditMixin, Base):
     unit_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     tax_percentage: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # e.g., 5, 12, 18
     total_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    purchase_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    base_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    units_per_purchase_unit: Mapped[Optional[float]] = mapped_column(Numeric(18, 6), nullable=True)
+    base_quantity: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)
+    base_unit_price_paise: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)
 
     invoice: Mapped["VendorInvoice"] = relationship(back_populates="items")
 
@@ -467,6 +483,11 @@ class SupplierQuotationItem(AuditMixin, Base):
     tax_percentage: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     tax_amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     line_total_paise: Mapped[int] = mapped_column(Integer, nullable=False)  # tax-inclusive line total
+    purchase_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    base_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    units_per_purchase_unit: Mapped[Optional[float]] = mapped_column(Numeric(18, 6), nullable=True)
+    base_quantity: Mapped[Optional[float]] = mapped_column(Numeric(20, 6), nullable=True)
+    base_unit_price_paise: Mapped[Optional[float]] = mapped_column(Numeric(24, 8), nullable=True)
 
     quotation: Mapped["SupplierQuotation"] = relationship(back_populates="items")
     requisition_item: Mapped["PurchaseRequisitionItem"] = relationship()
