@@ -41,3 +41,6 @@ def downgrade() -> None:
                 type_=sa.Integer(),
                 existing_nullable=False,
             )
+    op.drop_column("inventory_transfers", "base_uom_code")
+    op.drop_column("inventory_movements", "base_uom_code")
+    op.drop_column("inventory_batches", "base_uom_code")
