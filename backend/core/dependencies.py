@@ -326,7 +326,7 @@ def ensure_admission_department_access(db: Session, admission_id: int, actor: Us
     allowed_ids = get_user_assigned_department_ids(db, actor)
     if allowed_ids is None:
         return
-    from backend.domains.encounters.models import InpatientAdmission
+    from backend.domains.encounters.models import InpatientAdmission, PatientEncounter
 
     department_id = db.execute(
         select(PatientEncounter.department_id)
