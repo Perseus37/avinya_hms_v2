@@ -12,7 +12,7 @@ from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User, Department, Role
-from backend.domains.pharmacy.models import MedicationMaster
+from backend.domains.pharmacy.models import MedicationMaster, InventoryMovement
 from backend.domains.procurement.models import (
     VendorMaster, PurchaseOrder, PurchaseOrderItem, POStatusEnum,
     GoodsReceiptNote, GoodsReceiptItem, GRNStatusEnum,
@@ -1729,6 +1729,163 @@ def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(
     process_purchase_return(db, payload.vendor_id, payload.grn_id, payload.items, current_user.id)
     db.commit()
     return {"status": "success", "message": "Purchase return processed and Debit Note generated."}
+
+@router.get("/analytics/cost-intelligence")
+def get_procurement_cost_intelligence(
+    from_date: Optional[date] = Query(default=None, description="Inclusive date filter (UTC)."),
+    to_date: Optional[date] = Query(default=None, description="Inclusive date filter (UTC)."),
+    medication_id: Optional[int] = Query(default=None, gt=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    """Summarize procurement spend, medication price observations and supplier returns."""
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date must be on or before to_date.")
+    if medication_id is not None:
+        medication = db.get(MedicationMaster, medication_id)
+        if medication is None:
+            raise HTTPException(status_code=404, detail="Medication not found.")
+
+    start_at = datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc) if from_date else None
+    end_at = datetime.combine(to_date, datetime.max.time(), tzinfo=timezone.utc) if to_date else None
+    eligible_statuses = (
+        POStatusEnum.APPROVED,
+        POStatusEnum.PARTIALLY_RECEIVED,
+        POStatusEnum.COMPLETED,
+    )
+
+    line_query = db.query(PurchaseOrderItem, PurchaseOrder, VendorMaster, MedicationMaster).join(
+        PurchaseOrder, PurchaseOrderItem.po_id == PurchaseOrder.id
+    ).join(
+        VendorMaster, PurchaseOrder.vendor_id == VendorMaster.id
+    ).outerjoin(
+        MedicationMaster, PurchaseOrderItem.medication_id == MedicationMaster.id
+    ).filter(
+        PurchaseOrder.status.in_(eligible_statuses)
+    )
+    if start_at:
+        line_query = line_query.filter(PurchaseOrder.created_at >= start_at)
+    if end_at:
+        line_query = line_query.filter(PurchaseOrder.created_at <= end_at)
+    if medication_id is not None:
+        line_query = line_query.filter(PurchaseOrderItem.medication_id == medication_id)
+    purchase_lines = line_query.order_by(PurchaseOrder.created_at.asc(), PurchaseOrder.id.asc()).all()
+
+    monthly = {}
+    category_spend = {}
+    medication_prices = {}
+    supplier_comparison = {}
+    total_spend_paise = 0
+    for item, po, vendor, medication in purchase_lines:
+        gross_value = int(item.gross_total_paise or item.total_price_paise or 0)
+        total_spend_paise += gross_value
+        month_key = po.created_at.strftime("%Y-%m")
+        monthly[month_key] = monthly.get(month_key, 0) + gross_value
+        category_key = medication.form.value if medication is not None else "GENERAL_OR_UNCLASSIFIED"
+        category_spend[category_key] = category_spend.get(category_key, 0) + gross_value
+
+        if medication is not None:
+            price_record = {
+                "purchase_order_id": po.id,
+                "po_number": po.po_number,
+                "purchase_date": po.created_at.isoformat(),
+                "vendor_id": vendor.id,
+                "vendor_name": vendor.name,
+                "quantity": int(item.quantity_ordered),
+                "unit_price_paise_pre_tax": int(item.unit_price_paise),
+                "tax_percentage": int(item.tax_percentage or 0),
+            }
+            medication_prices.setdefault(medication.id, {
+                "medication_id": medication.id,
+                "medication_code": medication.code,
+                "brand_name": medication.brand_name,
+                "generic_name": medication.generic_name,
+                "form": medication.form.value,
+                "observations": [],
+            })["observations"].append(price_record)
+            supplier_key = (medication.id, vendor.id)
+            supplier_comparison.setdefault(supplier_key, {
+                "medication_id": medication.id,
+                "medication_code": medication.code,
+                "brand_name": medication.brand_name,
+                "vendor_id": vendor.id,
+                "vendor_name": vendor.name,
+                "purchase_line_count": 0,
+                "ordered_quantity": 0,
+                "pre_tax_value_paise": 0,
+                "observed_unit_prices_paise": [],
+            })
+            supplier_row = supplier_comparison[supplier_key]
+            supplier_row["purchase_line_count"] += 1
+            supplier_row["ordered_quantity"] += int(item.quantity_ordered)
+            supplier_row["pre_tax_value_paise"] += int(item.total_price_paise or 0)
+            supplier_row["observed_unit_prices_paise"].append(int(item.unit_price_paise))
+
+    return_query = db.query(InventoryMovement).filter(
+        InventoryMovement.movement_type == "PURCHASE_RETURN",
+        InventoryMovement.quantity_delta < 0,
+    )
+    if start_at:
+        return_query = return_query.filter(InventoryMovement.created_at >= start_at)
+    if end_at:
+        return_query = return_query.filter(InventoryMovement.created_at <= end_at)
+    if medication_id is not None:
+        return_query = return_query.filter(InventoryMovement.medication_id == medication_id)
+    return_movements = return_query.all()
+    returned_quantity = sum(abs(int(row.quantity_delta)) for row in return_movements)
+    returned_value_paise = sum(
+        abs(int(row.quantity_delta)) * int(row.unit_price_paise)
+        for row in return_movements
+    )
+    return_by_medication = {}
+    for row in return_movements:
+        med = db.get(MedicationMaster, row.medication_id)
+        if med is None:
+            continue
+        entry = return_by_medication.setdefault(med.id, {
+            "medication_id": med.id,
+            "medication_code": med.code,
+            "brand_name": med.brand_name,
+            "returned_quantity": 0,
+            "returned_value_paise": 0,
+        })
+        entry["returned_quantity"] += abs(int(row.quantity_delta))
+        entry["returned_value_paise"] += abs(int(row.quantity_delta)) * int(row.unit_price_paise)
+
+    return {
+        "period": {
+            "from_date": from_date.isoformat() if from_date else None,
+            "to_date": to_date.isoformat() if to_date else None,
+            "basis": "Purchase order creation date (UTC); supplier returns use inventory movement creation date.",
+        },
+        "filters": {"medication_id": medication_id},
+        "procurement_spend": {
+            "total_paise": total_spend_paise,
+            "monthly_paise": [
+                {"month": month, "spend_paise": amount}
+                for month, amount in sorted(monthly.items())
+            ],
+            "by_medication_form_paise": [
+                {"category": category, "spend_paise": amount}
+                for category, amount in sorted(category_spend.items())
+            ],
+            "definition": "Tax-inclusive approved, partially received and completed PO line values; excludes draft, submitted, cancelled and unapproved orders.",
+        },
+        "medication_price_history": list(medication_prices.values()),
+        "supplier_price_comparison": list(supplier_comparison.values()),
+        "price_comparison_note": (
+            "Prices are observed pre-tax PO line unit prices. Pack size and procurement unit-of-measure are not consistently modeled; "
+            "do not interpret differences as like-for-like savings or price variance until unit/pack equivalence is verified."
+        ),
+        "supplier_returns": {
+            "movement_count": len(return_movements),
+            "returned_quantity": returned_quantity,
+            "returned_value_paise": returned_value_paise,
+            "by_medication": list(return_by_medication.values()),
+            "definition": "Value uses immutable PURCHASE_RETURN movement quantity and unit-price snapshots; it is not a supplier credit-note settlement balance.",
+        },
+    }
+
 
 @router.get("/vendors/{vendor_id}/metrics")
 def get_vendor_metrics(
