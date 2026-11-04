@@ -14,6 +14,7 @@ from backend.domains.procurement.models import (
     GoodsReceiptNote,
     GoodsReceiptItem,
     PurchaseOrder,
+    PurchaseOrderItem,
     POStatusEnum,
     GRNStatusEnum,
     VendorInvoice,
@@ -77,51 +78,68 @@ def _append_stock_movement(
 
 
 def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: int):
-    """Atomic acceptance of goods: increments PO tracking and injects FEFO batches into Pharmacy."""
-    po = db.get(PurchaseOrder, grn.po_id)
-
-    all_po_items_fulfilled = True
-
+    """Atomically post an inspected GRN into the selected stock location and movement ledger."""
+    po = db.execute(select(PurchaseOrder).where(PurchaseOrder.id == grn.po_id).with_for_update()).scalar_one_or_none()
+    if po is None or po.status not in {POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED}:
+        raise HTTPException(status_code=409, detail="The purchase order is not open for goods receipt.")
+    po_items = {
+        item.id: item for item in db.execute(
+            select(PurchaseOrderItem).where(PurchaseOrderItem.po_id == po.id).with_for_update()
+        ).scalars().all()
+    }
     for grn_item in grn.items:
-        if grn_item.accepted_quantity > 0:
-            # 1. Update PO received tracking
-            po_item = grn_item.po_item
-            po_item.quantity_received += grn_item.accepted_quantity
-
-            if po_item.quantity_received < po_item.quantity_ordered:
-                all_po_items_fulfilled = False
-
-            # 2. Automatically provision live Pharmacy stock batches if medication is linked
-            if po_item.medication_id:
-                main_location = db.execute(
-                    select(PharmacyLocation).where(
-                        PharmacyLocation.code == "MAIN",
-                        PharmacyLocation.is_active.is_(True),
-                    )
-                ).scalar_one_or_none()
-                if main_location is None:
-                    raise HTTPException(status_code=409, detail="Default MAIN pharmacy location is unavailable.")
-                _ensure_stock_location_access(db, main_location.id, current_user_id)
-                new_batch = InventoryBatch(
-                    medication_id=po_item.medication_id,
-                    location_id=main_location.id,
-                    batch_number=grn_item.batch_number,
-                    expiry_date=grn_item.expiry_date,
-                    stock_quantity=grn_item.accepted_quantity,
-                    unit_price_paise=grn_item.unit_price_paise,
-                    created_by_id=current_user_id
-                )
-                db.add(new_batch)
-                db.flush()
-                _append_stock_movement(
-                    db, new_batch, movement_type="RECEIPT",
-                    quantity_delta=grn_item.accepted_quantity, stock_before=0,
-                    actor_user_id=current_user_id, reference_type="GOODS_RECEIPT",
-                    reference_id=grn.id, notes=f"GRN item {grn_item.id}",
-                )
-                grn_item.created_batch_id = new_batch.id
-
-    po.status = POStatusEnum.COMPLETED if all_po_items_fulfilled else POStatusEnum.PARTIALLY_RECEIVED
+        po_item = po_items.get(grn_item.po_item_id)
+        if po_item is None:
+            raise HTTPException(status_code=422, detail="A GRN line does not belong to its purchase order.")
+        if grn_item.accepted_quantity > grn_item.received_quantity:
+            raise HTTPException(status_code=422, detail="Accepted quantity cannot exceed received quantity.")
+        if po_item.quantity_received + grn_item.accepted_quantity > po_item.quantity_ordered:
+            raise HTTPException(status_code=409, detail=f"GRN would over-receive PO item {po_item.id}.")
+        if grn_item.accepted_quantity <= 0:
+            continue
+        po_item.quantity_received += grn_item.accepted_quantity
+        if not po_item.medication_id:
+            continue
+        if not grn.location_id:
+            raise HTTPException(status_code=422, detail="A pharmacy location is required for medication receipts.")
+        location = db.execute(select(PharmacyLocation).where(
+            PharmacyLocation.id == grn.location_id, PharmacyLocation.is_active.is_(True)
+        )).scalar_one_or_none()
+        if location is None:
+            raise HTTPException(status_code=404, detail="The selected pharmacy location is unavailable.")
+        _ensure_stock_location_access(db, location.id, current_user_id)
+        batch = db.execute(select(InventoryBatch).where(
+            InventoryBatch.medication_id == po_item.medication_id,
+            InventoryBatch.batch_number == grn_item.batch_number,
+            InventoryBatch.location_id == location.id,
+        ).with_for_update()).scalar_one_or_none()
+        if batch:
+            if batch.expiry_date != grn_item.expiry_date or batch.unit_price_paise != po_item.unit_price_paise:
+                raise HTTPException(status_code=409, detail="This batch already exists at the selected location with a different expiry date or unit cost.")
+            stock_before = batch.stock_quantity
+            batch.stock_quantity += grn_item.accepted_quantity
+        else:
+            batch = InventoryBatch(
+                medication_id=po_item.medication_id, location_id=location.id,
+                batch_number=grn_item.batch_number, expiry_date=grn_item.expiry_date,
+                stock_quantity=grn_item.accepted_quantity, unit_price_paise=po_item.unit_price_paise,
+                created_by_id=current_user_id,
+            )
+            db.add(batch)
+            db.flush()
+            stock_before = 0
+        _append_stock_movement(
+            db, batch, movement_type="RECEIPT", quantity_delta=grn_item.accepted_quantity,
+            stock_before=stock_before, actor_user_id=current_user_id,
+            reference_type="GOODS_RECEIPT", reference_id=grn.id,
+            notes=f"GRN item {grn_item.id}",
+        )
+        grn_item.unit_price_paise = po_item.unit_price_paise
+        grn_item.created_batch_id = batch.id
+    db.flush()
+    po.status = POStatusEnum.COMPLETED if all(
+        item.quantity_received >= item.quantity_ordered for item in po_items.values()
+    ) else POStatusEnum.PARTIALLY_RECEIVED
 
 def trigger_donut_invoice_extraction(db_name: str, invoice_id: int, document_path: str):
     """Extract invoice data in a fresh tenant session while retaining the source file."""
