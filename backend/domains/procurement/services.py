@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, func
 from fastapi import HTTPException
 
 from backend.core.database import tenant_engine_pool
@@ -356,33 +356,62 @@ def issue_patient_indent(db: Session, indent: StoreIndent, issue_request: list, 
     indent.approved_by_id = current_user_id
 
 def process_purchase_return(db: Session, vendor_id: int, grn_id: int, return_items: list, current_user_id: int):
-    """Processes vendor debit notes, removes physical stock, and logs a negative Accounts Payable entry."""
+    """Process a vendor return only against accepted quantities on the specified GRN."""
+    grn = db.execute(
+        select(GoodsReceiptNote).where(GoodsReceiptNote.id == grn_id).with_for_update()
+    ).scalar_one_or_none()
+    if grn is None or grn.status != GRNStatusEnum.ACCEPTED:
+        raise HTTPException(status_code=404, detail="Accepted goods receipt note not found.")
+    po = db.get(PurchaseOrder, grn.po_id)
+    if po is None or po.vendor_id != vendor_id:
+        raise HTTPException(status_code=400, detail="The specified GRN does not belong to this vendor.")
+
     total_credit_paise = 0
-
+    requested_by_line = {}
     for item in return_items:
-        grn_item = db.execute(select(GoodsReceiptItem).where(GoodsReceiptItem.id == item.grn_item_id).with_for_update()).scalar_one_or_none()
-        if not grn_item or grn_item.grn.po.vendor_id != vendor_id:
-            raise HTTPException(status_code=400, detail="Invalid GRN item for specified vendor.")
-
+        grn_item = db.execute(
+            select(GoodsReceiptItem).where(
+                GoodsReceiptItem.id == item.grn_item_id,
+                GoodsReceiptItem.grn_id == grn_id,
+            ).with_for_update()
+        ).scalar_one_or_none()
+        if not grn_item:
+            raise HTTPException(status_code=400, detail="Return line must belong to the specified GRN.")
         if not grn_item.created_batch_id:
             raise HTTPException(status_code=400, detail="GRN item has no associated inventory batch.")
 
-        batch = db.execute(select(InventoryBatch).where(InventoryBatch.id == grn_item.created_batch_id).with_for_update()).scalar_one_or_none()
-        if not batch or batch.stock_quantity < item.return_quantity:
+        batch = db.execute(
+            select(InventoryBatch).where(InventoryBatch.id == grn_item.created_batch_id).with_for_update()
+        ).scalar_one_or_none()
+        if not batch:
+            raise HTTPException(status_code=409, detail="The GRN inventory batch no longer exists.")
+        _ensure_stock_location_access(db, batch.location_id, current_user_id)
+
+        prior_delta = db.execute(select(func.coalesce(func.sum(InventoryMovement.quantity_delta), 0)).where(
+            InventoryMovement.inventory_batch_id == batch.id,
+            InventoryMovement.movement_type == "PURCHASE_RETURN",
+            InventoryMovement.reference_type == "PURCHASE_RETURN",
+            InventoryMovement.reference_id == str(grn_id),
+            InventoryMovement.notes.like(f"GRN item {grn_item.id}:%"),
+        )).scalar_one()
+        prior_returned = -int(prior_delta or 0)
+        already_requested = requested_by_line.get(grn_item.id, 0)
+        if prior_returned + already_requested + item.return_quantity > grn_item.accepted_quantity:
+            raise HTTPException(status_code=409, detail="Return quantity exceeds the accepted quantity remaining on this GRN line.")
+        if batch.stock_quantity < item.return_quantity:
             raise HTTPException(status_code=409, detail="Insufficient current stock to process return to vendor.")
 
-        _ensure_stock_location_access(db, batch.location_id, current_user_id)
         stock_before = batch.stock_quantity
         batch.stock_quantity -= item.return_quantity
         _append_stock_movement(
             db, batch, movement_type="PURCHASE_RETURN", quantity_delta=-item.return_quantity,
             stock_before=stock_before, actor_user_id=current_user_id,
             reference_type="PURCHASE_RETURN", reference_id=grn_id,
-            notes=f"GRN item {grn_item.id}",
+            notes=f"GRN item {grn_item.id}: {item.return_reason.strip()}",
         )
-        total_credit_paise += (item.return_quantity * batch.unit_price_paise)
+        requested_by_line[grn_item.id] = already_requested + item.return_quantity
+        total_credit_paise += item.return_quantity * batch.unit_price_paise
 
-    # Generate Accounts Payable Debit Note (Negative Expense)
     debit_note = ExpenseRecord(
         category=ExpenseCategoryEnum.PHARMACY_STOCK,
         title=f"Purchase Return / Debit Note for GRN: {grn_id}",
@@ -390,8 +419,8 @@ def process_purchase_return(db: Session, vendor_id: int, grn_id: int, return_ite
         status=ExpenseStatusEnum.APPROVED,
         approved_by_id=current_user_id,
         approved_at=datetime.now(timezone.utc),
-        vendor_name=grn_item.grn.purchase_order.vendor.name,
-        created_by_id=current_user_id
+        vendor_name=po.vendor.name,
+        created_by_id=current_user_id,
     )
     db.add(debit_note)
 
