@@ -1442,6 +1442,19 @@ def request_purchase_order_amendment(
     proposed_total = 0
     seen_requisition_lines = set()
     for item in payload.items:
+        prior_line = next((
+            existing for existing in po.items
+            if (
+                (item.requisition_item_id is not None and existing.requisition_item_id == item.requisition_item_id)
+                or (
+                    item.requisition_item_id is None
+                    and existing.medication_id == item.medication_id
+                    and existing.item_description.strip().lower() == item.item_description.strip().lower()
+                )
+            )
+        ), None)
+        if prior_line is not None and prior_line.purchase_uom_code is not None and item.purchase_uom_id is None:
+            raise HTTPException(status_code=422, detail="Amendment must explicitly retain or replace the purchasing unit for every previously standardized medication line.")
         if po.requisition_id is not None:
             if item.requisition_item_id is None or item.requisition_item_id in seen_requisition_lines:
                 raise HTTPException(status_code=422, detail="Every amended line on a requisition-backed PO must reference a unique requisition line.")
