@@ -57,7 +57,6 @@ def _branch_payload(branch: Branch, tenant: TenantRegistry) -> dict[str, Any]:
         "name": branch.name,
         "status": branch.status,
         "subdomain_slug": tenant.subdomain_slug,
-        "database_name": tenant.db_name,
         "tenant_active": tenant.is_active,
         "created_at": branch.created_at,
     }
