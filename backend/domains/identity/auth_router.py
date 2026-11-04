@@ -14,7 +14,7 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 import jwt
 from pydantic import BaseModel, EmailStr, Field, field_validator
