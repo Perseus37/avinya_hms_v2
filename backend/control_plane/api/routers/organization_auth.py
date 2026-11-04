@@ -389,17 +389,19 @@ def refresh_session(payload: RefreshRequest, db: Session = Depends(get_control_d
 def require_organization_roles(*roles: str):
     allowed = frozenset(role.upper() for role in roles)
 
-    def dependency(identity: dict = Depends(_current_identity)) -> dict:
+    def dependency(
+        identity: dict = Depends(_current_identity),
+        db: Session = Depends(get_control_db),
+    ) -> dict:
         if not allowed:
             return identity
-        with ControlSessionLocal() as db:
-            user = db.get(OrganizationUser, identity["user_id"])
-            if (
-                not user
-                or user.group_id != identity["group_id"]
-                or user.group_role.upper() not in allowed
-            ):
-                raise HTTPException(status_code=403, detail="Insufficient organization permissions.")
+        user = db.get(OrganizationUser, identity["user_id"])
+        if (
+            not user
+            or user.group_id != identity["group_id"]
+            or user.group_role.upper() not in allowed
+        ):
+            raise HTTPException(status_code=403, detail="Insufficient organization permissions.")
         return identity
 
     return dependency
