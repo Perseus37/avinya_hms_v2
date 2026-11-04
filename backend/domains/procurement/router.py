@@ -301,6 +301,7 @@ def submit_purchase_requisition(
     if not requisition.items:
         raise HTTPException(status_code=409, detail="A requisition must contain at least one line.")
     requisition.status = PurchaseRequisitionStatusEnum.SUBMITTED
+    requisition.updated_by_id = current_user.id
     requisition.submitted_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(requisition)
@@ -341,6 +342,7 @@ def review_purchase_requisition(
     elif payload.items:
         raise HTTPException(status_code=422, detail="Rejected requisitions must not include approved line quantities.")
     requisition.status = PurchaseRequisitionStatusEnum.APPROVED if payload.approved else PurchaseRequisitionStatusEnum.REJECTED
+    requisition.updated_by_id = current_user.id
     requisition.reviewed_by_id = current_user.id
     requisition.reviewed_at = datetime.now(timezone.utc)
     requisition.review_notes = payload.review_notes.strip()
@@ -432,6 +434,7 @@ def create_purchase_order_from_requisition(
             all_fulfilled = False
             break
     requisition.status = PurchaseRequisitionStatusEnum.CONVERTED if all_fulfilled else PurchaseRequisitionStatusEnum.PARTIALLY_ORDERED
+    requisition.updated_by_id = current_user.id
     db.commit()
     db.refresh(po)
     return po
