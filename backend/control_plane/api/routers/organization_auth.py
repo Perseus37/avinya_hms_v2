@@ -28,8 +28,8 @@ from backend.security.envelope import decrypt_tenant_secret, encrypt_tenant_secr
 from backend.security.totp import matching_totp_counter
 
 router = APIRouter(prefix="/api/organization-auth", tags=["Hospital Organization Identity"])
-_LOGIN_LIMIT = RateLimiter(scope="organization_auth_login", max_requests=10, window_seconds=60)
-_MFA_LIMIT = RateLimiter(scope="organization_auth_mfa", max_requests=5, window_seconds=300)
+_LOGIN_LIMIT = RateLimiter(scope="auth_login_organization", max_requests=10, window_seconds=60)
+_MFA_LIMIT = RateLimiter(scope="auth_mfa_organization", max_requests=5, window_seconds=300)
 _DUMMY_PASSWORD_HASH = "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewKd.RvvJ8hYjT.W"
 
 
@@ -267,7 +267,7 @@ def login(payload: OrganizationLogin, db: Session = Depends(get_control_db)):
     return _create_session(db, user)
 
 
-@router.post("/mfa/setup")
+@router.post("/mfa/setup", dependencies=[Depends(_MFA_LIMIT)])
 def setup_mfa(payload: MfaChallenge, db: Session = Depends(get_control_db)):
     user = _load_challenge(db, payload.mfa_token, "organization_mfa_setup")
     if user.group_role != "OWNER":
