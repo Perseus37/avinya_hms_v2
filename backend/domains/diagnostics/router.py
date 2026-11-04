@@ -359,15 +359,7 @@ def list_diagnostic_orders(
                 PatientEncounter.patient_id == DiagnosticOrder.patient_id,
                 PatientEncounter.department_id.in_(assigned_department_ids),
             ).exists()
-            service_scope = db.query(DiagnosticTask.id).join(
-                ServiceCatalog, ServiceCatalog.id == DiagnosticTask.service_id
-            ).join(
-                ServiceCategory, ServiceCategory.id == ServiceCatalog.category_id
-            ).filter(
-                DiagnosticTask.order_id == DiagnosticOrder.id,
-                ServiceCategory.department_id.in_(assigned_department_ids),
-            ).exists()
-            query = query.filter(or_(clinical_scope, service_scope))
+            query = query.filter(clinical_scope)
     if start_at is not None and end_at is not None:
         query = query.filter(
             DiagnosticOrder.created_at >= start_at,
