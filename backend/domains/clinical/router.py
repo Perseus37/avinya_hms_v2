@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, get_redis, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequireDepartmentAccess, RequireEncounterDepartmentAccess, RequirePermission, validate_pagination
+from backend.core.dependencies import RequireDepartmentAccess, RequireEncounterDepartmentAccess, RequirePatientDepartmentAccess, RequirePermission, ensure_encounter_department_access, validate_pagination
 from backend.core.export import stream_csv_response
 from backend.domains.clinical.models import (
     ClinicalEarlyWarningScore,
@@ -597,6 +597,7 @@ def update_soap_clinical_note(
     note = db.get(ClinicalNote, note_id)
     if not note:
         raise HTTPException(status_code=404, detail="Clinical note not found.")
+    ensure_encounter_department_access(db, note.encounter_id)
     if note.is_signed:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -622,6 +623,7 @@ def sign_off_clinical_note(
     note = db.get(ClinicalNote, note_id)
     if not note:
         raise HTTPException(status_code=404, detail="Clinical note not found.")
+    ensure_encounter_department_access(db, note.encounter_id)
     if note.is_signed:
         raise HTTPException(status_code=409, detail="Clinical note is already signed.")
 
@@ -732,6 +734,7 @@ def chart_patient_comorbidity(
     payload: PatientComorbidityCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("patients:write", "opd:write", "adt:write")),
+    __: User = Depends(RequirePatientDepartmentAccess()),
 ):
     patient = db.get(Patient, patient_id)
     if not patient or not patient.is_active:
@@ -785,6 +788,7 @@ def list_patient_comorbidities(
     patient_id: int,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("patients:read", "opd:read", "adt:read")),
+    __: User = Depends(RequirePatientDepartmentAccess()),
 ):
     _evaluate_patient_read(
         db, patient_id, actor, "clinical.patient.comorbidities.read"
