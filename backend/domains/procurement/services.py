@@ -219,7 +219,11 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
     if not invoice.po_id or not invoice.items:
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
-    po = db.get(PurchaseOrder, invoice.po_id)
+    # Serialize invoice matching per PO so two concurrent invoices cannot both
+    # consume the same accepted receipt quantity.
+    po = db.execute(
+        select(PurchaseOrder).where(PurchaseOrder.id == invoice.po_id).with_for_update()
+    ).scalar_one_or_none()
     if (
         not po
         or po.vendor_id != invoice.vendor_id
