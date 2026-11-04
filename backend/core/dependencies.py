@@ -21,7 +21,9 @@ from backend.core.database import (
     resolve_tenant_context,
 )
 from backend.domains.facility.models import Bed
-from backend.domains.identity.models import AuthSession, Permission, Role, User, UserStatusEnum
+from backend.domains.identity.models import (
+    AuthSession, Department, Permission, Role, User, UserRole, UserStatusEnum,
+)
 
 http_bearer = HTTPBearer(
     auto_error=False,
@@ -267,6 +269,58 @@ def user_has_permission(db: Session, user: User, *permission_codes: str) -> bool
     if central_role_codes is not None:
         stmt = stmt.where(Role.code.in_(central_role_codes))
     return db.execute(stmt).scalar_one_or_none() is not None
+
+
+def user_has_department_access(
+    db: Session, user: User, department_id: int
+) -> bool:
+    """Check local assignment and, for central sessions, central department scope."""
+    local_assignment = db.execute(
+        select(UserRole.user_id)
+        .join(Department, Department.id == UserRole.department_id)
+        .where(
+            UserRole.user_id == user.id,
+            Department.id == department_id,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if local_assignment is None:
+        return False
+
+    central_department_codes = db.info.get("central_branch_department_codes")
+    if central_department_codes is None:
+        return True
+
+    department_code = db.execute(
+        select(Department.code).where(Department.id == department_id)
+    ).scalar_one_or_none()
+    return bool(department_code and department_code in central_department_codes)
+
+
+def RequireDepartmentAccess(department_id_parameter: str = "department_id"):
+    """FastAPI dependency enforcing branch-local and centrally assigned department scope."""
+    def dependency(
+        request: Request,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> User:
+        raw_department_id = request.path_params.get(department_id_parameter)
+        if raw_department_id is None:
+            raw_department_id = request.query_params.get(department_id_parameter)
+        try:
+            department_id = int(raw_department_id)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A valid department identifier is required.",
+            )
+        if not user_has_department_access(db, current_user, department_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: department is outside your assigned scope.",
+            )
+        return current_user
+    return dependency
 
 
 def RequirePermission(*permission_codes: str):
