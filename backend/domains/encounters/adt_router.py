@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequireEncounterDepartmentAccess, RequirePermission, validate_pagination
+from backend.core.dependencies import RequireEncounterDepartmentAccess, RequirePermission, user_has_department_access, validate_pagination
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.billing.models import Invoice, InvoiceStatusEnum
 from backend.domains.encounters.models import AdmissionTypeEnum, BedTransferLog, EncounterStatusEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter, DischargeDispositionEnum
@@ -31,8 +31,16 @@ router = APIRouter(prefix="/api/adt", tags=["Admissions, Discharges & Transfers 
 def create_encounter(
     payload: PatientEncounterCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("adt:write")),
+    current_user: User = Depends(RequirePermission("adt:write")),
 ):
+    if db.info.get("central_branch_department_codes") is not None and not user_has_department_access(
+        db, current_user, payload.department_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: cannot create an encounter outside your assigned department scope.",
+        )
+
     active_encounter = (
         db.query(PatientEncounter)
         .filter(
@@ -70,7 +78,7 @@ def list_active_encounters(
         if not central_department_codes:
             query = query.filter(False)
         else:
-            query = query.join(PatientEncounter.department).filter(
+            query = query.join(Department, PatientEncounter.department_id == Department.id).filter(
                 Department.code.in_(central_department_codes)
             )
     query = query.order_by(PatientEncounter.id.desc())
@@ -117,7 +125,7 @@ def update_encounter(
     encounter_id: int,
     payload: PatientEncounterUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("adt:write")),
+    current_user: User = Depends(RequirePermission("adt:write")),
     __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     encounter = db.get(PatientEncounter, encounter_id)
@@ -129,6 +137,13 @@ def update_encounter(
     if payload.primary_doctor_id is not None:
         encounter.primary_doctor_id = payload.primary_doctor_id
     if payload.department_id is not None:
+        if db.info.get("central_branch_department_codes") is not None and not user_has_department_access(
+            db, current_user, payload.department_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: cannot move an encounter outside your assigned department scope.",
+            )
         encounter.department_id = payload.department_id
     if payload.chief_complaint_notes is not None:
         encounter.chief_complaint_notes = payload.chief_complaint_notes
