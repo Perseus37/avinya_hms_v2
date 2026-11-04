@@ -179,6 +179,9 @@ class PurchaseOrder(AuditMixin, Base):
     status: Mapped[POStatusEnum] = mapped_column(default=POStatusEnum.DRAFT, nullable=False)
     delivery_due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     payment_terms: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Commercial totals: subtotal is pre-tax, tax is explicit, total is tax-inclusive.
+    subtotal_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tax_amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     approved_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -197,6 +200,9 @@ class PurchaseOrderItem(AuditMixin, Base):
     __table_args__ = (
         CheckConstraint("quantity_ordered > 0", name="ck_po_item_qty_pos"),
         CheckConstraint("unit_price_paise >= 0", name="ck_po_item_price_non_neg"),
+        CheckConstraint("tax_percentage >= 0 AND tax_percentage <= 100", name="ck_po_item_tax_range"),
+        CheckConstraint("tax_amount_paise >= 0", name="ck_po_item_tax_non_neg"),
+        CheckConstraint("gross_total_paise >= 0", name="ck_po_item_gross_non_neg"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -207,7 +213,10 @@ class PurchaseOrderItem(AuditMixin, Base):
     quantity_ordered: Mapped[int] = mapped_column(Integer, nullable=False)
     quantity_received: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     unit_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
-    total_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)  # pre-tax line amount
+    tax_percentage: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tax_amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    gross_total_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     purchase_order: Mapped["PurchaseOrder"] = relationship(back_populates="items")
     medication: Mapped[Optional["MedicationMaster"]] = relationship()
