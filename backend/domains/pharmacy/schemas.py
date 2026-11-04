@@ -87,6 +87,24 @@ class InventoryBatchResponse(BaseModel):
     medication: MedicationMasterResponse
     model_config = ConfigDict(from_attributes=True)
 
+class InventoryMovementResponse(BaseModel):
+    id: int
+    location_id: int
+    medication_id: int
+    inventory_batch_id: int
+    movement_type: str
+    quantity_delta: int
+    stock_before: int
+    stock_after: int
+    unit_price_paise: int
+    reference_type: Optional[str] = None
+    reference_id: Optional[str] = None
+    actor_id: int
+    notes: Optional[str] = None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
 class InventoryTransferCreate(BaseModel):
     source_batch_id: int
     destination_location_id: int
