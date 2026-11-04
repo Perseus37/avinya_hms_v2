@@ -93,6 +93,14 @@ def downgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
         op.execute("DROP TRIGGER IF EXISTS trg_controlled_movement_append_only ON controlled_substance_movement_logs")
         op.execute("DROP FUNCTION IF EXISTS prevent_controlled_movement_mutation()")
+    # Remove only migration-created snapshots that have no historical actor;
+    # later operational movements remain untouched.
+    op.execute("""
+        DELETE FROM controlled_substance_movement_logs
+        WHERE movement_type = 'OPENING_BALANCE'
+          AND primary_user_id IS NULL
+          AND notes = 'Opening balance snapshot captured during location-scoping migration; prior movements and actors are unavailable.'
+    """)
     op.alter_column(
         "controlled_substance_movement_logs",
         "primary_user_id",
