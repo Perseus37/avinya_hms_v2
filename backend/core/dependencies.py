@@ -297,6 +297,70 @@ def user_has_department_access(
     return bool(department_code and department_code in central_department_codes)
 
 
+def ensure_encounter_department_access(db: Session, encounter_id: int) -> None:
+    """Raise when a centrally granted user cannot access an encounter's department."""
+    allowed_codes = db.info.get("central_branch_department_codes")
+    if allowed_codes is None:
+        return
+    from backend.domains.encounters.models import PatientEncounter
+
+    department_code = db.execute(
+        select(Department.code)
+        .join(PatientEncounter, PatientEncounter.department_id == Department.id)
+        .where(PatientEncounter.id == encounter_id)
+    ).scalar_one_or_none()
+    if department_code is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Encounter not found.")
+    if department_code not in allowed_codes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: encounter is outside your assigned department scope.",
+        )
+
+
+def ensure_patient_department_access(db: Session, patient_id: int) -> None:
+    """Allow patient-level access through a clinical encounter in an assigned department."""
+    allowed_codes = db.info.get("central_branch_department_codes")
+    if allowed_codes is None:
+        return
+    from backend.domains.encounters.models import PatientEncounter
+
+    encounter_id = db.execute(
+        select(PatientEncounter.id)
+        .join(Department, PatientEncounter.department_id == Department.id)
+        .where(
+            PatientEncounter.patient_id == patient_id,
+            Department.code.in_(allowed_codes),
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if encounter_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient is not available within your assigned clinical scope.",
+        )
+
+
+def RequirePatientDepartmentAccess(patient_id_parameter: str = "patient_id"):
+    """FastAPI dependency for patient visibility through an assigned clinical encounter."""
+    def dependency(
+        request: Request,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> User:
+        raw_patient_id = request.path_params.get(patient_id_parameter)
+        try:
+            patient_id = int(raw_patient_id)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A valid patient identifier is required.",
+            )
+        ensure_patient_department_access(db, patient_id)
+        return current_user
+    return dependency
+
+
 def RequireEncounterDepartmentAccess(encounter_id_parameter: str = "encounter_id"):
     """Enforce encounter department scope for centrally granted branch sessions.
 
@@ -321,21 +385,7 @@ def RequireEncounterDepartmentAccess(encounter_id_parameter: str = "encounter_id
                 detail="A valid encounter identifier is required.",
             )
 
-        from backend.domains.encounters.models import PatientEncounter
-        from backend.domains.identity.models import Department
-
-        department_code = db.execute(
-            select(Department.code)
-            .join(PatientEncounter, PatientEncounter.department_id == Department.id)
-            .where(PatientEncounter.id == encounter_id)
-        ).scalar_one_or_none()
-        if department_code is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Encounter not found.")
-        if department_code not in central_department_codes:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied: encounter is outside your assigned department scope.",
-            )
+        ensure_encounter_department_access(db, encounter_id)
         return current_user
     return dependency
 
