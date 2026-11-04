@@ -1466,6 +1466,14 @@ def request_purchase_order_amendment(
             seen_requisition_lines.add(item.requisition_item_id)
         elif item.requisition_item_id is not None:
             raise HTTPException(status_code=422, detail="A standalone purchase order cannot reference a requisition line.")
+        unit_snapshot = _resolve_medication_unit_snapshot(
+            db,
+            medication_id=req_line.medication_id if po.requisition_id is not None else item.medication_id,
+            purchase_uom_id=item.purchase_uom_id,
+            quantity=item.quantity_ordered,
+            unit_price_paise=item.unit_price_paise,
+            effective_at=datetime.now(timezone.utc),
+        )
         line_subtotal = item.quantity_ordered * item.unit_price_paise
         line_tax = (line_subtotal * item.tax_percentage + 50) // 100
         line_gross = line_subtotal + line_tax
@@ -1480,6 +1488,7 @@ def request_purchase_order_amendment(
             "tax_percentage": item.tax_percentage,
             "tax_amount_paise": line_tax,
             "gross_total_paise": line_gross,
+            **unit_snapshot,
         })
     prior_snapshot = {
         "delivery_due_date": po.delivery_due_date.isoformat(),
@@ -1496,6 +1505,11 @@ def request_purchase_order_amendment(
             "quantity_received": item.quantity_received,
             "unit_price_paise": item.unit_price_paise,
             "total_price_paise": item.total_price_paise,
+            "purchase_uom_code": item.purchase_uom_code,
+            "base_uom_code": item.base_uom_code,
+            "units_per_purchase_unit": item.units_per_purchase_unit,
+            "base_quantity": item.base_quantity,
+            "base_unit_price_paise": item.base_unit_price_paise,
             "tax_percentage": item.tax_percentage,
             "tax_amount_paise": item.tax_amount_paise,
             "gross_total_paise": item.gross_total_paise,
