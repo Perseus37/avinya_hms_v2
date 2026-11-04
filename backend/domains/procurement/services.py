@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 
 from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
@@ -282,6 +283,18 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
             invoiced_by_po_line.get(item.po_item_id, 0) + item.quantity
         )
         if item.medication_id is not None and item.medication_id != po_line.medication_id:
+            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+        # The invoice line's purchasing unit must match the immutable PO snapshot.
+        # A NULL/NULL pair is legacy unknown-unit data and remains non-comparable.
+        if (
+            item.purchase_uom_code != po_line.purchase_uom_code
+            or item.base_uom_code != po_line.base_uom_code
+            or item.units_per_purchase_unit != po_line.units_per_purchase_unit
+            or item.base_quantity != (
+                Decimal(item.quantity) * Decimal(str(po_line.units_per_purchase_unit))
+                if po_line.units_per_purchase_unit is not None else None
+            )
+        ):
             return VendorInvoiceStatusEnum.PENDING_VERIFICATION
         if (
             item.unit_price_paise != po_line.unit_price_paise
