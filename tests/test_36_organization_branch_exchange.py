@@ -2,6 +2,8 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.orm import Session
+
 from backend.control_plane.models import (
     Branch,
     BranchAccessSession,
@@ -64,7 +66,7 @@ def test_organization_branch_grant_exchanges_once_and_is_branch_bound(
         control_db.add(org_session)
         control_db.flush()
 
-        with __import__("sqlalchemy").orm.Session(tenant_engine) as tenant_db:
+        with Session(tenant_engine) as tenant_db:
             from backend.domains.identity.models import User
 
             local_user = tenant_db.query(User).filter_by(
