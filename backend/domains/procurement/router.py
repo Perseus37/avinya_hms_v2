@@ -407,10 +407,12 @@ def create_purchase_order_from_requisition(
     prepared = []
     for item in payload.items:
         req_item = item_map.get(item.requisition_item_id)
+        quoted_line = selected_quote_lines.get(item.requisition_item_id) if selected_quote is not None else None
         if selected_quote is not None:
-            quoted_line = selected_quote_lines.get(item.requisition_item_id)
             if quoted_line is None or item.unit_price_paise != quoted_line.unit_price_paise:
                 raise HTTPException(status_code=409, detail="Purchase order line pricing must match the selected supplier quotation.")
+            if item.tax_percentage is not None and item.tax_percentage != quoted_line.tax_percentage:
+                raise HTTPException(status_code=409, detail="Purchase order tax rate must match the selected supplier quotation.")
         if req_item is None or req_item.approved_quantity is None:
             raise HTTPException(status_code=422, detail="Every purchase order line must reference an approved requisition line.")
         ordered = db.query(func.coalesce(func.sum(PurchaseOrderItem.quantity_ordered), 0)).join(
@@ -423,7 +425,8 @@ def create_purchase_order_from_requisition(
         remaining = req_item.approved_quantity - int(ordered or 0)
         if item.quantity_ordered > remaining:
             raise HTTPException(status_code=409, detail=f"PO quantity exceeds remaining approved quantity for requisition line {req_item.id}.")
-        prepared.append((item, req_item))
+        tax_percentage = quoted_line.tax_percentage if quoted_line is not None else (item.tax_percentage or 0)
+        prepared.append((item, req_item, tax_percentage))
     po = PurchaseOrder(
         po_number=_generate_reference("PO"),
         vendor_id=vendor.id,
@@ -435,10 +438,14 @@ def create_purchase_order_from_requisition(
     )
     db.add(po)
     db.flush()
-    total_amount = 0
-    for item, req_item in prepared:
-        total = item.quantity_ordered * item.unit_price_paise
-        total_amount += total
+    subtotal = 0
+    tax_total = 0
+    for item, req_item, tax_percentage in prepared:
+        line_subtotal = item.quantity_ordered * item.unit_price_paise
+        line_tax = (line_subtotal * tax_percentage + 50) // 100
+        gross_total = line_subtotal + line_tax
+        subtotal += line_subtotal
+        tax_total += line_tax
         db.add(PurchaseOrderItem(
             po_id=po.id,
             requisition_item_id=req_item.id,
@@ -446,10 +453,15 @@ def create_purchase_order_from_requisition(
             item_description=req_item.item_description,
             quantity_ordered=item.quantity_ordered,
             unit_price_paise=item.unit_price_paise,
-            total_price_paise=total,
+            total_price_paise=line_subtotal,
+            tax_percentage=tax_percentage,
+            tax_amount_paise=line_tax,
+            gross_total_paise=gross_total,
             created_by_id=current_user.id,
         ))
-    po.total_amount_paise = total_amount
+    po.subtotal_paise = subtotal
+    po.tax_amount_paise = tax_total
+    po.total_amount_paise = subtotal + tax_total
     all_fulfilled = True
     for req_item in requisition.items:
         ordered = db.query(func.coalesce(func.sum(PurchaseOrderItem.quantity_ordered), 0)).join(
@@ -645,21 +657,29 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     db.add(po)
     db.flush()
 
-    total_amount = 0
+    subtotal = 0
+    tax_total = 0
     for item in payload.items:
-        line_total = item.quantity_ordered * item.unit_price_paise
-        total_amount += line_total
+        line_subtotal = item.quantity_ordered * item.unit_price_paise
+        line_tax = (line_subtotal * item.tax_percentage + 50) // 100
+        subtotal += line_subtotal
+        tax_total += line_tax
         db.add(PurchaseOrderItem(
             po_id=po.id,
             medication_id=item.medication_id,
             item_description=item.item_description,
             quantity_ordered=item.quantity_ordered,
             unit_price_paise=item.unit_price_paise,
-            total_price_paise=line_total,
+            total_price_paise=line_subtotal,
+            tax_percentage=item.tax_percentage,
+            tax_amount_paise=line_tax,
+            gross_total_paise=line_subtotal + line_tax,
             created_by_id=current_user.id
         ))
 
-    po.total_amount_paise = total_amount
+    po.subtotal_paise = subtotal
+    po.tax_amount_paise = tax_total
+    po.total_amount_paise = subtotal + tax_total
     db.commit()
     db.refresh(po)
     return po
