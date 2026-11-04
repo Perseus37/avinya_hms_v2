@@ -266,10 +266,12 @@ from backend.control_plane.models import (
     BranchMembership,
     BranchMembershipRole,
     BranchUserLink,
+    BranchAccessSession,
+    OrganizationSession,
     TenantRegistry,
 )
 from backend.core.database import tenant_engine_pool
-from backend.domains.identity.models import Department, Role, User
+from backend.domains.identity.models import Department, Role, User, UserStatusEnum
 
 
 class BranchAssignmentRequest(BaseModel):
@@ -407,6 +409,7 @@ def assign_staff_to_branch(
             local_user = local_db.get(User, payload.local_user_id)
             if (
                 not local_user
+                or local_user.status != UserStatusEnum.ACTIVE
                 or local_user.email.strip().lower() != staff.email_normalized
                 or " ".join(local_user.full_name.split()).casefold()
                 != " ".join(staff.full_name.split()).casefold()
@@ -559,3 +562,75 @@ def update_membership_status(
     ))
     db.commit()
     return {"membership_id": membership.id, "status": membership.status}
+
+
+
+class StaffStatusRequest(BaseModel):
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized not in {"ACTIVE", "SUSPENDED", "DEACTIVATED"}:
+            raise ValueError("Status must be ACTIVE, SUSPENDED, or DEACTIVATED.")
+        return normalized
+
+
+@router.patch("/{organization_user_id}/status")
+def update_staff_status(
+    organization_user_id: int,
+    payload: StaffStatusRequest,
+    identity: dict = Depends(require_organization_roles("OWNER")),
+    db: Session = Depends(get_control_db),
+):
+    staff = db.execute(
+        select(OrganizationUser)
+        .where(
+            OrganizationUser.id == organization_user_id,
+            OrganizationUser.group_id == identity["group_id"],
+            OrganizationUser.group_role == "STAFF",
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if not staff:
+        raise HTTPException(status_code=404, detail="Staff identity not found in your hospital group.")
+    if staff.status == "DEACTIVATED" and payload.status != "DEACTIVATED":
+        raise HTTPException(status_code=409, detail="A deactivated staff identity cannot be reactivated.")
+    if staff.status == "INVITED" and payload.status == "ACTIVE":
+        raise HTTPException(status_code=409, detail="The staff member must accept their invitation before activation.")
+
+    previous_status = staff.status
+    staff.status = payload.status
+    now = datetime.now(timezone.utc)
+    if payload.status in {"SUSPENDED", "DEACTIVATED"}:
+        sessions = db.execute(
+            select(OrganizationSession).where(
+                OrganizationSession.organization_user_id == staff.id,
+                OrganizationSession.revoked_at.is_(None),
+            )
+        ).scalars().all()
+        for session in sessions:
+            session.revoked_at = now
+            branch_sessions = db.execute(
+                select(BranchAccessSession).where(
+                    BranchAccessSession.organization_session_id == session.id,
+                    BranchAccessSession.revoked_at.is_(None),
+                )
+            ).scalars().all()
+            for branch_session in branch_sessions:
+                branch_session.revoked_at = now
+
+    db.add(ControlPlaneAuditLog(
+        action=f"HOSPITAL_GROUP_STAFF_{payload.status}",
+        target_slug="CONTROL_PLANE",
+        actor=str(identity["user_id"]),
+        details=f"Staff identity {staff.id} changed from {previous_status} to {payload.status}; active sessions revoked where applicable.",
+    ))
+    db.commit()
+    return {
+        "organization_user_id": staff.id,
+        "previous_status": previous_status,
+        "status": staff.status,
+        "sessions_revoked": payload.status in {"SUSPENDED", "DEACTIVATED"},
+    }
