@@ -21,6 +21,7 @@ from backend.domains.pharmacy.models import (
     ControlledSubstanceMovementLog,
     ControlledSubstanceVault,
     InventoryBatch,
+    InventoryMovement,
     PharmacyLocation,
     PharmacyLocationAccess,
     InventoryTransfer,
@@ -47,6 +48,7 @@ from backend.domains.pharmacy.schemas import (
     DispenseRequest,
     InventoryBatchCreate,
     InventoryBatchResponse,
+    InventoryMovementResponse,
     PharmacyLocationCreate,
     PharmacyLocationResponse,
     PharmacyLocationAccessCreate,
@@ -162,6 +164,76 @@ def deactivate_medication(
 
 
 
+def _record_inventory_movement(
+    db: Session,
+    batch: InventoryBatch,
+    *,
+    movement_type: str,
+    quantity_delta: int,
+    stock_before: int,
+    actor: User,
+    reference_type: Optional[str] = None,
+    reference_id: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> None:
+    """Append a stock delta in the same transaction as the inventory mutation."""
+    if quantity_delta == 0:
+        return
+    stock_after = stock_before + quantity_delta
+    if stock_before < 0 or stock_after < 0:
+        raise HTTPException(status_code=409, detail="Inventory movement would create an invalid stock balance.")
+    db.add(InventoryMovement(
+        location_id=batch.location_id,
+        medication_id=batch.medication_id,
+        inventory_batch_id=batch.id,
+        movement_type=movement_type,
+        quantity_delta=quantity_delta,
+        stock_before=stock_before,
+        stock_after=stock_after,
+        unit_price_paise=batch.unit_price_paise,
+        reference_type=reference_type,
+        reference_id=str(reference_id) if reference_id is not None else None,
+        actor_id=actor.id,
+        notes=notes,
+    ))
+
+
+@router.get("/inventory/movements", response_model=PaginatedResponse[InventoryMovementResponse])
+def list_inventory_movements(
+    location_id: Optional[int] = None,
+    batch_id: Optional[int] = None,
+    medication_id: Optional[int] = None,
+    movement_type: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:read")),
+):
+    """Lists append-only stock movements within the caller's assigned pharmacy locations."""
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    page, page_size = validate_pagination(page, page_size)
+    stmt = select(InventoryMovement).order_by(InventoryMovement.created_at.desc(), InventoryMovement.id.desc())
+    if location_id is not None:
+        _ensure_pharmacy_location_access(db, location_id, current_user)
+        stmt = stmt.where(InventoryMovement.location_id == location_id)
+    elif "central_branch_department_codes" in db.info:
+        allowed_ids = set(db.execute(select(PharmacyLocationAccess.location_id).where(
+            PharmacyLocationAccess.user_id == current_user.id,
+            PharmacyLocationAccess.is_active.is_(True),
+        )).scalars().all())
+        stmt = stmt.where(InventoryMovement.location_id.in_(allowed_ids)) if allowed_ids else stmt.where(InventoryMovement.id == -1)
+    if batch_id is not None:
+        stmt = stmt.where(InventoryMovement.inventory_batch_id == batch_id)
+    if medication_id is not None:
+        stmt = stmt.where(InventoryMovement.medication_id == medication_id)
+    if movement_type:
+        stmt = stmt.where(InventoryMovement.movement_type == movement_type.strip().upper())
+    total = db.execute(select(InventoryMovement.id).from_statement(stmt.with_only_columns(InventoryMovement.id).order_by(None))).scalars().all()
+    total_count = len(total)
+    items = list(db.execute(stmt.offset((page - 1) * page_size).limit(page_size)).scalars().all())
+    return {"items": items, "total": total_count, "page": page, "page_size": page_size}
+
+
 def _get_main_pharmacy_location(db: Session) -> PharmacyLocation:
     location = db.execute(select(PharmacyLocation).where(PharmacyLocation.code == "MAIN")).scalar_one_or_none()
     if location is None or not location.is_active:
@@ -272,6 +344,12 @@ def receive_inventory_batch(
     batch_data = payload.model_dump(exclude={"location_id"})
     batch = InventoryBatch(**batch_data, location_id=location.id)
     db.add(batch)
+    db.flush()
+    _record_inventory_movement(
+        db, batch, movement_type="RECEIPT", quantity_delta=batch.stock_quantity,
+        stock_before=0, actor=current_user, reference_type="INVENTORY_BATCH",
+        reference_id=batch.id, notes="Initial inventory receipt",
+    )
     db.commit()
     db.refresh(batch)
     return batch
@@ -391,7 +469,13 @@ def adjust_inventory_stock(
         if batch.stock_quantity + payload.quantity_adjustment < 0:
             raise HTTPException(status_code=400, detail="Stock adjustment cannot result in negative inventory.")
 
+        stock_before = batch.stock_quantity
         batch.stock_quantity += payload.quantity_adjustment
+        _record_inventory_movement(
+            db, batch, movement_type="ADJUSTMENT", quantity_delta=payload.quantity_adjustment,
+            stock_before=stock_before, actor=current_user, reference_type="INVENTORY_BATCH",
+            reference_id=batch.id, notes=payload.reason if hasattr(payload, "reason") else None,
+        )
         db.commit()
         db.refresh(batch)
         return batch
@@ -414,7 +498,14 @@ def void_inventory_batch(
             raise HTTPException(status_code=404, detail="Batch not found.")
         _ensure_pharmacy_location_access(db, batch.location_id, current_user)
 
+        stock_before = batch.stock_quantity
         batch.stock_quantity = 0
+        if stock_before:
+            _record_inventory_movement(
+                db, batch, movement_type="VOID", quantity_delta=-stock_before,
+                stock_before=stock_before, actor=current_user, reference_type="INVENTORY_BATCH",
+                reference_id=batch.id, notes="Batch stock zeroed by authorized void",
+            )
         db.commit()
         return {"status": "success", "message": f"Batch {batch_id} voided (stock zeroed for recall traceability)."}
     except OperationalError:
@@ -489,7 +580,13 @@ def dispatch_inventory_transfer(transfer_id: int, db: Session = Depends(get_db),
     batch = db.execute(select(InventoryBatch).where(InventoryBatch.id == item.source_batch_id).with_for_update()).scalar_one_or_none()
     if batch is None or batch.location_id != item.source_location_id or batch.stock_quantity < item.quantity:
         raise HTTPException(status_code=409, detail="Source batch changed or no longer has sufficient stock.")
+    stock_before = batch.stock_quantity
     batch.stock_quantity -= item.quantity
+    _record_inventory_movement(
+        db, batch, movement_type="TRANSFER_DISPATCH", quantity_delta=-item.quantity,
+        stock_before=stock_before, actor=current_user, reference_type="INVENTORY_TRANSFER",
+        reference_id=item.id, notes=item.notes,
+    )
     item.status, item.dispatched_by_id, item.dispatched_at = "DISPATCHED", current_user.id, datetime.now(timezone.utc)
     db.commit()
     db.refresh(item)
@@ -514,13 +611,20 @@ def receive_inventory_transfer(transfer_id: int, db: Session = Depends(get_db), 
     if target:
         if target.expiry_date != item.expiry_date or target.unit_price_paise != item.unit_price_paise:
             raise HTTPException(status_code=409, detail="Destination batch has conflicting expiry or valuation.")
+        stock_before = target.stock_quantity
         target.stock_quantity += item.quantity
     else:
+        stock_before = 0
         target = InventoryBatch(medication_id=item.medication_id, location_id=destination.id,
             batch_number=item.batch_number, expiry_date=item.expiry_date,
             stock_quantity=item.quantity, unit_price_paise=item.unit_price_paise)
         db.add(target)
         db.flush()
+    _record_inventory_movement(
+        db, target, movement_type="TRANSFER_RECEIVE", quantity_delta=item.quantity,
+        stock_before=stock_before, actor=current_user, reference_type="INVENTORY_TRANSFER",
+        reference_id=item.id, notes=item.notes,
+    )
     item.received_batch_id = target.id
     item.status, item.received_by_id, item.received_at = "RECEIVED", current_user.id, datetime.now(timezone.utc)
     db.commit()
@@ -867,7 +971,13 @@ def dispense_medication(
                     detail=f"FEFO Violation: Older unexpired batch ({older_unexpired_batch.batch_number}) has available stock. Dispense it first or pass override_fefo=True."
                 )
 
+            stock_before = batch.stock_quantity
             batch.stock_quantity -= disp_item.quantity_to_dispense
+            _record_inventory_movement(
+                db, batch, movement_type="DISPENSE", quantity_delta=-disp_item.quantity_to_dispense,
+                stock_before=stock_before, actor=current_user, reference_type="PRESCRIPTION",
+                reference_id=f"{prescription.id}:{rx_item.id}",
+            )
             rx_item.dispensed_quantity += disp_item.quantity_to_dispense
 
             line_cost = disp_item.quantity_to_dispense * batch.unit_price_paise
@@ -983,7 +1093,13 @@ def return_dispensed_medication(
         total_credit_paise += credit_paise
 
         # 1. Restore physical stock & decrement dispensed count
+        stock_before = batch.stock_quantity
         batch.stock_quantity += ret.quantity_to_return
+        _record_inventory_movement(
+            db, batch, movement_type="RETURN", quantity_delta=ret.quantity_to_return,
+            stock_before=stock_before, actor=current_user, reference_type="PRESCRIPTION_RETURN",
+            reference_id=f"{rx.id}:{rx_item.id}", notes=ret.return_reason,
+        )
         rx_item.dispensed_quantity -= ret.quantity_to_return
 
         # 2. Adjust DRAFT invoice line item if invoice is still open
