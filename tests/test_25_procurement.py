@@ -1148,7 +1148,7 @@ def test_pack_unit_purchase_receipt_and_supplier_return_convert_to_stock_base_un
     assert po_line["base_uom_code"] == "TAB"
     assert po_line["units_per_purchase_unit"] == 10
     assert po_line["base_quantity"] == 100
-    assert po_line["base_unit_price_paise"] == 100
+    assert float(po_line["base_unit_price_paise"]) == 100.0
 
     approval = client.patch(
         f"/v1/api/procurement/purchase-orders/{po['id']}/approve",
