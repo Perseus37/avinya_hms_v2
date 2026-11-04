@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from backend.core.database import get_db
-from backend.core.dependencies import RequirePermission
+from backend.core.dependencies import RequirePermission, ensure_department_id_access, ensure_queue_department_access, get_user_assigned_department_ids
 from backend.core.event_bus import publish_tenant_event
 from backend.domains.encounters.models import Appointment, AppointmentStatusEnum, AppointmentStatusHistory, EncounterStatusEnum, PatientEncounter
 from backend.domains.encounters.opd_queue_models import OPDQueue, OPDQueueEntry, OPDQueueEntryStatus, OPDQueueEvent, OPDQueueStatus
@@ -108,6 +108,7 @@ def check_in_appointment(payload: CheckInPayload, db: Session = Depends(get_db),
     appointment = db.execute(select(Appointment).where(Appointment.id == payload.appointment_id).with_for_update()).scalar_one_or_none()
     if appointment is None:
         raise HTTPException(status_code=404, detail="Appointment not found.")
+    ensure_department_id_access(db, appointment.department_id, current_user)
     if appointment.status not in (AppointmentStatusEnum.SCHEDULED, AppointmentStatusEnum.ARRIVED):
         raise HTTPException(status_code=409, detail=f"Appointment cannot enter the queue from {appointment.status.value}.")
     if appointment.appointment_time.date() != date.today():
@@ -147,13 +148,18 @@ def check_in_appointment(payload: CheckInPayload, db: Session = Depends(get_db),
 def list_queues(service_date: Optional[date] = Query(default=None), db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:read"))):
     branch_code = _branch_code(db)
     service_date = service_date or date.today()
-    rows = db.execute(select(OPDQueue).where(OPDQueue.branch_code == branch_code, OPDQueue.service_date == service_date).order_by(OPDQueue.department_id, OPDQueue.doctor_id)).scalars().all()
+    stmt = select(OPDQueue).where(OPDQueue.branch_code == branch_code, OPDQueue.service_date == service_date)
+    assigned_department_ids = get_user_assigned_department_ids(db, current_user)
+    if assigned_department_ids is not None:
+        stmt = stmt.where(OPDQueue.department_id.in_(assigned_department_ids))
+    rows = db.execute(stmt.order_by(OPDQueue.department_id, OPDQueue.doctor_id)).scalars().all()
     return [{"id": q.id, "service_date": q.service_date.isoformat(), "department_id": q.department_id, "doctor_id": q.doctor_id, "room_label": q.room_label, "status": q.status.value, "version": q.version} for q in rows]
 
 
 @router.get("/{queue_id}/entries")
 def list_queue_entries(queue_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:read"))):
     queue = _queue_or_404(db, queue_id, _branch_code(db))
+    ensure_queue_department_access(db, queue.id, current_user)
     rows = db.execute(select(OPDQueueEntry).where(OPDQueueEntry.queue_id == queue.id).order_by(OPDQueueEntry.priority, OPDQueueEntry.queue_position)).scalars().all()
     return [{"id": e.id, "appointment_id": e.appointment_id, "patient_id": e.patient_id, "encounter_id": e.encounter_id, "token_number": e.token_number, "queue_position": e.queue_position, "priority": e.priority, "state": e.state.value, "version": e.version, "checked_in_at": e.checked_in_at.isoformat(), "first_called_at": e.first_called_at.isoformat() if e.first_called_at else None} for e in rows]
 
@@ -180,6 +186,7 @@ def _call_entry(db, queue, entry, actor, *, reason_code=None, reason_note=None, 
 @router.post("/{queue_id}/call-next", response_model=QueueCommandResponse)
 def call_next(queue_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:write"))):
     queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    ensure_queue_department_access(db, queue.id, current_user)
     if _active_call(db, queue.id):
         raise HTTPException(status_code=409, detail="A patient is already active in this queue.")
     entry = db.execute(select(OPDQueueEntry).where(OPDQueueEntry.queue_id == queue.id, OPDQueueEntry.state == OPDQueueEntryStatus.WAITING).order_by(OPDQueueEntry.priority, OPDQueueEntry.queue_position, OPDQueueEntry.id).with_for_update().limit(1)).scalar_one_or_none()
@@ -196,6 +203,7 @@ def call_specific(queue_id: int, entry_id: int, payload: CallSpecificPayload, db
     if payload.reason_code == "OTHER" and not payload.reason_note:
         raise HTTPException(status_code=422, detail="A reason note is required for OTHER.")
     queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    ensure_queue_department_access(db, queue.id, current_user)
     if payload.expected_version is not None and payload.expected_version != queue.version:
         raise HTTPException(status_code=409, detail={"message": "Queue version conflict.", "current_version": queue.version})
     entry = _entry_or_404(db, entry_id, queue.id, lock=True)
@@ -208,6 +216,7 @@ def call_specific(queue_id: int, entry_id: int, payload: CallSpecificPayload, db
 @router.post("/{queue_id}/entries/{entry_id}/repeat-call", response_model=QueueCommandResponse)
 def repeat_call(queue_id: int, entry_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:write"))):
     queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    ensure_queue_department_access(db, queue.id, current_user)
     entry = _entry_or_404(db, entry_id, queue.id, lock=True)
     if entry.state != OPDQueueEntryStatus.CALLED:
         raise HTTPException(status_code=409, detail="Only the currently called patient can be announced again.")
@@ -223,6 +232,7 @@ def repeat_call(queue_id: int, entry_id: int, db: Session = Depends(get_db), cur
 @router.post("/{queue_id}/entries/{entry_id}/arrive", response_model=QueueCommandResponse)
 def mark_arrived(queue_id: int, entry_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:write"))):
     queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    ensure_queue_department_access(db, queue.id, current_user)
     entry = _entry_or_404(db, entry_id, queue.id, lock=True)
     if entry.state != OPDQueueEntryStatus.CALLED:
         raise HTTPException(status_code=409, detail="Only a called patient can be marked arrived.")
@@ -256,6 +266,7 @@ def _change_appointment_status(db, appointment_id, target_status, actor, reason)
 @router.post("/{queue_id}/entries/{entry_id}/hold", response_model=QueueCommandResponse)
 def hold_entry(queue_id: int, entry_id: int, payload: QueueReasonPayload, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:write"))):
     queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    ensure_queue_department_access(db, queue.id, current_user)
     entry = _entry_or_404(db, entry_id, queue.id, lock=True)
     if entry.state not in (OPDQueueEntryStatus.WAITING, OPDQueueEntryStatus.CALLED):
         raise HTTPException(status_code=409, detail="Only waiting or called patients can be placed on hold.")
@@ -274,6 +285,7 @@ def hold_entry(queue_id: int, entry_id: int, payload: QueueReasonPayload, db: Se
 @router.post("/{queue_id}/entries/{entry_id}/release-hold", response_model=QueueCommandResponse)
 def release_hold(queue_id: int, entry_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:write"))):
     queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    ensure_queue_department_access(db, queue.id, current_user)
     entry = _entry_or_404(db, entry_id, queue.id, lock=True)
     if entry.state != OPDQueueEntryStatus.ON_HOLD:
         raise HTTPException(status_code=409, detail="Only patients on hold can be released.")
@@ -291,6 +303,7 @@ def release_hold(queue_id: int, entry_id: int, db: Session = Depends(get_db), cu
 @router.post("/{queue_id}/entries/{entry_id}/no-show", response_model=QueueCommandResponse)
 def mark_no_show(queue_id: int, entry_id: int, payload: QueueReasonPayload, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:write"))):
     queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    ensure_queue_department_access(db, queue.id, current_user)
     entry = _entry_or_404(db, entry_id, queue.id, lock=True)
     if entry.state not in (OPDQueueEntryStatus.WAITING, OPDQueueEntryStatus.CALLED):
         raise HTTPException(status_code=409, detail="Only waiting or called patients can be marked no-show.")
@@ -316,6 +329,7 @@ class StartConsultationPayload(BaseModel):
 def start_consultation(queue_id: int, entry_id: int, payload: StartConsultationPayload, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:write"))):
     """Start the consultation only after revalidating the settled financial state."""
     queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    ensure_queue_department_access(db, queue.id, current_user)
     entry = _entry_or_404(db, entry_id, queue.id, lock=True)
     if entry.state != OPDQueueEntryStatus.ARRIVED:
         raise HTTPException(status_code=409, detail="Patient must be marked arrived before consultation starts.")
@@ -348,6 +362,7 @@ def start_consultation(queue_id: int, entry_id: int, payload: StartConsultationP
 def complete_consultation(queue_id: int, entry_id: int, payload: QueueReasonPayload, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:write"))):
     """Complete the OPD queue slot; downstream orders remain independent."""
     queue = _queue_or_404(db, queue_id, _branch_code(db), lock=True)
+    ensure_queue_department_access(db, queue.id, current_user)
     entry = _entry_or_404(db, entry_id, queue.id, lock=True)
     if entry.state != OPDQueueEntryStatus.IN_CONSULTATION:
         raise HTTPException(status_code=409, detail="Only an active consultation can be completed.")
@@ -372,6 +387,7 @@ def complete_consultation(queue_id: int, entry_id: int, payload: QueueReasonPayl
 def list_queue_events(queue_id: int, limit: int = Query(default=100, ge=1, le=500), before_id: Optional[int] = Query(default=None, ge=1), db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("opd:read"))):
     """Return a bounded, newest-first audit/event history for a branch queue."""
     queue = _queue_or_404(db, queue_id, _branch_code(db))
+    ensure_queue_department_access(db, queue.id, current_user)
     stmt = select(OPDQueueEvent).where(OPDQueueEvent.queue_id == queue.id)
     if before_id is not None:
         stmt = stmt.where(OPDQueueEvent.id < before_id)
