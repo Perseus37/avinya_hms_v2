@@ -10,9 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from backend.control_plane.models import GlobalPatientPointer
 from backend.core.database import get_control_db, get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.dependencies import RequirePatientDepartmentAccess, RequirePermission, validate_pagination
 from backend.core.export import stream_csv_response, chunked_query_fetcher
-from backend.domains.identity.models import User
+from backend.domains.identity.models import Department, User
+from backend.domains.encounters.models import PatientEncounter
 from backend.domains.patients.models import (
     AllergyMaster,
     AllergySeverityEnum,
@@ -174,6 +175,21 @@ def list_patients(
     """Lists patients with search, registration date filtering, and streaming CSV export."""
     start_at, end_at = resolve_record_date_window(start_date, end_date)
     query = db.query(Patient).filter(Patient.is_active == True)
+    central_department_codes = db.info.get("central_branch_department_codes")
+    if central_department_codes is not None:
+        if not central_department_codes:
+            query = query.filter(False)
+        else:
+            visible_encounter = (
+                select(PatientEncounter.id)
+                .join(Department, PatientEncounter.department_id == Department.id)
+                .where(
+                    PatientEncounter.patient_id == Patient.id,
+                    Department.code.in_(central_department_codes),
+                )
+                .exists()
+            )
+            query = query.filter(visible_encounter)
     if search:
         term = f"%{search.strip()}%"
         query = query.filter(
@@ -282,6 +298,7 @@ def get_patient(
     patient_id: int,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("patients:read")),
+    __: User = Depends(RequirePatientDepartmentAccess()),
 ):
     patient = db.get(Patient, patient_id)
     if not patient or not patient.is_active:
@@ -309,6 +326,7 @@ def update_patient(
     db: Session = Depends(get_db),
     control_db: Session = Depends(get_control_db),
     current_user: User = Depends(RequirePermission("patients:write")),
+    __: User = Depends(RequirePatientDepartmentAccess()),
 ):
     tenant = resolve_tenant_context(request)
     patient = db.get(Patient, patient_id)
@@ -339,6 +357,7 @@ def deactivate_patient(
     db: Session = Depends(get_db),
     control_db: Session = Depends(get_control_db),
     current_user: User = Depends(RequirePermission("patients:delete")),
+    __: User = Depends(RequirePatientDepartmentAccess()),
 ):
     tenant = resolve_tenant_context(request)
     patient = db.get(Patient, patient_id)
@@ -371,6 +390,7 @@ def chart_patient_allergy(
     db: Session = Depends(get_db),
     control_db: Session = Depends(get_control_db),
     current_user: User = Depends(RequirePermission("patients:write")),
+    __: User = Depends(RequirePatientDepartmentAccess()),
 ):
     """Charts a patient allergy AND marks this branch as holding critical allergy updates in the Central Index."""
     tenant = resolve_tenant_context(request)
@@ -434,6 +454,7 @@ def list_patient_allergies(
     patient_id: int,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("patients:read")),
+    __: User = Depends(RequirePatientDepartmentAccess()),
 ):
     patient = db.get(Patient, patient_id)
     decision = evaluate_tenant_data_use(
@@ -465,6 +486,7 @@ def remove_patient_allergy(
     allergy_record_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("patients:delete")),
+    __: User = Depends(RequirePatientDepartmentAccess()),
 ):
     record = (
         db.query(PatientAllergy)
