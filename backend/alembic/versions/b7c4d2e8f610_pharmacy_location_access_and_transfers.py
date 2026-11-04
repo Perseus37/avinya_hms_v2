@@ -31,8 +31,14 @@ def upgrade() -> None:
         INSERT INTO pharmacy_location_access (location_id, user_id, is_active)
         SELECT pl.id, ur.user_id, true
         FROM pharmacy_locations pl
-        JOIN user_roles ur ON ur.department_id IN (
-            SELECT d.id FROM departments d WHERE d.code IN ('PHARMACY', 'DEPT_PHARMACY')
+        JOIN user_roles ur ON (
+            ur.department_id IN (
+                SELECT d.id FROM departments d WHERE d.code IN ('PHARMACY', 'DEPT_PHARMACY')
+            )
+            OR ur.role_id IN (
+                SELECT r.id FROM roles r
+                WHERE r.code IN ('ROLE_PHARMACIST', 'ROLE_PHARMACY_MANAGER', 'PHARMACIST')
+            )
         )
         WHERE pl.code = 'MAIN'
         GROUP BY pl.id, ur.user_id
