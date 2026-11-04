@@ -609,6 +609,49 @@ def test_supplier_quotation_comparison_and_independent_selection(
     assert selected.json()["status"] == "SELECTED"
     assert selected.json()["selected_by_id"] is not None
 
+    second_selection = client.patch(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/quotations/{comparison.json()[1]['id']}/select",
+        headers=superuser_headers,
+        json={"selection_reason": "Attempt to replace the already selected supplier."},
+    )
+    assert second_selection.status_code == 409, second_selection.text
+
+    po_payload = {
+        "vendor_id": vendors[1]["id"],
+        "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
+        "payment_terms": "Net 30",
+        "items": [{
+            "requisition_item_id": item_id,
+            "quantity_ordered": 5,
+            "unit_price_paise": 10000,
+        }],
+    }
+    wrong_supplier_payload = {**po_payload, "vendor_id": vendors[0]["id"]}
+    wrong_supplier = client.post(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/purchase-orders",
+        headers=pharmacist_headers,
+        json=wrong_supplier_payload,
+    )
+    assert wrong_supplier.status_code == 409, wrong_supplier.text
+
+    wrong_price_payload = {
+        **po_payload,
+        "items": [{**po_payload["items"][0], "unit_price_paise": 11000}],
+    }
+    wrong_price = client.post(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/purchase-orders",
+        headers=pharmacist_headers,
+        json=wrong_price_payload,
+    )
+    assert wrong_price.status_code == 409, wrong_price.text
+
+    selected_supplier_po = client.post(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/purchase-orders",
+        headers=pharmacist_headers,
+        json=po_payload,
+    )
+    assert selected_supplier_po.status_code == 201, selected_supplier_po.text
+
     final_comparison = client.get(
         f"/v1/api/procurement/purchase-requisitions/{requisition_id}/quotations",
         headers=superuser_headers,
