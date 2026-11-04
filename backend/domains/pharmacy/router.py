@@ -254,6 +254,19 @@ def _ensure_pharmacy_location_access(db: Session, location_id: int, actor: User)
         raise HTTPException(status_code=403, detail="You are not assigned to this pharmacy location.")
 
 
+def _get_authorized_controlled_vault(
+    db: Session, vault_id: int, actor: User, *, lock: bool = True
+) -> ControlledSubstanceVault:
+    stmt = select(ControlledSubstanceVault).where(ControlledSubstanceVault.id == vault_id)
+    if lock:
+        stmt = stmt.with_for_update()
+    vault = db.execute(stmt).scalar_one_or_none()
+    if vault is None:
+        raise HTTPException(status_code=404, detail="Controlled substance vault register not found.")
+    _ensure_pharmacy_location_access(db, vault.location_id, actor)
+    return vault
+
+
 def _get_active_pharmacy_location(db: Session, location_id: int) -> PharmacyLocation:
     location = db.get(PharmacyLocation, location_id)
     if location is None or not location.is_active:
@@ -563,6 +576,8 @@ def approve_inventory_transfer(transfer_id: int, db: Session = Depends(get_db), 
     _ensure_pharmacy_location_access(db, item.destination_location_id, current_user)
     if item.status != "REQUESTED":
         raise HTTPException(status_code=409, detail="Only requested transfers can be approved.")
+    if item.requested_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="Transfer requester cannot approve their own transfer.")
     item.status, item.approved_by_id, item.approved_at = "APPROVED", current_user.id, datetime.now(timezone.utc)
     db.commit()
     db.refresh(item)
@@ -578,6 +593,8 @@ def dispatch_inventory_transfer(transfer_id: int, db: Session = Depends(get_db),
     _ensure_pharmacy_location_access(db, item.source_location_id, current_user)
     if item.status != "APPROVED":
         raise HTTPException(status_code=409, detail="Only approved transfers can be dispatched.")
+    if item.approved_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="Transfer approver cannot dispatch the same transfer.")
     batch = db.execute(select(InventoryBatch).where(InventoryBatch.id == item.source_batch_id).with_for_update()).scalar_one_or_none()
     if batch is None or batch.location_id != item.source_location_id or batch.stock_quantity < item.quantity:
         raise HTTPException(status_code=409, detail="Source batch changed or no longer has sufficient stock.")
@@ -603,6 +620,8 @@ def receive_inventory_transfer(transfer_id: int, db: Session = Depends(get_db), 
     _ensure_pharmacy_location_access(db, item.destination_location_id, current_user)
     if item.status != "DISPATCHED":
         raise HTTPException(status_code=409, detail="Only dispatched transfers can be received.")
+    if item.dispatched_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="Transfer dispatcher cannot receive the same transfer.")
     destination = _get_active_pharmacy_location(db, item.destination_location_id)
     target = db.execute(select(InventoryBatch).where(
         InventoryBatch.medication_id == item.medication_id,
@@ -1222,16 +1241,22 @@ def create_controlled_substance_vault_entry(
     med = db.get(MedicationMaster, payload.medication_id)
     if not med:
         raise HTTPException(status_code=404, detail="Medication not found in formulary.")
+    location = _get_active_pharmacy_location(db, payload.location_id) if payload.location_id is not None else _get_main_pharmacy_location(db)
+    _ensure_pharmacy_location_access(db, location.id, current_user)
 
     existing = db.execute(
-        select(ControlledSubstanceVault).where(ControlledSubstanceVault.medication_id == payload.medication_id)
+        select(ControlledSubstanceVault).where(
+            ControlledSubstanceVault.medication_id == payload.medication_id,
+            ControlledSubstanceVault.location_id == location.id,
+        )
     ).scalar_one_or_none()
     if existing:
-        raise HTTPException(status_code=409, detail="A controlled substance vault entry already exists for this medication.")
+        raise HTTPException(status_code=409, detail="A controlled substance vault entry already exists for this medication at this location.")
 
     med.is_controlled_substance = True
     vault = ControlledSubstanceVault(
         medication_id=payload.medication_id,
+        location_id=location.id,
         vault_location=payload.vault_location,
         current_balance_units=payload.initial_balance_units,
         unit_of_measure=payload.unit_of_measure,
@@ -1239,6 +1264,18 @@ def create_controlled_substance_vault_entry(
         is_locked=True,
     )
     db.add(vault)
+    db.flush()
+    if payload.initial_balance_units > 0:
+        db.add(ControlledSubstanceMovementLog(
+            vault_id=vault.id,
+            movement_type="OPENING_BALANCE",
+            quantity_units=payload.initial_balance_units,
+            balance_before=0,
+            balance_after=payload.initial_balance_units,
+            primary_user_id=current_user.id,
+            witness_verified=False,
+            notes="Opening physical count recorded at vault setup; not a supplier receipt.",
+        ))
     db.commit()
     db.refresh(vault)
     return vault
@@ -1252,6 +1289,12 @@ def list_controlled_substance_vaults(
     """Lists all active perpetual narcotics vaults with current safe balances and tamper seal status."""
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     stmt = select(ControlledSubstanceVault).options(joinedload(ControlledSubstanceVault.medication)).order_by(ControlledSubstanceVault.id.asc())
+    if "central_branch_department_codes" in db.info:
+        allowed_ids = select(PharmacyLocationAccess.location_id).where(
+            PharmacyLocationAccess.user_id == current_user.id,
+            PharmacyLocationAccess.is_active.is_(True),
+        )
+        stmt = stmt.where(ControlledSubstanceVault.location_id.in_(allowed_ids))
     return list(db.execute(stmt).scalars().all())
 
 
@@ -1263,6 +1306,7 @@ def receive_controlled_substance_into_vault(
 ):
     """Logs stock replenishment / supplier receipt into the double-locked narcotics vault."""
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    _get_authorized_controlled_vault(db, payload.vault_id, current_user)
     from backend.domains.pharmacy.services import process_controlled_substance_movement
     return process_controlled_substance_movement(
         session=db,
@@ -1286,6 +1330,7 @@ def dispense_controlled_substance_from_vault(
 ):
     """Dispenses controlled narcotics from perpetual safe to ward stock or patient encounter."""
     ensure_pharmacy_or_encounter_access(db, current_user, payload.encounter_id, payload.prescription_item_id)
+    _get_authorized_controlled_vault(db, payload.vault_id, current_user)
     from backend.domains.pharmacy.services import process_controlled_substance_movement
     return process_controlled_substance_movement(
         session=db,
@@ -1310,6 +1355,7 @@ def return_controlled_substance_to_vault(
 ):
     """Returns unused controlled narcotics back to the perpetual safe."""
     ensure_pharmacy_or_encounter_access(db, current_user, payload.encounter_id, payload.prescription_item_id)
+    _get_authorized_controlled_vault(db, payload.vault_id, current_user)
     from backend.domains.pharmacy.services import process_controlled_substance_movement
     return process_controlled_substance_movement(
         session=db,
@@ -1337,6 +1383,7 @@ def record_controlled_substance_dual_witness_wastage(
     Co-signs partial ampoule / vial destruction with secondary healthcare witness credential validation.
     """
     ensure_pharmacy_or_encounter_access(db, current_user, payload.encounter_id, payload.prescription_item_id)
+    _get_authorized_controlled_vault(db, payload.vault_id, current_user)
     from backend.domains.pharmacy.services import process_controlled_substance_movement
     return process_controlled_substance_movement(
         session=db,
@@ -1363,7 +1410,17 @@ def list_controlled_substance_movements(
 ):
     """Retrieves full perpetual audit ledger of all controlled substance transactions."""
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
-    stmt = select(ControlledSubstanceMovementLog).order_by(ControlledSubstanceMovementLog.id.desc())
-    if vault_id:
+    stmt = (
+        select(ControlledSubstanceMovementLog)
+        .join(ControlledSubstanceVault, ControlledSubstanceMovementLog.vault_id == ControlledSubstanceVault.id)
+        .order_by(ControlledSubstanceMovementLog.id.desc())
+    )
+    if vault_id is not None:
         stmt = stmt.where(ControlledSubstanceMovementLog.vault_id == vault_id)
+    if "central_branch_department_codes" in db.info:
+        allowed_ids = select(PharmacyLocationAccess.location_id).where(
+            PharmacyLocationAccess.user_id == current_user.id,
+            PharmacyLocationAccess.is_active.is_(True),
+        )
+        stmt = stmt.where(ControlledSubstanceVault.location_id.in_(allowed_ids))
     return list(db.execute(stmt).scalars().all())
