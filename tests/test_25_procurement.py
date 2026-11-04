@@ -63,7 +63,7 @@ def test_purchase_requisition_approval_and_partial_po_conversion(
 
     creator_cannot_review = client.patch(
         f"/v1/api/procurement/purchase-requisitions/{requisition_id}/review",
-        headers=superuser_headers if requisition["requested_by_id"] == -1 else pharmacist_headers,
+        headers=pharmacist_headers,
         json={
             "approved": True,
             "review_notes": "Reviewed",
@@ -72,6 +72,17 @@ def test_purchase_requisition_approval_and_partial_po_conversion(
     )
     # The pharmacist is not an approver; approval is performed by the independent superuser below.
     assert creator_cannot_review.status_code in (403, 409)
+
+    invalid_quantity_review = client.patch(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/review",
+        headers=superuser_headers,
+        json={
+            "approved": True,
+            "review_notes": "Invalid over-approval attempt.",
+            "items": [{"requisition_item_id": requisition_item_id, "approved_quantity": 11}],
+        },
+    )
+    assert invalid_quantity_review.status_code == 422
 
     review = client.patch(
         f"/v1/api/procurement/purchase-requisitions/{requisition_id}/review",
