@@ -127,7 +127,12 @@ def branch_grant_environment(monkeypatch):
             status=UserStatusEnum.ACTIVE,
         )
         user.roles.extend([role, local_admin])
-        tenant_db.add(user)
+        tenant_db.add_all([department, user])
+        tenant_db.flush()
+        assignment = tenant_db.query(UserRole).filter_by(
+            user_id=user.id, role_id=role.id
+        ).one()
+        assignment.department_id = department.id
         tenant_db.commit()
         local_user_id = user.id
         assert local_user_id == 1
