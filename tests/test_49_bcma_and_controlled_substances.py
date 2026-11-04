@@ -340,6 +340,68 @@ def test_controlled_substance_vault_lifecycle_receipt_and_dispense(client, super
     assert "Insufficient narcotic vault balance" in over_res.text
 
 
+def test_controlled_substance_vaults_are_location_scoped_and_audited(client, superuser_headers, pharmacist_headers):
+    med = _create_medication(
+        client,
+        superuser_headers,
+        code="MED_LOCATION_VAULT",
+        brand="Location Vault Medicine",
+        generic="Location Generic",
+        is_controlled=True,
+    )
+    location_res = client.post(
+        "/v1/api/pharmacy/locations",
+        headers=pharmacist_headers,
+        json={"code": "NARCOTICS-ICU", "name": "ICU Narcotics Safe", "location_type": "CONTROLLED_SAFE"},
+    )
+    assert location_res.status_code == 201, location_res.text
+    location_id = location_res.json()["id"]
+
+    first = client.post(
+        "/v1/api/pharmacy/controlled-substances/vault",
+        headers=pharmacist_headers,
+        json={
+            "medication_id": med["id"],
+            "location_id": location_id,
+            "vault_location": "ICU_SAFE_A",
+            "initial_balance_units": 4,
+            "unit_of_measure": "AMPOULE",
+        },
+    )
+    assert first.status_code == 201, first.text
+    first_vault = first.json()
+    assert first_vault["location_id"] == location_id
+    assert first_vault["current_balance_units"] == 4
+
+    # The same medication may have a separate controlled vault at another location.
+    second = client.post(
+        "/v1/api/pharmacy/controlled-substances/vault",
+        headers=pharmacist_headers,
+        json={"medication_id": med["id"], "vault_location": "MAIN_NARCOTICS_SAFE"},
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["location_id"] != location_id
+
+    duplicate = client.post(
+        "/v1/api/pharmacy/controlled-substances/vault",
+        headers=pharmacist_headers,
+        json={"medication_id": med["id"], "location_id": location_id},
+    )
+    assert duplicate.status_code == 409
+
+    movements = client.get(
+        f"/v1/api/pharmacy/controlled-substances/movements?vault_id={first_vault['id']}",
+        headers=pharmacist_headers,
+    )
+    assert movements.status_code == 200, movements.text
+    assert len(movements.json()) == 1
+    opening = movements.json()[0]
+    assert opening["movement_type"] == "OPENING_BALANCE"
+    assert opening["balance_before"] == 0
+    assert opening["balance_after"] == 4
+    assert opening["witness_verified"] is False
+
+
 def test_controlled_substance_dual_witness_wastage_security_controls(client, superuser_headers, pharmacist_headers):
     """
     Scenario 6: Enforces mandatory dual-witness protocol for narcotics wastage/destruction.
@@ -433,9 +495,10 @@ def test_controlled_substance_dual_witness_wastage_security_controls(client, sup
     )
     assert ledger_res.status_code == 200, ledger_res.text
     movements = ledger_res.json()
-    assert len(movements) == 1
+    assert len(movements) == 2
     assert movements[0]["movement_type"] == "WASTAGE_DESTROYED"
     assert movements[0]["witness_verified"] is True
+    assert movements[1]["movement_type"] == "OPENING_BALANCE"
 
 
 def test_bcma_safety_controls_dose_mismatch_generic_rejection_and_duplicates(client, superuser_headers, nurse_headers):
