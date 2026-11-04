@@ -634,3 +634,57 @@ def update_staff_status(
         "status": staff.status,
         "sessions_revoked": payload.status in {"SUSPENDED", "DEACTIVATED"},
     }
+
+
+
+@router.get("/{organization_user_id}/branches")
+def list_staff_branch_assignments(
+    organization_user_id: int,
+    identity: dict = Depends(require_organization_roles("OWNER")),
+    db: Session = Depends(get_control_db),
+):
+    staff = db.execute(
+        select(OrganizationUser).where(
+            OrganizationUser.id == organization_user_id,
+            OrganizationUser.group_id == identity["group_id"],
+            OrganizationUser.group_role == "STAFF",
+        )
+    ).scalar_one_or_none()
+    if not staff:
+        raise HTTPException(status_code=404, detail="Staff identity not found in your hospital group.")
+
+    memberships = db.execute(
+        select(BranchMembership, Branch)
+        .join(Branch, Branch.id == BranchMembership.branch_id)
+        .where(
+            BranchMembership.organization_user_id == staff.id,
+            BranchMembership.group_id == identity["group_id"],
+        )
+        .order_by(Branch.name.asc(), Branch.id.asc())
+    ).all()
+
+    items = []
+    for membership, branch in memberships:
+        roles = db.execute(
+            select(BranchMembershipRole.role_code)
+            .where(BranchMembershipRole.membership_id == membership.id)
+            .order_by(BranchMembershipRole.role_code.asc())
+        ).scalars().all()
+        departments = db.execute(
+            select(BranchDepartmentAssignment.department_code)
+            .where(BranchDepartmentAssignment.membership_id == membership.id)
+            .order_by(BranchDepartmentAssignment.department_code.asc())
+        ).scalars().all()
+        link = db.execute(
+            select(BranchUserLink).where(BranchUserLink.membership_id == membership.id)
+        ).scalar_one_or_none()
+        items.append({
+            "membership_id": membership.id,
+            "branch": {"id": branch.id, "code": branch.code, "name": branch.name},
+            "status": membership.status,
+            "local_user_id": link.local_user_id if link else None,
+            "identity_link_verified": bool(link and link.verified_at),
+            "roles": roles,
+            "departments": departments,
+        })
+    return {"organization_user_id": staff.id, "items": items, "count": len(items)}
