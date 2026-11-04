@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.dependencies import RequireDepartmentAccess, RequireEncounterDepartmentAccess, RequirePermission, user_has_department_access, validate_pagination
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.billing.models import Invoice, InvoiceStatusEnum
 from backend.domains.encounters.models import AdmissionTypeEnum, BedTransferLog, EncounterStatusEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter, DischargeDispositionEnum
@@ -64,7 +64,16 @@ def list_active_encounters(
     actor: User = Depends(RequirePermission("adt:read")),
 ):
     page, page_size = validate_pagination(page, page_size)
-    query = db.query(PatientEncounter).filter(PatientEncounter.status == EncounterStatusEnum.ACTIVE).order_by(PatientEncounter.id.desc())
+    query = db.query(PatientEncounter).filter(PatientEncounter.status == EncounterStatusEnum.ACTIVE)
+    central_department_codes = db.info.get("central_branch_department_codes")
+    if central_department_codes is not None:
+        if not central_department_codes:
+            query = query.filter(False)
+        else:
+            query = query.join(PatientEncounter.department).filter(
+                Department.code.in_(central_department_codes)
+            )
+    query = query.order_by(PatientEncounter.id.desc())
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     decisions = evaluate_tenant_patient_data_uses(
@@ -87,6 +96,7 @@ def get_encounter(
     encounter_id: int,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     encounter = db.get(PatientEncounter, encounter_id)
     if not encounter:
@@ -108,6 +118,7 @@ def update_encounter(
     payload: PatientEncounterUpdate,
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("adt:write")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     encounter = db.get(PatientEncounter, encounter_id)
     if not encounter:
@@ -132,6 +143,7 @@ def cancel_encounter(
     encounter_id: int,
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("adt:discharge")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     encounter = db.get(PatientEncounter, encounter_id)
     if not encounter:
