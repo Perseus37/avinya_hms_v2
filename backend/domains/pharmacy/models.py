@@ -115,6 +115,7 @@ class InventoryMovement(AuditMixin, Base):
     __table_args__ = (
         CheckConstraint("quantity_delta != 0", name="ck_inventory_movement_nonzero_delta"),
         CheckConstraint("stock_before >= 0 AND stock_after >= 0", name="ck_inventory_movement_stock_nonnegative"),
+        CheckConstraint("stock_after = stock_before + quantity_delta", name="ck_inventory_movement_balance_delta"),
         CheckConstraint("unit_price_paise >= 0", name="ck_inventory_movement_unit_price_nonnegative"),
         Index("ix_inventory_movements_location_created", "location_id", "created_at"),
         Index("ix_inventory_movements_batch_created", "inventory_batch_id", "created_at"),
