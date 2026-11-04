@@ -156,6 +156,7 @@ class PurchaseRequisitionItem(AuditMixin, Base):
         ForeignKey("procurement_requisitions.id", ondelete="CASCADE"), nullable=False
     )
     medication_id: Mapped[Optional[int]] = mapped_column(ForeignKey("medication_master.id"), nullable=True, index=True)
+    purchase_uom_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_units_of_measure.id"), nullable=True)
     item_description: Mapped[str] = mapped_column(String(200), nullable=False)
     requested_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     approved_quantity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
