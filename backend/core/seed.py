@@ -55,6 +55,7 @@ GRANULAR_PERMISSIONS = [
     ("pharmacy:read", "View formulary, inventory batches, and prescriptions", "Pharmacy"),
     ("pharmacy:write", "Receive stock, write prescriptions, and dispense medications", "Pharmacy"),
     ("pharmacy:void", "Void inventory batches and cancel prescriptions", "Pharmacy"),
+    ("pharmacy:location:manage", "Assign and revoke staff access to pharmacy locations", "Pharmacy"),
     # Billing & Financial Ledger
     ("billing:read", "View patient invoices and payment receipts", "Billing"),
     ("billing:write", "Create invoices, append catalog items, and record payments", "Billing"),
