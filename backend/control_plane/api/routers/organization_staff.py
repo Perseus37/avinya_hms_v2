@@ -253,3 +253,309 @@ def accept_staff_invitation(
         "user": _staff_payload(user),
         "message": "Your staff account is active. The hospital owner must assign your branch access separately.",
     }
+
+
+# Branch assignment endpoints. These store the organization's authorization intent.
+# They do not mint a branch-local JWT or mutate legacy UserRole rows; branch-session
+# enforcement is a separate migration step so legacy login is not silently changed.
+from sqlalchemy.orm import sessionmaker
+
+from backend.control_plane.models import (
+    Branch,
+    BranchDepartmentAssignment,
+    BranchMembership,
+    BranchMembershipRole,
+    BranchUserLink,
+    TenantRegistry,
+)
+from backend.core.database import tenant_engine_pool
+from backend.domains.identity.models import Department, Role, User
+
+
+class BranchAssignmentRequest(BaseModel):
+    local_user_id: int = Field(gt=0)
+    role_codes: list[str] = Field(min_length=1, max_length=30)
+    department_codes: list[str] = Field(default_factory=list, max_length=30)
+
+    @field_validator("role_codes", "department_codes")
+    @classmethod
+    def normalize_codes(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values]
+        if any(not value or len(value) > 100 for value in cleaned):
+            raise ValueError("Role and department codes must be non-empty and at most 100 characters.")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("Duplicate role or department codes are not allowed.")
+        return cleaned
+
+
+class MembershipStatusRequest(BaseModel):
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized not in {"ACTIVE", "SUSPENDED", "REVOKED"}:
+            raise ValueError("Status must be ACTIVE, SUSPENDED, or REVOKED.")
+        return normalized
+
+
+def _branch_for_group(db: Session, group_id: int, branch_id: int) -> tuple[Branch, TenantRegistry]:
+    row = db.execute(
+        select(Branch, TenantRegistry)
+        .join(TenantRegistry, TenantRegistry.id == Branch.tenant_registry_id)
+        .where(
+            Branch.id == branch_id,
+            Branch.group_id == group_id,
+            Branch.status == "ACTIVE",
+            TenantRegistry.is_active.is_(True),
+        )
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Active branch not found in your hospital group.")
+    return row[0], row[1]
+
+
+@router.get("/branches")
+def list_group_branches(
+    identity: dict = Depends(require_organization_roles("OWNER")),
+    db: Session = Depends(get_control_db),
+):
+    rows = db.execute(
+        select(Branch)
+        .where(Branch.group_id == identity["group_id"], Branch.status == "ACTIVE")
+        .order_by(Branch.name.asc(), Branch.id.asc())
+    ).scalars().all()
+    return {
+        "items": [
+            {"id": branch.id, "code": branch.code, "name": branch.name, "status": branch.status}
+            for branch in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@router.get("/branches/{branch_id}/catalogue")
+def get_branch_catalogue(
+    branch_id: int,
+    identity: dict = Depends(require_organization_roles("OWNER")),
+    db: Session = Depends(get_control_db),
+):
+    branch, registry = _branch_for_group(db, identity["group_id"], branch_id)
+    LocalSession = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=tenant_engine_pool.get_engine(registry.db_name),
+    )
+    try:
+        with LocalSession() as local_db:
+            roles = local_db.execute(
+                select(Role).order_by(Role.name.asc(), Role.code.asc())
+            ).scalars().all()
+            departments = local_db.execute(
+                select(Department)
+                .where(Department.is_active.is_(True))
+                .order_by(Department.name.asc(), Department.code.asc())
+            ).scalars().all()
+            return {
+                "branch": {"id": branch.id, "code": branch.code, "name": branch.name},
+                "roles": [
+                    {"code": role.code, "name": role.name, "description": role.description}
+                    for role in roles
+                ],
+                "departments": [
+                    {"code": department.code, "name": department.name}
+                    for department in departments
+                ],
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Branch role catalogue is temporarily unavailable.") from exc
+
+
+@router.post("/{organization_user_id}/branches", status_code=status.HTTP_201_CREATED)
+def assign_staff_to_branch(
+    organization_user_id: int,
+    branch_id: int,
+    payload: BranchAssignmentRequest,
+    identity: dict = Depends(require_organization_roles("OWNER")),
+    db: Session = Depends(get_control_db),
+):
+    now = datetime.now(timezone.utc)
+    staff = db.execute(
+        select(OrganizationUser)
+        .where(
+            OrganizationUser.id == organization_user_id,
+            OrganizationUser.group_id == identity["group_id"],
+            OrganizationUser.group_role == "STAFF",
+            OrganizationUser.status == "ACTIVE",
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if not staff:
+        raise HTTPException(status_code=404, detail="Active staff identity not found in your hospital group.")
+
+    branch, registry = _branch_for_group(db, identity["group_id"], branch_id)
+    LocalSession = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        bind=tenant_engine_pool.get_engine(registry.db_name),
+    )
+    try:
+        with LocalSession() as local_db:
+            local_user = local_db.get(User, payload.local_user_id)
+            if (
+                not local_user
+                or local_user.email.strip().lower() != staff.email_normalized
+                or " ".join(local_user.full_name.split()).casefold()
+                != " ".join(staff.full_name.split()).casefold()
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="The selected branch-local user does not match this staff identity. No automatic email-only linking is allowed.",
+                )
+
+            role_rows = local_db.execute(
+                select(Role).where(Role.code.in_(payload.role_codes))
+            ).scalars().all()
+            role_map = {role.code: role for role in role_rows}
+            if set(role_map) != set(payload.role_codes):
+                raise HTTPException(status_code=422, detail="One or more role codes do not exist in this branch.")
+
+            department_rows = []
+            if payload.department_codes:
+                department_rows = local_db.execute(
+                    select(Department).where(
+                        Department.code.in_(payload.department_codes),
+                        Department.is_active.is_(True),
+                    )
+                ).scalars().all()
+            department_map = {department.code: department for department in department_rows}
+            if set(department_map) != set(payload.department_codes):
+                raise HTTPException(status_code=422, detail="One or more department codes do not exist or are inactive in this branch.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not verify the selected branch-local identity and catalogue.") from exc
+
+    existing = db.execute(
+        select(BranchMembership)
+        .where(
+            BranchMembership.organization_user_id == staff.id,
+            BranchMembership.branch_id == branch.id,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if existing and existing.status == "ACTIVE":
+        raise HTTPException(status_code=409, detail="Staff already has an active membership in this branch.")
+
+    try:
+        if existing:
+            membership = existing
+            membership.status = "ACTIVE"
+            membership.revoked_at = None
+            db.query(BranchMembershipRole).filter_by(membership_id=membership.id).delete()
+            db.query(BranchDepartmentAssignment).filter_by(membership_id=membership.id).delete()
+        else:
+            membership = BranchMembership(
+                organization_user_id=staff.id,
+                branch_id=branch.id,
+                group_id=identity["group_id"],
+                status="ACTIVE",
+            )
+            db.add(membership)
+            db.flush()
+
+        for role_code in payload.role_codes:
+            db.add(BranchMembershipRole(membership_id=membership.id, role_code=role_code))
+        for department_code in payload.department_codes:
+            db.add(BranchDepartmentAssignment(
+                membership_id=membership.id,
+                department_code=department_code,
+            ))
+
+        link = db.execute(
+            select(BranchUserLink)
+            .where(BranchUserLink.membership_id == membership.id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if link and link.local_user_id != payload.local_user_id:
+            raise HTTPException(status_code=409, detail="This membership is already linked to a different branch-local user.")
+        if link:
+            link.verified_at = now
+        else:
+            db.add(BranchUserLink(
+                membership_id=membership.id,
+                organization_user_id=staff.id,
+                branch_id=branch.id,
+                local_user_id=payload.local_user_id,
+                verified_at=now,
+            ))
+
+        db.add(ControlPlaneAuditLog(
+            action="HOSPITAL_GROUP_STAFF_BRANCH_ASSIGNED",
+            target_slug="CONTROL_PLANE",
+            actor=str(identity["user_id"]),
+            details=(
+                f"Staff {staff.id} assigned to branch {branch.code}; "
+                f"local_user_id={payload.local_user_id}; roles={','.join(payload.role_codes)}; "
+                f"departments={','.join(payload.department_codes)}."
+            ),
+        ))
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="The branch membership or local-user link conflicts with an existing assignment.") from exc
+
+    return {
+        "membership_id": membership.id,
+        "organization_user_id": staff.id,
+        "branch": {"id": branch.id, "code": branch.code, "name": branch.name},
+        "local_user_id": payload.local_user_id,
+        "roles": payload.role_codes,
+        "departments": payload.department_codes,
+        "status": membership.status,
+        "clinical_access_enabled": False,
+        "message": "Branch assignment is recorded. Clinical access remains governed by the branch-session integration and is not enabled by this assignment alone.",
+    }
+
+
+@router.patch("/memberships/{membership_id}/status")
+def update_membership_status(
+    membership_id: int,
+    payload: MembershipStatusRequest,
+    identity: dict = Depends(require_organization_roles("OWNER")),
+    db: Session = Depends(get_control_db),
+):
+    membership = db.execute(
+        select(BranchMembership)
+        .where(
+            BranchMembership.id == membership_id,
+            BranchMembership.group_id == identity["group_id"],
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if not membership:
+        raise HTTPException(status_code=404, detail="Branch membership not found in your hospital group.")
+    if membership.status == "REVOKED" and payload.status != "REVOKED":
+        raise HTTPException(status_code=409, detail="A revoked membership cannot be reactivated; create a new assignment.")
+    if payload.status == "ACTIVE":
+        staff = db.get(OrganizationUser, membership.organization_user_id)
+        branch = db.get(Branch, membership.branch_id)
+        if not staff or staff.status != "ACTIVE" or not branch or branch.status != "ACTIVE":
+            raise HTTPException(status_code=409, detail="Staff identity and branch must both be active.")
+    membership.status = payload.status
+    if payload.status == "REVOKED":
+        membership.revoked_at = datetime.now(timezone.utc)
+    elif payload.status == "ACTIVE":
+        membership.revoked_at = None
+
+    db.add(ControlPlaneAuditLog(
+        action=f"HOSPITAL_GROUP_STAFF_BRANCH_{payload.status}",
+        target_slug="CONTROL_PLANE",
+        actor=str(identity["user_id"]),
+        details=f"Membership {membership.id} status changed to {payload.status}.",
+    ))
+    db.commit()
+    return {"membership_id": membership.id, "status": membership.status}
