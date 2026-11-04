@@ -297,6 +297,69 @@ def user_has_department_access(
     return bool(department_code and department_code in central_department_codes)
 
 
+def get_user_assigned_department_ids(db: Session, actor: User) -> Optional[set[int]]:
+    """Return locally assigned departments intersected with central grant scope.
+
+    None means legacy branch authentication, where existing route behavior is retained.
+    """
+    central_codes = db.info.get("central_branch_department_codes")
+    if central_codes is None:
+        return None
+    if not central_codes:
+        return set()
+    return set(
+        db.execute(
+            select(UserRole.department_id)
+            .join(Department, Department.id == UserRole.department_id)
+            .where(
+                UserRole.user_id == actor.id,
+                UserRole.department_id.is_not(None),
+                Department.code.in_(central_codes),
+            )
+            .distinct()
+        ).scalars().all()
+    )
+
+
+def ensure_admission_department_access(db: Session, admission_id: int, actor: User) -> None:
+    """Authorize an IPD admission through its parent encounter department."""
+    allowed_ids = get_user_assigned_department_ids(db, actor)
+    if allowed_ids is None:
+        return
+    from backend.domains.encounters.models import InpatientAdmission
+
+    department_id = db.execute(
+        select(PatientEncounter.department_id)
+        .join(InpatientAdmission, InpatientAdmission.encounter_id == PatientEncounter.id)
+        .where(InpatientAdmission.id == admission_id)
+    ).scalar_one_or_none()
+    if department_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admission not found.")
+    if department_id not in allowed_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: admission is outside your assigned department scope.",
+        )
+
+
+def RequireAdmissionDepartmentAccess(admission_id_parameter: str = "admission_id"):
+    def dependency(
+        request: Request,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> User:
+        try:
+            admission_id = int(request.path_params.get(admission_id_parameter))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A valid admission identifier is required.",
+            )
+        ensure_admission_department_access(db, admission_id, current_user)
+        return current_user
+    return dependency
+
+
 def ensure_encounter_department_access(db: Session, encounter_id: int, actor: User) -> None:
     """Require both central membership and local department assignment for an encounter."""
     allowed_codes = db.info.get("central_branch_department_codes")
