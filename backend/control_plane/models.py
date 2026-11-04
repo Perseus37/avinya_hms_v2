@@ -404,7 +404,11 @@ class OrganizationSession(ControlBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_user_id: Mapped[int] = mapped_column(ForeignKey("organization_users.id", ondelete="CASCADE"), nullable=False, index=True)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    refresh_token_hash: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    refresh_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    device_label: Mapped[Optional[str]] = mapped_column(String(120))
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
