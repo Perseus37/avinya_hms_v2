@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Enum,
+    event,
     Float,
     ForeignKey,
     Index,
@@ -136,6 +137,16 @@ class InventoryMovement(AuditMixin, Base):
     medication: Mapped[MedicationMaster] = relationship()
     inventory_batch: Mapped[InventoryBatch] = relationship()
     actor: Mapped[User] = relationship()
+
+
+@event.listens_for(InventoryMovement, "before_update")
+def _prevent_inventory_movement_update(mapper, connection, target):
+    raise ValueError("Inventory movement records are append-only and cannot be updated.")
+
+
+@event.listens_for(InventoryMovement, "before_delete")
+def _prevent_inventory_movement_delete(mapper, connection, target):
+    raise ValueError("Inventory movement records are append-only and cannot be deleted.")
 
 
 class InventoryTransferStatusEnum(str, PyEnum):
