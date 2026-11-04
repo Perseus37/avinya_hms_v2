@@ -77,15 +77,15 @@ def create_hospital_group(
 
     group = HospitalGroup(code=payload.code, name=payload.name, status="ACTIVE")
     db.add(group)
-    db.flush()
-    db.add(
-        ControlPlaneAuditLog(
-            action="HOSPITAL_GROUP_CREATED",
-            target_slug="CONTROL_PLANE",
-            details=f"Hospital group {group.code} (id={group.id}) created.",
-        )
-    )
     try:
+        db.flush()
+        db.add(
+            ControlPlaneAuditLog(
+                action="HOSPITAL_GROUP_CREATED",
+                target_slug="CONTROL_PLANE",
+                details=f"Hospital group {group.code} (id={group.id}) created.",
+            )
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -163,18 +163,18 @@ def register_existing_branch(
         status="ACTIVE",
     )
     db.add(branch)
-    db.flush()
-    db.add(
-        ControlPlaneAuditLog(
-            action="HOSPITAL_GROUP_BRANCH_REGISTERED",
-            target_slug=tenant.subdomain_slug,
-            details=(
-                f"Existing branch {tenant.branch_code} (tenant_registry_id={tenant.id}) "
-                f"registered under hospital group {group.code} (id={group.id})."
-            ),
-        )
-    )
     try:
+        db.flush()
+        db.add(
+            ControlPlaneAuditLog(
+                action="HOSPITAL_GROUP_BRANCH_REGISTERED",
+                target_slug=tenant.subdomain_slug,
+                details=(
+                    f"Existing branch {tenant.branch_code} (tenant_registry_id={tenant.id}) "
+                    f"registered under hospital group {group.code} (id={group.id})."
+                ),
+            )
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
