@@ -11,15 +11,15 @@ depends_on = None
 units = [
     {"code": "TAB", "display_name": "Tablet", "dimension": "COUNT", "allows_fractional": False},
     {"code": "CAP", "display_name": "Capsule", "dimension": "COUNT", "allows_fractional": False},
-    {"code": "STRIP", "display_name": "Strip", "dimension": "COUNT", "allows_fractional": False},
-    {"code": "BOX", "display_name": "Box", "dimension": "COUNT", "allows_fractional": False},
-    {"code": "VIAL", "display_name": "Vial", "dimension": "COUNT", "allows_fractional": False},
-    {"code": "AMP", "display_name": "Ampoule", "dimension": "COUNT", "allows_fractional": False},
-    {"code": "BOTTLE", "display_name": "Bottle", "dimension": "COUNT", "allows_fractional": False},
-    {"code": "SACHET", "display_name": "Sachet", "dimension": "COUNT", "allows_fractional": False},
-    {"code": "TUBE", "display_name": "Tube", "dimension": "COUNT", "allows_fractional": False},
+    {"code": "STRIP", "display_name": "Strip", "dimension": "COUNT", "allows_fractional": False, "is_packaging_unit": True},
+    {"code": "BOX", "display_name": "Box", "dimension": "COUNT", "allows_fractional": False, "is_packaging_unit": True},
+    {"code": "VIAL", "display_name": "Vial", "dimension": "COUNT", "allows_fractional": False, "is_packaging_unit": True},
+    {"code": "AMP", "display_name": "Ampoule", "dimension": "COUNT", "allows_fractional": False, "is_packaging_unit": True},
+    {"code": "BOTTLE", "display_name": "Bottle", "dimension": "COUNT", "allows_fractional": False, "is_packaging_unit": True},
+    {"code": "SACHET", "display_name": "Sachet", "dimension": "COUNT", "allows_fractional": False, "is_packaging_unit": True},
+    {"code": "TUBE", "display_name": "Tube", "dimension": "COUNT", "allows_fractional": False, "is_packaging_unit": True},
     {"code": "PIECE", "display_name": "Piece", "dimension": "COUNT", "allows_fractional": False},
-    {"code": "PACK", "display_name": "Pack", "dimension": "COUNT", "allows_fractional": False},
+    {"code": "PACK", "display_name": "Pack", "dimension": "COUNT", "allows_fractional": False, "is_packaging_unit": True},
     {"code": "DOSE", "display_name": "Dose", "dimension": "COUNT", "allows_fractional": False},
     {"code": "PAIR", "display_name": "Pair", "dimension": "COUNT", "allows_fractional": False},
     {"code": "ML", "display_name": "Millilitre", "dimension": "VOLUME", "allows_fractional": True},
@@ -37,6 +37,7 @@ def upgrade() -> None:
         sa.Column("display_name", sa.String(length=80), nullable=False),
         sa.Column("dimension", sa.String(length=16), nullable=False),
         sa.Column("allows_fractional", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("is_packaging_unit", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.CheckConstraint("dimension IN ('COUNT', 'MASS', 'VOLUME', 'LENGTH')", name="ck_proc_uom_dimension"),
         sa.UniqueConstraint("code", name="uq_procurement_units_of_measure_code"),
@@ -47,9 +48,13 @@ def upgrade() -> None:
         sa.column("display_name", sa.String()),
         sa.column("dimension", sa.String()),
         sa.column("allows_fractional", sa.Boolean()),
+        sa.column("is_packaging_unit", sa.Boolean()),
         sa.column("is_active", sa.Boolean()),
     )
-    op.bulk_insert(unit_table, [dict(unit, is_active=True) for unit in units])
+    op.bulk_insert(unit_table, [
+        dict(unit, is_packaging_unit=unit.get("is_packaging_unit", False), is_active=True)
+        for unit in units
+    ])
 
     op.create_table(
         "procurement_medication_pack_configurations",
