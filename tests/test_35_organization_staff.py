@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.control_plane import app as control_app_module
 from backend.control_plane.api.routers import organization_auth, organization_staff
-from backend.control_plane.models import ControlBase, HospitalGroup, OrganizationUser
+from backend.control_plane.models import BranchMembership, ControlBase, HospitalGroup, OrganizationUser
 from backend.core.database import get_control_db
 from backend.core.dependencies import get_redis
 
@@ -119,7 +119,7 @@ def test_owner_invites_staff_and_staff_activation_grants_no_branch_membership(mo
                 ).one()
                 assert staff.group_role == "STAFF"
                 assert staff.status == "ACTIVE"
-                assert db.query(organization_staff.BranchMembership).count() == 0
+                assert db.query(BranchMembership).count() == 0
     finally:
         control_app_module.app.dependency_overrides.pop(get_control_db, None)
         control_app_module.app.dependency_overrides.pop(get_redis, None)
