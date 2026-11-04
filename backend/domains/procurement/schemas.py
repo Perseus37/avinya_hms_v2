@@ -110,6 +110,7 @@ class PurchaseOrderFromRequisitionItem(BaseModel):
     requisition_item_id: int
     quantity_ordered: int = Field(gt=0)
     unit_price_paise: int = Field(ge=0)
+    tax_percentage: Optional[int] = Field(default=None, ge=0, le=100)
 
 
 class PurchaseOrderFromRequisitionCreate(BaseModel):
@@ -125,6 +126,7 @@ class POItemCreate(BaseModel):
     item_description: str
     quantity_ordered: int = Field(gt=0)
     unit_price_paise: int = Field(ge=0)
+    tax_percentage: int = Field(default=0, ge=0, le=100)
 
 class POCreate(BaseModel):
     vendor_id: int
@@ -137,6 +139,8 @@ class POItemResponse(POItemCreate):
     requisition_item_id: Optional[int] = None
     quantity_received: int
     total_price_paise: int
+    tax_amount_paise: int
+    gross_total_paise: int
     model_config = ConfigDict(from_attributes=True)
 
 class POResponse(BaseModel):
@@ -147,6 +151,8 @@ class POResponse(BaseModel):
     status: POStatusEnum
     delivery_due_date: datetime
     payment_terms: str
+    subtotal_paise: int
+    tax_amount_paise: int
     total_amount_paise: int
     items: List[POItemResponse]
     model_config = ConfigDict(from_attributes=True)
