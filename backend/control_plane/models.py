@@ -301,6 +301,7 @@ class OrganizationUser(ControlBase):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     email_normalized: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    group_role: Mapped[str] = mapped_column(String(30), default="STAFF", server_default="STAFF", nullable=False)
     password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="INVITED", server_default="INVITED", nullable=False)
     email_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -372,6 +373,26 @@ class BranchUserLink(ControlBase):
     branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
     local_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OrganizationInvitation(ControlBase):
+    """Single-use, hashed-token invitation for first-owner bootstrap and later staff onboarding."""
+    __tablename__ = "organization_invitations"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_organization_invitations_token_hash"),
+        Index("ix_org_invitations_group_email_status", "group_id", "email_normalized", "accepted_at", "revoked_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("hospital_groups.id", ondelete="CASCADE"), nullable=False)
+    organization_user_id: Mapped[int] = mapped_column(ForeignKey("organization_users.id", ondelete="CASCADE"), nullable=False)
+    email_normalized: Mapped[str] = mapped_column(String(255), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    invitation_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
