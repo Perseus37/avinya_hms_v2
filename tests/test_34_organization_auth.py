@@ -15,6 +15,7 @@ from backend.security.totp import totp_code
 
 def test_group_owner_must_enroll_mfa_and_gets_revocable_central_session(monkeypatch):
     from backend.control_plane.api.routers import organization_auth
+    from backend.control_plane.services import auth as operator_auth
 
     engine = create_engine(
         "sqlite://",
@@ -50,14 +51,19 @@ def test_group_owner_must_enroll_mfa_and_gets_revocable_central_session(monkeypa
             db.close()
 
     class TestRedis:
+        def __init__(self):
+            self.values = {}
+
         def get(self, key):
-            return None
+            return self.values.get(key)
 
         def set(self, key, value, ex=None):
+            self.values[key] = value
             return True
 
     monkeypatch.setattr(control_app_module, "ControlSessionLocal", SessionLocal)
     monkeypatch.setattr(organization_auth, "ControlSessionLocal", SessionLocal)
+    monkeypatch.setattr(operator_auth, "ControlSessionLocal", SessionLocal)
     monkeypatch.setattr(
         organization_auth, "encrypt_tenant_secret", lambda value: f"test:{value}"
     )
