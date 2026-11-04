@@ -1821,7 +1821,7 @@ def get_procurement_cost_intelligence(
             supplier_row["pre_tax_value_paise"] += int(item.total_price_paise or 0)
             supplier_row["observed_unit_prices_paise"].append(int(item.unit_price_paise))
 
-    return_query = db.query(InventoryMovement).filter(
+    return_query = db.query(InventoryMovement).options(joinedload(InventoryMovement.medication)).filter(
         InventoryMovement.movement_type == "PURCHASE_RETURN",
         InventoryMovement.quantity_delta < 0,
     )
@@ -1839,7 +1839,7 @@ def get_procurement_cost_intelligence(
     )
     return_by_medication = {}
     for row in return_movements:
-        med = db.get(MedicationMaster, row.medication_id)
+        med = row.medication
         if med is None:
             continue
         entry = return_by_medication.setdefault(med.id, {
