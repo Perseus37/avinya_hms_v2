@@ -709,10 +709,14 @@ def test_purchase_order_amendment_requires_independent_review_and_reapproval(
                 "item_description": "Examination lamp",
                 "quantity_ordered": 2,
                 "unit_price_paise": 150000,
+                "tax_percentage": 5,
             }],
         },
     )
     assert po.status_code == 201, po.text
+    assert po.json()["subtotal_paise"] == 300000
+    assert po.json()["tax_amount_paise"] == 15000
+    assert po.json()["total_amount_paise"] == 315000
     po_id = po.json()["id"]
     approved = client.patch(
         f"/v1/api/procurement/purchase-orders/{po_id}/approve",
@@ -731,13 +735,16 @@ def test_purchase_order_amendment_requires_independent_review_and_reapproval(
                 "item_description": "Examination lamp",
                 "quantity_ordered": 2,
                 "unit_price_paise": 160000,
+                "tax_percentage": 12,
             }],
         },
     )
     assert amendment.status_code == 201, amendment.text
     amendment_id = amendment.json()["id"]
-    assert amendment.json()["prior_snapshot"]["total_amount_paise"] == 300000
-    assert amendment.json()["proposed_snapshot"]["total_amount_paise"] == 320000
+    assert amendment.json()["prior_snapshot"]["total_amount_paise"] == 315000
+    assert amendment.json()["proposed_snapshot"]["subtotal_paise"] == 320000
+    assert amendment.json()["proposed_snapshot"]["tax_amount_paise"] == 38400
+    assert amendment.json()["proposed_snapshot"]["total_amount_paise"] == 358400
 
     self_review = client.patch(
         f"/v1/api/procurement/purchase-orders/{po_id}/amendments/{amendment_id}/review",
@@ -760,7 +767,7 @@ def test_purchase_order_amendment_requires_independent_review_and_reapproval(
     )
     assert history.status_code == 200, history.text
     assert len(history.json()) == 1
-    assert history.json()[0]["prior_snapshot"]["total_amount_paise"] == 300000
+    assert history.json()[0]["prior_snapshot"]["total_amount_paise"] == 315000
 
     refreshed = client.get(
         f"/v1/api/procurement/purchase-orders/{po_id}",
@@ -768,7 +775,10 @@ def test_purchase_order_amendment_requires_independent_review_and_reapproval(
     )
     assert refreshed.status_code == 200, refreshed.text
     assert refreshed.json()["status"] == "SUBMITTED"
-    assert refreshed.json()["total_amount_paise"] == 320000
+    assert refreshed.json()["subtotal_paise"] == 320000
+    assert refreshed.json()["tax_amount_paise"] == 38400
+    assert refreshed.json()["total_amount_paise"] == 358400
+    assert refreshed.json()["items"][0]["tax_percentage"] == 12
 
     reapproved = client.patch(
         f"/v1/api/procurement/purchase-orders/{po_id}/approve",
