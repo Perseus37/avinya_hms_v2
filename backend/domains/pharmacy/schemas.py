@@ -44,8 +44,24 @@ class MedicationMasterResponse(BaseModel):
     fefo_expiry_warning_days: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
+class PharmacyLocationCreate(BaseModel):
+    code: str = Field(min_length=2, max_length=40, pattern=r"^[A-Z0-9_-]+$")
+    name: str = Field(min_length=2, max_length=120)
+    location_type: str = Field(default="STORE", min_length=2, max_length=30)
+
+
+class PharmacyLocationResponse(BaseModel):
+    id: int
+    code: str
+    name: str
+    location_type: str
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
 class InventoryBatchCreate(BaseModel):
     medication_id: int
+    location_id: Optional[int] = None
     batch_number: str
     expiry_date: datetime
     stock_quantity: int
@@ -59,6 +75,7 @@ class InventoryBatchUpdate(BaseModel):
 class InventoryBatchResponse(BaseModel):
     id: int
     medication_id: int
+    location_id: int
     batch_number: str
     expiry_date: datetime
     stock_quantity: int
