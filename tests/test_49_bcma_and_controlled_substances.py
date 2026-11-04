@@ -610,3 +610,70 @@ def test_bcma_safety_controls_dose_mismatch_generic_rejection_and_duplicates(cli
     assert res_dup.status_code == 409
     assert "Duplicate administration detected" in res_dup.text
 
+
+
+def test_controlled_vault_physical_count_requires_dual_witness_and_independent_approval(
+    client, superuser_headers, pharmacist_headers
+):
+    med = _create_medication(
+        client, superuser_headers, code="MED_VAULT_COUNT", brand="Vault Count Medicine",
+        generic="Vault Count Generic", is_controlled=True,
+    )
+    vault_res = client.post(
+        "/v1/api/pharmacy/controlled-substances/vault",
+        headers=pharmacist_headers,
+        json={"medication_id": med["id"], "initial_balance_units": 8, "unit_of_measure": "AMPOULE"},
+    )
+    assert vault_res.status_code == 201, vault_res.text
+    vault_id = vault_res.json()["id"]
+
+    self_witness = client.post(
+        "/v1/api/pharmacy/controlled-substances/counts",
+        headers=pharmacist_headers,
+        json={
+            "vault_id": vault_id, "physical_balance": 7, "witness_user_id": 4,
+            "witness_password": "StaffPass123!", "reason": "Physical count discrepancy",
+        },
+    )
+    assert self_witness.status_code == 409
+
+    created = client.post(
+        "/v1/api/pharmacy/controlled-substances/counts",
+        headers=pharmacist_headers,
+        json={
+            "vault_id": vault_id, "physical_balance": 7, "witness_user_id": 2,
+            "witness_password": "StaffPass123!", "reason": "Physical count discrepancy",
+        },
+    )
+    assert created.status_code == 201, created.text
+    count = created.json()
+    assert count["status"] == "PENDING"
+    assert count["expected_balance"] == 8
+    assert count["physical_balance"] == 7
+
+    cannot_self_approve = client.post(
+        f"/v1/api/pharmacy/controlled-substances/counts/{count['id']}/approve",
+        headers=pharmacist_headers,
+        json={},
+    )
+    assert cannot_self_approve.status_code == 409
+
+    approved = client.post(
+        f"/v1/api/pharmacy/controlled-substances/counts/{count['id']}/approve",
+        headers=superuser_headers,
+        json={},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "APPROVED"
+    assert approved.json()["approved_by_id"] != approved.json()["counted_by_id"]
+
+    movements = client.get(
+        f"/v1/api/pharmacy/controlled-substances/movements?vault_id={vault_id}",
+        headers=pharmacist_headers,
+    )
+    assert movements.status_code == 200, movements.text
+    reconciliation = [m for m in movements.json() if m["movement_type"] == "COUNT_RECONCILIATION"]
+    assert len(reconciliation) == 1
+    assert reconciliation[0]["balance_before"] == 8
+    assert reconciliation[0]["balance_after"] == 7
+    assert reconciliation[0]["witness_verified"] is True
