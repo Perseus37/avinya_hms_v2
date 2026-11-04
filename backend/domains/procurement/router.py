@@ -1483,6 +1483,10 @@ def request_purchase_order_amendment(
         line_tax = (line_subtotal * item.tax_percentage + 50) // 100
         line_gross = line_subtotal + line_tax
         proposed_total += line_gross
+        unit_snapshot = {
+            key: str(value) if isinstance(value, Decimal) else value
+            for key, value in unit_snapshot.items()
+        }
         proposed_items.append({
             "requisition_item_id": item.requisition_item_id,
             "medication_id": req_line.medication_id if po.requisition_id is not None else item.medication_id,
@@ -1514,7 +1518,9 @@ def request_purchase_order_amendment(
             "base_uom_code": item.base_uom_code,
             "units_per_purchase_unit": item.units_per_purchase_unit,
             "base_quantity": item.base_quantity,
-            "base_unit_price_paise": item.base_unit_price_paise,
+            "base_unit_price_paise": str(item.base_unit_price_paise) if item.base_unit_price_paise is not None else None,
+            "units_per_purchase_unit": str(item.units_per_purchase_unit) if item.units_per_purchase_unit is not None else None,
+            "base_quantity": str(item.base_quantity) if item.base_quantity is not None else None,
             "tax_percentage": item.tax_percentage,
             "tax_amount_paise": item.tax_amount_paise,
             "gross_total_paise": item.gross_total_paise,
