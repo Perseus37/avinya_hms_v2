@@ -435,7 +435,9 @@ def request_inventory_transfer(payload: InventoryTransferCreate, db: Session = D
     if source.stock_quantity < payload.quantity:
         raise HTTPException(status_code=409, detail="Insufficient source stock for transfer.")
     item = InventoryTransfer(source_batch_id=source.id, source_location_id=source.location_id,
-        destination_location_id=destination.id, quantity=payload.quantity, status="REQUESTED",
+        destination_location_id=destination.id, medication_id=source.medication_id, batch_number=source.batch_number,
+        expiry_date=source.expiry_date, unit_price_paise=source.unit_price_paise,
+        quantity=payload.quantity, status="REQUESTED",
         requested_by_id=current_user.id, notes=payload.notes)
     db.add(item)
     db.commit()
@@ -503,23 +505,20 @@ def receive_inventory_transfer(transfer_id: int, db: Session = Depends(get_db), 
     _ensure_pharmacy_location_access(db, item.destination_location_id, current_user)
     if item.status != "DISPATCHED":
         raise HTTPException(status_code=409, detail="Only dispatched transfers can be received.")
-    source = db.get(InventoryBatch, item.source_batch_id)
-    if source is None:
-        raise HTTPException(status_code=409, detail="Original source batch is unavailable.")
     destination = _get_active_pharmacy_location(db, item.destination_location_id)
     target = db.execute(select(InventoryBatch).where(
-        InventoryBatch.medication_id == source.medication_id,
-        InventoryBatch.batch_number == source.batch_number,
+        InventoryBatch.medication_id == item.medication_id,
+        InventoryBatch.batch_number == item.batch_number,
         InventoryBatch.location_id == destination.id,
     ).with_for_update()).scalar_one_or_none()
     if target:
-        if target.expiry_date != source.expiry_date or target.unit_price_paise != source.unit_price_paise:
+        if target.expiry_date != item.expiry_date or target.unit_price_paise != item.unit_price_paise:
             raise HTTPException(status_code=409, detail="Destination batch has conflicting expiry or valuation.")
         target.stock_quantity += item.quantity
     else:
-        target = InventoryBatch(medication_id=source.medication_id, location_id=destination.id,
-            batch_number=source.batch_number, expiry_date=source.expiry_date,
-            stock_quantity=item.quantity, unit_price_paise=source.unit_price_paise)
+        target = InventoryBatch(medication_id=item.medication_id, location_id=destination.id,
+            batch_number=item.batch_number, expiry_date=item.expiry_date,
+            stock_quantity=item.quantity, unit_price_paise=item.unit_price_paise)
         db.add(target)
         db.flush()
     item.received_batch_id = target.id
