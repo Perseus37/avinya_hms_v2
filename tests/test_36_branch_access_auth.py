@@ -340,8 +340,8 @@ def test_patient_visibility_uses_any_assigned_department_encounter(branch_grant_
         tenant_db.add(encounter)
         tenant_db.commit()
 
-        dependencies.ensure_patient_department_access(tenant_db, patient.id)
-        dependencies.ensure_encounter_department_access(tenant_db, encounter.id)
+        dependencies.ensure_patient_department_access(tenant_db, patient.id, user)
+        dependencies.ensure_encounter_department_access(tenant_db, encounter.id, user)
 
 
 def test_patient_visibility_denies_patient_without_assigned_department_encounter(
@@ -370,6 +370,7 @@ def test_patient_visibility_denies_patient_without_assigned_department_encounter
 def test_patient_visibility_does_not_block_legacy_branch_sessions(branch_grant_environment):
     _, TenantSession, _, _ = branch_grant_environment
     with TenantSession() as tenant_db:
+        patient_actor = tenant_db.get(User, 1)
         patient = Patient(
             mrn="MRN-PATIENT-SCOPE-03",
             full_name="Legacy Patient",
