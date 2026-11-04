@@ -22,6 +22,8 @@ from backend.domains.pharmacy.models import (
     ControlledSubstanceVault,
     InventoryBatch,
     InventoryMovement,
+    InventoryCountSession,
+    InventoryCountLine,
     PharmacyLocation,
     PharmacyLocationAccess,
     InventoryTransfer,
@@ -56,6 +58,10 @@ from backend.domains.pharmacy.schemas import (
     InventoryTransferResponse,
     InventoryBatchUpdate,
     InventoryStockAdjustment,
+    InventoryCountSessionCreate,
+    InventoryCountLineEntry,
+    InventoryCountSessionResponse,
+    ExpiryReportItem,
     MedicationCreate,
     MedicationResponse,
     MedicationUpdate,
@@ -526,6 +532,303 @@ def void_inventory_batch(
         db.rollback()
         raise HTTPException(status_code=409, detail="Inventory batch is locked by another transaction.")
 
+
+
+
+# -----------------------------------------------------------------------------
+# Physical stock reconciliation and expiry governance
+# -----------------------------------------------------------------------------
+@router.post("/inventory/count-sessions", response_model=InventoryCountSessionResponse, status_code=status.HTTP_201_CREATED)
+def create_inventory_count_session(
+    payload: InventoryCountSessionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    location = _get_active_pharmacy_location(db, payload.location_id)
+    _ensure_pharmacy_location_access(db, location.id, current_user)
+
+    session = InventoryCountSession(
+        location_id=location.id,
+        count_type=payload.count_type,
+        status="COUNTING",
+        created_by_id=current_user.id,
+        notes=payload.notes,
+    )
+    db.add(session)
+    db.flush()
+    batches = list(db.execute(
+        select(InventoryBatch)
+        .where(InventoryBatch.location_id == location.id)
+        .order_by(InventoryBatch.id.asc())
+        .with_for_update()
+    ).scalars().all())
+    for batch in batches:
+        last_movement_id = db.execute(
+            select(func.max(InventoryMovement.id)).where(InventoryMovement.inventory_batch_id == batch.id)
+        ).scalar_one_or_none() or 0
+        db.add(InventoryCountLine(
+            session_id=session.id,
+            inventory_batch_id=batch.id,
+            medication_id=batch.medication_id,
+            batch_number=batch.batch_number,
+            expiry_date=batch.expiry_date,
+            snapshot_quantity=batch.stock_quantity,
+            snapshot_movement_id=last_movement_id,
+        ))
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+@router.get("/inventory/count-sessions", response_model=list[InventoryCountSessionResponse])
+def list_inventory_count_sessions(
+    location_id: Optional[int] = None,
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:read")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    stmt = select(InventoryCountSession).order_by(InventoryCountSession.created_at.desc())
+    if location_id is not None:
+        _ensure_pharmacy_location_access(db, location_id, current_user)
+        stmt = stmt.where(InventoryCountSession.location_id == location_id)
+    elif "central_branch_department_codes" in db.info:
+        allowed = set(db.execute(select(PharmacyLocationAccess.location_id).where(
+            PharmacyLocationAccess.user_id == current_user.id,
+            PharmacyLocationAccess.is_active.is_(True),
+        )).scalars().all())
+        stmt = stmt.where(InventoryCountSession.location_id.in_(allowed)) if allowed else stmt.where(InventoryCountSession.id == -1)
+    if status_filter:
+        stmt = stmt.where(InventoryCountSession.status == status_filter.strip().upper())
+    return list(db.execute(stmt).scalars().all())
+
+
+@router.get("/inventory/count-sessions/{session_id}", response_model=InventoryCountSessionResponse)
+def get_inventory_count_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:read")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    session = db.execute(
+        select(InventoryCountSession)
+        .where(InventoryCountSession.id == session_id)
+        .options(joinedload(InventoryCountSession.lines))
+    ).unique().scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Inventory count session not found.")
+    _ensure_pharmacy_location_access(db, session.location_id, current_user)
+    return session
+
+
+@router.put("/inventory/count-sessions/{session_id}/lines/{line_id}", response_model=InventoryCountLineResponse)
+def enter_inventory_physical_count(
+    session_id: int,
+    line_id: int,
+    payload: InventoryCountLineEntry,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    line = db.execute(
+        select(InventoryCountLine)
+        .join(InventoryCountSession, InventoryCountSession.id == InventoryCountLine.session_id)
+        .where(InventoryCountSession.id == session_id, InventoryCountLine.id == line_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if line is None:
+        raise HTTPException(status_code=404, detail="Inventory count line not found.")
+    session = db.get(InventoryCountSession, session_id)
+    _ensure_pharmacy_location_access(db, session.location_id, current_user)
+    if session.status != "COUNTING":
+        raise HTTPException(status_code=409, detail="Counts can only be entered while the session is COUNTING.")
+    line.physical_quantity = payload.physical_quantity
+    line.counted_by_id = current_user.id
+    line.counted_at = datetime.now(timezone.utc)
+    line.reason_code = payload.reason_code
+    line.notes = payload.notes
+    db.commit()
+    db.refresh(line)
+    # Expected system quantity is deliberately omitted from the blind-count response.
+    return {
+        "id": line.id,
+        "inventory_batch_id": line.inventory_batch_id,
+        "medication_id": line.medication_id,
+        "batch_number": line.batch_number,
+        "expiry_date": line.expiry_date,
+        "physical_quantity": line.physical_quantity,
+        "counted_by_id": line.counted_by_id,
+        "counted_at": line.counted_at,
+        "variance": None,
+    }
+
+
+@router.post("/inventory/count-sessions/{session_id}/submit", response_model=InventoryCountSessionResponse)
+def submit_inventory_count_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    session = db.execute(
+        select(InventoryCountSession).where(InventoryCountSession.id == session_id).with_for_update()
+    ).scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Inventory count session not found.")
+    _ensure_pharmacy_location_access(db, session.location_id, current_user)
+    if session.status != "COUNTING":
+        raise HTTPException(status_code=409, detail="Only active counting sessions can be submitted.")
+    lines = list(db.execute(select(InventoryCountLine).where(
+        InventoryCountLine.session_id == session.id
+    )).scalars().all())
+    if not lines or any(line.physical_quantity is None for line in lines):
+        raise HTTPException(status_code=409, detail="Every batch must have a physical count before submission.")
+    session.status = "SUBMITTED"
+    session.submitted_by_id = current_user.id
+    session.submitted_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+@router.post("/inventory/count-sessions/{session_id}/approve", response_model=InventoryCountSessionResponse)
+def approve_inventory_count_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:void")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    session = db.execute(
+        select(InventoryCountSession).where(InventoryCountSession.id == session_id).with_for_update()
+    ).scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Inventory count session not found.")
+    _ensure_pharmacy_location_access(db, session.location_id, current_user)
+    if session.status != "SUBMITTED":
+        raise HTTPException(status_code=409, detail="Only submitted count sessions can be approved.")
+    if current_user.id in {session.created_by_id, session.submitted_by_id}:
+        raise HTTPException(status_code=409, detail="Count creator and submitter cannot approve the same count.")
+
+    lines = list(db.execute(
+        select(InventoryCountLine)
+        .where(InventoryCountLine.session_id == session.id)
+        .order_by(InventoryCountLine.inventory_batch_id.asc())
+    ).scalars().all())
+    batch_ids = [line.inventory_batch_id for line in lines]
+    batches = list(db.execute(
+        select(InventoryBatch)
+        .where(InventoryBatch.id.in_(batch_ids))
+        .order_by(InventoryBatch.id.asc())
+        .with_for_update()
+    ).scalars().all()) if batch_ids else []
+    batch_by_id = {batch.id: batch for batch in batches}
+
+    # Reject rather than silently applying a stale physical count after any
+    # stock movement since the per-batch snapshot was captured.
+    for line in lines:
+        batch = batch_by_id.get(line.inventory_batch_id)
+        if batch is None or batch.location_id != session.location_id:
+            raise HTTPException(status_code=409, detail="A counted batch is no longer available at this location.")
+        newer_movement = db.execute(select(InventoryMovement.id).where(
+            InventoryMovement.inventory_batch_id == batch.id,
+            InventoryMovement.id > line.snapshot_movement_id,
+        ).limit(1)).scalar_one_or_none()
+        if newer_movement is not None or batch.stock_quantity != line.snapshot_quantity:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Stock changed after the count snapshot for batch {line.batch_number}; cancel and recount this session.",
+            )
+
+    for line in lines:
+        batch = batch_by_id[line.inventory_batch_id]
+        physical = int(line.physical_quantity)
+        variance = physical - batch.stock_quantity
+        if variance:
+            stock_before = batch.stock_quantity
+            batch.stock_quantity = physical
+            _record_inventory_movement(
+                db, batch,
+                movement_type="COUNT_RECONCILIATION",
+                quantity_delta=variance,
+                stock_before=stock_before,
+                actor=current_user,
+                reference_type="INVENTORY_COUNT",
+                reference_id=session.id,
+                notes=(line.notes or line.reason_code or "Approved physical stock count variance"),
+            )
+    session.status = "APPROVED"
+    session.approved_by_id = current_user.id
+    session.approved_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+@router.post("/inventory/count-sessions/{session_id}/cancel", response_model=InventoryCountSessionResponse)
+def cancel_inventory_count_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:void")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    session = db.execute(select(InventoryCountSession).where(
+        InventoryCountSession.id == session_id
+    ).with_for_update()).scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=404, detail="Inventory count session not found.")
+    _ensure_pharmacy_location_access(db, session.location_id, current_user)
+    if session.status not in {"COUNTING", "SUBMITTED"}:
+        raise HTTPException(status_code=409, detail="Only counting or submitted sessions can be cancelled.")
+    session.status = "CANCELLED"
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+@router.get("/inventory/expiry-report", response_model=list[ExpiryReportItem])
+def get_inventory_expiry_report(
+    within_days: int = Query(default=90, ge=0, le=730),
+    location_id: Optional[int] = None,
+    include_expired: bool = True,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:read")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    today = datetime.now(timezone.utc).date()
+    cutoff = today.fromordinal(today.toordinal() + within_days)
+    stmt = select(InventoryBatch, MedicationMaster).join(
+        MedicationMaster, MedicationMaster.id == InventoryBatch.medication_id
+    ).where(
+        InventoryBatch.stock_quantity > 0,
+        InventoryBatch.expiry_date <= datetime.combine(cutoff, datetime.max.time(), tzinfo=timezone.utc),
+    )
+    if not include_expired:
+        stmt = stmt.where(InventoryBatch.expiry_date >= datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc))
+    if location_id is not None:
+        _ensure_pharmacy_location_access(db, location_id, current_user)
+        stmt = stmt.where(InventoryBatch.location_id == location_id)
+    elif "central_branch_department_codes" in db.info:
+        allowed = set(db.execute(select(PharmacyLocationAccess.location_id).where(
+            PharmacyLocationAccess.user_id == current_user.id,
+            PharmacyLocationAccess.is_active.is_(True),
+        )).scalars().all())
+        stmt = stmt.where(InventoryBatch.location_id.in_(allowed)) if allowed else stmt.where(InventoryBatch.id == -1)
+    rows = db.execute(stmt.order_by(InventoryBatch.expiry_date.asc())).all()
+    result = []
+    for batch, medication in rows:
+        days = (batch.expiry_date.date() - today).days
+        result.append({
+            "batch_id": batch.id,
+            "location_id": batch.location_id,
+            "medication_id": batch.medication_id,
+            "medication_name": f"{medication.brand_name} ({medication.generic_name})",
+            "batch_number": batch.batch_number,
+            "expiry_date": batch.expiry_date,
+            "stock_quantity": batch.stock_quantity,
+            "days_to_expiry": days,
+        })
+    return result
 
 @router.post("/inventory/transfers", response_model=InventoryTransferResponse, status_code=status.HTTP_201_CREATED)
 def request_inventory_transfer(payload: InventoryTransferCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:write"))):
