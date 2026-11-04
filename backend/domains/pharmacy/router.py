@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 import secrets
 
@@ -1377,7 +1378,11 @@ def dispense_medication(
             )
             rx_item.dispensed_quantity += disp_item.quantity_to_dispense
 
-            line_cost = disp_item.quantity_to_dispense * batch.unit_price_paise
+            line_cost = int(
+                (Decimal(disp_item.quantity_to_dispense) * Decimal(str(batch.unit_price_paise))).quantize(
+                    Decimal("1"), rounding=ROUND_HALF_UP
+                )
+            )
             total_dispensed_cost_paise += line_cost
 
             med = db.get(MedicationMaster, rx_item.medication_id)
@@ -1393,7 +1398,7 @@ def dispense_medication(
                     f"Batch: {batch.batch_number} [RxItem:{rx_item.id}] [DispensedBy:{current_user.id}]"
                 ),
                 quantity=disp_item.quantity_to_dispense,
-                unit_price_paise=batch.unit_price_paise,
+                unit_price_paise=int(Decimal(str(batch.unit_price_paise)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
                 total_price_paise=line_cost,
             )
             db.add(line_item)
@@ -1486,7 +1491,11 @@ def return_dispensed_medication(
         _ensure_pharmacy_location_access(db, batch.location_id, current_user)
 
         med = db.get(MedicationMaster, rx_item.medication_id)
-        credit_paise = ret.quantity_to_return * batch.unit_price_paise
+        credit_paise = int(
+            (Decimal(ret.quantity_to_return) * Decimal(str(batch.unit_price_paise))).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+        )
         total_credit_paise += credit_paise
 
         # 1. Restore physical stock & decrement dispensed count
