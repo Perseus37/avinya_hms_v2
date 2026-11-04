@@ -701,11 +701,19 @@ def record_supplier_quotation(
             raise HTTPException(status_code=422, detail="A quotation cannot price a line with no approved quantity.")
         if line.quantity_quoted != req_line.approved_quantity:
             raise HTTPException(status_code=422, detail="Quoted quantity must equal the approved requisition quantity for that line.")
+        unit_snapshot = _resolve_medication_unit_snapshot(
+            db,
+            medication_id=req_line.medication_id,
+            purchase_uom_id=line.purchase_uom_id,
+            quantity=line.quantity_quoted,
+            unit_price_paise=line.unit_price_paise,
+            effective_at=payload.quoted_at,
+        )
         line_subtotal = line.quantity_quoted * line.unit_price_paise
         line_tax = (line_subtotal * line.tax_percentage + 50) // 100
         line_total = line_subtotal + line_tax
         total += line_total
-        prepared.append((line, line_tax, line_total))
+        prepared.append((line, line_tax, line_total, unit_snapshot))
     quote = SupplierQuotation(
         requisition_id=requisition.id,
         vendor_id=vendor.id,
@@ -721,7 +729,7 @@ def record_supplier_quotation(
     )
     db.add(quote)
     db.flush()
-    for line, line_tax, line_total in prepared:
+    for line, line_tax, line_total, unit_snapshot in prepared:
         db.add(SupplierQuotationItem(
             quotation_id=quote.id,
             requisition_item_id=line.requisition_item_id,
@@ -730,6 +738,7 @@ def record_supplier_quotation(
             tax_percentage=line.tax_percentage,
             tax_amount_paise=line_tax,
             line_total_paise=line_total,
+            **unit_snapshot,
             created_by_id=current_user.id,
         ))
     db.commit()
@@ -838,6 +847,14 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     for item in payload.items:
         line_subtotal = item.quantity_ordered * item.unit_price_paise
         line_tax = (line_subtotal * item.tax_percentage + 50) // 100
+        unit_snapshot = _resolve_medication_unit_snapshot(
+            db,
+            medication_id=item.medication_id,
+            purchase_uom_id=item.purchase_uom_id,
+            quantity=item.quantity_ordered,
+            unit_price_paise=item.unit_price_paise,
+            effective_at=po.created_at or datetime.now(timezone.utc),
+        )
         subtotal += line_subtotal
         tax_total += line_tax
         db.add(PurchaseOrderItem(
@@ -850,6 +867,7 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
             tax_percentage=item.tax_percentage,
             tax_amount_paise=line_tax,
             gross_total_paise=line_subtotal + line_tax,
+            **unit_snapshot,
             created_by_id=current_user.id
         ))
 
