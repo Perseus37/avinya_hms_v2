@@ -183,6 +183,104 @@ def test_purchase_requisition_rejects_unassigned_department(
     assert response.status_code == 403, response.text
 
 
+
+def test_purchase_requisition_creator_cannot_approve_own_request(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import Department, Role, User, UserRole
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        admin = db.query(User).filter(User.email == "admin@default.com").one()
+        department = db.query(Department).filter(Department.code == "DEPT_GEN_MED").one()
+        admin_role = db.query(Role).filter(Role.code == "ROLE_ADMIN").one()
+        assignment = db.query(UserRole).filter(
+            UserRole.user_id == admin.id,
+            UserRole.department_id == department.id,
+        ).first()
+        if assignment is None:
+            db.add(UserRole(user_id=admin.id, role_id=admin_role.id, department_id=department.id))
+            db.commit()
+        department_id = department.id
+
+    created = client.post(
+        "/v1/api/procurement/purchase-requisitions",
+        headers=superuser_headers,
+        json={
+            "requesting_department_id": department_id,
+            "justification": "Urgent replacement of damaged department equipment is required.",
+            "items": [{"item_description": "Patient monitor cable", "requested_quantity": 1}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    requisition_id = created.json()["id"]
+    submitted = client.post(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/submit",
+        headers=superuser_headers,
+    )
+    assert submitted.status_code == 200, submitted.text
+    approval = client.patch(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/review",
+        headers=superuser_headers,
+        json={
+            "approved": True,
+            "review_notes": "Attempted self approval.",
+            "items": [{"requisition_item_id": created.json()["items"][0]["id"], "approved_quantity": 1}],
+        },
+    )
+    assert approval.status_code == 409, approval.text
+
+
+def test_purchase_requisition_draft_edit_and_rejection(
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import Department
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        department_id = db.query(Department.id).filter(
+            Department.code == "DEPT_GEN_MED"
+        ).scalar()
+
+    created = client.post(
+        "/v1/api/procurement/purchase-requisitions",
+        headers=pharmacist_headers,
+        json={
+            "requesting_department_id": department_id,
+            "justification": "Replace worn patient examination equipment.",
+            "items": [{"item_description": "Examination lamp", "requested_quantity": 2}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    requisition_id = created.json()["id"]
+    updated = client.put(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}",
+        headers=pharmacist_headers,
+        json={
+            "requesting_department_id": department_id,
+            "justification": "Replace worn examination lamps before the next audit.",
+            "items": [{"item_description": "LED examination lamp", "requested_quantity": 3}],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["items"][0]["requested_quantity"] == 3
+
+    submitted = client.post(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/submit",
+        headers=pharmacist_headers,
+    )
+    assert submitted.status_code == 200, submitted.text
+    rejected = client.patch(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/review",
+        headers=superuser_headers,
+        json={"approved": False, "review_notes": "Deferred pending budget approval.", "items": []},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["status"] == "REJECTED"
+
+
 def test_01_vendor_and_purchase_order_lifecycle(client, superuser_headers, pharmacist_headers):
     """Scenario 1: Register a vendor, draft a PO, and approve it via Maker-Checker."""
 
