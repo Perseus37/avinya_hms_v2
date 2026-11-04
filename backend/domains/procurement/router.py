@@ -1751,7 +1751,6 @@ def get_vendor_metrics(
 
     po_query = db.query(PurchaseOrder).options(
         selectinload(PurchaseOrder.items),
-        selectinload(PurchaseOrder.shipments),
     ).filter(
         PurchaseOrder.vendor_id == vendor_id,
         PurchaseOrder.status != POStatusEnum.CANCELLED,
