@@ -546,6 +546,19 @@ def update_membership_status(
         if not staff or staff.status != "ACTIVE" or not branch or branch.status != "ACTIVE":
             raise HTTPException(status_code=409, detail="Staff identity and branch must both be active.")
     membership.status = payload.status
+    if payload.status in {"SUSPENDED", "REVOKED"}:
+        active_grants = db.execute(
+            select(BranchAccessSession)
+            .join(OrganizationSession, OrganizationSession.id == BranchAccessSession.organization_session_id)
+            .where(
+                BranchAccessSession.membership_id == membership.id,
+                BranchAccessSession.revoked_at.is_(None),
+                OrganizationSession.revoked_at.is_(None),
+            )
+            .with_for_update()
+        ).scalars().all()
+        for grant in active_grants:
+            grant.revoked_at = datetime.now(timezone.utc)
     if payload.status == "REVOKED":
         membership.revoked_at = datetime.now(timezone.utc)
     elif payload.status == "ACTIVE":
