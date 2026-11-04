@@ -172,6 +172,7 @@ class PurchaseOrder(AuditMixin, Base):
         CheckConstraint("subtotal_paise >= 0", name="ck_po_subtotal_non_neg"),
         CheckConstraint("tax_amount_paise >= 0", name="ck_po_tax_non_neg"),
         CheckConstraint("total_amount_paise >= 0", name="ck_po_total_non_neg"),
+        CheckConstraint("subtotal_paise + tax_amount_paise = total_amount_paise", name="ck_po_financial_totals"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -205,6 +206,7 @@ class PurchaseOrderItem(AuditMixin, Base):
         CheckConstraint("tax_percentage >= 0 AND tax_percentage <= 100", name="ck_po_item_tax_range"),
         CheckConstraint("tax_amount_paise >= 0", name="ck_po_item_tax_non_neg"),
         CheckConstraint("gross_total_paise >= 0", name="ck_po_item_gross_non_neg"),
+        CheckConstraint("total_price_paise + tax_amount_paise = gross_total_paise", name="ck_po_item_financial_totals"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
