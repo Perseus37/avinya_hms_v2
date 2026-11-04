@@ -21,6 +21,157 @@ def test_purchase_return_endpoint_reaches_service_validation(client, superuser_h
     assert "Accepted goods receipt note" in response.json()["message"]
 
 
+
+def test_purchase_requisition_approval_and_partial_po_conversion(
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import Department
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        department = db.query(Department).filter(Department.code == "DEPT_GEN_MED").one()
+        department_id = department.id
+
+    requisition_response = client.post(
+        "/v1/api/procurement/purchase-requisitions",
+        headers=pharmacist_headers,
+        json={
+            "requesting_department_id": department_id,
+            "required_by_date": (datetime.now(timezone.utc) + timedelta(days=14)).isoformat(),
+            "justification": "Minimum stock threshold reached and forecast demand requires replenishment.",
+            "items": [{
+                "item_description": "Sterile examination gloves",
+                "requested_quantity": 10,
+                "estimated_unit_price_paise": 2500,
+                "notes": "Non-sterile alternatives are not acceptable.",
+            }],
+        },
+    )
+    assert requisition_response.status_code == 201, requisition_response.text
+    requisition = requisition_response.json()
+    assert requisition["status"] == "DRAFT"
+    requisition_id = requisition["id"]
+    requisition_item_id = requisition["items"][0]["id"]
+
+    submitted = client.post(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/submit",
+        headers=pharmacist_headers,
+    )
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["status"] == "SUBMITTED"
+
+    creator_cannot_review = client.patch(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/review",
+        headers=superuser_headers if requisition["requested_by_id"] == -1 else pharmacist_headers,
+        json={
+            "approved": True,
+            "review_notes": "Reviewed",
+            "items": [{"requisition_item_id": requisition_item_id, "approved_quantity": 8}],
+        },
+    )
+    # The pharmacist is not an approver; approval is performed by the independent superuser below.
+    assert creator_cannot_review.status_code in (403, 409)
+
+    review = client.patch(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/review",
+        headers=superuser_headers,
+        json={
+            "approved": True,
+            "review_notes": "Approved within the department replenishment budget.",
+            "items": [{
+                "requisition_item_id": requisition_item_id,
+                "approved_quantity": 8,
+                "estimated_unit_price_paise": 2400,
+            }],
+        },
+    )
+    assert review.status_code == 200, review.text
+    assert review.json()["status"] == "APPROVED"
+    assert review.json()["items"][0]["approved_quantity"] == 8
+
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-REQ-001",
+            "name": "Requisition Supply Partner",
+            "category": "GENERAL_SUPPLIES",
+            "contact_person": "Procurement Desk",
+            "phone": "9876501234",
+            "email": "requisition-vendor@example.com",
+            "address": "Industrial Estate, Hyderabad",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    def create_po(quantity):
+        return client.post(
+            f"/v1/api/procurement/purchase-requisitions/{requisition_id}/purchase-orders",
+            headers=pharmacist_headers,
+            json={
+                "vendor_id": vendor_id,
+                "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+                "payment_terms": "Net 30",
+                "items": [{
+                    "requisition_item_id": requisition_item_id,
+                    "quantity_ordered": quantity,
+                    "unit_price_paise": 2450,
+                }],
+            },
+        )
+
+    first_po = create_po(5)
+    assert first_po.status_code == 201, first_po.text
+    assert first_po.json()["requisition_id"] == requisition_id
+    assert first_po.json()["items"][0]["requisition_item_id"] == requisition_item_id
+
+    over_order = create_po(4)
+    assert over_order.status_code == 409, over_order.text
+
+    second_po = create_po(3)
+    assert second_po.status_code == 201, second_po.text
+
+    detail = client.get(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}",
+        headers=superuser_headers,
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["status"] == "CONVERTED"
+
+    po_approval = client.patch(
+        f"/v1/api/procurement/purchase-orders/{first_po.json()['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert po_approval.status_code == 200, po_approval.text
+
+
+def test_purchase_requisition_rejects_unassigned_department(
+    client, pharmacist_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import Department
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        department = Department(code="PROCUREMENT-UNASSIGNED", name="Unassigned Department")
+        db.add(department)
+        db.commit()
+        department_id = department.id
+
+    response = client.post(
+        "/v1/api/procurement/purchase-requisitions",
+        headers=pharmacist_headers,
+        json={
+            "requesting_department_id": department_id,
+            "justification": "Department stock replenishment is required.",
+            "items": [{"item_description": "Office stationery", "requested_quantity": 2}],
+        },
+    )
+    assert response.status_code == 403, response.text
+
+
 def test_01_vendor_and_purchase_order_lifecycle(client, superuser_headers, pharmacist_headers):
     """Scenario 1: Register a vendor, draft a PO, and approve it via Maker-Checker."""
 
