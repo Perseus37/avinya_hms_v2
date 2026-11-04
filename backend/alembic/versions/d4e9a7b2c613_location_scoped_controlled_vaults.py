@@ -52,8 +52,53 @@ def upgrade() -> None:
         ["medication_id", "location_id"],
     )
 
+    # Existing vault balances are opening snapshots only. Historical receipts,
+    # dispenses, witnesses and actors cannot be reconstructed from the old table.
+    op.alter_column(
+        "controlled_substance_movement_logs",
+        "primary_user_id",
+        existing_type=sa.Integer(),
+        nullable=True,
+    )
+    op.execute("""
+        INSERT INTO controlled_substance_movement_logs (
+            vault_id, movement_type, quantity_units, balance_before, balance_after,
+            primary_user_id, witness_verified, notes, created_at, updated_at
+        )
+        SELECT
+            id, 'OPENING_BALANCE', current_balance_units, 0, current_balance_units,
+            NULL, FALSE,
+            'Opening balance snapshot captured during location-scoping migration; prior movements and actors are unavailable.',
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        FROM controlled_substance_vaults
+        WHERE current_balance_units > 0
+    """)
+    if bind.dialect.name == "postgresql":
+        op.execute("""
+            CREATE FUNCTION prevent_controlled_movement_mutation()
+            RETURNS trigger AS $body$
+            BEGIN
+                RAISE EXCEPTION 'controlled_substance_movement_logs is append-only';
+            END;
+            $body$ LANGUAGE plpgsql
+        """)
+        op.execute("""
+            CREATE TRIGGER trg_controlled_movement_append_only
+            BEFORE UPDATE OR DELETE ON controlled_substance_movement_logs
+            FOR EACH ROW EXECUTE FUNCTION prevent_controlled_movement_mutation()
+        """)
+
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("DROP TRIGGER IF EXISTS trg_controlled_movement_append_only ON controlled_substance_movement_logs")
+        op.execute("DROP FUNCTION IF EXISTS prevent_controlled_movement_mutation()")
+    op.alter_column(
+        "controlled_substance_movement_logs",
+        "primary_user_id",
+        existing_type=sa.Integer(),
+        nullable=False,
+    )
     # Refuse to discard valid multi-location vaults during downgrade.
     bind = op.get_bind()
     duplicate = bind.execute(sa.text("""
