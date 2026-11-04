@@ -358,3 +358,66 @@ def test_inventory_batches_are_scoped_to_selected_pharmacy_location(client, phar
         headers=pharmacist_headers,
     ).json()["items"]
     assert [item["id"] for item in dispensary_inventory] == [second_batch_res.json()["id"]]
+
+
+def test_pharmacy_stock_transfer_lifecycle_preserves_batch_traceability(client, pharmacist_headers):
+    med, source_batch = _setup_med_and_batch(client, pharmacist_headers)
+    location_response = client.post(
+        "/v1/api/pharmacy/locations",
+        headers=pharmacist_headers,
+        json={"code": "WARD-01", "name": "Ward Pharmacy", "location_type": "DISPENSARY"},
+    )
+    assert location_response.status_code == 201
+    destination = location_response.json()
+
+    request_response = client.post(
+        "/v1/api/pharmacy/inventory/transfers",
+        headers=pharmacist_headers,
+        json={
+            "source_batch_id": source_batch["id"],
+            "destination_location_id": destination["id"],
+            "quantity": 20,
+            "notes": "Ward replenishment",
+        },
+    )
+    assert request_response.status_code == 201
+    transfer_id = request_response.json()["id"]
+    assert request_response.json()["status"] == "REQUESTED"
+
+    approved = client.post(
+        f"/v1/api/pharmacy/inventory/transfers/{transfer_id}/approve",
+        headers=pharmacist_headers,
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "APPROVED"
+
+    dispatched = client.post(
+        f"/v1/api/pharmacy/inventory/transfers/{transfer_id}/dispatch",
+        headers=pharmacist_headers,
+    )
+    assert dispatched.status_code == 200
+    assert dispatched.json()["status"] == "DISPATCHED"
+    assert client.post(
+        f"/v1/api/pharmacy/inventory/transfers/{transfer_id}/dispatch",
+        headers=pharmacist_headers,
+    ).status_code == 409
+
+    received = client.post(
+        f"/v1/api/pharmacy/inventory/transfers/{transfer_id}/receive",
+        headers=pharmacist_headers,
+    )
+    assert received.status_code == 200
+    assert received.json()["status"] == "RECEIVED"
+    assert received.json()["received_batch_id"] is not None
+
+    source_stock = client.get(
+        f"/v1/api/pharmacy/inventory/batches?medication_id={med['id']}",
+        headers=pharmacist_headers,
+    ).json()["items"]
+    destination_stock = client.get(
+        f"/v1/api/pharmacy/inventory/batches?medication_id={med['id']}&location_id={destination['id']}",
+        headers=pharmacist_headers,
+    ).json()["items"]
+    assert source_stock[0]["stock_quantity"] == 80
+    assert destination_stock[0]["stock_quantity"] == 20
+    assert destination_stock[0]["batch_number"] == source_batch["batch_number"]
