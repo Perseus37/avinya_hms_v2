@@ -370,6 +370,36 @@ def ensure_pharmacy_prescription_access(db: Session, prescription_id: int, actor
     ensure_encounter_department_access(db, prescription.encounter_id, actor)
 
 
+
+def ensure_pharmacy_or_encounter_access(
+    db: Session,
+    actor: User,
+    encounter_id: Optional[int] = None,
+    prescription_item_id: Optional[int] = None,
+) -> None:
+    """Authorize controlled-medication ward movements through pharmacy or encounter scope."""
+    if db.info.get("central_branch_department_codes") is None:
+        return
+    try:
+        ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, actor)
+        return
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_403_FORBIDDEN:
+            raise
+    if encounter_id is None and prescription_item_id is not None:
+        from backend.domains.pharmacy.models import PrescriptionItem, Prescription
+        encounter_id = db.execute(
+            select(Prescription.encounter_id)
+            .join(PrescriptionItem, PrescriptionItem.prescription_id == Prescription.id)
+            .where(PrescriptionItem.id == prescription_item_id)
+        ).scalar_one_or_none()
+    if encounter_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Controlled medication movement requires pharmacy or assigned encounter department access.",
+        )
+    ensure_encounter_department_access(db, encounter_id, actor)
+
 def ensure_prescription_encounter_access(db: Session, encounter_id: int, actor: User) -> None:
     """Prescription creation remains a clinical action scoped to its encounter department."""
     ensure_encounter_department_access(db, encounter_id, actor)
