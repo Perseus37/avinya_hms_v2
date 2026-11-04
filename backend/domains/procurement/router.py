@@ -600,7 +600,31 @@ def create_purchase_order_from_requisition(
         if item.quantity_ordered > remaining:
             raise HTTPException(status_code=409, detail=f"PO quantity exceeds remaining approved quantity for requisition line {req_item.id}.")
         tax_percentage = quoted_line.tax_percentage if quoted_line is not None else (item.tax_percentage or 0)
-        prepared.append((item, req_item, tax_percentage))
+        if quoted_line is not None:
+            requested_uom = db.get(ProcurementUnitOfMeasure, item.purchase_uom_id) if item.purchase_uom_id else None
+            if item.purchase_uom_id and (
+                requested_uom is None or requested_uom.code != quoted_line.purchase_uom_code
+            ):
+                raise HTTPException(status_code=409, detail="Purchase order unit must match the selected quotation unit.")
+            unit_snapshot = {
+                "purchase_uom_code": quoted_line.purchase_uom_code,
+                "base_uom_code": quoted_line.base_uom_code,
+                "units_per_purchase_unit": quoted_line.units_per_purchase_unit,
+                "base_quantity": Decimal(item.quantity_ordered) * Decimal(str(quoted_line.units_per_purchase_unit)) if quoted_line.units_per_purchase_unit is not None else None,
+                "base_unit_price_paise": quoted_line.base_unit_price_paise,
+            }
+            if quoted_line.units_per_purchase_unit is not None and quoted_line.quantity_quoted:
+                unit_snapshot["base_quantity"] = Decimal(item.quantity_ordered) * Decimal(str(quoted_line.units_per_purchase_unit))
+        else:
+            unit_snapshot = _resolve_medication_unit_snapshot(
+                db,
+                medication_id=req_item.medication_id,
+                purchase_uom_id=item.purchase_uom_id,
+                quantity=item.quantity_ordered,
+                unit_price_paise=item.unit_price_paise,
+                effective_at=datetime.now(timezone.utc),
+            )
+        prepared.append((item, req_item, tax_percentage, unit_snapshot))
     po = PurchaseOrder(
         po_number=_generate_reference("PO"),
         vendor_id=vendor.id,
@@ -614,7 +638,7 @@ def create_purchase_order_from_requisition(
     db.flush()
     subtotal = 0
     tax_total = 0
-    for item, req_item, tax_percentage in prepared:
+    for item, req_item, tax_percentage, unit_snapshot in prepared:
         line_subtotal = item.quantity_ordered * item.unit_price_paise
         line_tax = (line_subtotal * tax_percentage + 50) // 100
         gross_total = line_subtotal + line_tax
@@ -631,6 +655,7 @@ def create_purchase_order_from_requisition(
             tax_percentage=tax_percentage,
             tax_amount_paise=line_tax,
             gross_total_paise=gross_total,
+            **unit_snapshot,
             created_by_id=current_user.id,
         ))
     po.subtotal_paise = subtotal
