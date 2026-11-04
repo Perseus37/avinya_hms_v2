@@ -132,12 +132,12 @@ class InventoryMovement(AuditMixin, Base):
     unit_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     reference_type: Mapped[Optional[str]] = mapped_column(String(40))
     reference_id: Mapped[Optional[str]] = mapped_column(String(80))
-    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    actor_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(String(500))
     location: Mapped[PharmacyLocation] = relationship()
     medication: Mapped[MedicationMaster] = relationship()
     inventory_batch: Mapped[InventoryBatch] = relationship()
-    actor: Mapped[User] = relationship()
+    actor: Mapped[Optional[User]] = relationship()
 
 
 @event.listens_for(InventoryMovement, "before_update")
