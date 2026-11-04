@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.domains.policies.router import get_or_create_policy
 from backend.core.database import get_db, resolve_tenant_context
-from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.dependencies import RequirePermission, ensure_department_id_access, get_user_assigned_department_ids, validate_pagination
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.encounters.models import Appointment, AppointmentStatusEnum, AppointmentStatusHistory, AppointmentWaitlistEntry, AppointmentWaitlistHistory, AppointmentWaitlistStatusEnum, DoctorLeave, PatientEncounter, EncounterTypeEnum, EncounterStatusEnum, ServiceDemandReasonEnum, ServiceDemandRequest, ServiceDemandStatusEnum, ServiceDemandStatusHistory
@@ -126,6 +126,7 @@ def book_appointment(
     patient = db.get(Patient, payload.patient_id)
     if not patient or not patient.is_active:
         raise HTTPException(status_code=400, detail="Invalid or inactive patient.")
+    ensure_department_id_access(db, payload.department_id, current_user)
 
     doctor = db.execute(
         select(DoctorProfile)
@@ -189,4 +190,56 @@ def book_appointment(
 
 
 @router.get(
-    "/appointments", 
+    "/appointments",
+    response_model=PaginatedResponse[AppointmentResponse],
+    openapi_extra={"x-privacy-data-use-point": "opd.appointments.search"},
+)
+def list_appointments(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    patient_id: Optional[int] = None,
+    doctor_id: Optional[int] = None,
+    department_id: Optional[int] = None,
+    appointment_status: Optional[AppointmentStatusEnum] = Query(default=None, alias="status"),
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+    actor: User = Depends(RequirePermission("opd:read")),
+):
+    """List appointments only within the actor's assigned clinical departments."""
+    start_at, end_at = resolve_record_date_window(start_date, end_date)
+    query = db.query(Appointment)
+    assigned_department_ids = get_user_assigned_department_ids(db, actor)
+    if assigned_department_ids is not None:
+        query = query.filter(Appointment.department_id.in_(assigned_department_ids))
+    if department_id is not None:
+        ensure_department_id_access(db, department_id, actor)
+        query = query.filter(Appointment.department_id == department_id)
+    if patient_id is not None:
+        query = query.filter(Appointment.patient_id == patient_id)
+    if doctor_id is not None:
+        query = query.filter(Appointment.doctor_id == doctor_id)
+    if appointment_status is not None:
+        query = query.filter(Appointment.status == appointment_status)
+    if start_at is not None and end_at is not None:
+        query = query.filter(
+            Appointment.appointment_time >= start_at,
+            Appointment.appointment_time < end_at,
+        )
+
+    page, page_size = validate_pagination(page, page_size)
+    query = query.order_by(Appointment.appointment_time.asc(), Appointment.id.asc())
+    total = query.count()
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    decisions = evaluate_tenant_patient_data_uses(
+        db,
+        data_use_point="opd.appointments.search",
+        patient_ids=[item.patient_id for item in items],
+        actor_user_id=actor.id,
+    )
+    if any(not decision.allowed for decision in decisions):
+        raise HTTPException(
+            status_code=403,
+            detail="Privacy policy does not permit one or more patient disclosures.",
+        )
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
