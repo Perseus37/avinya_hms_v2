@@ -36,6 +36,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_inventory_movements_location_created", "inventory_movements", ["location_id", "created_at"])
     op.create_index("ix_inventory_movements_batch_created", "inventory_movements", ["inventory_batch_id", "created_at"])
+    op.create_index("ix_inventory_movements_medication_created", "inventory_movements", ["medication_id", "created_at"])
     op.create_index("ix_inventory_movements_reference", "inventory_movements", ["reference_type", "reference_id"])
 
     # Capture current stock as a clearly labelled opening snapshot. This is not
@@ -79,6 +80,7 @@ def downgrade() -> None:
         op.execute("DROP TRIGGER IF EXISTS trg_inventory_movements_append_only ON inventory_movements")
         op.execute("DROP FUNCTION IF EXISTS prevent_inventory_movement_mutation()")
     op.drop_index("ix_inventory_movements_reference", table_name="inventory_movements")
+    op.drop_index("ix_inventory_movements_medication_created", table_name="inventory_movements")
     op.drop_index("ix_inventory_movements_batch_created", table_name="inventory_movements")
     op.drop_index("ix_inventory_movements_location_created", table_name="inventory_movements")
     op.drop_table("inventory_movements")
