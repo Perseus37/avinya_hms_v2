@@ -16,15 +16,15 @@ TABLES = (
 )
 
 def upgrade() -> None:
-    op.add_column("procurement_requisition_items", sa.Column("purchase_uom_id", sa.Integer(), nullable=True))
-    op.create_foreign_key(
-        "fk_proc_req_item_purchase_uom",
-        "procurement_requisition_items",
-        "procurement_units_of_measure",
-        ["purchase_uom_id"],
-        ["id"],
-        ondelete="RESTRICT",
-    )
+    with op.batch_alter_table("procurement_requisition_items") as batch_op:
+        batch_op.add_column(sa.Column("purchase_uom_id", sa.Integer(), nullable=True))
+        batch_op.create_foreign_key(
+            "fk_proc_req_item_purchase_uom",
+            "procurement_units_of_measure",
+            ["purchase_uom_id"],
+            ["id"],
+            ondelete="RESTRICT",
+        )
     for table in TABLES:
         op.add_column(table, sa.Column("purchase_uom_code", sa.String(length=24), nullable=True))
         op.add_column(table, sa.Column("base_uom_code", sa.String(length=24), nullable=True))
@@ -34,8 +34,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_proc_req_item_purchase_uom", "procurement_requisition_items", type_="foreignkey")
-    op.drop_column("procurement_requisition_items", "purchase_uom_id")
+    with op.batch_alter_table("procurement_requisition_items") as batch_op:
+        batch_op.drop_constraint("fk_proc_req_item_purchase_uom", type_="foreignkey")
+        batch_op.drop_column("purchase_uom_id")
     for table in reversed(TABLES):
         op.drop_column(table, "base_unit_price_paise")
         op.drop_column(table, "base_quantity")
