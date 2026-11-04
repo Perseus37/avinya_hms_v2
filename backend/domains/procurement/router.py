@@ -209,6 +209,80 @@ def get_purchase_requisition(
     return requisition
 
 
+@router.put("/purchase-requisitions/{requisition_id}", response_model=PurchaseRequisitionResponse)
+def update_purchase_requisition(
+    requisition_id: int,
+    payload: PurchaseRequisitionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    requisition = db.query(PurchaseRequisition).options(
+        selectinload(PurchaseRequisition.items)
+    ).filter(PurchaseRequisition.id == requisition_id).with_for_update().one_or_none()
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Purchase requisition not found.")
+    if requisition.requested_by_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the requisition requester can edit it.")
+    if requisition.status != PurchaseRequisitionStatusEnum.DRAFT:
+        raise HTTPException(status_code=409, detail="Only draft requisitions can be edited.")
+    department = db.get(Department, payload.requesting_department_id)
+    if department is None or not department.is_active:
+        raise HTTPException(status_code=404, detail="Requesting department is unavailable.")
+    if not user_has_department_access(db, current_user, department.id):
+        raise HTTPException(status_code=403, detail="You are not assigned to the requesting department.")
+    for item in payload.items:
+        if item.medication_id is not None:
+            medication = db.get(MedicationMaster, item.medication_id)
+            if medication is None or not medication.is_active:
+                raise HTTPException(status_code=422, detail="A requested medication is unavailable.")
+    requisition.requesting_department_id = department.id
+    requisition.required_by_date = payload.required_by_date
+    requisition.justification = payload.justification.strip()
+    requisition.updated_by_id = current_user.id
+    for existing in list(requisition.items):
+        db.delete(existing)
+    db.flush()
+    for item in payload.items:
+        db.add(PurchaseRequisitionItem(
+            requisition_id=requisition.id,
+            medication_id=item.medication_id,
+            item_description=item.item_description.strip(),
+            requested_quantity=item.requested_quantity,
+            estimated_unit_price_paise=item.estimated_unit_price_paise,
+            notes=item.notes,
+            created_by_id=current_user.id,
+        ))
+    db.commit()
+    return db.query(PurchaseRequisition).options(
+        selectinload(PurchaseRequisition.items)
+    ).filter(PurchaseRequisition.id == requisition.id).one()
+
+
+@router.post("/purchase-requisitions/{requisition_id}/cancel", response_model=PurchaseRequisitionResponse)
+def cancel_purchase_requisition(
+    requisition_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    requisition = db.query(PurchaseRequisition).filter(
+        PurchaseRequisition.id == requisition_id
+    ).with_for_update().one_or_none()
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Purchase requisition not found.")
+    if requisition.requested_by_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the requisition requester can cancel it.")
+    if requisition.status not in {
+        PurchaseRequisitionStatusEnum.DRAFT,
+        PurchaseRequisitionStatusEnum.SUBMITTED,
+    }:
+        raise HTTPException(status_code=409, detail="Only draft or submitted requisitions can be cancelled.")
+    requisition.status = PurchaseRequisitionStatusEnum.CANCELLED
+    requisition.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(requisition)
+    return requisition
+
+
 @router.post("/purchase-requisitions/{requisition_id}/submit", response_model=PurchaseRequisitionResponse)
 def submit_purchase_requisition(
     requisition_id: int,
