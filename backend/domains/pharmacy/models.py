@@ -362,3 +362,64 @@ class BCMAScanAuditLog(AuditMixin, Base):
     prescription_item: Mapped[PrescriptionItem] = relationship()
     administered_by: Mapped["User"] = relationship()
     emar_log: Mapped[Optional[MedicationAdministrationLog]] = relationship()
+
+
+class InventoryCountStatusEnum(str, PyEnum):
+    DRAFT = "DRAFT"
+    COUNTING = "COUNTING"
+    SUBMITTED = "SUBMITTED"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
+
+
+class InventoryCountSession(AuditMixin, Base):
+    """Blind physical stock count with independent approval and stale-snapshot protection."""
+    __tablename__ = "inventory_count_sessions"
+    __table_args__ = (
+        Index("ix_inventory_count_location_status", "location_id", "status"),
+        CheckConstraint("count_type IN ('CYCLE', 'FULL', 'SPOT')", name="ck_inventory_count_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    location_id: Mapped[int] = mapped_column(ForeignKey("pharmacy_locations.id"), nullable=False, index=True)
+    count_type: Mapped[str] = mapped_column(String(20), default="CYCLE", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT", nullable=False)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    submitted_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    approved_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    notes: Mapped[Optional[str]] = mapped_column(String(500))
+    location: Mapped[PharmacyLocation] = relationship()
+    lines: Mapped[List["InventoryCountLine"]] = relationship(back_populates="session", cascade="all, delete-orphan")
+
+
+class InventoryCountLine(AuditMixin, Base):
+    """One batch's expected snapshot and independently entered physical quantity."""
+    __tablename__ = "inventory_count_lines"
+    __table_args__ = (
+        UniqueConstraint("session_id", "inventory_batch_id", name="uq_inventory_count_session_batch"),
+        CheckConstraint("snapshot_quantity >= 0", name="ck_inventory_count_snapshot_nonnegative"),
+        CheckConstraint("physical_quantity IS NULL OR physical_quantity >= 0", name="ck_inventory_count_physical_nonnegative"),
+        Index("ix_inventory_count_lines_batch", "inventory_batch_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("inventory_count_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    inventory_batch_id: Mapped[int] = mapped_column(ForeignKey("inventory_batches.id"), nullable=False)
+    medication_id: Mapped[int] = mapped_column(ForeignKey("medication_master.id"), nullable=False)
+    batch_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    expiry_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    snapshot_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_movement_id: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    physical_quantity: Mapped[Optional[int]] = mapped_column(Integer)
+    counted_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    counted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    recount_quantity: Mapped[Optional[int]] = mapped_column(Integer)
+    recounted_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    reason_code: Mapped[Optional[str]] = mapped_column(String(40))
+    notes: Mapped[Optional[str]] = mapped_column(String(500))
+    session: Mapped[InventoryCountSession] = relationship(back_populates="lines")
+    batch: Mapped[InventoryBatch] = relationship()
+    medication: Mapped[MedicationMaster] = relationship()
