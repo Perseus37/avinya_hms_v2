@@ -1035,7 +1035,7 @@ def test_medication_pack_configuration_is_dimension_safe_and_versioned(
         headers=superuser_headers,
         json={
             **payload,
-            "purchase_uom_id": unit_ids["BOX"],
+            "purchase_uom_id": unit_ids["TAB"],
             "base_uom_id": unit_ids["ML"],
         },
     )
