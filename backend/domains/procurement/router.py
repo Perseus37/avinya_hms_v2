@@ -654,6 +654,37 @@ def list_purchase_orders(
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
+@router.get(
+    "/purchase-orders/overdue",
+    response_model=list[OverduePurchaseOrderResponse],
+)
+def list_overdue_purchase_orders(
+    as_of: Optional[datetime] = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    now = as_of or datetime.now(timezone.utc)
+    query = db.query(PurchaseOrder).options(joinedload(PurchaseOrder.vendor), selectinload(PurchaseOrder.items)).filter(
+        PurchaseOrder.status.in_([POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED]),
+        PurchaseOrder.delivery_due_date < now,
+    ).order_by(PurchaseOrder.delivery_due_date.asc(), PurchaseOrder.id.asc())
+    results = []
+    for po in query.all():
+        outstanding = sum(max(item.quantity_ordered - item.quantity_received, 0) for item in po.items)
+        results.append({
+            "po_id": po.id,
+            "po_number": po.po_number,
+            "vendor_id": po.vendor_id,
+            "vendor_name": po.vendor.name,
+            "delivery_due_date": po.delivery_due_date,
+            "days_overdue": max((now.date() - po.delivery_due_date.date()).days, 0),
+            "status": po.status,
+            "total_amount_paise": po.total_amount_paise,
+            "outstanding_quantity": outstanding,
+        })
+    return results
+
+
 @router.get("/purchase-orders/{po_id}", response_model=POResponse)
 def get_purchase_order(
     po_id: int,
@@ -1376,37 +1407,6 @@ def update_purchase_order_shipment(
     return db.query(PurchaseOrderShipment).options(
         selectinload(PurchaseOrderShipment.events)
     ).filter(PurchaseOrderShipment.id == shipment.id).one()
-
-
-@router.get(
-    "/purchase-orders/overdue",
-    response_model=list[OverduePurchaseOrderResponse],
-)
-def list_overdue_purchase_orders(
-    as_of: Optional[datetime] = Query(default=None),
-    db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("procurement:read")),
-):
-    now = as_of or datetime.now(timezone.utc)
-    query = db.query(PurchaseOrder).options(joinedload(PurchaseOrder.vendor), selectinload(PurchaseOrder.items)).filter(
-        PurchaseOrder.status.in_([POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED]),
-        PurchaseOrder.delivery_due_date < now,
-    ).order_by(PurchaseOrder.delivery_due_date.asc(), PurchaseOrder.id.asc())
-    results = []
-    for po in query.all():
-        outstanding = sum(max(item.quantity_ordered - item.quantity_received, 0) for item in po.items)
-        results.append({
-            "po_id": po.id,
-            "po_number": po.po_number,
-            "vendor_id": po.vendor_id,
-            "vendor_name": po.vendor.name,
-            "delivery_due_date": po.delivery_due_date,
-            "days_overdue": max((now.date() - po.delivery_due_date.date()).days, 0),
-            "status": po.status,
-            "total_amount_paise": po.total_amount_paise,
-            "outstanding_quantity": outstanding,
-        })
-    return results
 
 
 @router.get(
