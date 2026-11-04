@@ -374,10 +374,20 @@ def test_controlled_substance_vaults_are_location_scoped_and_audited(client, sup
     assert first_vault["current_balance_units"] == 4
 
     # The same medication may have a separate controlled vault at another location.
+    second_location_res = client.post(
+        "/v1/api/pharmacy/locations",
+        headers=pharmacist_headers,
+        json={"code": "NARCOTICS-MAIN", "name": "Main Controlled Safe", "location_type": "CONTROLLED_SAFE"},
+    )
+    assert second_location_res.status_code == 201, second_location_res.text
     second = client.post(
         "/v1/api/pharmacy/controlled-substances/vault",
         headers=pharmacist_headers,
-        json={"medication_id": med["id"], "vault_location": "MAIN_NARCOTICS_SAFE"},
+        json={
+            "medication_id": med["id"],
+            "location_id": second_location_res.json()["id"],
+            "vault_location": "MAIN_NARCOTICS_SAFE",
+        },
     )
     assert second.status_code == 201, second.text
     assert second.json()["location_id"] != location_id
