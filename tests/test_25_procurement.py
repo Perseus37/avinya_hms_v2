@@ -1070,3 +1070,159 @@ def test_medication_pack_configuration_is_dimension_safe_and_versioned(
     assert len(history.json()) == 2
     assert history.json()[0]["is_active"] is True
     assert history.json()[1]["units_per_purchase_unit"] == 10
+
+
+
+def test_pack_unit_purchase_receipt_and_supplier_return_convert_to_stock_base_units(
+    client, pharmacist_headers, superuser_headers
+):
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-PACK-BASE-01",
+            "name": "Pack Base Unit Supplier",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Store Desk",
+            "phone": "9000000001",
+            "email": "pack-base@example.com",
+            "address": "Supply Park",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor = vendor_response.json()
+
+    medication_response = client.post(
+        "/v1/api/pharmacy/medications",
+        headers=pharmacist_headers,
+        json={
+            "code": "MED-PACK-BASE-01",
+            "brand_name": "Pack Base Medicine",
+            "generic_name": "Pack Base Generic",
+            "form": "TABLET",
+            "strength": "500mg",
+        },
+    )
+    assert medication_response.status_code == 201, medication_response.text
+    medication = medication_response.json()
+
+    units_response = client.get(
+        "/v1/api/procurement/units-of-measure",
+        headers=superuser_headers,
+    )
+    assert units_response.status_code == 200, units_response.text
+    unit_ids = {unit["code"]: unit["id"] for unit in units_response.json()}
+
+    configuration = client.post(
+        f"/v1/api/procurement/medications/{medication['id']}/pack-configurations",
+        headers=superuser_headers,
+        json={
+            "purchase_uom_id": unit_ids["STRIP"],
+            "base_uom_id": unit_ids["TAB"],
+            "units_per_purchase_unit": 10,
+            "effective_from": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        },
+    )
+    assert configuration.status_code == 201, configuration.text
+
+    po_response = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor["id"],
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+            "payment_terms": "Net 30",
+            "items": [{
+                "medication_id": medication["id"],
+                "item_description": "Pack Base Medicine - 10 tablet strip",
+                "quantity_ordered": 10,
+                "unit_price_paise": 1000,
+                "purchase_uom_id": unit_ids["STRIP"],
+            }],
+        },
+    )
+    assert po_response.status_code == 201, po_response.text
+    po = po_response.json()
+    po_line = po["items"][0]
+    assert po_line["purchase_uom_code"] == "STRIP"
+    assert po_line["base_uom_code"] == "TAB"
+    assert po_line["units_per_purchase_unit"] == 10
+    assert po_line["base_quantity"] == 100
+    assert po_line["base_unit_price_paise"] == 100
+
+    approval = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert approval.status_code == 200, approval.text
+
+    locations = client.get("/v1/api/pharmacy/locations", headers=pharmacist_headers)
+    assert locations.status_code == 200, locations.text
+    location = next(item for item in locations.json() if item["code"] == "MAIN")
+    grn_response = client.post(
+        "/v1/api/procurement/grn",
+        headers=pharmacist_headers,
+        json={
+            "po_id": po["id"],
+            "location_id": location["id"],
+            "invoice_number": "PACK-BASE-INV-01",
+            "invoice_date": datetime.now(timezone.utc).isoformat(),
+            "items": [{
+                "po_item_id": po_line["id"],
+                "batch_number": "PACK-BASE-BATCH-01",
+                "expiry_date": "2030-01-01T00:00:00+00:00",
+                "received_quantity": 10,
+                "accepted_quantity": 10,
+            }],
+        },
+    )
+    assert grn_response.status_code == 201, grn_response.text
+    grn_id = grn_response.json()["id"]
+    accepted = client.patch(
+        f"/v1/api/procurement/grn/{grn_id}/accept",
+        headers=superuser_headers,
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    batches = client.get(
+        f"/v1/api/pharmacy/inventory/batches?medication_id={medication['id']}",
+        headers=pharmacist_headers,
+    )
+    assert batches.status_code == 200, batches.text
+    batch = next(item for item in batches.json()["items"] if item["batch_number"] == "PACK-BASE-BATCH-01")
+    assert batch["stock_quantity"] == 100
+    assert float(batch["unit_price_paise"]) == 100.0
+
+    grns = client.get(f"/v1/api/procurement/grn?po_id={po['id']}", headers=superuser_headers)
+    assert grns.status_code == 200, grns.text
+    # The GRN item id is available from the persisted receipt line.
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.procurement.models import GoodsReceiptItem
+    from backend.core.database import tenant_engine_pool
+    tenant_name = "hms_default"
+    session_factory = sessionmaker(bind=tenant_engine_pool.get_engine(tenant_name))
+    with session_factory() as db:
+        grn_item = db.query(GoodsReceiptItem).filter(GoodsReceiptItem.grn_id == grn_id).one()
+        grn_item_id = grn_item.id
+
+    returned = client.post(
+        "/v1/api/procurement/returns",
+        headers=pharmacist_headers,
+        json={
+            "grn_id": grn_id,
+            "vendor_id": vendor["id"],
+            "items": [{
+                "grn_item_id": grn_item_id,
+                "return_quantity": 2,
+                "return_reason": "Two strips were damaged on arrival",
+            }],
+        },
+    )
+    assert returned.status_code == 200, returned.text
+
+    refreshed = client.get(
+        f"/v1/api/pharmacy/inventory/batches?medication_id={medication['id']}",
+        headers=pharmacist_headers,
+    )
+    batch_after_return = next(item for item in refreshed.json()["items"] if item["batch_number"] == "PACK-BASE-BATCH-01")
+    assert batch_after_return["stock_quantity"] == 80
