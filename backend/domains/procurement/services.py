@@ -101,6 +101,15 @@ def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: 
         po_item.quantity_received += grn_item.accepted_quantity
         if not po_item.medication_id:
             continue
+        conversion = Decimal(str(po_item.units_per_purchase_unit)) if po_item.units_per_purchase_unit is not None else Decimal("1")
+        if conversion != conversion.to_integral_value():
+            raise HTTPException(status_code=409, detail="Inventory receipt requires a whole-number base-unit conversion.")
+        accepted_base_quantity = int(Decimal(grn_item.accepted_quantity) * conversion)
+        base_unit_cost = (
+            Decimal(str(po_item.base_unit_price_paise))
+            if po_item.base_unit_price_paise is not None
+            else Decimal(po_item.unit_price_paise)
+        )
         if not grn.location_id:
             raise HTTPException(status_code=422, detail="A pharmacy location is required for medication receipts.")
         location = db.execute(select(PharmacyLocation).where(
@@ -115,22 +124,22 @@ def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: 
             InventoryBatch.location_id == location.id,
         ).with_for_update()).scalar_one_or_none()
         if batch:
-            if batch.expiry_date != grn_item.expiry_date or batch.unit_price_paise != po_item.unit_price_paise:
-                raise HTTPException(status_code=409, detail="This batch already exists at the selected location with a different expiry date or unit cost.")
+            if batch.expiry_date != grn_item.expiry_date or Decimal(str(batch.unit_price_paise)) != base_unit_cost:
+                raise HTTPException(status_code=409, detail="This batch already exists at the selected location with a different expiry date or base-unit cost.")
             stock_before = batch.stock_quantity
-            batch.stock_quantity += grn_item.accepted_quantity
+            batch.stock_quantity += accepted_base_quantity
         else:
             batch = InventoryBatch(
                 medication_id=po_item.medication_id, location_id=location.id,
                 batch_number=grn_item.batch_number, expiry_date=grn_item.expiry_date,
-                stock_quantity=grn_item.accepted_quantity, unit_price_paise=po_item.unit_price_paise,
+                stock_quantity=accepted_base_quantity, unit_price_paise=base_unit_cost,
                 created_by_id=current_user_id,
             )
             db.add(batch)
             db.flush()
             stock_before = 0
         _append_stock_movement(
-            db, batch, movement_type="RECEIPT", quantity_delta=grn_item.accepted_quantity,
+            db, batch, movement_type="RECEIPT", quantity_delta=accepted_base_quantity,
             stock_before=stock_before, actor_user_id=current_user_id,
             reference_type="GOODS_RECEIPT", reference_id=grn.id,
             notes=f"GRN item {grn_item.id}",
@@ -470,23 +479,28 @@ def process_purchase_return(db: Session, vendor_id: int, grn_id: int, return_ite
             InventoryMovement.reference_id == str(grn_id),
             InventoryMovement.notes.like(f"GRN item {grn_item.id}%"),
         )).scalar_one()
-        prior_returned = -int(prior_delta or 0)
+        conversion = Decimal(str(grn_item.units_per_purchase_unit)) if grn_item.units_per_purchase_unit is not None else Decimal("1")
+        if conversion != conversion.to_integral_value():
+            raise HTTPException(status_code=409, detail="Inventory return requires a whole-number base-unit conversion.")
+        prior_returned_base = -int(prior_delta or 0)
         already_requested = requested_by_line.get(grn_item.id, 0)
-        if prior_returned + already_requested + item.return_quantity > grn_item.accepted_quantity:
+        requested_base = int(Decimal(item.return_quantity) * conversion)
+        accepted_base = int(Decimal(grn_item.accepted_quantity) * conversion)
+        if prior_returned_base + already_requested + requested_base > accepted_base:
             raise HTTPException(status_code=409, detail="Return quantity exceeds the accepted quantity remaining on this GRN line.")
-        if batch.stock_quantity < item.return_quantity:
+        if batch.stock_quantity < requested_base:
             raise HTTPException(status_code=409, detail="Insufficient current stock to process return to vendor.")
 
         stock_before = batch.stock_quantity
-        batch.stock_quantity -= item.return_quantity
+        batch.stock_quantity -= requested_base
         _append_stock_movement(
-            db, batch, movement_type="PURCHASE_RETURN", quantity_delta=-item.return_quantity,
+            db, batch, movement_type="PURCHASE_RETURN", quantity_delta=-requested_base,
             stock_before=stock_before, actor_user_id=current_user_id,
             reference_type="PURCHASE_RETURN", reference_id=grn_id,
             notes=f"GRN item {grn_item.id}: {item.return_reason.strip()}",
         )
-        requested_by_line[grn_item.id] = already_requested + item.return_quantity
-        total_credit_paise += item.return_quantity * batch.unit_price_paise
+        requested_by_line[grn_item.id] = already_requested + requested_base
+        total_credit_paise += item.return_quantity * grn_item.unit_price_paise
 
     debit_note = ExpenseRecord(
         category=ExpenseCategoryEnum.PHARMACY_STOCK,
