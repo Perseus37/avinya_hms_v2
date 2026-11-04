@@ -119,6 +119,7 @@ class InventoryMovement(AuditMixin, Base):
         CheckConstraint("unit_price_paise >= 0", name="ck_inventory_movement_unit_price_nonnegative"),
         Index("ix_inventory_movements_location_created", "location_id", "created_at"),
         Index("ix_inventory_movements_batch_created", "inventory_batch_id", "created_at"),
+        Index("ix_inventory_movements_medication_created", "medication_id", "created_at"),
         Index("ix_inventory_movements_reference", "reference_type", "reference_id"),
     )
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
