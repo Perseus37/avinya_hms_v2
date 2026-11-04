@@ -98,6 +98,10 @@ class InventoryTransferResponse(BaseModel):
     id: int
     source_batch_id: int
     source_location_id: int
+    medication_id: int
+    batch_number: str
+    expiry_date: datetime
+    unit_price_paise: int
     destination_location_id: int
     quantity: int
     status: InventoryTransferStatusEnum
