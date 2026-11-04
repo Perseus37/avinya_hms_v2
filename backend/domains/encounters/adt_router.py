@@ -177,7 +177,6 @@ def admit_patient(
     payload: InpatientAdmissionCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("adt:write")),
-    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     encounter = db.get(PatientEncounter, payload.encounter_id)
     if not encounter or encounter.status != EncounterStatusEnum.ACTIVE:
@@ -261,7 +260,7 @@ def list_admissions(
             PatientEncounter.department_id.in_(assigned_department_ids)
         )
     if patient_id:
-        query = query.join(InpatientAdmission.encounter).filter(PatientEncounter.patient_id == patient_id)
+        query = query.filter(InpatientAdmission.encounter.has(PatientEncounter.patient_id == patient_id))
     if admission_type:
         query = query.filter(InpatientAdmission.admission_type == admission_type)
     if is_discharged is True:
@@ -419,7 +418,6 @@ def transfer_patient_bed(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("adt:write")),
-    
 ):
     admission = db.get(InpatientAdmission, payload.admission_id)
     if not admission or admission.discharge_time is not None:
