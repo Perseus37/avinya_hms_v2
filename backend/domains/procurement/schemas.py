@@ -335,3 +335,17 @@ class SupplierQuotationResponse(BaseModel):
 
 class SupplierQuotationSelection(BaseModel):
     selection_reason: str = Field(min_length=10, max_length=2000)
+
+
+# --- Purchase order approval authority ---
+class PurchaseOrderApprovalAuthorityUpdate(BaseModel):
+    max_amount_paise: int = Field(ge=0)
+    is_active: bool = True
+
+
+class PurchaseOrderApprovalAuthorityResponse(BaseModel):
+    id: int
+    role_id: int
+    max_amount_paise: int
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
