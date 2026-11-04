@@ -112,10 +112,38 @@ def test_group_owner_must_enroll_mfa_and_gets_revocable_central_session(monkeypa
             assert profile.status_code == 200, profile.text
             assert profile.json()["user"]["group_role"] == "OWNER"
             assert profile.json()["user"]["mfa_enabled"] is True
+            assert confirm.json()["refresh_token"]
 
-            logout = client.post("/api/organization-auth/logout", headers=headers)
-            assert logout.status_code == 200, logout.text
-            denied = client.get("/api/organization-auth/me", headers=headers)
+            sessions = client.get("/api/organization-auth/sessions", headers=headers)
+            assert sessions.status_code == 200, sessions.text
+            assert len(sessions.json()["sessions"]) == 1
+            session_id = sessions.json()["sessions"][0]["id"]
+
+            rotated = client.post(
+                "/api/organization-auth/refresh",
+                json={"refresh_token": confirm.json()["refresh_token"]},
+            )
+            assert rotated.status_code == 200, rotated.text
+            assert rotated.json()["refresh_token"] != confirm.json()["refresh_token"]
+
+            replay = client.post(
+                "/api/organization-auth/refresh",
+                json={"refresh_token": confirm.json()["refresh_token"]},
+            )
+            assert replay.status_code == 401
+
+            new_headers = {"Authorization": f"Bearer {rotated.json()['access_token']}"}
+            old_access_denied = client.get("/api/organization-auth/me", headers=headers)
+            assert old_access_denied.status_code == 401
+            new_profile = client.get("/api/organization-auth/me", headers=new_headers)
+            assert new_profile.status_code == 200, new_profile.text
+
+            revoked = client.delete(
+                f"/api/organization-auth/sessions/{session_id}",
+                headers=new_headers,
+            )
+            assert revoked.status_code == 200, revoked.text
+            denied = client.get("/api/organization-auth/me", headers=new_headers)
             assert denied.status_code == 401
     finally:
         control_app_module.app.dependency_overrides.pop(get_control_db, None)
