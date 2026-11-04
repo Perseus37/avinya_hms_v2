@@ -321,6 +321,28 @@ def get_user_assigned_department_ids(db: Session, actor: User) -> Optional[set[i
     )
 
 
+def ensure_department_id_access(db: Session, department_id: int, actor: User) -> None:
+    """Require the local department assignment and central department grant, when present."""
+    if db.info.get("central_branch_department_codes") is None:
+        return
+    if not user_has_department_access(db, actor, department_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: resource is outside your assigned department scope.",
+        )
+
+
+def ensure_queue_department_access(db: Session, queue_id: int, actor: User) -> None:
+    from backend.domains.encounters.opd_queue_models import OPDQueue
+
+    department_id = db.execute(
+        select(OPDQueue.department_id).where(OPDQueue.id == queue_id)
+    ).scalar_one_or_none()
+    if department_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="OPD queue not found.")
+    ensure_department_id_access(db, department_id, actor)
+
+
 def ensure_admission_department_access(db: Session, admission_id: int, actor: User) -> None:
     """Authorize an IPD admission through its parent encounter department."""
     allowed_ids = get_user_assigned_department_ids(db, actor)
