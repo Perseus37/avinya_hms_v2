@@ -8,6 +8,8 @@ from backend.domains.procurement.models import (
     IndentStatusEnum,
     PurchaseRequisitionStatusEnum,
     VendorInvoiceStatusEnum,
+    SupplierQuotationStatusEnum,
+    POAmendmentStatusEnum,
 )
 
 # --- Vendor Master ---
@@ -348,4 +350,31 @@ class PurchaseOrderApprovalAuthorityResponse(BaseModel):
     role_id: int
     max_amount_paise: int
     is_active: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
+# --- Purchase order amendments ---
+class PurchaseOrderAmendmentCreate(BaseModel):
+    reason: str = Field(min_length=10, max_length=2000)
+    delivery_due_date: datetime
+    payment_terms: str = Field(min_length=1, max_length=255)
+    items: List[POItemCreate] = Field(min_length=1, max_length=100)
+
+
+class PurchaseOrderAmendmentReview(BaseModel):
+    approved: bool
+    review_notes: str = Field(min_length=3, max_length=2000)
+
+
+class PurchaseOrderAmendmentResponse(BaseModel):
+    id: int
+    po_id: int
+    version: int
+    reason: str
+    prior_snapshot: dict
+    proposed_snapshot: dict
+    status: POAmendmentStatusEnum
+    reviewed_by_id: Optional[int]
+    reviewed_at: Optional[datetime]
+    review_notes: Optional[str]
     model_config = ConfigDict(from_attributes=True)
