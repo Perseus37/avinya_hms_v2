@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 import secrets
 
@@ -745,6 +745,11 @@ def approve_inventory_count_session(
         physical = int(line.physical_quantity)
         variance = physical - batch.stock_quantity
         if variance:
+            if not (line.reason_code or line.notes):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"A reason code or note is required for the variance on batch {line.batch_number}.",
+                )
             stock_before = batch.stock_quantity
             batch.stock_quantity = physical
             _record_inventory_movement(
@@ -796,7 +801,7 @@ def get_inventory_expiry_report(
 ):
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     today = datetime.now(timezone.utc).date()
-    cutoff = today.fromordinal(today.toordinal() + within_days)
+    cutoff = today + timedelta(days=within_days)
     stmt = select(InventoryBatch, MedicationMaster).join(
         MedicationMaster, MedicationMaster.id == InventoryBatch.medication_id
     ).where(
