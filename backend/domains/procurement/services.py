@@ -260,6 +260,18 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
     po_lines = {line.id: line for line in po.items}
+    # Refuse matching if persisted PO financial totals no longer reconcile.
+    po_subtotal = sum(line.total_price_paise for line in po_lines.values())
+    po_tax = sum(line.tax_amount_paise for line in po_lines.values())
+    po_gross = sum(line.gross_total_paise for line in po_lines.values())
+    if (
+        po.subtotal_paise != po_subtotal
+        or po.tax_amount_paise != po_tax
+        or po.total_amount_paise != po_gross
+        or po_subtotal + po_tax != po_gross
+    ):
+        return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+
     invoiced_by_po_line = {}
     price_variance = False
     for item in invoice.items:
@@ -271,7 +283,10 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
         )
         if item.medication_id is not None and item.medication_id != po_line.medication_id:
             return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        if item.unit_price_paise != po_line.unit_price_paise:
+        if (
+            item.unit_price_paise != po_line.unit_price_paise
+            or item.tax_percentage != po_line.tax_percentage
+        ):
             price_variance = True
 
     # Compare cumulative accepted quantity across all accepted GRNs, not just the
