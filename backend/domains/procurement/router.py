@@ -178,6 +178,11 @@ def create_medication_pack_configuration(
         raise HTTPException(status_code=422, detail="Purchase unit and stock base unit must be different; use a conversion of 1 only when a distinct pack unit is defined.")
     if purchase_uom.dimension != base_uom.dimension:
         raise HTTPException(status_code=422, detail="Purchase and base units must belong to the same measurement dimension.")
+    existing_medication_base = db.query(MedicationPackConfiguration.base_uom_id).filter(
+        MedicationPackConfiguration.medication_id == medication_id
+    ).distinct().all()
+    if existing_medication_base and any(row[0] != base_uom.id for row in existing_medication_base):
+        raise HTTPException(status_code=409, detail="A medication must retain one consistent stock base unit across all pack configurations.")
     if payload.effective_from.tzinfo is None:
         raise HTTPException(status_code=422, detail="Pack configuration effective_from must include a timezone.")
     if payload.units_per_purchase_unit <= 0:
@@ -2084,7 +2089,8 @@ def get_procurement_cost_intelligence(
             supplier_row["purchase_line_count"] += 1
             supplier_row["ordered_quantity"] += int(item.quantity_ordered)
             supplier_row["pre_tax_value_paise"] += int(item.total_price_paise or 0)
-            supplier_row["observed_unit_prices_paise"].append({
+            supplier_row["observed_unit_prices_paise"].append(int(item.unit_price_paise))
+            supplier_row.setdefault("purchase_unit_price_observations", []).append({
                 "price_paise": int(item.unit_price_paise),
                 "purchase_uom_code": item.purchase_uom_code,
             })
