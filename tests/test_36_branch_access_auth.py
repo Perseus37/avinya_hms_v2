@@ -381,4 +381,4 @@ def test_patient_visibility_does_not_block_legacy_branch_sessions(branch_grant_e
         tenant_db.add(patient)
         tenant_db.commit()
         assert "central_branch_department_codes" not in tenant_db.info
-        dependencies.ensure_patient_department_access(tenant_db, patient.id)
+        dependencies.ensure_patient_department_access(tenant_db, patient.id, patient_actor)
