@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     JSON,
     String,
     Text,
@@ -553,3 +554,42 @@ class PurchaseOrderShipmentEvent(Base):
 
     shipment: Mapped["PurchaseOrderShipment"] = relationship(back_populates="events")
     actor: Mapped[Optional["User"]] = relationship()
+
+
+class ProcurementUnitOfMeasure(Base):
+    """Canonical purchasing or inventory unit; seeded values are shared within a branch database."""
+    __tablename__ = "procurement_units_of_measure"
+    __table_args__ = (
+        CheckConstraint("dimension IN ('COUNT', 'MASS', 'VOLUME', 'LENGTH')", name="ck_proc_uom_dimension"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(24), unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    dimension: Mapped[str] = mapped_column(String(16), nullable=False)
+    allows_fractional: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class MedicationPackConfiguration(AuditMixin, Base):
+    """Effective-dated, auditable conversion from a medication purchase unit to its stock base unit."""
+    __tablename__ = "procurement_medication_pack_configurations"
+    __table_args__ = (
+        CheckConstraint("units_per_purchase_unit > 0", name="ck_med_pack_conversion_positive"),
+        CheckConstraint("effective_to IS NULL OR effective_to > effective_from", name="ck_med_pack_effective_window"),
+        UniqueConstraint("medication_id", "purchase_uom_id", "effective_from", name="uq_med_pack_effective_start"),
+        Index("ix_med_pack_medication_active", "medication_id", "is_active"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    medication_id: Mapped[int] = mapped_column(ForeignKey("medication_master.id", ondelete="RESTRICT"), nullable=False)
+    purchase_uom_id: Mapped[int] = mapped_column(ForeignKey("procurement_units_of_measure.id", ondelete="RESTRICT"), nullable=False)
+    base_uom_id: Mapped[int] = mapped_column(ForeignKey("procurement_units_of_measure.id", ondelete="RESTRICT"), nullable=False)
+    units_per_purchase_unit: Mapped[float] = mapped_column(Numeric(18, 6), nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    effective_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    medication: Mapped["MedicationMaster"] = relationship()
+    purchase_uom: Mapped["ProcurementUnitOfMeasure"] = relationship(foreign_keys=[purchase_uom_id])
+    base_uom: Mapped["ProcurementUnitOfMeasure"] = relationship(foreign_keys=[base_uom_id])
