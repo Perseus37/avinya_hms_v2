@@ -25,6 +25,31 @@ def upgrade() -> None:
     op.create_index("ix_pharmacy_location_access_location_id", "pharmacy_location_access", ["location_id"])
     op.create_index("ix_pharmacy_location_access_user_id", "pharmacy_location_access", ["user_id"])
 
+    op.execute(
+        """
+        INSERT INTO permissions (code, description, module)
+        SELECT 'pharmacy:location:manage',
+               'Assign and revoke staff access to pharmacy locations',
+               'Pharmacy'
+        WHERE NOT EXISTS (
+            SELECT 1 FROM permissions WHERE code = 'pharmacy:location:manage'
+        )
+        """
+    )
+    op.execute(
+        """
+        INSERT INTO role_permissions (role_id, permission_id)
+        SELECT r.id, p.id
+        FROM roles r
+        JOIN permissions p ON p.code = 'pharmacy:location:manage'
+        WHERE r.code = 'ROLE_ADMIN'
+          AND NOT EXISTS (
+              SELECT 1 FROM role_permissions rp
+              WHERE rp.role_id = r.id AND rp.permission_id = p.id
+          )
+        """
+    )
+
     # Preserve access for existing pharmacy staff when moving from branch-wide to location-scoped access.
     op.execute(
         """
