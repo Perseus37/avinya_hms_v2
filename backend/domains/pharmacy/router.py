@@ -19,6 +19,7 @@ from backend.domains.identity.models import Department, User
 from backend.domains.pharmacy.models import (
     BCMAScanAuditLog,
     ControlledSubstanceMovementLog,
+    ControlledVaultCount,
     ControlledSubstanceVault,
     InventoryBatch,
     InventoryMovement,
@@ -46,6 +47,9 @@ from backend.domains.pharmacy.schemas import (
     ControlledSubstanceReturnRequest,
     ControlledSubstanceVaultCreate,
     ControlledSubstanceVaultResponse,
+    ControlledVaultCountCreate,
+    ControlledVaultCountDecision,
+    ControlledVaultCountResponse,
     ControlledSubstanceWastageRequest,
     DispenseRequest,
     InventoryBatchCreate,
@@ -1716,6 +1720,140 @@ def record_controlled_substance_dual_witness_wastage(
         batch_number=payload.batch_number,
         notes=payload.notes,
     )
+
+
+
+@router.post("/controlled-substances/counts", response_model=ControlledVaultCountResponse, status_code=status.HTTP_201_CREATED)
+def create_controlled_vault_physical_count(
+    payload: ControlledVaultCountCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
+):
+    """Record a physical vault count with an independently authenticated witness."""
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    vault = _get_authorized_controlled_vault(db, payload.vault_id, current_user)
+    if payload.witness_user_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The counter cannot witness their own controlled-vault count.")
+    from backend.domains.pharmacy.services import _verify_witness_credentials
+    _verify_witness_credentials(db, current_user, payload.witness_user_id, payload.witness_password)
+    last_movement_id = db.execute(
+        select(func.max(ControlledSubstanceMovementLog.id)).where(
+            ControlledSubstanceMovementLog.vault_id == vault.id
+        )
+    ).scalar_one_or_none() or 0
+    count = ControlledVaultCount(
+        vault_id=vault.id,
+        expected_balance=vault.current_balance_units,
+        physical_balance=payload.physical_balance,
+        snapshot_movement_id=last_movement_id,
+        counted_by_id=current_user.id,
+        witness_user_id=payload.witness_user_id,
+        status="PENDING",
+        reason=payload.reason.strip(),
+        counted_at=datetime.now(timezone.utc),
+    )
+    db.add(count)
+    db.commit()
+    db.refresh(count)
+    return count
+
+
+@router.get("/controlled-substances/counts", response_model=list[ControlledVaultCountResponse])
+def list_controlled_vault_counts(
+    vault_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:read")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    stmt = select(ControlledVaultCount).join(
+        ControlledSubstanceVault, ControlledSubstanceVault.id == ControlledVaultCount.vault_id
+    ).order_by(ControlledVaultCount.id.desc())
+    if vault_id is not None:
+        _get_authorized_controlled_vault(db, vault_id, current_user, lock=False)
+        stmt = stmt.where(ControlledVaultCount.vault_id == vault_id)
+    if "central_branch_department_codes" in db.info:
+        allowed = select(PharmacyLocationAccess.location_id).where(
+            PharmacyLocationAccess.user_id == current_user.id,
+            PharmacyLocationAccess.is_active.is_(True),
+        )
+        stmt = stmt.where(ControlledSubstanceVault.location_id.in_(allowed))
+    return list(db.execute(stmt).scalars().all())
+
+
+@router.post("/controlled-substances/counts/{count_id}/approve", response_model=ControlledVaultCountResponse)
+def approve_controlled_vault_count(
+    count_id: int,
+    payload: ControlledVaultCountDecision,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:void")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    count = db.execute(select(ControlledVaultCount).where(
+        ControlledVaultCount.id == count_id
+    ).with_for_update()).scalar_one_or_none()
+    if count is None:
+        raise HTTPException(status_code=404, detail="Controlled-vault count not found.")
+    vault = _get_authorized_controlled_vault(db, count.vault_id, current_user)
+    if count.status != "PENDING":
+        raise HTTPException(status_code=409, detail="Only pending controlled-vault counts can be approved.")
+    if current_user.id in {count.counted_by_id, count.witness_user_id}:
+        raise HTTPException(status_code=409, detail="The counter and witness cannot approve their own count.")
+    latest_movement_id = db.execute(select(func.max(ControlledSubstanceMovementLog.id)).where(
+        ControlledSubstanceMovementLog.vault_id == vault.id
+    )).scalar_one_or_none() or 0
+    if latest_movement_id != count.snapshot_movement_id or vault.current_balance_units != count.expected_balance:
+        raise HTTPException(status_code=409, detail="Controlled-vault movements occurred after the physical count; recount is required.")
+    variance = count.physical_balance - vault.current_balance_units
+    if variance:
+        before = vault.current_balance_units
+        vault.current_balance_units = count.physical_balance
+        db.add(ControlledSubstanceMovementLog(
+            vault_id=vault.id,
+            movement_type="COUNT_RECONCILIATION",
+            quantity_units=abs(variance),
+            balance_before=before,
+            balance_after=count.physical_balance,
+            primary_user_id=current_user.id,
+            witness_user_id=count.witness_user_id,
+            witness_verified=True,
+            wastage_reason=count.reason,
+            notes=f"Approved dual-witness physical count #{count.id}; variance {variance:+d}",
+        ))
+    count.status = "APPROVED"
+    count.approved_by_id = current_user.id
+    count.approved_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(count)
+    return count
+
+
+@router.post("/controlled-substances/counts/{count_id}/reject", response_model=ControlledVaultCountResponse)
+def reject_controlled_vault_count(
+    count_id: int,
+    payload: ControlledVaultCountDecision,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:void")),
+):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    count = db.execute(select(ControlledVaultCount).where(
+        ControlledVaultCount.id == count_id
+    ).with_for_update()).scalar_one_or_none()
+    if count is None:
+        raise HTTPException(status_code=404, detail="Controlled-vault count not found.")
+    _get_authorized_controlled_vault(db, count.vault_id, current_user)
+    if count.status != "PENDING":
+        raise HTTPException(status_code=409, detail="Only pending controlled-vault counts can be rejected.")
+    if current_user.id in {count.counted_by_id, count.witness_user_id}:
+        raise HTTPException(status_code=409, detail="The counter and witness cannot reject their own count.")
+    if not payload.reason or len(payload.reason.strip()) < 5:
+        raise HTTPException(status_code=422, detail="A rejection reason of at least five characters is required.")
+    count.status = "REJECTED"
+    count.approved_by_id = current_user.id
+    count.rejection_reason = payload.reason.strip()
+    count.approved_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(count)
+    return count
 
 
 @router.get("/controlled-substances/movements", response_model=list[ControlledSubstanceMovementResponse])
