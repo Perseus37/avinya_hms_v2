@@ -108,6 +108,36 @@ class InventoryBatch(AuditMixin, Base):
     location: Mapped[PharmacyLocation] = relationship()
 
 
+class InventoryMovement(AuditMixin, Base):
+    """Append-only stock movement record with signed quantity and valuation snapshots."""
+    __tablename__ = "inventory_movements"
+    __table_args__ = (
+        CheckConstraint("quantity_delta != 0", name="ck_inventory_movement_nonzero_delta"),
+        CheckConstraint("stock_before >= 0 AND stock_after >= 0", name="ck_inventory_movement_stock_nonnegative"),
+        CheckConstraint("unit_price_paise >= 0", name="ck_inventory_movement_unit_price_nonnegative"),
+        Index("ix_inventory_movements_location_created", "location_id", "created_at"),
+        Index("ix_inventory_movements_batch_created", "inventory_batch_id", "created_at"),
+        Index("ix_inventory_movements_reference", "reference_type", "reference_id"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    location_id: Mapped[int] = mapped_column(ForeignKey("pharmacy_locations.id"), nullable=False)
+    medication_id: Mapped[int] = mapped_column(ForeignKey("medication_master.id"), nullable=False)
+    inventory_batch_id: Mapped[int] = mapped_column(ForeignKey("inventory_batches.id"), nullable=False)
+    movement_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    quantity_delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    stock_before: Mapped[int] = mapped_column(Integer, nullable=False)
+    stock_after: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    reference_type: Mapped[Optional[str]] = mapped_column(String(40))
+    reference_id: Mapped[Optional[str]] = mapped_column(String(80))
+    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(String(500))
+    location: Mapped[PharmacyLocation] = relationship()
+    medication: Mapped[MedicationMaster] = relationship()
+    inventory_batch: Mapped[InventoryBatch] = relationship()
+    actor: Mapped[User] = relationship()
+
+
 class InventoryTransferStatusEnum(str, PyEnum):
     REQUESTED = "REQUESTED"
     APPROVED = "APPROVED"
