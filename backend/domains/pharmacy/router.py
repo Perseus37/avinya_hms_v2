@@ -202,6 +202,7 @@ def _record_inventory_movement(
         stock_before=stock_before,
         stock_after=stock_after,
         unit_price_paise=batch.unit_price_paise,
+        base_uom_code=batch.base_uom_code,
         reference_type=reference_type,
         reference_id=str(reference_id) if reference_id is not None else None,
         actor_id=actor.id,
@@ -920,6 +921,7 @@ def request_inventory_transfer(payload: InventoryTransferCreate, db: Session = D
     item = InventoryTransfer(source_batch_id=source.id, source_location_id=source.location_id,
         destination_location_id=destination.id, medication_id=source.medication_id, batch_number=source.batch_number,
         expiry_date=source.expiry_date, unit_price_paise=source.unit_price_paise,
+        base_uom_code=source.base_uom_code,
         quantity=payload.quantity, status="REQUESTED",
         requested_by_id=current_user.id, notes=payload.notes)
     db.add(item)
@@ -1007,15 +1009,20 @@ def receive_inventory_transfer(transfer_id: int, db: Session = Depends(get_db), 
         InventoryBatch.location_id == destination.id,
     ).with_for_update()).scalar_one_or_none()
     if target:
-        if target.expiry_date != item.expiry_date or target.unit_price_paise != item.unit_price_paise:
-            raise HTTPException(status_code=409, detail="Destination batch has conflicting expiry or valuation.")
+        if (
+            target.expiry_date != item.expiry_date
+            or target.unit_price_paise != item.unit_price_paise
+            or target.base_uom_code != item.base_uom_code
+        ):
+            raise HTTPException(status_code=409, detail="Destination batch has conflicting expiry, valuation or stock base unit.")
         stock_before = target.stock_quantity
         target.stock_quantity += item.quantity
     else:
         stock_before = 0
         target = InventoryBatch(medication_id=item.medication_id, location_id=destination.id,
             batch_number=item.batch_number, expiry_date=item.expiry_date,
-            stock_quantity=item.quantity, unit_price_paise=item.unit_price_paise)
+            stock_quantity=item.quantity, unit_price_paise=item.unit_price_paise,
+            base_uom_code=item.base_uom_code)
         db.add(target)
         db.flush()
     _record_inventory_movement(
