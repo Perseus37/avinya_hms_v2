@@ -11,7 +11,7 @@ from backend.core.document_responses import pdf_attachment_response
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
-from backend.domains.identity.models import User, Department
+from backend.domains.identity.models import User, Department, Role
 from backend.domains.pharmacy.models import MedicationMaster
 from backend.domains.procurement.models import (
     VendorMaster, PurchaseOrder, PurchaseOrderItem, POStatusEnum,
@@ -1073,18 +1073,83 @@ def approve_vendor_invoice(invoice_id: int, db: Session = Depends(get_db), curre
     return {"status": "success", "message": "Invoice approved and posted to Accounts Payable."}
 
 # --- Purchase Order Approval & PDF ---
+@router.get(
+    "/purchase-order-approval-authorities",
+    response_model=list[PurchaseOrderApprovalAuthorityResponse],
+)
+def list_po_approval_authorities(
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    return db.query(PurchaseOrderApprovalAuthority).order_by(
+        PurchaseOrderApprovalAuthority.role_id.asc()
+    ).all()
+
+
+@router.put(
+    "/purchase-order-approval-authorities/{role_id}",
+    response_model=PurchaseOrderApprovalAuthorityResponse,
+)
+def set_po_approval_authority(
+    role_id: int,
+    payload: PurchaseOrderApprovalAuthorityUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    role = db.get(Role, role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail="Role not found.")
+    authority = db.query(PurchaseOrderApprovalAuthority).filter(
+        PurchaseOrderApprovalAuthority.role_id == role_id
+    ).with_for_update().one_or_none()
+    if authority is None:
+        authority = PurchaseOrderApprovalAuthority(
+            role_id=role_id,
+            max_amount_paise=payload.max_amount_paise,
+            is_active=payload.is_active,
+            created_by_id=current_user.id,
+        )
+        db.add(authority)
+    else:
+        authority.max_amount_paise = payload.max_amount_paise
+        authority.is_active = payload.is_active
+        authority.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(authority)
+    return authority
+
+
 @router.patch("/purchase-orders/{po_id}/approve", response_model=POResponse)
-def approve_purchase_order(po_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:approve"))):
-    po = db.get(PurchaseOrder, po_id)
-    # FIX: Check for both DRAFT and SUBMITTED statuses
+def approve_purchase_order(
+    po_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    po = db.query(PurchaseOrder).filter(
+        PurchaseOrder.id == po_id
+    ).with_for_update().one_or_none()
     if not po or po.status not in [POStatusEnum.DRAFT, POStatusEnum.SUBMITTED]:
         raise HTTPException(status_code=400, detail="Only DRAFT or SUBMITTED purchase orders can be approved.")
     if po.created_by_id == current_user.id:
         raise HTTPException(status_code=409, detail="The purchase order creator cannot approve the same purchase order.")
 
+    if not current_user.is_superuser:
+        role_ids = [role.id for role in current_user.roles]
+        authorities = db.query(PurchaseOrderApprovalAuthority).filter(
+            PurchaseOrderApprovalAuthority.role_id.in_(role_ids or [-1]),
+            PurchaseOrderApprovalAuthority.is_active.is_(True),
+        ).all()
+        allowed_limit = max((authority.max_amount_paise for authority in authorities), default=None)
+        if allowed_limit is None or po.total_amount_paise > allowed_limit:
+            raise HTTPException(
+                status_code=403,
+                detail="Your configured purchase-order approval authority is missing or insufficient for this amount.",
+            )
+
     po.status = POStatusEnum.APPROVED
     po.approved_by_id = current_user.id
     po.approved_at = datetime.now(timezone.utc)
+    po.updated_by_id = current_user.id
     db.commit()
     db.refresh(po)
     return po
