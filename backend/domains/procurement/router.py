@@ -1151,8 +1151,26 @@ def request_purchase_order_amendment(
                 PurchaseRequisitionItem.id == item.requisition_item_id,
                 PurchaseRequisitionItem.requisition_id == po.requisition_id,
             ).one_or_none()
-            if req_line is None or not req_line.approved_quantity or item.quantity_ordered > req_line.approved_quantity:
-                raise HTTPException(status_code=422, detail="Amended quantity must map to an approved line and cannot exceed its approved quantity.")
+            if req_line is None or req_line.approved_quantity is None or req_line.approved_quantity <= 0:
+                raise HTTPException(status_code=422, detail="Amended quantity must map to a positively approved requisition line.")
+            # Existing allocations on other non-cancelled POs remain reserved.
+            # The current PO is excluded because this amendment replaces its lines.
+            ordered_elsewhere = db.query(func.coalesce(func.sum(PurchaseOrderItem.quantity_ordered), 0)).join(
+                PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.po_id
+            ).filter(
+                PurchaseOrder.requisition_id == po.requisition_id,
+                PurchaseOrderItem.requisition_item_id == req_line.id,
+                PurchaseOrder.id != po.id,
+                PurchaseOrder.status != POStatusEnum.CANCELLED,
+            ).scalar()
+            remaining_for_this_po = req_line.approved_quantity - int(ordered_elsewhere or 0)
+            if remaining_for_this_po <= 0 or item.quantity_ordered > remaining_for_this_po:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Amended quantity exceeds the remaining approved allocation for requisition line {req_line.id}.",
+                )
+            if item.medication_id is not None and item.medication_id != req_line.medication_id:
+                raise HTTPException(status_code=422, detail="An amended requisition line cannot change its approved medication.")
             seen_requisition_lines.add(item.requisition_item_id)
         elif item.requisition_item_id is not None:
             raise HTTPException(status_code=422, detail="A standalone purchase order cannot reference a requisition line.")
@@ -1160,8 +1178,8 @@ def request_purchase_order_amendment(
         proposed_total += line_total
         proposed_items.append({
             "requisition_item_id": item.requisition_item_id,
-            "medication_id": item.medication_id,
-            "item_description": item.item_description.strip(),
+            "medication_id": req_line.medication_id if po.requisition_id is not None else item.medication_id,
+            "item_description": req_line.item_description if po.requisition_id is not None else item.item_description.strip(),
             "quantity_ordered": item.quantity_ordered,
             "unit_price_paise": item.unit_price_paise,
             "total_price_paise": line_total,
@@ -1389,6 +1407,11 @@ def update_purchase_order_shipment(
     event_at = payload.event_at or datetime.now(timezone.utc)
     if event_at > datetime.now(timezone.utc):
         raise HTTPException(status_code=422, detail="Shipment event time cannot be in the future.")
+    previous_event_at = db.query(func.max(PurchaseOrderShipmentEvent.event_at)).filter(
+        PurchaseOrderShipmentEvent.shipment_id == shipment.id
+    ).scalar()
+    if previous_event_at is not None and event_at < previous_event_at:
+        raise HTTPException(status_code=422, detail="Shipment event time cannot precede the previous recorded shipment event.")
     shipment.status = payload.status
     shipment.updated_by_id = current_user.id
     if payload.status == POShipmentStatusEnum.DISPATCHED:
