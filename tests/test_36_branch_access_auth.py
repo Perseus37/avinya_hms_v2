@@ -11,6 +11,7 @@ from backend.control_plane.models import (
     BranchAccessSession,
     BranchMembership,
     BranchMembershipRole,
+    BranchDepartmentAssignment,
     BranchUserLink,
     ControlBase,
     HospitalGroup,
@@ -21,7 +22,7 @@ from backend.control_plane.models import (
 )
 from backend.core import dependencies
 from backend.core.database import Base, TenantContext
-from backend.domains.identity.models import Permission, Role, User, UserStatusEnum
+from backend.domains.identity.models import Department, Permission, Role, User, UserRole, UserStatusEnum
 
 
 @pytest.fixture
@@ -105,9 +106,11 @@ def branch_grant_environment(monkeypatch):
         )
         control.add(grant)
         control.add(BranchMembershipRole(membership_id=membership.id, role_code="DOCTOR"))
+        control.add(BranchDepartmentAssignment(membership_id=membership.id, department_code="CARDIOLOGY"))
         control.commit()
 
     with TenantSession() as tenant_db:
+        department = Department(code="CARDIOLOGY", name="Cardiology")
         role = Role(code="DOCTOR", name="Doctor")
         local_admin = Role(code="LOCAL_ADMIN", name="Local Admin")
         elevated_permission = Permission(
@@ -210,4 +213,22 @@ def test_branch_grant_cannot_use_unassigned_local_role_permissions(
         assert {role.code for role in user.roles} == {"DOCTOR"}
         assert not dependencies.user_has_permission(
             tenant_db, user, "patient:delete"
+        )
+
+
+
+def test_department_access_requires_both_local_and_central_assignment(
+    branch_grant_environment,
+):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        department = tenant_db.query(Department).filter_by(code="CARDIOLOGY").one()
+        assert dependencies.user_has_department_access(
+            tenant_db, user, department.id
+        )
+        assert not dependencies.user_has_department_access(
+            tenant_db, user, department.id + 1000
         )
