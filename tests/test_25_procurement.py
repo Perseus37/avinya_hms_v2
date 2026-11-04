@@ -41,6 +41,10 @@ def test_01_vendor_and_purchase_order_lifecycle(client, superuser_headers, pharm
     )
     assert vendor_res.status_code == 201, f"Vendor creation failed: {vendor_res.json()}"
     vendor = vendor_res.json()
+    vendor_list = client.get("/v1/api/procurement/vendors", headers=pharmacist_headers)
+    assert vendor_list.status_code == 200, vendor_list.text
+    listed_vendor = next(item for item in vendor_list.json() if item["id"] == vendor["id"])
+    assert "bank_account_number" not in listed_vendor
 
     # 2. Draft PO
     po_res = client.post(
@@ -57,6 +61,20 @@ def test_01_vendor_and_purchase_order_lifecycle(client, superuser_headers, pharm
     )
     assert po_res.status_code == 201, f"PO drafting failed: {po_res.text}"
     po_id = po_res.json()["id"]
+    po_list = client.get(
+        f"/v1/api/procurement/purchase-orders?vendor_id={vendor['id']}",
+        headers=pharmacist_headers,
+    )
+    assert po_list.status_code == 200, po_list.text
+    assert any(item["id"] == po_id for item in po_list.json()["items"])
+    po_detail = client.get(f"/v1/api/procurement/purchase-orders/{po_id}", headers=pharmacist_headers)
+    assert po_detail.status_code == 200, po_detail.text
+    blocked_deactivation = client.patch(
+        f"/v1/api/procurement/vendors/{vendor['id']}/status",
+        headers=superuser_headers,
+        json={"is_active": False},
+    )
+    assert blocked_deactivation.status_code == 409
 
     # 3. Approve PO
     approval = client.patch(f"/v1/api/procurement/purchase-orders/{po_id}/approve", headers=superuser_headers)
