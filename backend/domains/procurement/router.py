@@ -19,13 +19,18 @@ from backend.domains.procurement.models import (
     VendorInvoice, VendorInvoiceItem, VendorInvoiceStatusEnum,
     ProcurementDocumentDownloadAudit,
     StoreIndent, StoreIndentItem, IndentStatusEnum,
-    PurchaseRequisition, PurchaseRequisitionItem, PurchaseRequisitionStatusEnum
+    PurchaseRequisition, PurchaseRequisitionItem, PurchaseRequisitionStatusEnum,
+    SupplierQuotation, SupplierQuotationItem, SupplierQuotationStatusEnum,
+    PurchaseOrderApprovalAuthority, PurchaseOrderAmendment, POAmendmentStatusEnum
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
     IndentIssueRequest, PurchaseReturnCreate,
     PurchaseRequisitionCreate, PurchaseRequisitionResponse, PurchaseRequisitionReview,
-    PurchaseOrderFromRequisitionCreate
+    PurchaseOrderFromRequisitionCreate, SupplierQuotationCreate,
+    SupplierQuotationResponse, SupplierQuotationSelection,
+    PurchaseOrderApprovalAuthorityUpdate, PurchaseOrderApprovalAuthorityResponse,
+    PurchaseOrderAmendmentCreate, PurchaseOrderAmendmentReview, PurchaseOrderAmendmentResponse
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
@@ -1073,6 +1078,163 @@ def approve_vendor_invoice(invoice_id: int, db: Session = Depends(get_db), curre
     return {"status": "success", "message": "Invoice approved and posted to Accounts Payable."}
 
 # --- Purchase Order Approval & PDF ---
+
+# --- Purchase order amendment lifecycle ---
+@router.post(
+    "/purchase-orders/{po_id}/amendments",
+    response_model=PurchaseOrderAmendmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def request_purchase_order_amendment(
+    po_id: int,
+    payload: PurchaseOrderAmendmentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    po = db.query(PurchaseOrder).options(
+        selectinload(PurchaseOrder.items)
+    ).filter(PurchaseOrder.id == po_id).with_for_update().one_or_none()
+    if po is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found.")
+    if po.status != POStatusEnum.APPROVED:
+        raise HTTPException(status_code=409, detail="Only approved purchase orders can be amended.")
+    if db.query(GoodsReceiptNote.id).filter(GoodsReceiptNote.po_id == po.id).first():
+        raise HTTPException(status_code=409, detail="A purchase order with receipt activity cannot be amended.")
+    if db.query(PurchaseOrderAmendment.id).filter(
+        PurchaseOrderAmendment.po_id == po.id,
+        PurchaseOrderAmendment.status == POAmendmentStatusEnum.PENDING,
+    ).first():
+        raise HTTPException(status_code=409, detail="A pending amendment already exists.")
+
+    proposed_items = []
+    proposed_total = 0
+    for item in payload.items:
+        line_total = item.quantity_ordered * item.unit_price_paise
+        proposed_total += line_total
+        proposed_items.append({
+            "medication_id": item.medication_id,
+            "item_description": item.item_description.strip(),
+            "quantity_ordered": item.quantity_ordered,
+            "unit_price_paise": item.unit_price_paise,
+            "total_price_paise": line_total,
+        })
+    prior_snapshot = {
+        "delivery_due_date": po.delivery_due_date.isoformat(),
+        "payment_terms": po.payment_terms,
+        "total_amount_paise": po.total_amount_paise,
+        "items": [{
+            "id": item.id,
+            "requisition_item_id": item.requisition_item_id,
+            "medication_id": item.medication_id,
+            "item_description": item.item_description,
+            "quantity_ordered": item.quantity_ordered,
+            "quantity_received": item.quantity_received,
+            "unit_price_paise": item.unit_price_paise,
+            "total_price_paise": item.total_price_paise,
+        } for item in po.items],
+    }
+    proposed_snapshot = {
+        "delivery_due_date": payload.delivery_due_date.isoformat(),
+        "payment_terms": payload.payment_terms,
+        "total_amount_paise": proposed_total,
+        "items": proposed_items,
+    }
+    amendment = PurchaseOrderAmendment(
+        po_id=po.id,
+        version=po.amendment_version + 1,
+        reason=payload.reason.strip(),
+        prior_snapshot=prior_snapshot,
+        proposed_snapshot=proposed_snapshot,
+        status=POAmendmentStatusEnum.PENDING,
+        created_by_id=current_user.id,
+    )
+    db.add(amendment)
+    db.commit()
+    db.refresh(amendment)
+    return amendment
+
+
+@router.get(
+    "/purchase-orders/{po_id}/amendments",
+    response_model=list[PurchaseOrderAmendmentResponse],
+)
+def list_purchase_order_amendments(
+    po_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    if db.get(PurchaseOrder, po_id) is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found.")
+    return db.query(PurchaseOrderAmendment).filter(
+        PurchaseOrderAmendment.po_id == po_id
+    ).order_by(PurchaseOrderAmendment.version.asc()).all()
+
+
+@router.patch(
+    "/purchase-orders/{po_id}/amendments/{amendment_id}/review",
+    response_model=PurchaseOrderAmendmentResponse,
+)
+def review_purchase_order_amendment(
+    po_id: int,
+    amendment_id: int,
+    payload: PurchaseOrderAmendmentReview,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    po = db.query(PurchaseOrder).filter(
+        PurchaseOrder.id == po_id
+    ).with_for_update().one_or_none()
+    if po is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found.")
+    amendment = db.query(PurchaseOrderAmendment).filter(
+        PurchaseOrderAmendment.id == amendment_id,
+        PurchaseOrderAmendment.po_id == po_id,
+    ).with_for_update().one_or_none()
+    if amendment is None or amendment.status != POAmendmentStatusEnum.PENDING:
+        raise HTTPException(status_code=409, detail="Pending amendment not found.")
+    if amendment.created_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The amendment requester cannot review their own amendment.")
+    if po.status != POStatusEnum.APPROVED or po.amendment_version + 1 != amendment.version:
+        raise HTTPException(status_code=409, detail="The purchase order has changed since this amendment was requested.")
+    if db.query(GoodsReceiptNote.id).filter(GoodsReceiptNote.po_id == po.id).first():
+        raise HTTPException(status_code=409, detail="The purchase order has receipt activity and cannot be amended.")
+
+    amendment.reviewed_by_id = current_user.id
+    amendment.reviewed_at = datetime.now(timezone.utc)
+    amendment.review_notes = payload.review_notes.strip()
+    amendment.updated_by_id = current_user.id
+    if payload.approved:
+        snapshot = amendment.proposed_snapshot
+        po.delivery_due_date = datetime.fromisoformat(snapshot["delivery_due_date"])
+        po.payment_terms = snapshot["payment_terms"]
+        po.total_amount_paise = snapshot["total_amount_paise"]
+        for old_item in list(po.items):
+            db.delete(old_item)
+        db.flush()
+        for item in snapshot["items"]:
+            db.add(PurchaseOrderItem(
+                po_id=po.id,
+                medication_id=item["medication_id"],
+                item_description=item["item_description"],
+                quantity_ordered=item["quantity_ordered"],
+                quantity_received=0,
+                unit_price_paise=item["unit_price_paise"],
+                total_price_paise=item["total_price_paise"],
+                created_by_id=current_user.id,
+            ))
+        po.amendment_version = amendment.version
+        po.status = POStatusEnum.SUBMITTED
+        po.approved_by_id = None
+        po.approved_at = None
+        po.updated_by_id = current_user.id
+        amendment.status = POAmendmentStatusEnum.APPROVED
+    else:
+        amendment.status = POAmendmentStatusEnum.REJECTED
+    db.commit()
+    db.refresh(amendment)
+    return amendment
+
+
 @router.get(
     "/purchase-order-approval-authorities",
     response_model=list[PurchaseOrderApprovalAuthorityResponse],
