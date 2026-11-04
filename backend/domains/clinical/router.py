@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, get_redis, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequireDepartmentAccess, RequirePermission, validate_pagination
+from backend.core.dependencies import RequireDepartmentAccess, RequireEncounterDepartmentAccess, RequirePermission, validate_pagination
 from backend.core.export import stream_csv_response
 from backend.domains.clinical.models import (
     ClinicalEarlyWarningScore,
@@ -461,6 +461,7 @@ def record_encounter_vitals(
     payload: EncounterVitalCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("adt:write")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     encounter = db.get(PatientEncounter, encounter_id)
     if encounter is None:
@@ -523,6 +524,7 @@ def list_encounter_vitals(
     encounter_id: int,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     if not _evaluate_encounter_read(
         db, encounter_id, actor, "clinical.encounter.vitals.read"
@@ -546,6 +548,7 @@ def create_soap_clinical_note(
     payload: ClinicalNoteCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("opd:write")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     _get_active_encounter_or_raise(db, encounter_id)
     note = ClinicalNote(
@@ -570,6 +573,7 @@ def list_soap_clinical_notes(
     encounter_id: int,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     if not _evaluate_encounter_read(
         db, encounter_id, actor, "clinical.encounter.notes.read"
@@ -640,6 +644,7 @@ def attach_encounter_diagnosis(
     payload: EncounterDiagnosisCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("opd:write")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     _get_active_encounter_or_raise(db, encounter_id)
 
@@ -699,6 +704,7 @@ def list_encounter_diagnoses(
     encounter_id: int,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     if not _evaluate_encounter_read(
         db, encounter_id, actor, "clinical.encounter.diagnoses.read"
@@ -802,6 +808,7 @@ def record_encounter_physical_exam(
     payload: EncounterPhysicalExamCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("opd:write", "adt:write")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     _get_active_encounter_or_raise(db, encounter_id)
     exam_master = db.get(PhysicalExaminationMaster, payload.exam_master_id)
@@ -843,6 +850,7 @@ def list_encounter_physical_exams(
     encounter_id: int,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("opd:read", "adt:read")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     _evaluate_encounter_read(
         db, encounter_id, actor, "clinical.encounter.physical_exams.read"
@@ -1002,6 +1010,7 @@ def apply_cpoe_order_set_to_encounter(
     payload: ApplyOrderSetPayload,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("clinical:write", "opd:write", "adt:write")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     """
     Atomically instantiates a standardized OrderSetMaster for an active clinical encounter.
@@ -1143,6 +1152,7 @@ def evaluate_encounter_news2(
     payload: NEWS2EvaluationRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("clinical:write", "opd:write", "adt:write")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     """
     Computes National Early Warning Score 2 (NEWS2) & qSOFA for a patient encounter.
@@ -1218,6 +1228,7 @@ def list_early_warning_scores(
     encounter_id: int,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("clinical:read", "opd:read", "adt:read")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     """Retrieves all historical NEWS2 and deterioration scores recorded for an encounter."""
     _evaluate_encounter_read(db, encounter_id, actor, "clinical.encounter.vitals.read")
