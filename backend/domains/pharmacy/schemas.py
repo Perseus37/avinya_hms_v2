@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from backend.domains.pharmacy.models import MedicationFormEnum, PrescriptionStatusEnum
+from backend.domains.pharmacy.models import MedicationFormEnum, PrescriptionStatusEnum, InventoryTransferStatusEnum
 
 class MedicationMasterCreate(BaseModel):
     code: str
@@ -50,6 +50,10 @@ class PharmacyLocationCreate(BaseModel):
     location_type: str = Field(default="STORE", min_length=2, max_length=30)
 
 
+class PharmacyLocationAccessCreate(BaseModel):
+    user_id: int
+
+
 class PharmacyLocationResponse(BaseModel):
     id: int
     code: str
@@ -82,6 +86,32 @@ class InventoryBatchResponse(BaseModel):
     unit_price_paise: int
     medication: MedicationMasterResponse
     model_config = ConfigDict(from_attributes=True)
+
+class InventoryTransferCreate(BaseModel):
+    source_batch_id: int
+    destination_location_id: int
+    quantity: int = Field(gt=0)
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class InventoryTransferResponse(BaseModel):
+    id: int
+    source_batch_id: int
+    source_location_id: int
+    destination_location_id: int
+    quantity: int
+    status: InventoryTransferStatusEnum
+    requested_by_id: int
+    approved_by_id: Optional[int] = None
+    dispatched_by_id: Optional[int] = None
+    received_by_id: Optional[int] = None
+    received_batch_id: Optional[int] = None
+    approved_at: Optional[datetime] = None
+    dispatched_at: Optional[datetime] = None
+    received_at: Optional[datetime] = None
+    notes: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
 
 class InventoryStockAdjustment(BaseModel):
     quantity_adjustment: int = Field(default=..., description="Must not be zero")
