@@ -129,6 +129,16 @@ def test_organization_branch_grant_exchanges_once_and_is_branch_bound(
     assert exchanged.json()["branch"]["code"] == "HQ-HYD-01"
     assert exchanged.json()["access_token"]
 
+    branch_profile = client.get(
+        "/api/auth/me",
+        headers={
+            "X-Hospital-Subdomain": "default",
+            "Authorization": f"Bearer {exchanged.json()['access_token']}",
+        },
+    )
+    assert branch_profile.status_code == 200, branch_profile.text
+    assert branch_profile.json()["email"] == "doctor@default.com"
+
     replay = client.post(
         "/api/auth/organization-branch-exchange",
         headers={
