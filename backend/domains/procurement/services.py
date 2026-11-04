@@ -392,7 +392,7 @@ def process_purchase_return(db: Session, vendor_id: int, grn_id: int, return_ite
             InventoryMovement.movement_type == "PURCHASE_RETURN",
             InventoryMovement.reference_type == "PURCHASE_RETURN",
             InventoryMovement.reference_id == str(grn_id),
-            InventoryMovement.notes.like(f"GRN item {grn_item.id}:%"),
+            InventoryMovement.notes.like(f"GRN item {grn_item.id}%"),
         )).scalar_one()
         prior_returned = -int(prior_delta or 0)
         already_requested = requested_by_line.get(grn_item.id, 0)
