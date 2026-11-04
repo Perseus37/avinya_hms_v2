@@ -354,11 +354,15 @@ class PurchaseOrderApprovalAuthorityResponse(BaseModel):
 
 
 # --- Purchase order amendments ---
+class PurchaseOrderAmendmentItemCreate(POItemCreate):
+    requisition_item_id: Optional[int] = None
+
+
 class PurchaseOrderAmendmentCreate(BaseModel):
     reason: str = Field(min_length=10, max_length=2000)
     delivery_due_date: datetime
     payment_terms: str = Field(min_length=1, max_length=255)
-    items: List[POItemCreate] = Field(min_length=1, max_length=100)
+    items: List[PurchaseOrderAmendmentItemCreate] = Field(min_length=1, max_length=100)
 
 
 class PurchaseOrderAmendmentReview(BaseModel):
