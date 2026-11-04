@@ -314,3 +314,47 @@ def test_12_payment_reversal_restores_balance_and_allows_voiding(client, superus
     # Now voiding succeeds
     void_res = client.delete(f"/v1/api/billing/invoices/{inv['id']}/void", headers=superuser_headers)
     assert void_res.status_code == 200
+
+
+def test_inventory_batches_are_scoped_to_selected_pharmacy_location(client, pharmacist_headers):
+    med, main_batch = _setup_med_and_batch(client, pharmacist_headers)
+    locations_res = client.get("/v1/api/pharmacy/locations", headers=pharmacist_headers)
+    assert locations_res.status_code == 200
+    main_location = next(item for item in locations_res.json() if item["code"] == "MAIN")
+
+    second_location_res = client.post(
+        "/v1/api/pharmacy/locations",
+        headers=pharmacist_headers,
+        json={"code": "OPD-DISP", "name": "OPD Dispensary", "location_type": "DISPENSARY"},
+    )
+    assert second_location_res.status_code == 201
+    second_location = second_location_res.json()
+
+    future_exp = (datetime.now(timezone.utc) + timedelta(days=240)).isoformat()
+    second_batch_res = client.post(
+        "/v1/api/pharmacy/inventory/batches",
+        headers=pharmacist_headers,
+        json={
+            "medication_id": med["id"],
+            "location_id": second_location["id"],
+            "batch_number": "BATCH-OPD-01",
+            "expiry_date": future_exp,
+            "stock_quantity": 25,
+            "unit_price_paise": 1500,
+        },
+    )
+    assert second_batch_res.status_code == 201
+    assert second_batch_res.json()["location_id"] == second_location["id"]
+    assert main_batch["location_id"] == main_location["id"]
+
+    default_inventory = client.get(
+        f"/v1/api/pharmacy/inventory/batches?medication_id={med['id']}",
+        headers=pharmacist_headers,
+    ).json()["items"]
+    assert [item["id"] for item in default_inventory] == [main_batch["id"]]
+
+    dispensary_inventory = client.get(
+        f"/v1/api/pharmacy/inventory/batches?medication_id={med['id']}&location_id={second_location['id']}",
+        headers=pharmacist_headers,
+    ).json()["items"]
+    assert [item["id"] for item in dispensary_inventory] == [second_batch_res.json()["id"]]
