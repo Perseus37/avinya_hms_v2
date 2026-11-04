@@ -26,7 +26,7 @@ from backend.domains.identity.models import Department, GenderEnum, Permission, 
 from backend.domains.encounters.models import AdmissionTypeEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter
 from backend.domains.patients.models import Patient
 from backend.domains.encounters.opd_queue_models import OPDQueue
-from backend.domains.diagnostics.models import (DiagnosticOrder, DiagnosticTask, ServiceCategory, ServiceCatalog, ServiceTypeEnum, TaskStatusEnum)
+from backend.domains.diagnostics.models import (DiagnosticOrder, DiagnosticTask, OrderStatusEnum, ServiceCategory, ServiceCatalog, ServiceTypeEnum, TaskStatusEnum)
 from starlette.requests import Request
 
 
@@ -67,7 +67,7 @@ def branch_grant_environment(monkeypatch):
             tenant_registry_id=registry.id,
             code=registry.branch_code,
             name=registry.hospital_name,
-            status="ACTIVE",
+            status=OrderStatusEnum.ACTIVE,
         )
         control.add(branch)
         control.flush()
