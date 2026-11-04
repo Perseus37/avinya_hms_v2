@@ -4,12 +4,12 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, BackgroundTasks, Response, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
-from sqlalchemy import select
+from sqlalchemy import select, func
 from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.document_responses import pdf_attachment_response
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.dependencies import RequirePermission, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User
 from backend.domains.procurement.models import (
@@ -17,11 +17,14 @@ from backend.domains.procurement.models import (
     GoodsReceiptNote, GoodsReceiptItem, GRNStatusEnum,
     VendorInvoice, VendorInvoiceItem, VendorInvoiceStatusEnum,
     ProcurementDocumentDownloadAudit,
-    StoreIndent, StoreIndentItem, IndentStatusEnum
+    StoreIndent, StoreIndentItem, IndentStatusEnum,
+    PurchaseRequisition, PurchaseRequisitionItem, PurchaseRequisitionStatusEnum
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
-    IndentIssueRequest, PurchaseReturnCreate
+    IndentIssueRequest, PurchaseReturnCreate,
+    PurchaseRequisitionCreate, PurchaseRequisitionResponse, PurchaseRequisitionReview,
+    PurchaseOrderFromRequisitionCreate
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
@@ -120,6 +123,243 @@ def get_vendor(
     if vendor is None:
         raise HTTPException(status_code=404, detail="Vendor not found.")
     return vendor
+
+
+# --- External Purchase Requisitions ---
+@router.post(
+    "/purchase-requisitions",
+    response_model=PurchaseRequisitionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_purchase_requisition(
+    payload: PurchaseRequisitionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    department = db.get(__import__("backend.domains.identity.models", fromlist=["Department"]).Department, payload.requesting_department_id)
+    if department is None or not department.is_active:
+        raise HTTPException(status_code=404, detail="Requesting department is unavailable.")
+    if not user_has_department_access(db, current_user, department.id):
+        raise HTTPException(status_code=403, detail="You are not assigned to the requesting department.")
+    requisition = PurchaseRequisition(
+        requisition_number=_generate_reference("PR"),
+        requesting_department_id=department.id,
+        requested_by_id=current_user.id,
+        status=PurchaseRequisitionStatusEnum.DRAFT,
+        required_by_date=payload.required_by_date,
+        justification=payload.justification.strip(),
+        created_by_id=current_user.id,
+    )
+    db.add(requisition)
+    db.flush()
+    for item in payload.items:
+        if item.medication_id is not None:
+            medication = db.get(__import__("backend.domains.pharmacy.models", fromlist=["MedicationMaster"]).MedicationMaster, item.medication_id)
+            if medication is None or not medication.is_active:
+                raise HTTPException(status_code=422, detail="A requested medication is unavailable.")
+        db.add(PurchaseRequisitionItem(
+            requisition_id=requisition.id,
+            medication_id=item.medication_id,
+            item_description=item.item_description.strip(),
+            requested_quantity=item.requested_quantity,
+            estimated_unit_price_paise=item.estimated_unit_price_paise,
+            notes=item.notes,
+            created_by_id=current_user.id,
+        ))
+    db.commit()
+    return db.query(PurchaseRequisition).options(
+        selectinload(PurchaseRequisition.items)
+    ).filter(PurchaseRequisition.id == requisition.id).one()
+
+
+@router.get("/purchase-requisitions", response_model=PaginatedResponse[PurchaseRequisitionResponse])
+def list_purchase_requisitions(
+    requisition_status: Optional[PurchaseRequisitionStatusEnum] = Query(default=None, alias="status"),
+    department_id: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    page, page_size = validate_pagination(page, page_size)
+    query = db.query(PurchaseRequisition).options(selectinload(PurchaseRequisition.items))
+    if requisition_status is not None:
+        query = query.filter(PurchaseRequisition.status == requisition_status)
+    if department_id is not None:
+        query = query.filter(PurchaseRequisition.requesting_department_id == department_id)
+    total = query.count()
+    items = query.order_by(PurchaseRequisition.created_at.desc(), PurchaseRequisition.id.desc()).offset(
+        (page - 1) * page_size
+    ).limit(page_size).all()
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/purchase-requisitions/{requisition_id}", response_model=PurchaseRequisitionResponse)
+def get_purchase_requisition(
+    requisition_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    requisition = db.query(PurchaseRequisition).options(
+        selectinload(PurchaseRequisition.items)
+    ).filter(PurchaseRequisition.id == requisition_id).one_or_none()
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Purchase requisition not found.")
+    return requisition
+
+
+@router.post("/purchase-requisitions/{requisition_id}/submit", response_model=PurchaseRequisitionResponse)
+def submit_purchase_requisition(
+    requisition_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    requisition = db.query(PurchaseRequisition).options(
+        selectinload(PurchaseRequisition.items)
+    ).filter(PurchaseRequisition.id == requisition_id).with_for_update().one_or_none()
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Purchase requisition not found.")
+    if requisition.requested_by_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the requisition requester can submit it.")
+    if requisition.status != PurchaseRequisitionStatusEnum.DRAFT:
+        raise HTTPException(status_code=409, detail="Only draft requisitions can be submitted.")
+    if not requisition.items:
+        raise HTTPException(status_code=409, detail="A requisition must contain at least one line.")
+    requisition.status = PurchaseRequisitionStatusEnum.SUBMITTED
+    requisition.submitted_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(requisition)
+    return requisition
+
+
+@router.patch("/purchase-requisitions/{requisition_id}/review", response_model=PurchaseRequisitionResponse)
+def review_purchase_requisition(
+    requisition_id: int,
+    payload: PurchaseRequisitionReview,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    requisition = db.query(PurchaseRequisition).options(
+        selectinload(PurchaseRequisition.items)
+    ).filter(PurchaseRequisition.id == requisition_id).with_for_update().one_or_none()
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Purchase requisition not found.")
+    if requisition.status != PurchaseRequisitionStatusEnum.SUBMITTED:
+        raise HTTPException(status_code=409, detail="Only submitted requisitions can be reviewed.")
+    if requisition.requested_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The requester cannot approve their own requisition.")
+    if payload.approved:
+        requested_ids = {item.id for item in requisition.items}
+        submitted = [item.requisition_item_id for item in payload.items]
+        if len(submitted) != len(set(submitted)) or set(submitted) != requested_ids:
+            raise HTTPException(status_code=422, detail="Approval must specify exactly one decision for every requisition line.")
+        decisions = {item.requisition_item_id: item for item in payload.items}
+        if not any(decision.approved_quantity > 0 for decision in payload.items):
+            raise HTTPException(status_code=422, detail="At least one line must have a positive approved quantity.")
+        for line in requisition.items:
+            decision = decisions[line.id]
+            if decision.approved_quantity > line.requested_quantity:
+                raise HTTPException(status_code=422, detail=f"Approved quantity cannot exceed requested quantity for line {line.id}.")
+            line.approved_quantity = decision.approved_quantity
+            if decision.estimated_unit_price_paise is not None:
+                line.estimated_unit_price_paise = decision.estimated_unit_price_paise
+    elif payload.items:
+        raise HTTPException(status_code=422, detail="Rejected requisitions must not include approved line quantities.")
+    requisition.status = PurchaseRequisitionStatusEnum.APPROVED if payload.approved else PurchaseRequisitionStatusEnum.REJECTED
+    requisition.reviewed_by_id = current_user.id
+    requisition.reviewed_at = datetime.now(timezone.utc)
+    requisition.review_notes = payload.review_notes.strip()
+    db.commit()
+    db.refresh(requisition)
+    return requisition
+
+
+@router.post(
+    "/purchase-requisitions/{requisition_id}/purchase-orders",
+    response_model=POResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_purchase_order_from_requisition(
+    requisition_id: int,
+    payload: PurchaseOrderFromRequisitionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    requisition = db.query(PurchaseRequisition).options(
+        selectinload(PurchaseRequisition.items)
+    ).filter(PurchaseRequisition.id == requisition_id).with_for_update().one_or_none()
+    if requisition is None:
+        raise HTTPException(status_code=404, detail="Purchase requisition not found.")
+    if requisition.status not in {
+        PurchaseRequisitionStatusEnum.APPROVED,
+        PurchaseRequisitionStatusEnum.PARTIALLY_ORDERED,
+    }:
+        raise HTTPException(status_code=409, detail="Only approved requisitions with remaining approved quantities can create purchase orders.")
+    vendor = db.get(VendorMaster, payload.vendor_id)
+    if vendor is None or not vendor.is_active:
+        raise HTTPException(status_code=409, detail="An active registered vendor is required.")
+    item_map = {item.id: item for item in requisition.items}
+    requested_ids = [item.requisition_item_id for item in payload.items]
+    if len(requested_ids) != len(set(requested_ids)):
+        raise HTTPException(status_code=422, detail="A requisition line can appear only once in a purchase order.")
+    prepared = []
+    for item in payload.items:
+        req_item = item_map.get(item.requisition_item_id)
+        if req_item is None or req_item.approved_quantity is None:
+            raise HTTPException(status_code=422, detail="Every purchase order line must reference an approved requisition line.")
+        ordered = db.query(func.coalesce(func.sum(PurchaseOrderItem.quantity_ordered), 0)).join(
+            PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.po_id
+        ).filter(
+            PurchaseOrder.requisition_id == requisition.id,
+            PurchaseOrderItem.requisition_item_id == req_item.id,
+            PurchaseOrder.status != POStatusEnum.CANCELLED,
+        ).scalar()
+        remaining = req_item.approved_quantity - int(ordered or 0)
+        if item.quantity_ordered > remaining:
+            raise HTTPException(status_code=409, detail=f"PO quantity exceeds remaining approved quantity for requisition line {req_item.id}.")
+        prepared.append((item, req_item))
+    po = PurchaseOrder(
+        po_number=_generate_reference("PO"),
+        vendor_id=vendor.id,
+        requisition_id=requisition.id,
+        status=POStatusEnum.SUBMITTED,
+        delivery_due_date=payload.delivery_due_date,
+        payment_terms=payload.payment_terms,
+        created_by_id=current_user.id,
+    )
+    db.add(po)
+    db.flush()
+    total_amount = 0
+    for item, req_item in prepared:
+        total = item.quantity_ordered * item.unit_price_paise
+        total_amount += total
+        db.add(PurchaseOrderItem(
+            po_id=po.id,
+            requisition_item_id=req_item.id,
+            medication_id=req_item.medication_id,
+            item_description=req_item.item_description,
+            quantity_ordered=item.quantity_ordered,
+            unit_price_paise=item.unit_price_paise,
+            total_price_paise=total,
+            created_by_id=current_user.id,
+        ))
+    po.total_amount_paise = total_amount
+    all_fulfilled = True
+    for req_item in requisition.items:
+        ordered = db.query(func.coalesce(func.sum(PurchaseOrderItem.quantity_ordered), 0)).join(
+            PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.po_id
+        ).filter(
+            PurchaseOrder.requisition_id == requisition.id,
+            PurchaseOrderItem.requisition_item_id == req_item.id,
+            PurchaseOrder.status != POStatusEnum.CANCELLED,
+        ).scalar()
+        if int(ordered or 0) < int(req_item.approved_quantity or 0):
+            all_fulfilled = False
+            break
+    requisition.status = PurchaseRequisitionStatusEnum.CONVERTED if all_fulfilled else PurchaseRequisitionStatusEnum.PARTIALLY_ORDERED
+    db.commit()
+    db.refresh(po)
+    return po
 
 
 # --- Purchase Orders ---
