@@ -204,61 +204,105 @@ def trigger_donut_invoice_extraction(db_name: str, invoice_id: int, document_pat
     finally:
         db.close()
 
+def _percentage_amount_paise(base_paise: int, percentage: int) -> int:
+    """Calculate a whole-percent tax amount in paise using half-up rounding."""
+    return (base_paise * percentage + 50) // 100
+
+
 def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceStatusEnum:
-    """Validates Vendor Invoice against PO and GRN for financial integrity."""
-    if not invoice.po_id:
+    """Reconcile invoice arithmetic, PO pricing, accepted receipts and prior invoices.
+
+    A missing accepted GRN is deliberately not considered a successful three-way match.
+    Tax is checked against the invoice's own line tax rates; PO tax rates are not yet
+    represented in the PO schema, so no unsupported tax-rate assumption is made here.
+    """
+    if not invoice.po_id or not invoice.items:
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
     po = db.get(PurchaseOrder, invoice.po_id)
     if (
         not po
         or po.vendor_id != invoice.vendor_id
-        or po.status
-        not in {
+        or po.status not in {
             POStatusEnum.APPROVED,
             POStatusEnum.PARTIALLY_RECEIVED,
             POStatusEnum.COMPLETED,
         }
     ):
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-    receipt = None
-    if invoice.grn_id:
-        receipt = db.get(GoodsReceiptNote, invoice.grn_id)
-        if (
-            not receipt
-            or receipt.po_id != po.id
-            or receipt.status != GRNStatusEnum.ACCEPTED
-        ):
-            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-    calculated_gross = invoice.subtotal_paise + invoice.tax_amount_paise - invoice.discount_paise
 
-    # Rule 1: Mathematical Integrity Tolerance (+/- 100 paise)
-    if abs(calculated_gross - invoice.total_amount_paise) > 100:
+    receipt = db.get(GoodsReceiptNote, invoice.grn_id) if invoice.grn_id else None
+    if not receipt or receipt.po_id != po.id or receipt.status != GRNStatusEnum.ACCEPTED:
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
-    # Rule 2: PO Line Item Validation
+    # Header totals must reconcile exactly. Each invoice line's net amount is
+    # quantity * unit price; tax is rounded per line to avoid aggregate drift.
+    expected_subtotal = 0
+    expected_tax = 0
     for item in invoice.items:
-        if not item.po_item_id:
+        line_net = item.quantity * item.unit_price_paise
+        if item.total_price_paise != line_net:
             return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        po_line = next((line for line in po.items if line.id == item.po_item_id), None)
-        if not po_line:
-            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        if item.quantity > po_line.quantity_ordered:
-            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        if receipt:
-            received_quantity = sum(
-                receipt_item.accepted_quantity
-                for receipt_item in receipt.items
-                if receipt_item.po_item_id == po_line.id
-            )
-            if item.quantity > received_quantity:
-                return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+        expected_subtotal += line_net
+        expected_tax += _percentage_amount_paise(line_net, item.tax_percentage)
 
-        # Flag variance if invoiced unit price strictly exceeds PO unit price
-        if item.unit_price_paise > po_line.unit_price_paise:
-            return VendorInvoiceStatusEnum.PRICE_VARIANCE_FLAGGED
+    if (
+        invoice.subtotal_paise != expected_subtotal
+        or invoice.tax_amount_paise != expected_tax
+        or invoice.discount_paise > invoice.subtotal_paise
+        or invoice.total_amount_paise
+        != invoice.subtotal_paise + invoice.tax_amount_paise - invoice.discount_paise
+    ):
+        return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
-    return VendorInvoiceStatusEnum.MATCHED_APPROVED
+    po_lines = {line.id: line for line in po.items}
+    invoiced_by_po_line = {}
+    price_variance = False
+    for item in invoice.items:
+        if not item.po_item_id or item.po_item_id not in po_lines:
+            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+        po_line = po_lines[item.po_item_id]
+        invoiced_by_po_line[item.po_item_id] = (
+            invoiced_by_po_line.get(item.po_item_id, 0) + item.quantity
+        )
+        if item.medication_id is not None and item.medication_id != po_line.medication_id:
+            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+        if item.unit_price_paise != po_line.unit_price_paise:
+            price_variance = True
+
+    # Compare cumulative accepted quantity across all accepted GRNs, not just the
+    # GRN selected on this invoice.
+    for po_item_id, current_invoice_qty in invoiced_by_po_line.items():
+        accepted_qty = db.query(func.coalesce(func.sum(GoodsReceiptItem.accepted_quantity), 0)).join(
+            GoodsReceiptNote, GoodsReceiptNote.id == GoodsReceiptItem.grn_id
+        ).filter(
+            GoodsReceiptNote.po_id == po.id,
+            GoodsReceiptNote.status == GRNStatusEnum.ACCEPTED,
+            GoodsReceiptItem.po_item_id == po_item_id,
+        ).scalar()
+        if current_invoice_qty > int(accepted_qty or 0):
+            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+
+        previously_invoiced = db.query(func.coalesce(func.sum(VendorInvoiceItem.quantity), 0)).join(
+            VendorInvoice, VendorInvoice.id == VendorInvoiceItem.invoice_id
+        ).filter(
+            VendorInvoice.po_id == po.id,
+            VendorInvoice.id != invoice.id,
+            VendorInvoice.status.in_([
+                VendorInvoiceStatusEnum.MATCHED_APPROVED,
+                VendorInvoiceStatusEnum.PAID,
+                VendorInvoiceStatusEnum.PRICE_VARIANCE_FLAGGED,
+            ]),
+            VendorInvoiceItem.po_item_id == po_item_id,
+        ).scalar()
+        if int(previously_invoiced or 0) + current_invoice_qty > int(accepted_qty or 0):
+            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+
+    return (
+        VendorInvoiceStatusEnum.PRICE_VARIANCE_FLAGGED
+        if price_variance
+        else VendorInvoiceStatusEnum.MATCHED_APPROVED
+    )
 
 def post_invoice_to_accounts_payable(db: Session, invoice: VendorInvoice, current_user_id: int):
     """Triggers Accounts Payable ledger entry upon successful invoice match."""
