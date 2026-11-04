@@ -623,7 +623,7 @@ def sign_off_clinical_note(
     note = db.get(ClinicalNote, note_id)
     if not note:
         raise HTTPException(status_code=404, detail="Clinical note not found.")
-    ensure_encounter_department_access(db, note.encounter_id)
+    ensure_encounter_department_access(db, note.encounter_id, current_user)
     if note.is_signed:
         raise HTTPException(status_code=409, detail="Clinical note is already signed.")
 
