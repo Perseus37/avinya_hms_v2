@@ -729,6 +729,14 @@ def test_hospital_group_identity_supports_branch_specific_roles_and_scoped_email
             branch_a = add_branch("ACME-A", "acme-a", "hms_acme_a")
             branch_b = add_branch("ACME-B", "acme-b", "hms_acme_b")
             other_branch = add_branch("OTHER-C", "other-c", "hms_other_c", other_group)
+            db.commit()
+            # Reload persistent setup rows before testing group-boundary constraints.
+            group = db.query(HospitalGroup).filter_by(code="ACME-HEALTH").one()
+            user = db.query(OrganizationUser).filter_by(group_id=group.id, email_normalized="doctor@example.com").one()
+            branch_a = db.query(Branch).filter_by(code="ACME-A").one()
+            branch_b = db.query(Branch).filter_by(code="ACME-B").one()
+            other_branch = db.query(Branch).filter_by(code="OTHER-C").one()
+
             membership_a = BranchMembership(
                 organization_user_id=user.id,
                 branch_id=branch_a.id,
@@ -743,24 +751,17 @@ def test_hospital_group_identity_supports_branch_specific_roles_and_scoped_email
             )
             db.add_all([membership_a, membership_b])
             db.flush()
-            db.add(BranchMembership(
-                organization_user_id=user.id,
-                branch_id=other_branch.id,
-                group_id=group.id,
-                status="ACTIVE",
-            ))
+
             with pytest.raises(IntegrityError):
-                db.flush()
-            db.rollback()
-            # Re-open the transaction and verify valid group-scoped assignments remain possible.
-            group = db.query(HospitalGroup).filter_by(code="ACME-HEALTH").one()
-            user = db.query(OrganizationUser).filter_by(group_id=group.id, email_normalized="doctor@example.com").one()
-            branch_a = db.query(Branch).filter_by(code="ACME-A").one()
-            branch_b = db.query(Branch).filter_by(code="ACME-B").one()
-            membership_a = BranchMembership(organization_user_id=user.id, branch_id=branch_a.id, group_id=group.id, status="ACTIVE")
-            membership_b = BranchMembership(organization_user_id=user.id, branch_id=branch_b.id, group_id=group.id, status="ACTIVE")
-            db.add_all([membership_a, membership_b])
-            db.flush()
+                with db.begin_nested():
+                    db.add(BranchMembership(
+                        organization_user_id=user.id,
+                        branch_id=other_branch.id,
+                        group_id=group.id,
+                        status="ACTIVE",
+                    ))
+                    db.flush()
+
             db.add_all([
                 BranchMembershipRole(membership_id=membership_a.id, role_code="ROLE_DOCTOR"),
                 BranchMembershipRole(membership_id=membership_b.id, role_code="ROLE_MEDICAL_DIRECTOR"),
