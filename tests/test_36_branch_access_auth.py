@@ -313,3 +313,71 @@ def test_encounter_department_scope_denies_unassigned_department(branch_grant_en
         with pytest.raises(HTTPException) as exc:
             dependencies.RequireEncounterDepartmentAccess()(request, user, tenant_db)
         assert exc.value.status_code == 403
+
+
+def test_patient_visibility_uses_any_assigned_department_encounter(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        department = tenant_db.query(Department).filter_by(code="CARDIOLOGY").one()
+        patient = Patient(
+            mrn="MRN-PATIENT-SCOPE-01",
+            full_name="Patient Scope Test",
+            date_of_birth=datetime(1985, 1, 1, tzinfo=timezone.utc),
+            gender=GenderEnum.FEMALE,
+            created_by_id=user.id,
+        )
+        tenant_db.add(patient)
+        tenant_db.flush()
+        encounter = PatientEncounter(
+            patient_id=patient.id,
+            encounter_type=EncounterTypeEnum.OPD,
+            primary_doctor_id=user.id,
+            department_id=department.id,
+        )
+        tenant_db.add(encounter)
+        tenant_db.commit()
+
+        dependencies.ensure_patient_department_access(tenant_db, patient.id)
+        dependencies.ensure_encounter_department_access(tenant_db, encounter.id)
+
+
+def test_patient_visibility_denies_patient_without_assigned_department_encounter(
+    branch_grant_environment,
+):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        patient = Patient(
+            mrn="MRN-PATIENT-SCOPE-02",
+            full_name="Unassigned Patient",
+            date_of_birth=datetime(1985, 1, 1, tzinfo=timezone.utc),
+            gender=GenderEnum.FEMALE,
+            created_by_id=user.id,
+        )
+        tenant_db.add(patient)
+        tenant_db.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            dependencies.ensure_patient_department_access(tenant_db, patient.id)
+        assert exc.value.status_code == 404
+
+
+def test_patient_visibility_does_not_block_legacy_branch_sessions(branch_grant_environment):
+    _, TenantSession, _, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        patient = Patient(
+            mrn="MRN-PATIENT-SCOPE-03",
+            full_name="Legacy Patient",
+            date_of_birth=datetime(1985, 1, 1, tzinfo=timezone.utc),
+            gender=GenderEnum.FEMALE,
+            created_by_id=1,
+        )
+        tenant_db.add(patient)
+        tenant_db.commit()
+        assert "central_branch_department_codes" not in tenant_db.info
+        dependencies.ensure_patient_department_access(tenant_db, patient.id)
