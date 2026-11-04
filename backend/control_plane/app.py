@@ -20,6 +20,7 @@ from backend.control_plane.api.routers.saas_billing import router as saas_billin
 from backend.control_plane.api.routers.ui_console import router as ui_console_router
 from backend.control_plane.api.routers.network import router as control_plane_network_router
 from backend.control_plane.api.routers.organization_groups import router as organization_groups_router
+from backend.control_plane.api.routers.organization_auth import router as organization_auth_router
 from backend.control_plane.services.auth import (
     authenticate_operator_token,
     control_plane_actor, control_plane_operator_role,
@@ -193,6 +194,7 @@ app.include_router(saas_billing_router)
 app.include_router(ui_console_router)
 app.include_router(control_plane_network_router)
 app.include_router(organization_groups_router)
+app.include_router(organization_auth_router)
 app.include_router(create_operator_auth_router())
 
 # -------------------------------------------------------------------------
