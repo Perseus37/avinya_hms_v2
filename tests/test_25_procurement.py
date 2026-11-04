@@ -103,8 +103,8 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
                 "po_item_id": po_item_id,
                 "batch_number": "BATCH-AUTO-001",
                 "expiry_date": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
-                "received_quantity": 1000,
-                "accepted_quantity": 1000
+                "received_quantity": 600,
+                "accepted_quantity": 600
             }]
         }
     )
@@ -115,6 +115,31 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
     assert accept_res.status_code == 200, f"GRN acceptance failed: {accept_res.text}"
     duplicate_accept = client.patch(f"/v1/api/procurement/grn/{grn['id']}/accept", headers=superuser_headers)
     assert duplicate_accept.status_code == 409
+    assert client.get(f"/v1/api/procurement/purchase-orders/{po_id}", headers=pharmacist_headers).status_code in (404, 405)
+
+    second_grn = client.post(
+        "/v1/api/procurement/grn",
+        headers=pharmacist_headers,
+        json={
+            "po_id": po_id,
+            "location_id": main_location["id"],
+            "invoice_number": "INV-VND-1000",
+            "invoice_date": datetime.now(timezone.utc).isoformat(),
+            "items": [{
+                "po_item_id": po_item_id,
+                "batch_number": "BATCH-AUTO-001",
+                "expiry_date": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
+                "received_quantity": 400,
+                "accepted_quantity": 400
+            }]
+        },
+    )
+    assert second_grn.status_code == 201, second_grn.text
+    second_accept = client.patch(
+        f"/v1/api/procurement/grn/{second_grn.json()['id']}/accept",
+        headers=superuser_headers,
+    )
+    assert second_accept.status_code == 200, second_accept.text
 
     batches = client.get(
         f"/v1/api/pharmacy/inventory/batches?medication_id={med['id']}",
@@ -127,11 +152,11 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
         f"/v1/api/pharmacy/inventory/movements?batch_id={batches[0]['id']}",
         headers=pharmacist_headers,
     ).json()["items"]
-    assert len(ledger) == 1
-    assert ledger[0]["movement_type"] == "RECEIPT"
-    assert ledger[0]["quantity_delta"] == 1000
-    assert ledger[0]["stock_before"] == 0
-    assert ledger[0]["stock_after"] == 1000
+    assert len(ledger) == 2
+    assert all(item["movement_type"] == "RECEIPT" for item in ledger)
+    assert [item["quantity_delta"] for item in ledger] == [600, 400]
+    assert [item["stock_before"] for item in ledger] == [0, 600]
+    assert [item["stock_after"] for item in ledger] == [600, 1000]
 
 def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_headers, pharmacist_headers, billing_headers, superuser_headers):
     """Scenario 3: Issuing an indent bills the patient; returning stock credits the patient."""
