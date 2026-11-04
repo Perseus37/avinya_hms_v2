@@ -9,13 +9,13 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.dependencies import (RequirePermission, validate_pagination, ensure_department_code_access, ensure_pharmacy_prescription_access, ensure_prescription_encounter_access, ensure_encounter_department_access, get_user_assigned_department_ids)
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.core.date_ranges import resolve_record_date_window
 from backend.domains.billing.models import Invoice, InvoiceLineItem, InvoiceStatusEnum, PaymentMethodEnum, RefundVoucher
 from backend.domains.billing.rcm_services import recalculate_invoice_totals
 from backend.domains.encounters.models import EncounterStatusEnum, PatientEncounter
-from backend.domains.identity.models import User
+from backend.domains.identity.models import Department, User
 from backend.domains.pharmacy.models import (
     BCMAScanAuditLog,
     ControlledSubstanceMovementLog,
@@ -155,8 +155,9 @@ def deactivate_medication(
 def receive_inventory_batch(
     payload: InventoryBatchCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:write")),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
 ):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     if payload.stock_quantity <= 0:
         raise HTTPException(status_code=400, detail="Initial batch stock quantity must be greater than zero.")
     if payload.unit_price_paise < 0:
@@ -185,8 +186,9 @@ def list_inventory_batches(
     page_size: int = 50,
     export_format: Optional[str] = Query(default=None, alias="format"),
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:read")),
+    current_user: User = Depends(RequirePermission("pharmacy:read")),
 ):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     """Lists pharmacy inventory batches with optional depleted stock inclusion and streaming CSV export."""
     start_at, end_at = resolve_record_date_window(start_date, end_date)
     query = db.query(InventoryBatch).options(joinedload(InventoryBatch.medication))
@@ -245,8 +247,9 @@ def update_inventory_batch(
     batch_id: int,
     payload: InventoryBatchUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:write")),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
 ):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     batch = db.get(InventoryBatch, batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found.")
@@ -264,8 +267,9 @@ def adjust_inventory_stock(
     batch_id: int,
     payload: InventoryStockAdjustment,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:write")),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
 ):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     if payload.quantity_adjustment == 0:
         raise HTTPException(status_code=400, detail="Quantity adjustment cannot be zero.")
 
@@ -291,8 +295,9 @@ def adjust_inventory_stock(
 def void_inventory_batch(
     batch_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:void")),
+    current_user: User = Depends(RequirePermission("pharmacy:void")),
 ):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     try:
         stmt = select(InventoryBatch).where(InventoryBatch.id == batch_id).with_for_update(nowait=True)
         batch = db.execute(stmt).scalar_one_or_none()
@@ -322,6 +327,7 @@ def write_prescription(
     encounter = db.get(PatientEncounter, payload.encounter_id)
     if not encounter or encounter.status != EncounterStatusEnum.ACTIVE:
         raise HTTPException(status_code=400, detail="Active patient encounter not found.")
+    ensure_prescription_encounter_access(db, payload.encounter_id, current_user)
 
     med_ids = [item.medication_id for item in payload.items]
     meds = db.query(MedicationMaster).filter(MedicationMaster.id.in_(med_ids)).all()
@@ -420,6 +426,19 @@ def list_prescriptions(
     page, page_size = validate_pagination(page, page_size)
     start_at, end_at = resolve_record_date_window(start_date, end_date)
     query = db.query(Prescription).options(joinedload(Prescription.items).joinedload(PrescriptionItem.medication))
+    assigned_department_ids = get_user_assigned_department_ids(db, actor)
+    if assigned_department_ids is not None:
+        pharmacy_department_ids = set(db.execute(
+            select(Department.id).where(
+                Department.id.in_(assigned_department_ids),
+                Department.code.in_(("PHARMACY", "DEPT_PHARMACY")),
+                Department.is_active.is_(True),
+            )
+        ).scalars().all())
+        if not pharmacy_department_ids:
+            query = query.join(Prescription.encounter).filter(
+                PatientEncounter.department_id.in_(assigned_department_ids)
+            ) if assigned_department_ids else query.filter(Prescription.id == -1)
     if encounter_id:
         query = query.filter(Prescription.encounter_id == encounter_id)
     if status_filter:
@@ -466,6 +485,8 @@ def get_prescription(
     )
     if not rx:
         raise HTTPException(status_code=404, detail="Prescription not found.")
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    ensure_pharmacy_prescription_access(db, rx.id, actor)
     decisions = evaluate_tenant_patient_data_uses(
         db,
         data_use_point="pharmacy.prescriptions.read",
@@ -487,6 +508,7 @@ def update_prescription(
     rx = db.get(Prescription, prescription_id)
     if not rx:
         raise HTTPException(status_code=404, detail="Prescription not found.")
+    ensure_pharmacy_prescription_access(db, rx.id, current_user)
     if rx.status in [PrescriptionStatusEnum.DISPENSED, PrescriptionStatusEnum.CANCELLED]:
         raise HTTPException(status_code=400, detail="Cannot modify a dispensed or cancelled prescription.")
 
@@ -509,6 +531,7 @@ def cancel_prescription(
     rx = db.query(Prescription).options(joinedload(Prescription.items)).filter(Prescription.id == prescription_id).first()
     if not rx:
         raise HTTPException(status_code=404, detail="Prescription not found.")
+    ensure_pharmacy_prescription_access(db, rx.id, current_user)
     if rx.status != PrescriptionStatusEnum.ACTIVE or any(i.dispensed_quantity > 0 for i in rx.items):
         raise HTTPException(status_code=400, detail="Cannot cancel a prescription once dispensing has started.")
 
@@ -537,6 +560,7 @@ def dispense_medication(
         prescription = db.execute(stmt_rx).scalar_one_or_none()
         if not prescription or prescription.status in [PrescriptionStatusEnum.DISPENSED, PrescriptionStatusEnum.CANCELLED]:
             raise HTTPException(status_code=400, detail="Prescription is invalid, cancelled, or already fully dispensed.")
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
 
         stmt_inv = (
             select(Invoice)
@@ -815,6 +839,7 @@ def bcma_verify_and_administer(
     Right Patient, Right Drug, Right Dose, Right Route, and Right Time (+/- 60 mins).
     Automates eMAR dose logging upon successful verification; triggers hard stops on mismatch.
     """
+    ensure_encounter_department_access(db, payload.encounter_id, current_user)
     from backend.domains.pharmacy.services import execute_bcma_administration
     return execute_bcma_administration(
         session=db,
