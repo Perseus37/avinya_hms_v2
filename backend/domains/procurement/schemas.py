@@ -70,9 +70,10 @@ class GRNItemCreate(BaseModel):
 
 class GRNCreate(BaseModel):
     po_id: int
-    invoice_number: str
+    location_id: Optional[int] = None
+    invoice_number: str = Field(min_length=1, max_length=100)
     invoice_date: datetime
-    items: List[GRNItemCreate]
+    items: List[GRNItemCreate] = Field(min_length=1)
 
 # --- Vendor Invoices (Donut AI Integration) ---
 class VendorInvoiceItemResponse(BaseModel):
