@@ -326,7 +326,7 @@ class ControlledSubstanceMovementResponse(BaseModel):
     balance_after: int
     encounter_id: Optional[int] = None
     prescription_item_id: Optional[int] = None
-    primary_user_id: int
+    primary_user_id: Optional[int] = None
     witness_user_id: Optional[int] = None
     witness_verified: bool
     wastage_reason: Optional[str] = None
