@@ -6,7 +6,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.control_plane import app as control_app_module
-from backend.control_plane.models import ControlBase, HospitalGroup, OrganizationUser
+from backend.control_plane.models import (
+    Branch, BranchAccessSession, BranchMembership, BranchUserLink,
+    ControlBase, HospitalGroup, OrganizationUser, TenantRegistry,
+)
 from backend.core.database import get_control_db
 from backend.core.dependencies import get_redis
 from backend.domains.identity.passwords import pwd_context
@@ -107,6 +110,78 @@ def test_group_owner_must_enroll_mfa_and_gets_revocable_central_session(monkeypa
             assert confirm.status_code == 200, confirm.text
             access_token = confirm.json()["access_token"]
             headers = {"Authorization": f"Bearer {access_token}"}
+
+            with SessionLocal() as db:
+                group = db.query(HospitalGroup).filter_by(code="ACME-HEALTH").one()
+                registry = TenantRegistry(
+                    hospital_name="Acme Main Hospital",
+                    branch_code="ACME-MAIN",
+                    subdomain_slug="acme-main",
+                    db_name="acme_main_db",
+                    admin_email="admin@acme.example",
+                    jwt_secret_key="branch-test-signing-key",
+                    backup_encryption_key="branch-test-backup-key",
+                )
+                db.add(registry)
+                db.flush()
+                branch = Branch(
+                    group_id=group.id,
+                    tenant_registry_id=registry.id,
+                    code="ACME-MAIN",
+                    name="Acme Main Hospital",
+                    status="ACTIVE",
+                )
+                db.add(branch)
+                db.flush()
+                membership = BranchMembership(
+                    organization_user_id=1,
+                    branch_id=branch.id,
+                    group_id=group.id,
+                    status="ACTIVE",
+                )
+                db.add(membership)
+                db.flush()
+                db.add(BranchUserLink(
+                    membership_id=membership.id,
+                    organization_user_id=1,
+                    branch_id=branch.id,
+                    local_user_id=42,
+                    verified_at=datetime.now(timezone.utc),
+                ))
+                db.commit()
+                branch_id = branch.id
+
+            branch_list = client.get("/api/organization-auth/branches", headers=headers)
+            assert branch_list.status_code == 200, branch_list.text
+            assert branch_list.json()["count"] == 1
+            assert branch_list.json()["items"][0]["branch_code"] == "ACME-MAIN"
+
+            grant_response = client.post(
+                f"/api/organization-auth/branches/{branch_id}/access",
+                headers=headers,
+            )
+            assert grant_response.status_code == 200, grant_response.text
+            grant_payload = grant_response.json()
+            assert grant_payload["expires_in"] == 600
+            assert grant_payload["local_user_id"] == 42
+            assert grant_payload["branch_access_token"].startswith("br_access_")
+            with SessionLocal() as db:
+                stored_grant = db.get(BranchAccessSession, grant_payload["grant_id"])
+                assert stored_grant is not None
+                assert stored_grant.token_hash != grant_payload["branch_access_token"]
+                assert stored_grant.revoked_at is None
+
+            missing_grant = client.post(
+                "/api/organization-auth/branches/999999/access",
+                headers=headers,
+            )
+            assert missing_grant.status_code == 403
+
+            grant_revoked = client.delete(
+                f"/api/organization-auth/branch-access/{grant_payload['grant_id']}",
+                headers=headers,
+            )
+            assert grant_revoked.status_code == 200, grant_revoked.text
 
             profile = client.get("/api/organization-auth/me", headers=headers)
             assert profile.status_code == 200, profile.text
