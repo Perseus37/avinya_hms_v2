@@ -21,6 +21,7 @@ from backend.domains.pharmacy.models import (
     ControlledSubstanceMovementLog,
     ControlledSubstanceVault,
     InventoryBatch,
+    PharmacyLocation,
     MedicationMaster,
     PharmacyReturnLog,
     Prescription,
@@ -43,6 +44,8 @@ from backend.domains.pharmacy.schemas import (
     DispenseRequest,
     InventoryBatchCreate,
     InventoryBatchResponse,
+    PharmacyLocationCreate,
+    PharmacyLocationResponse,
     InventoryBatchUpdate,
     InventoryStockAdjustment,
     MedicationCreate,
@@ -151,6 +154,34 @@ def deactivate_medication(
     return {"status": "success", "message": f"Medication {med.code} deactivated."}
 
 
+
+
+def _get_main_pharmacy_location(db: Session) -> PharmacyLocation:
+    location = db.execute(select(PharmacyLocation).where(PharmacyLocation.code == "MAIN")).scalar_one_or_none()
+    if location is None or not location.is_active:
+        raise HTTPException(status_code=409, detail="Default MAIN pharmacy location is unavailable.")
+    return location
+
+
+@router.get("/locations", response_model=list[PharmacyLocationResponse])
+def list_pharmacy_locations(db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:read"))):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    return list(db.execute(select(PharmacyLocation).where(PharmacyLocation.is_active.is_(True)).order_by(PharmacyLocation.code)).scalars().all())
+
+
+@router.post("/locations", response_model=PharmacyLocationResponse, status_code=status.HTTP_201_CREATED)
+def create_pharmacy_location(payload: PharmacyLocationCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:write"))):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    code = payload.code.strip().upper()
+    if db.execute(select(PharmacyLocation.id).where(PharmacyLocation.code == code)).scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Pharmacy location code already exists.")
+    location = PharmacyLocation(code=code, name=payload.name.strip(), location_type=payload.location_type.strip().upper(), is_active=True)
+    db.add(location)
+    db.commit()
+    db.refresh(location)
+    return location
+
+
 @router.post("/inventory/batches", response_model=InventoryBatchResponse, status_code=status.HTTP_201_CREATED)
 def receive_inventory_batch(
     payload: InventoryBatchCreate,
@@ -169,7 +200,12 @@ def receive_inventory_batch(
     if not med or not med.is_active:
         raise HTTPException(status_code=404, detail="Active medication not found.")
 
-    batch = InventoryBatch(**payload.model_dump())
+    location_id = payload.location_id if payload.location_id is not None else _get_main_pharmacy_location(db).id
+    location = db.get(PharmacyLocation, location_id)
+    if not location or not location.is_active:
+        raise HTTPException(status_code=404, detail="Active pharmacy location not found.")
+    batch_data = payload.model_dump(exclude={"location_id"})
+    batch = InventoryBatch(**batch_data, location_id=location.id)
     db.add(batch)
     db.commit()
     db.refresh(batch)
@@ -179,6 +215,7 @@ def receive_inventory_batch(
 @router.get("/inventory/batches", response_model=PaginatedResponse[InventoryBatchResponse])
 def list_inventory_batches(
     medication_id: Optional[int] = None,
+    location_id: Optional[int] = None,
     include_depleted: bool = False,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
@@ -191,7 +228,11 @@ def list_inventory_batches(
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     """Lists pharmacy inventory batches with optional depleted stock inclusion and streaming CSV export."""
     start_at, end_at = resolve_record_date_window(start_date, end_date)
-    query = db.query(InventoryBatch).options(joinedload(InventoryBatch.medication))
+    selected_location_id = location_id if location_id is not None else _get_main_pharmacy_location(db).id
+    selected_location = db.get(PharmacyLocation, selected_location_id)
+    if not selected_location or not selected_location.is_active:
+        raise HTTPException(status_code=404, detail="Active pharmacy location not found.")
+    query = db.query(InventoryBatch).options(joinedload(InventoryBatch.medication)).filter(InventoryBatch.location_id == selected_location_id)
     if not include_depleted:
         query = query.filter(InventoryBatch.stock_quantity > 0)
     if medication_id:
@@ -621,6 +662,7 @@ def dispense_medication(
                 select(InventoryBatch)
                 .where(
                     InventoryBatch.medication_id == rx_item.medication_id,
+                    InventoryBatch.location_id == batch.location_id,
                     InventoryBatch.stock_quantity > 0,
                     InventoryBatch.expiry_date > datetime.now(timezone.utc),
                     InventoryBatch.expiry_date < batch.expiry_date,
