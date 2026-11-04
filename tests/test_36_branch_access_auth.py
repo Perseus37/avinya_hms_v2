@@ -27,8 +27,8 @@ from backend.domains.encounters.models import AdmissionTypeEnum, EncounterTypeEn
 from backend.domains.patients.models import Patient
 from backend.domains.encounters.opd_queue_models import OPDQueue
 from backend.domains.diagnostics.models import (DiagnosticOrder, DiagnosticTask, OrderStatusEnum, ServiceCategory, ServiceCatalog, ServiceTypeEnum, TaskStatusEnum)
-from backend.domains.pharmacy.models import PharmacyLocation, PharmacyLocationAccess
-from backend.domains.pharmacy.router import _ensure_pharmacy_location_access
+from backend.domains.pharmacy.models import (ControlledSubstanceVault, MedicationFormEnum, MedicationMaster, PharmacyLocation, PharmacyLocationAccess)
+from backend.domains.pharmacy.router import _ensure_pharmacy_location_access, _get_authorized_controlled_vault
 from starlette.requests import Request
 
 
@@ -641,6 +641,52 @@ def test_central_pharmacy_location_access_requires_explicit_user_assignment(bran
         tenant_db.flush()
         with pytest.raises(HTTPException) as revoked:
             _ensure_pharmacy_location_access(tenant_db, location.id, user)
+        assert revoked.value.status_code == 403
+
+
+def test_central_controlled_vault_access_requires_location_assignment(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        location = PharmacyLocation(code="NARCOTICS", name="Narcotics Safe", location_type="CONTROLLED_SAFE", is_active=True)
+        medication = MedicationMaster(
+            code="CTRL-ACCESS-01",
+            brand_name="Controlled Test Medicine",
+            generic_name="Controlled Generic",
+            form=MedicationFormEnum.INJECTION,
+            strength="10mg",
+            is_controlled_substance=True,
+        )
+        tenant_db.add_all([location, medication])
+        tenant_db.flush()
+        vault = ControlledSubstanceVault(
+            medication_id=medication.id,
+            location_id=location.id,
+            vault_location="NARCOTICS_SAFE",
+            current_balance_units=0,
+            unit_of_measure="AMPOULE",
+            is_locked=True,
+        )
+        tenant_db.add(vault)
+        tenant_db.flush()
+        tenant_db.info["central_branch_department_codes"] = frozenset({"PHARMACY"})
+
+        with pytest.raises(HTTPException) as denied:
+            _get_authorized_controlled_vault(tenant_db, vault.id, user)
+        assert denied.value.status_code == 403
+
+        tenant_db.add(PharmacyLocationAccess(location_id=location.id, user_id=user.id, is_active=True))
+        tenant_db.flush()
+        assert _get_authorized_controlled_vault(tenant_db, vault.id, user).id == vault.id
+
+        tenant_db.query(PharmacyLocationAccess).filter_by(
+            location_id=location.id, user_id=user.id
+        ).one().is_active = False
+        tenant_db.flush()
+        with pytest.raises(HTTPException) as revoked:
+            _get_authorized_controlled_vault(tenant_db, vault.id, user)
         assert revoked.value.status_code == 403
 
 
