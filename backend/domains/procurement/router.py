@@ -1040,6 +1040,11 @@ def receive_goods(payload: GRNCreate, db: Session = Depends(get_db), current_use
             rejected_quantity=rejected_quantity,
             rejection_reason=item.rejection_reason,
             unit_price_paise=po_item.unit_price_paise,
+            purchase_uom_code=po_item.purchase_uom_code,
+            base_uom_code=po_item.base_uom_code,
+            units_per_purchase_unit=po_item.units_per_purchase_unit,
+            base_quantity=(Decimal(item.accepted_quantity) * Decimal(str(po_item.units_per_purchase_unit))) if po_item.units_per_purchase_unit is not None else None,
+            base_unit_price_paise=po_item.base_unit_price_paise,
             created_by_id=current_user.id,
         ))
     db.commit()
@@ -1314,9 +1319,17 @@ def review_vendor_invoice(
     ):
         raise HTTPException(status_code=422, detail="Goods receipt must belong to the selected purchase order.")
 
-    po_item_ids = {item.id for item in purchase_order.items} if purchase_order else set()
-    if any(item.po_item_id is not None and item.po_item_id not in po_item_ids for item in payload.items):
+    po_items = {item.id: item for item in purchase_order.items} if purchase_order else {}
+    if any(item.po_item_id is not None and item.po_item_id not in po_items for item in payload.items):
         raise HTTPException(status_code=422, detail="Invoice line items must reference items from the selected purchase order.")
+    for item in payload.items:
+        if item.po_item_id is None:
+            if item.purchase_uom_code is not None:
+                raise HTTPException(status_code=422, detail="An invoice unit can only be supplied when the invoice line is mapped to a purchase-order line.")
+            continue
+        po_line = po_items[item.po_item_id]
+        if item.purchase_uom_code != po_line.purchase_uom_code:
+            raise HTTPException(status_code=409, detail="Invoice purchasing unit must match the mapped purchase-order line. Resolve unit differences with a PO amendment before matching.")
     if vendor is None:
         raise HTTPException(status_code=409, detail="Invoice vendor no longer exists.")
 
@@ -1344,6 +1357,11 @@ def review_vendor_invoice(
                 unit_price_paise=item.unit_price_paise,
                 tax_percentage=item.tax_percentage,
                 total_price_paise=item.total_price_paise,
+                purchase_uom_code=po_items[item.po_item_id].purchase_uom_code if item.po_item_id is not None else None,
+                base_uom_code=po_items[item.po_item_id].base_uom_code if item.po_item_id is not None else None,
+                units_per_purchase_unit=po_items[item.po_item_id].units_per_purchase_unit if item.po_item_id is not None else None,
+                base_quantity=(Decimal(item.quantity) * Decimal(str(po_items[item.po_item_id].units_per_purchase_unit))) if item.po_item_id is not None and po_items[item.po_item_id].units_per_purchase_unit is not None else None,
+                base_unit_price_paise=po_items[item.po_item_id].base_unit_price_paise if item.po_item_id is not None else None,
                 created_by_id=current_user.id,
             )
         )
