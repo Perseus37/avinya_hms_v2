@@ -64,6 +64,18 @@ class MedicationMaster(AuditMixin, Base):
     fefo_expiry_warning_days: Mapped[Optional[int]] = mapped_column(Integer)
 
 
+class PharmacyLocation(AuditMixin, Base):
+    """A stock-holding location within one branch database."""
+    __tablename__ = "pharmacy_locations"
+    __table_args__ = (UniqueConstraint("code", name="uq_pharmacy_locations_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    location_type: Mapped[str] = mapped_column(String(30), default="STORE", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
 class InventoryBatch(AuditMixin, Base):
     __tablename__ = "inventory_batches"
     __table_args__ = (
@@ -71,15 +83,18 @@ class InventoryBatch(AuditMixin, Base):
         CheckConstraint("stock_quantity >= 0", name="ck_batch_stock_non_neg"),
         CheckConstraint("unit_price_paise >= 0", name="ck_batch_price_non_neg"),
         Index("ix_inventory_batches_medication_id", "medication_id"),
+        Index("ix_inventory_batches_location_id", "location_id"),
     )
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     medication_id: Mapped[int] = mapped_column(ForeignKey("medication_master.id"), nullable=False)
+    location_id: Mapped[int] = mapped_column(ForeignKey("pharmacy_locations.id"), nullable=False)
     batch_number: Mapped[str] = mapped_column(String(50), nullable=False)
     expiry_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     stock_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
 
     medication: Mapped[MedicationMaster] = relationship()
+    location: Mapped[PharmacyLocation] = relationship()
 
 
 class Prescription(AuditMixin, Base):
