@@ -105,34 +105,93 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
 # --- Goods Receipt Note (GRN) ---
 @router.post("/grn", status_code=status.HTTP_201_CREATED)
 def receive_goods(payload: GRNCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
+    po = db.execute(
+        select(PurchaseOrder).where(PurchaseOrder.id == payload.po_id).with_for_update()
+    ).scalar_one_or_none()
+    if po is None or po.status not in {POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED}:
+        raise HTTPException(status_code=409, detail="Goods can only be received against an approved, open purchase order.")
+    vendor = db.get(VendorMaster, po.vendor_id)
+    if vendor is None or not vendor.is_active:
+        raise HTTPException(status_code=409, detail="The purchase order vendor is inactive.")
+
+    po_items = {
+        item.id: item for item in db.execute(
+            select(PurchaseOrderItem).where(PurchaseOrderItem.po_id == po.id)
+        ).scalars().all()
+    }
+    pending_lines = db.query(GoodsReceiptItem).join(GoodsReceiptNote).filter(
+        GoodsReceiptNote.po_id == po.id,
+        GoodsReceiptNote.status == GRNStatusEnum.PENDING_INSPECTION,
+    ).all()
+    pending_by_po_item = {}
+    for line in pending_lines:
+        pending_by_po_item[line.po_item_id] = pending_by_po_item.get(line.po_item_id, 0) + line.accepted_quantity
+
+    prepared_items = []
+    for item in payload.items:
+        po_item = po_items.get(item.po_item_id)
+        if po_item is None:
+            raise HTTPException(status_code=422, detail="Every GRN line must belong to the selected purchase order.")
+        if item.received_quantity <= 0:
+            raise HTTPException(status_code=422, detail="Received quantity must be greater than zero.")
+        if item.accepted_quantity > item.received_quantity:
+            raise HTTPException(status_code=422, detail="Accepted quantity cannot exceed received quantity.")
+        rejected_quantity = item.received_quantity - item.accepted_quantity
+        if rejected_quantity and not (item.rejection_reason and item.rejection_reason.strip()):
+            raise HTTPException(status_code=422, detail="A rejection reason is required for rejected quantity.")
+        total_received = po_item.quantity_received + pending_by_po_item.get(po_item.id, 0) + item.accepted_quantity
+        if total_received > po_item.quantity_ordered:
+            raise HTTPException(status_code=409, detail=f"Receipt exceeds the remaining quantity for PO item {po_item.id}.")
+        prepared_items.append((item, po_item, rejected_quantity))
+        pending_by_po_item[po_item.id] = pending_by_po_item.get(po_item.id, 0) + item.accepted_quantity
+
+    if any(po_item.medication_id for _, po_item, _ in prepared_items) and payload.location_id is None:
+        raise HTTPException(status_code=422, detail="Select the destination pharmacy location for medication receipts.")
+
     grn = GoodsReceiptNote(
         grn_number=_generate_reference("GRN"),
         po_id=payload.po_id,
-        invoice_number=payload.invoice_number,
+        location_id=payload.location_id,
+        invoice_number=payload.invoice_number.strip(),
         invoice_date=payload.invoice_date,
         status=GRNStatusEnum.PENDING_INSPECTION,
-        inspected_by_id=current_user.id,
-        created_by_id=current_user.id
+        inspected_by_id=None,
+        created_by_id=current_user.id,
     )
     db.add(grn)
     db.flush()
-
-    for item in payload.items:
-        db.add(GoodsReceiptItem(**item.model_dump(), grn_id=grn.id, unit_price_paise=0, created_by_id=current_user.id))
-
+    for item, po_item, rejected_quantity in prepared_items:
+        db.add(GoodsReceiptItem(
+            grn_id=grn.id,
+            po_item_id=item.po_item_id,
+            batch_number=item.batch_number.strip(),
+            expiry_date=item.expiry_date,
+            received_quantity=item.received_quantity,
+            accepted_quantity=item.accepted_quantity,
+            rejected_quantity=rejected_quantity,
+            rejection_reason=item.rejection_reason,
+            unit_price_paise=po_item.unit_price_paise,
+            created_by_id=current_user.id,
+        ))
     db.commit()
     return {"status": "success", "id": grn.id, "grn_number": grn.grn_number}
 
 @router.patch("/grn/{grn_id}/accept")
 def accept_goods(grn_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:approve"))):
-    grn = db.get(GoodsReceiptNote, grn_id)
+    grn = db.query(GoodsReceiptNote).options(
+        selectinload(GoodsReceiptNote.items)
+    ).filter(GoodsReceiptNote.id == grn_id).with_for_update().one_or_none()
     if not grn or grn.status != GRNStatusEnum.PENDING_INSPECTION:
-        raise HTTPException(status_code=400, detail="Invalid GRN or already processed.")
+        raise HTTPException(status_code=409, detail="GRN is missing or has already been processed.")
+    if grn.created_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The GRN creator cannot inspect and accept the same receipt.")
 
     process_grn_acceptance(db, grn, current_user.id)
     grn.status = GRNStatusEnum.ACCEPTED
+    grn.inspected_by_id = current_user.id
+    grn.accepted_at = datetime.now(timezone.utc)
     db.commit()
-    return {"status": "success", "message": "Goods accepted into Pharmacy inventory."}
+    return {"status": "success", "message": "Goods accepted into the selected pharmacy location."}
 
 
 @router.get("/grn")
