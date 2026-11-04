@@ -657,6 +657,7 @@ def test_alembic_revision_graph_has_one_resolvable_head(config_path, expected_he
 
 
 def test_hospital_group_identity_supports_branch_specific_roles_and_scoped_emails(tmp_path):
+    from sqlalchemy import event
     from sqlalchemy.exc import IntegrityError
     from backend.control_plane.models import (
         Branch,
@@ -670,6 +671,11 @@ def test_hospital_group_identity_supports_branch_specific_roles_and_scoped_email
 
     database_url = f"sqlite:///{(tmp_path / 'group_identity.sqlite').as_posix()}"
     engine = create_engine(database_url)
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_foreign_keys(connection, _record):
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
     ControlBase.metadata.create_all(engine)
     SessionLocal = __import__("sqlalchemy.orm", fromlist=["sessionmaker"]).sessionmaker(bind=engine)
 
@@ -697,7 +703,7 @@ def test_hospital_group_identity_supports_branch_specific_roles_and_scoped_email
             db.add_all([user, other_group_user])
             db.flush()
 
-            def add_branch(code, slug, db_name):
+            def add_branch(code, slug, db_name, branch_group=group):
                 registry = TenantRegistry(
                     hospital_name=code,
                     branch_code=code,
@@ -711,7 +717,7 @@ def test_hospital_group_identity_supports_branch_specific_roles_and_scoped_email
                 db.add(registry)
                 db.flush()
                 branch = Branch(
-                    group_id=group.id,
+                    group_id=branch_group.id,
                     tenant_registry_id=registry.id,
                     code=code,
                     name=code,
@@ -722,6 +728,7 @@ def test_hospital_group_identity_supports_branch_specific_roles_and_scoped_email
 
             branch_a = add_branch("ACME-A", "acme-a", "hms_acme_a")
             branch_b = add_branch("ACME-B", "acme-b", "hms_acme_b")
+            other_branch = add_branch("OTHER-C", "other-c", "hms_other_c", other_group)
             membership_a = BranchMembership(
                 organization_user_id=user.id,
                 branch_id=branch_a.id,
@@ -734,6 +741,24 @@ def test_hospital_group_identity_supports_branch_specific_roles_and_scoped_email
                 group_id=group.id,
                 status="ACTIVE",
             )
+            db.add_all([membership_a, membership_b])
+            db.flush()
+            db.add(BranchMembership(
+                organization_user_id=user.id,
+                branch_id=other_branch.id,
+                group_id=group.id,
+                status="ACTIVE",
+            ))
+            with pytest.raises(IntegrityError):
+                db.flush()
+            db.rollback()
+            # Re-open the transaction and verify valid group-scoped assignments remain possible.
+            group = db.query(HospitalGroup).filter_by(code="ACME-HEALTH").one()
+            user = db.query(OrganizationUser).filter_by(group_id=group.id, email_normalized="doctor@example.com").one()
+            branch_a = db.query(Branch).filter_by(code="ACME-A").one()
+            branch_b = db.query(Branch).filter_by(code="ACME-B").one()
+            membership_a = BranchMembership(organization_user_id=user.id, branch_id=branch_a.id, group_id=group.id, status="ACTIVE")
+            membership_b = BranchMembership(organization_user_id=user.id, branch_id=branch_b.id, group_id=group.id, status="ACTIVE")
             db.add_all([membership_a, membership_b])
             db.flush()
             db.add_all([
