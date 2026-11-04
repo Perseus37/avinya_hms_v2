@@ -72,9 +72,14 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
         "contact_person": "John", "phone": "1234567890", "email": "test@vendor.com", "address": "123 St"
     }).json()
 
+    med = client.post("/v1/api/pharmacy/medications", headers=pharmacist_headers, json={
+        "code": "MED_GRN_02", "brand_name": "GRN Test Medicine", "generic_name": "Test Generic",
+        "form": "TABLET", "strength": "250mg"
+    }).json()
+
     po = client.post("/v1/api/procurement/purchase-orders", headers=pharmacist_headers, json={
         "vendor_id": vendor["id"], "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
-        "payment_terms": "Net 30", "items": [{"item_description": "Test Med", "quantity_ordered": 1000, "unit_price_paise": 500}]
+        "payment_terms": "Net 30", "items": [{"medication_id": med["id"], "item_description": "Test Med", "quantity_ordered": 1000, "unit_price_paise": 500}]
     }).json()
 
     client.patch(f"/v1/api/procurement/purchase-orders/{po['id']}/approve", headers=superuser_headers)
@@ -105,6 +110,23 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
     accept_res = client.patch(f"/v1/api/procurement/grn/{grn['id']}/accept", headers=superuser_headers)
     assert accept_res.status_code == 200, f"GRN acceptance failed: {accept_res.text}"
 
+    batches = client.get(
+        f"/v1/api/pharmacy/inventory/batches?medication_id={med['id']}",
+        headers=pharmacist_headers,
+    ).json()["items"]
+    assert len(batches) == 1
+    assert batches[0]["stock_quantity"] == 1000
+
+    ledger = client.get(
+        f"/v1/api/pharmacy/inventory/movements?batch_id={batches[0]['id']}",
+        headers=pharmacist_headers,
+    ).json()["items"]
+    assert len(ledger) == 1
+    assert ledger[0]["movement_type"] == "RECEIPT"
+    assert ledger[0]["quantity_delta"] == 1000
+    assert ledger[0]["stock_before"] == 0
+    assert ledger[0]["stock_after"] == 1000
+
 def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_headers, pharmacist_headers, billing_headers, superuser_headers):
     """Scenario 3: Issuing an indent bills the patient; returning stock credits the patient."""
     p_res = client.post("/v1/api/patients", headers=doctor_headers, json={"full_name": "Indent Patient", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"})
@@ -133,3 +155,31 @@ def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_he
 
     issue_res = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/issue", headers=pharmacist_headers, json={"items": [{"indent_item_id": indent["items"][0]["id"], "batch_id": batch["id"], "issue_quantity": 10}]})
     assert issue_res.status_code == 200, f"Indent issue failed: {issue_res.text}"
+
+    issue_ledger = client.get(
+        f"/v1/api/pharmacy/inventory/movements?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    ).json()["items"]
+    issue_movement = next(item for item in issue_ledger if item["movement_type"] == "WARD_ISSUE")
+    assert issue_movement["quantity_delta"] == -10
+    assert issue_movement["stock_before"] == 50
+    assert issue_movement["stock_after"] == 40
+
+    return_res = client.post(
+        f"/v1/api/procurement/indents/patient/{indent['id']}/return",
+        headers=superuser_headers,
+        json={"items": [{
+            "indent_item_id": indent["items"][0]["id"],
+            "batch_id": batch["id"],
+            "return_quantity": 4,
+        }]},
+    )
+    assert return_res.status_code == 200, f"Indent return failed: {return_res.text}"
+    return_ledger = client.get(
+        f"/v1/api/pharmacy/inventory/movements?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    ).json()["items"]
+    return_movement = next(item for item in return_ledger if item["movement_type"] == "WARD_RETURN")
+    assert return_movement["quantity_delta"] == 4
+    assert return_movement["stock_before"] == 40
+    assert return_movement["stock_after"] == 44
