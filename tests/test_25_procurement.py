@@ -1074,7 +1074,7 @@ def test_medication_pack_configuration_is_dimension_safe_and_versioned(
 
 
 def test_pack_unit_purchase_receipt_and_supplier_return_convert_to_stock_base_units(
-    client, pharmacist_headers, superuser_headers
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
 ):
     vendor_response = client.post(
         "/v1/api/procurement/vendors",
@@ -1198,9 +1198,7 @@ def test_pack_unit_purchase_receipt_and_supplier_return_convert_to_stock_base_un
     # The GRN item id is available from the persisted receipt line.
     from sqlalchemy.orm import sessionmaker
     from backend.domains.procurement.models import GoodsReceiptItem
-    from backend.core.database import tenant_engine_pool
-    tenant_name = "hms_default"
-    session_factory = sessionmaker(bind=tenant_engine_pool.get_engine(tenant_name))
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
     with session_factory() as db:
         grn_item = db.query(GoodsReceiptItem).filter(GoodsReceiptItem.grn_id == grn_id).one()
         grn_item_id = grn_item.id
