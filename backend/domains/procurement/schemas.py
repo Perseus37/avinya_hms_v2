@@ -10,6 +10,7 @@ from backend.domains.procurement.models import (
     VendorInvoiceStatusEnum,
     SupplierQuotationStatusEnum,
     POAmendmentStatusEnum,
+    POShipmentStatusEnum,
 )
 
 # --- Vendor Master ---
@@ -382,3 +383,54 @@ class PurchaseOrderAmendmentResponse(BaseModel):
     reviewed_at: Optional[datetime]
     review_notes: Optional[str]
     model_config = ConfigDict(from_attributes=True)
+
+
+# --- Purchase order shipment tracking ---
+class PurchaseOrderShipmentCreate(BaseModel):
+    carrier: str = Field(min_length=2, max_length=120)
+    tracking_number: Optional[str] = Field(default=None, max_length=120)
+    expected_delivery_at: datetime
+    notes: Optional[str] = None
+
+
+class PurchaseOrderShipmentUpdate(BaseModel):
+    status: POShipmentStatusEnum
+    event_at: Optional[datetime] = None
+    location: Optional[str] = Field(default=None, max_length=255)
+    notes: Optional[str] = None
+
+
+class PurchaseOrderShipmentEventResponse(BaseModel):
+    id: int
+    status: POShipmentStatusEnum
+    event_at: datetime
+    location: Optional[str]
+    notes: Optional[str]
+    actor_user_id: Optional[int]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PurchaseOrderShipmentResponse(BaseModel):
+    id: int
+    po_id: int
+    carrier: str
+    tracking_number: Optional[str]
+    expected_delivery_at: datetime
+    dispatched_at: Optional[datetime]
+    delivery_confirmed_at: Optional[datetime]
+    status: POShipmentStatusEnum
+    notes: Optional[str]
+    events: List[PurchaseOrderShipmentEventResponse]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OverduePurchaseOrderResponse(BaseModel):
+    po_id: int
+    po_number: str
+    vendor_id: int
+    vendor_name: str
+    delivery_due_date: datetime
+    days_overdue: int
+    status: POStatusEnum
+    total_amount_paise: int
+    outstanding_quantity: int
