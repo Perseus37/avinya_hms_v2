@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, event, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, event, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -274,6 +274,7 @@ class Branch(ControlBase):
     __table_args__ = (
         UniqueConstraint("tenant_registry_id", name="uq_org_branch_tenant_registry"),
         UniqueConstraint("group_id", "code", name="uq_org_branch_group_code"),
+        UniqueConstraint("id", "group_id", name="uq_org_branch_id_group"),
         Index("ix_org_branches_group_status", "group_id", "status"),
     )
 
@@ -291,6 +292,7 @@ class OrganizationUser(ControlBase):
     __tablename__ = "organization_users"
     __table_args__ = (
         UniqueConstraint("group_id", "email_normalized", name="uq_org_user_group_email"),
+        UniqueConstraint("id", "group_id", name="uq_org_user_id_group"),
         Index("ix_org_users_group_status", "group_id", "status"),
     )
 
@@ -315,12 +317,16 @@ class BranchMembership(ControlBase):
     __tablename__ = "branch_memberships"
     __table_args__ = (
         UniqueConstraint("organization_user_id", "branch_id", name="uq_branch_membership_user_branch"),
+        UniqueConstraint("id", "organization_user_id", "branch_id", name="uq_branch_membership_link_target"),
+        ForeignKeyConstraint(["organization_user_id", "group_id"], ["organization_users.id", "organization_users.group_id"], ondelete="RESTRICT"),
+        ForeignKeyConstraint(["branch_id", "group_id"], ["organization_branches.id", "organization_branches.group_id"], ondelete="RESTRICT"),
         Index("ix_branch_memberships_branch_status", "branch_id", "status"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    organization_user_id: Mapped[int] = mapped_column(ForeignKey("organization_users.id", ondelete="RESTRICT"), nullable=False)
-    branch_id: Mapped[int] = mapped_column(ForeignKey("organization_branches.id", ondelete="RESTRICT"), nullable=False)
+    organization_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    group_id: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="INVITED", server_default="INVITED", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -356,13 +362,14 @@ class BranchUserLink(ControlBase):
     __table_args__ = (
         UniqueConstraint("membership_id", name="uq_branch_user_link_membership"),
         UniqueConstraint("branch_id", "local_user_id", name="uq_branch_user_link_local_user"),
+        ForeignKeyConstraint(["membership_id", "organization_user_id", "branch_id"], ["branch_memberships.id", "branch_memberships.organization_user_id", "branch_memberships.branch_id"], ondelete="RESTRICT"),
         Index("ix_branch_user_links_org_user", "organization_user_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    membership_id: Mapped[int] = mapped_column(ForeignKey("branch_memberships.id", ondelete="RESTRICT"), nullable=False)
-    organization_user_id: Mapped[int] = mapped_column(ForeignKey("organization_users.id", ondelete="RESTRICT"), nullable=False)
-    branch_id: Mapped[int] = mapped_column(ForeignKey("organization_branches.id", ondelete="RESTRICT"), nullable=False)
+    membership_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    organization_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    branch_id: Mapped[int] = mapped_column(Integer, nullable=False)
     local_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
