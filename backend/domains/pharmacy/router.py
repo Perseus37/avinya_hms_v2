@@ -3,7 +3,7 @@ from typing import Optional
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, joinedload
 
@@ -228,8 +228,9 @@ def list_inventory_movements(
         stmt = stmt.where(InventoryMovement.medication_id == medication_id)
     if movement_type:
         stmt = stmt.where(InventoryMovement.movement_type == movement_type.strip().upper())
-    total = db.execute(select(InventoryMovement.id).from_statement(stmt.with_only_columns(InventoryMovement.id).order_by(None))).scalars().all()
-    total_count = len(total)
+    total_count = db.execute(
+        select(func.count()).select_from(stmt.order_by(None).subquery())
+    ).scalar_one()
     items = list(db.execute(stmt.offset((page - 1) * page_size).limit(page_size)).scalars().all())
     return {"items": items, "total": total_count, "page": page, "page_size": page_size}
 
@@ -474,7 +475,7 @@ def adjust_inventory_stock(
         _record_inventory_movement(
             db, batch, movement_type="ADJUSTMENT", quantity_delta=payload.quantity_adjustment,
             stock_before=stock_before, actor=current_user, reference_type="INVENTORY_BATCH",
-            reference_id=batch.id, notes=payload.reason if hasattr(payload, "reason") else None,
+            reference_id=batch.id, notes=payload.reason,
         )
         db.commit()
         db.refresh(batch)
