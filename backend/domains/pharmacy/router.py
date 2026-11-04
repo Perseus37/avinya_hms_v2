@@ -420,6 +420,14 @@ def receive_inventory_batch(
     med = db.get(MedicationMaster, payload.medication_id)
     if not med or not med.is_active:
         raise HTTPException(status_code=404, detail="Active medication not found.")
+    if payload.base_uom_code:
+        from backend.domains.procurement.models import ProcurementUnitOfMeasure
+        base_unit = db.query(ProcurementUnitOfMeasure).filter(
+            ProcurementUnitOfMeasure.code == payload.base_uom_code,
+            ProcurementUnitOfMeasure.is_active.is_(True),
+        ).one_or_none()
+        if base_unit is None:
+            raise HTTPException(status_code=422, detail="Base stock unit must be an active registered procurement unit.")
 
     location_id = payload.location_id if payload.location_id is not None else _get_main_pharmacy_location(db).id
     location = _get_active_pharmacy_location(db, location_id)
