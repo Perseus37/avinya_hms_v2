@@ -105,6 +105,7 @@ class InventoryBatch(AuditMixin, Base):
     expiry_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     stock_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_price_paise: Mapped[float] = mapped_column(Numeric(24, 8), nullable=False)
+    base_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
 
     medication: Mapped[MedicationMaster] = relationship()
     location: Mapped[PharmacyLocation] = relationship()
@@ -132,6 +133,7 @@ class InventoryMovement(AuditMixin, Base):
     stock_before: Mapped[int] = mapped_column(Integer, nullable=False)
     stock_after: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_price_paise: Mapped[float] = mapped_column(Numeric(24, 8), nullable=False)
+    base_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     reference_type: Mapped[Optional[str]] = mapped_column(String(40))
     reference_id: Mapped[Optional[str]] = mapped_column(String(80))
     actor_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -174,6 +176,7 @@ class InventoryTransfer(AuditMixin, Base):
     batch_number: Mapped[str] = mapped_column(String(50), nullable=False)
     expiry_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     unit_price_paise: Mapped[float] = mapped_column(Numeric(24, 8), nullable=False)
+    base_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     destination_location_id: Mapped[int] = mapped_column(ForeignKey("pharmacy_locations.id"), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="REQUESTED", nullable=False)
