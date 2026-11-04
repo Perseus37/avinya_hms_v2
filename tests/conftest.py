@@ -66,6 +66,7 @@ from backend.control_plane.models import ControlBase, DeploymentModeEnum, Tenant
 from backend.core import database
 from backend.core.database import Base, get_control_db, get_redis
 from backend.main import app, v1_app
+from backend.domains.pharmacy.models import PharmacyLocation
 from backend.domains.identity.models import (
     AuthSession,
     Department,
@@ -307,6 +308,9 @@ def multi_tenant_env(monkeypatch, fake_redis):
                 admin_email=a_email,
                 admin_password="AdminPassword123!",
             )
+            if not tdb.query(PharmacyLocation).filter_by(code="MAIN").first():
+                tdb.add(PharmacyLocation(code="MAIN", name="Main Pharmacy Store", location_type="STORE", is_active=True))
+                tdb.commit()
 
     DefaultSession = sessionmaker(autocommit=False, autoflush=False, bind=tenant_engines["hms_default"])
     with DefaultSession() as ddb:
