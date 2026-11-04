@@ -1610,6 +1610,11 @@ def review_purchase_order_amendment(
                 tax_percentage=item.get("tax_percentage", 0),
                 tax_amount_paise=item.get("tax_amount_paise", 0),
                 gross_total_paise=item.get("gross_total_paise", item["total_price_paise"]),
+                purchase_uom_code=item.get("purchase_uom_code"),
+                base_uom_code=item.get("base_uom_code"),
+                units_per_purchase_unit=item.get("units_per_purchase_unit"),
+                base_quantity=item.get("base_quantity"),
+                base_unit_price_paise=item.get("base_unit_price_paise"),
                 created_by_id=current_user.id,
             ))
         po.amendment_version = amendment.version
@@ -2043,7 +2048,13 @@ def get_procurement_cost_intelligence(
                 "vendor_id": vendor.id,
                 "vendor_name": vendor.name,
                 "quantity": int(item.quantity_ordered),
+                "purchase_uom_code": item.purchase_uom_code,
+                "base_uom_code": item.base_uom_code,
+                "units_per_purchase_unit": float(item.units_per_purchase_unit) if item.units_per_purchase_unit is not None else None,
+                "base_quantity": float(item.base_quantity) if item.base_quantity is not None else None,
                 "unit_price_paise_pre_tax": int(item.unit_price_paise),
+                "base_unit_price_paise_pre_tax": float(item.base_unit_price_paise) if item.base_unit_price_paise is not None else None,
+                "unit_price_comparable": item.base_unit_price_paise is not None,
                 "tax_percentage": int(item.tax_percentage or 0),
             }
             medication_prices.setdefault(medication.id, {
@@ -2065,12 +2076,22 @@ def get_procurement_cost_intelligence(
                 "ordered_quantity": 0,
                 "pre_tax_value_paise": 0,
                 "observed_unit_prices_paise": [],
+                "normalized_base_unit_prices_paise": [],
+                "base_uom_code": item.base_uom_code,
+                "has_unknown_unit_lines": False,
             })
             supplier_row = supplier_comparison[supplier_key]
             supplier_row["purchase_line_count"] += 1
             supplier_row["ordered_quantity"] += int(item.quantity_ordered)
             supplier_row["pre_tax_value_paise"] += int(item.total_price_paise or 0)
-            supplier_row["observed_unit_prices_paise"].append(int(item.unit_price_paise))
+            supplier_row["observed_unit_prices_paise"].append({
+                "price_paise": int(item.unit_price_paise),
+                "purchase_uom_code": item.purchase_uom_code,
+            })
+            if item.base_unit_price_paise is not None and item.base_uom_code:
+                supplier_row["normalized_base_unit_prices_paise"].append(float(item.base_unit_price_paise))
+            else:
+                supplier_row["has_unknown_unit_lines"] = True
 
     return_query = db.query(InventoryMovement).options(joinedload(InventoryMovement.medication)).filter(
         InventoryMovement.movement_type == "PURCHASE_RETURN",
@@ -2085,7 +2106,7 @@ def get_procurement_cost_intelligence(
     return_movements = return_query.all()
     returned_quantity = sum(abs(int(row.quantity_delta)) for row in return_movements)
     returned_value_paise = sum(
-        abs(int(row.quantity_delta)) * int(row.unit_price_paise)
+        (Decimal(abs(int(row.quantity_delta))) * Decimal(str(row.unit_price_paise)))
         for row in return_movements
     )
     return_by_medication = {}
@@ -2101,7 +2122,9 @@ def get_procurement_cost_intelligence(
             "returned_value_paise": 0,
         })
         entry["returned_quantity"] += abs(int(row.quantity_delta))
-        entry["returned_value_paise"] += abs(int(row.quantity_delta)) * int(row.unit_price_paise)
+        entry["returned_value_paise"] += float(
+            Decimal(abs(int(row.quantity_delta))) * Decimal(str(row.unit_price_paise))
+        )
 
     return {
         "period": {
@@ -2131,7 +2154,7 @@ def get_procurement_cost_intelligence(
         "supplier_returns": {
             "movement_count": len(return_movements),
             "returned_quantity": returned_quantity,
-            "returned_value_paise": returned_value_paise,
+            "returned_value_paise": float(returned_value_paise),
             "by_medication": list(return_by_medication.values()),
             "definition": "Value uses immutable PURCHASE_RETURN movement quantity and unit-price snapshots; it is not a supplier credit-note settlement balance.",
         },
