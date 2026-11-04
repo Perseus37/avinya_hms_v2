@@ -1,5 +1,5 @@
 import logging
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
@@ -422,14 +422,17 @@ def issue_patient_indent(db: Session, indent: StoreIndent, issue_request: list, 
         # Auto-bill to patient invoice
         if invoice:
             med = db.get(MedicationMaster, indent_item.medication_id)
-            line_cost = issue_item.issue_quantity * batch.unit_price_paise
+            billable_unit_price_paise = int(
+                Decimal(str(batch.unit_price_paise)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+            line_cost = issue_item.issue_quantity * billable_unit_price_paise
             total_billed_paise += line_cost
 
             line_item = InvoiceLineItem(
                 invoice_id=invoice.id,
                 description=f"WARD ISSUE: {med.brand_name} - Batch: {batch.batch_number} [IndentItem:{indent_item.id}]",
                 quantity=issue_item.issue_quantity,
-                unit_price_paise=batch.unit_price_paise,
+                unit_price_paise=billable_unit_price_paise,
                 total_price_paise=line_cost
             )
             db.add(line_item)
