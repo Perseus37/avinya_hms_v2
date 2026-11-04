@@ -213,8 +213,8 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
     """Reconcile invoice arithmetic, PO pricing, accepted receipts and prior invoices.
 
     A missing accepted GRN is deliberately not considered a successful three-way match.
-    Tax is checked against the invoice's own line tax rates; PO tax rates are not yet
-    represented in the PO schema, so no unsupported tax-rate assumption is made here.
+    Tax is checked against invoice line rates and compared with the approved PO tax rate.
+    PO financial totals are independently recalculated before matching.
     """
     if not invoice.po_id or not invoice.items:
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
