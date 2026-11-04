@@ -360,7 +360,7 @@ def test_inventory_batches_are_scoped_to_selected_pharmacy_location(client, phar
     assert [item["id"] for item in dispensary_inventory] == [second_batch_res.json()["id"]]
 
 
-def test_pharmacy_stock_transfer_lifecycle_preserves_batch_traceability(client, pharmacist_headers):
+def test_pharmacy_stock_transfer_lifecycle_preserves_batch_traceability(client, pharmacist_headers, superuser_headers):
     med, source_batch = _setup_med_and_batch(client, pharmacist_headers)
     location_response = client.post(
         "/v1/api/pharmacy/locations",
@@ -384,12 +384,28 @@ def test_pharmacy_stock_transfer_lifecycle_preserves_batch_traceability(client, 
     transfer_id = request_response.json()["id"]
     assert request_response.json()["status"] == "REQUESTED"
 
-    approved = client.post(
+    # Requester cannot approve their own transfer.
+    self_approval = client.post(
         f"/v1/api/pharmacy/inventory/transfers/{transfer_id}/approve",
         headers=pharmacist_headers,
     )
+    assert self_approval.status_code == 409
+    assert "requester cannot approve" in self_approval.text
+
+    approved = client.post(
+        f"/v1/api/pharmacy/inventory/transfers/{transfer_id}/approve",
+        headers=superuser_headers,
+    )
     assert approved.status_code == 200
     assert approved.json()["status"] == "APPROVED"
+
+    # Approver cannot also dispatch the same transfer.
+    approver_dispatch = client.post(
+        f"/v1/api/pharmacy/inventory/transfers/{transfer_id}/dispatch",
+        headers=superuser_headers,
+    )
+    assert approver_dispatch.status_code == 409
+    assert "approver cannot dispatch" in approver_dispatch.text
 
     dispatched = client.post(
         f"/v1/api/pharmacy/inventory/transfers/{transfer_id}/dispatch",
@@ -402,9 +418,17 @@ def test_pharmacy_stock_transfer_lifecycle_preserves_batch_traceability(client, 
         headers=pharmacist_headers,
     ).status_code == 409
 
-    received = client.post(
+    # Dispatcher cannot also attest to receipt at destination.
+    self_receive = client.post(
         f"/v1/api/pharmacy/inventory/transfers/{transfer_id}/receive",
         headers=pharmacist_headers,
+    )
+    assert self_receive.status_code == 409
+    assert "dispatcher cannot receive" in self_receive.text
+
+    received = client.post(
+        f"/v1/api/pharmacy/inventory/transfers/{transfer_id}/receive",
+        headers=superuser_headers,
     )
     assert received.status_code == 200
     assert received.json()["status"] == "RECEIVED"
