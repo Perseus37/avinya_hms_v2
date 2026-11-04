@@ -589,6 +589,8 @@ def test_supplier_quotation_comparison_and_independent_selection(
             },
         )
         assert quote.status_code == 201, quote.text
+        assert quote.json()["items"][0]["tax_amount_paise"] == 2500
+        assert quote.json()["items"][0]["line_total_paise"] == 52500
 
     comparison = client.get(
         f"/v1/api/procurement/purchase-requisitions/{requisition_id}/quotations",
