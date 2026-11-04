@@ -18,7 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.core.audit import AuditMixin
 from backend.core.database import Base
-from backend.domains.identity.models import Department, User
+from backend.domains.identity.models import Department, User, Role
 from backend.domains.encounters.models import PatientEncounter
 from backend.domains.pharmacy.models import MedicationMaster, InventoryBatch
 # from backend.domains.procurement.models import VendorMaster, PurchaseOrder, GoodsReceiptNote
@@ -434,3 +434,18 @@ class SupplierQuotationItem(AuditMixin, Base):
 
     quotation: Mapped["SupplierQuotation"] = relationship(back_populates="items")
     requisition_item: Mapped["PurchaseRequisitionItem"] = relationship()
+
+
+class PurchaseOrderApprovalAuthority(AuditMixin, Base):
+    """Role-based maximum PO amount that a member may approve; amounts are paise."""
+    __tablename__ = "procurement_po_approval_authorities"
+    __table_args__ = (
+        CheckConstraint("max_amount_paise >= 0", name="ck_po_approval_limit_non_neg"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"), nullable=False, unique=True)
+    max_amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    role: Mapped["Role"] = relationship()
