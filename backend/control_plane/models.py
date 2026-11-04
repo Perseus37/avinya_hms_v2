@@ -254,3 +254,141 @@ class ControlPlaneOperatorSession(ControlBase):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# Hospital-group identity is deliberately separate from vendor ControlPlaneOperator.
+# Branch clinical users remain in their branch databases during the migration period.
+class HospitalGroup(ControlBase):
+    __tablename__ = "hospital_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(63), unique=True, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", server_default="ACTIVE", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class Branch(ControlBase):
+    """Control-plane mapping from a hospital group to an existing branch tenant database."""
+    __tablename__ = "organization_branches"
+    __table_args__ = (
+        UniqueConstraint("tenant_registry_id", name="uq_org_branch_tenant_registry"),
+        UniqueConstraint("group_id", "code", name="uq_org_branch_group_code"),
+        Index("ix_org_branches_group_status", "group_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("hospital_groups.id", ondelete="RESTRICT"), nullable=False)
+    tenant_registry_id: Mapped[int] = mapped_column(ForeignKey("tenant_registry.id", ondelete="RESTRICT"), nullable=False)
+    code: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", server_default="ACTIVE", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OrganizationUser(ControlBase):
+    """One human identity inside one hospital group; never a vendor console operator."""
+    __tablename__ = "organization_users"
+    __table_args__ = (
+        UniqueConstraint("group_id", "email_normalized", name="uq_org_user_group_email"),
+        Index("ix_org_users_group_status", "group_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("hospital_groups.id", ondelete="RESTRICT"), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    email_normalized: Mapped[str] = mapped_column(String(255), nullable=False)
+    full_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="INVITED", server_default="INVITED", nullable=False)
+    email_verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    mfa_secret_encrypted: Mapped[Optional[str]] = mapped_column(Text)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    mfa_last_used_counter: Mapped[Optional[int]] = mapped_column(Integer)
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    locked_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class BranchMembership(ControlBase):
+    """Authorization edge between a group identity and one branch; role is never global."""
+    __tablename__ = "branch_memberships"
+    __table_args__ = (
+        UniqueConstraint("organization_user_id", "branch_id", name="uq_branch_membership_user_branch"),
+        Index("ix_branch_memberships_branch_status", "branch_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_user_id: Mapped[int] = mapped_column(ForeignKey("organization_users.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[int] = mapped_column(ForeignKey("organization_branches.id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="INVITED", server_default="INVITED", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class BranchMembershipRole(ControlBase):
+    """Stable role code resolved against the selected branch's local role catalogue."""
+    __tablename__ = "branch_membership_roles"
+    __table_args__ = (
+        UniqueConstraint("membership_id", "role_code", name="uq_membership_role_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    membership_id: Mapped[int] = mapped_column(ForeignKey("branch_memberships.id", ondelete="CASCADE"), nullable=False, index=True)
+    role_code: Mapped[str] = mapped_column(String(100), nullable=False)
+
+
+class BranchDepartmentAssignment(ControlBase):
+    """Stable department code resolved in the branch database; may coexist with multiple roles."""
+    __tablename__ = "branch_department_assignments"
+    __table_args__ = (
+        UniqueConstraint("membership_id", "department_code", name="uq_membership_department_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    membership_id: Mapped[int] = mapped_column(ForeignKey("branch_memberships.id", ondelete="CASCADE"), nullable=False, index=True)
+    department_code: Mapped[str] = mapped_column(String(100), nullable=False)
+
+
+class BranchUserLink(ControlBase):
+    """Verified link to a legacy local user; local_user_id intentionally has no cross-DB FK."""
+    __tablename__ = "branch_user_links"
+    __table_args__ = (
+        UniqueConstraint("membership_id", name="uq_branch_user_link_membership"),
+        UniqueConstraint("branch_id", "local_user_id", name="uq_branch_user_link_local_user"),
+        Index("ix_branch_user_links_org_user", "organization_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    membership_id: Mapped[int] = mapped_column(ForeignKey("branch_memberships.id", ondelete="RESTRICT"), nullable=False)
+    organization_user_id: Mapped[int] = mapped_column(ForeignKey("organization_users.id", ondelete="RESTRICT"), nullable=False)
+    branch_id: Mapped[int] = mapped_column(ForeignKey("organization_branches.id", ondelete="RESTRICT"), nullable=False)
+    local_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OrganizationSession(ControlBase):
+    """Central authentication session. Store only a token/JTI hash, never the bearer token."""
+    __tablename__ = "organization_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_user_id: Mapped[int] = mapped_column(ForeignKey("organization_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class BranchAccessSession(ControlBase):
+    """Short-lived branch selection grant bound to one membership and central session."""
+    __tablename__ = "branch_access_sessions"
+    __table_args__ = (Index("ix_branch_access_membership_expiry", "membership_id", "expires_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_session_id: Mapped[int] = mapped_column(ForeignKey("organization_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    membership_id: Mapped[int] = mapped_column(ForeignKey("branch_memberships.id", ondelete="RESTRICT"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
