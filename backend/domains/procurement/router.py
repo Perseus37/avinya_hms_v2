@@ -104,6 +104,7 @@ def _resolve_medication_unit_snapshot(
         }
     if medication_id is None:
         raise HTTPException(status_code=422, detail="A purchasing unit can only be assigned to a medication catalogue line.")
+    effective_at = _utc_aware(effective_at)
     configuration = db.query(MedicationPackConfiguration).filter(
         MedicationPackConfiguration.medication_id == medication_id,
         MedicationPackConfiguration.purchase_uom_id == purchase_uom_id,
@@ -1516,11 +1517,9 @@ def request_purchase_order_amendment(
             "total_price_paise": item.total_price_paise,
             "purchase_uom_code": item.purchase_uom_code,
             "base_uom_code": item.base_uom_code,
-            "units_per_purchase_unit": item.units_per_purchase_unit,
-            "base_quantity": item.base_quantity,
-            "base_unit_price_paise": str(item.base_unit_price_paise) if item.base_unit_price_paise is not None else None,
             "units_per_purchase_unit": str(item.units_per_purchase_unit) if item.units_per_purchase_unit is not None else None,
             "base_quantity": str(item.base_quantity) if item.base_quantity is not None else None,
+            "base_unit_price_paise": str(item.base_unit_price_paise) if item.base_unit_price_paise is not None else None,
             "tax_percentage": item.tax_percentage,
             "tax_amount_paise": item.tax_amount_paise,
             "gross_total_paise": item.gross_total_paise,
