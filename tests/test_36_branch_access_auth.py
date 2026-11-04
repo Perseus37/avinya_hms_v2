@@ -22,7 +22,10 @@ from backend.control_plane.models import (
 )
 from backend.core import dependencies
 from backend.core.database import Base, TenantContext
-from backend.domains.identity.models import Department, Permission, Role, User, UserRole, UserStatusEnum
+from backend.domains.identity.models import Department, GenderEnum, Permission, Role, User, UserRole, UserStatusEnum
+from backend.domains.encounters.models import EncounterTypeEnum, PatientEncounter
+from backend.domains.patients.models import Patient
+from starlette.requests import Request
 
 
 @pytest.fixture
@@ -237,3 +240,76 @@ def test_department_access_requires_both_local_and_central_assignment(
         assert not dependencies.user_has_department_access(
             tenant_db, user, department.id + 1000
         )
+
+
+def test_encounter_department_scope_allows_assigned_department(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        department = tenant_db.query(Department).filter_by(code="CARDIOLOGY").one()
+        patient = Patient(
+            mrn="MRN-GRANT-001",
+            full_name="Grant Test Patient",
+            date_of_birth=datetime(1980, 1, 1, tzinfo=timezone.utc),
+            gender=GenderEnum.MALE,
+            created_by_id=user.id,
+        )
+        tenant_db.add(patient)
+        tenant_db.flush()
+        encounter = PatientEncounter(
+            patient_id=patient.id,
+            encounter_type=EncounterTypeEnum.OPD,
+            primary_doctor_id=user.id,
+            department_id=department.id,
+        )
+        tenant_db.add(encounter)
+        tenant_db.commit()
+
+        request = Request({
+            "type": "http", "method": "GET", "path": f"/api/clinical/encounters/{encounter.id}/vitals",
+            "root_path": "", "scheme": "http", "query_string": b"", "headers": [],
+            "server": ("test", 80), "client": ("test", 1), "http_version": "1.1",
+            "path_params": {"encounter_id": str(encounter.id)},
+        })
+        resolved = dependencies.RequireEncounterDepartmentAccess()(request, user, tenant_db)
+        assert resolved.id == user.id
+
+
+def test_encounter_department_scope_denies_unassigned_department(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        department = Department(code="NEUROLOGY", name="Neurology")
+        tenant_db.add(department)
+        tenant_db.flush()
+        patient = Patient(
+            mrn="MRN-GRANT-002",
+            full_name="Grant Test Patient Two",
+            date_of_birth=datetime(1980, 1, 1, tzinfo=timezone.utc),
+            gender=GenderEnum.MALE,
+            created_by_id=user.id,
+        )
+        tenant_db.add(patient)
+        tenant_db.flush()
+        encounter = PatientEncounter(
+            patient_id=patient.id,
+            encounter_type=EncounterTypeEnum.OPD,
+            primary_doctor_id=user.id,
+            department_id=department.id,
+        )
+        tenant_db.add(encounter)
+        tenant_db.commit()
+
+        request = Request({
+            "type": "http", "method": "GET", "path": f"/api/clinical/encounters/{encounter.id}/vitals",
+            "root_path": "", "scheme": "http", "query_string": b"", "headers": [],
+            "server": ("test", 80), "client": ("test", 1), "http_version": "1.1",
+            "path_params": {"encounter_id": str(encounter.id)},
+        })
+        with pytest.raises(HTTPException) as exc:
+            dependencies.RequireEncounterDepartmentAccess()(request, user, tenant_db)
+        assert exc.value.status_code == 403
