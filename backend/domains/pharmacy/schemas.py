@@ -1,6 +1,7 @@
 """Pydantic schemas owned by the Avinya HMS domain."""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -69,12 +70,12 @@ class InventoryBatchCreate(BaseModel):
     batch_number: str
     expiry_date: datetime
     stock_quantity: int
-    unit_price_paise: int
+    unit_price_paise: Decimal = Field(ge=0)
 
 class InventoryBatchUpdate(BaseModel):
     batch_number: Optional[str] = None
     expiry_date: Optional[datetime] = None
-    unit_price_paise: Optional[int] = None
+    unit_price_paise: Optional[Decimal] = Field(default=None, ge=0)
 
 class InventoryBatchResponse(BaseModel):
     id: int
