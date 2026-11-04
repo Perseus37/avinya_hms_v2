@@ -1108,10 +1108,24 @@ def request_purchase_order_amendment(
 
     proposed_items = []
     proposed_total = 0
+    seen_requisition_lines = set()
     for item in payload.items:
+        if po.requisition_id is not None:
+            if item.requisition_item_id is None or item.requisition_item_id in seen_requisition_lines:
+                raise HTTPException(status_code=422, detail="Every amended line on a requisition-backed PO must reference a unique requisition line.")
+            req_line = db.query(PurchaseRequisitionItem).filter(
+                PurchaseRequisitionItem.id == item.requisition_item_id,
+                PurchaseRequisitionItem.requisition_id == po.requisition_id,
+            ).one_or_none()
+            if req_line is None or not req_line.approved_quantity or item.quantity_ordered > req_line.approved_quantity:
+                raise HTTPException(status_code=422, detail="Amended quantity must map to an approved line and cannot exceed its approved quantity.")
+            seen_requisition_lines.add(item.requisition_item_id)
+        elif item.requisition_item_id is not None:
+            raise HTTPException(status_code=422, detail="A standalone purchase order cannot reference a requisition line.")
         line_total = item.quantity_ordered * item.unit_price_paise
         proposed_total += line_total
         proposed_items.append({
+            "requisition_item_id": item.requisition_item_id,
             "medication_id": item.medication_id,
             "item_description": item.item_description.strip(),
             "quantity_ordered": item.quantity_ordered,
@@ -1214,6 +1228,7 @@ def review_purchase_order_amendment(
         for item in snapshot["items"]:
             db.add(PurchaseOrderItem(
                 po_id=po.id,
+                requisition_item_id=item.get("requisition_item_id"),
                 medication_id=item["medication_id"],
                 item_description=item["item_description"],
                 quantity_ordered=item["quantity_ordered"],
