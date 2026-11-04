@@ -125,3 +125,25 @@ def test_owner_invites_staff_and_staff_activation_grants_no_branch_membership(mo
         control_app_module.app.dependency_overrides.pop(get_redis, None)
         control_app_module.app.dependency_overrides.pop(organization_auth._current_identity, None)
         engine.dispose()
+
+
+
+def test_branch_assignment_rejects_duplicate_role_and_department_codes():
+    import pytest
+    from pydantic import ValidationError
+
+    from backend.control_plane.api.routers.organization_staff import BranchAssignmentRequest
+
+    with pytest.raises(ValidationError):
+        BranchAssignmentRequest(
+            local_user_id=12,
+            role_codes=["DOCTOR", "DOCTOR"],
+            department_codes=["CARDIOLOGY"],
+        )
+
+    with pytest.raises(ValidationError):
+        BranchAssignmentRequest(
+            local_user_id=12,
+            role_codes=["DOCTOR"],
+            department_codes=["CARDIOLOGY", "CARDIOLOGY"],
+        )
