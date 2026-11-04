@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequireEncounterDepartmentAccess, RequirePermission, user_has_department_access, validate_pagination
+from backend.core.dependencies import RequireAdmissionDepartmentAccess, RequireEncounterDepartmentAccess, RequirePermission, ensure_admission_department_access, get_user_assigned_department_ids, user_has_department_access, validate_pagination
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.billing.models import Invoice, InvoiceStatusEnum
 from backend.domains.encounters.models import AdmissionTypeEnum, BedTransferLog, EncounterStatusEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter, DischargeDispositionEnum
@@ -73,14 +73,9 @@ def list_active_encounters(
 ):
     page, page_size = validate_pagination(page, page_size)
     query = db.query(PatientEncounter).filter(PatientEncounter.status == EncounterStatusEnum.ACTIVE)
-    central_department_codes = db.info.get("central_branch_department_codes")
-    if central_department_codes is not None:
-        if not central_department_codes:
-            query = query.filter(False)
-        else:
-            query = query.join(Department, PatientEncounter.department_id == Department.id).filter(
-                Department.code.in_(central_department_codes)
-            )
+    assigned_department_ids = get_user_assigned_department_ids(db, actor)
+    if assigned_department_ids is not None:
+        query = query.filter(PatientEncounter.department_id.in_(assigned_department_ids))
     query = query.order_by(PatientEncounter.id.desc())
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
@@ -182,12 +177,19 @@ def admit_patient(
     payload: InpatientAdmissionCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("adt:write")),
+    __: User = Depends(RequireEncounterDepartmentAccess()),
 ):
     encounter = db.get(PatientEncounter, payload.encounter_id)
     if not encounter or encounter.status != EncounterStatusEnum.ACTIVE:
         raise HTTPException(status_code=400, detail="Valid, active encounter required for IPD admission.")
     if encounter.encounter_type != EncounterTypeEnum.IPD:
         raise HTTPException(status_code=400, detail="Only IPD encounters can be admitted to a bed.")
+
+    if not user_has_department_access(db, current_user, encounter.department_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: admission is outside your assigned department scope.",
+        )
 
     try:
         stmt = select(Bed).where(Bed.id == payload.assigned_bed_id).with_for_update(nowait=True)
@@ -242,6 +244,7 @@ def list_admissions(
     export_format: Optional[str] = Query(default=None, alias="format"),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read")),
+    
 ):
     """Lists inpatient admissions with date filtering and streaming CSV export."""
     start_at, end_at = resolve_record_date_window(start_date, end_date)
@@ -252,6 +255,11 @@ def list_admissions(
             joinedload(InpatientAdmission.current_bed).joinedload(Bed.room).joinedload(PhysicalRoom.ward),
         )
     )
+    assigned_department_ids = get_user_assigned_department_ids(db, actor)
+    if assigned_department_ids is not None:
+        query = query.join(InpatientAdmission.encounter).filter(
+            PatientEncounter.department_id.in_(assigned_department_ids)
+        )
     if patient_id:
         query = query.join(InpatientAdmission.encounter).filter(PatientEncounter.patient_id == patient_id)
     if admission_type:
@@ -332,6 +340,7 @@ def get_admission(
     admission_id: int,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read")),
+    __: User = Depends(RequireAdmissionDepartmentAccess()),
 ):
     admission = db.get(InpatientAdmission, admission_id)
     if not admission:
@@ -353,6 +362,7 @@ def update_admission(
     payload: InpatientAdmissionUpdate,
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("adt:write")),
+    __: User = Depends(RequireAdmissionDepartmentAccess()),
 ):
     admission = db.get(InpatientAdmission, admission_id)
     if not admission:
@@ -375,6 +385,7 @@ def cancel_admission(
     admission_id: int,
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("adt:discharge")),
+    __: User = Depends(RequireAdmissionDepartmentAccess()),
 ):
     admission = db.get(InpatientAdmission, admission_id)
     if not admission:
@@ -408,10 +419,12 @@ def transfer_patient_bed(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("adt:write")),
+    
 ):
     admission = db.get(InpatientAdmission, payload.admission_id)
     if not admission or admission.discharge_time is not None:
         raise HTTPException(status_code=400, detail="Active admission required for bed transfer.")
+    ensure_admission_department_access(db, admission.id, current_user)
 
     old_bed_id = admission.current_bed_id
     if old_bed_id == payload.new_bed_id:
@@ -475,6 +488,7 @@ def list_admission_transfers(
     page_size: int = 50,
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("adt:read")),
+    __: User = Depends(RequireAdmissionDepartmentAccess()),
 ):
     page, page_size = validate_pagination(page, page_size)
     query = db.query(BedTransferLog).filter(BedTransferLog.admission_id == admission_id).order_by(BedTransferLog.id.asc())
@@ -503,6 +517,7 @@ def discharge_patient(
     request: Request,
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("adt:discharge", "adt:write")),
+    __: User = Depends(RequireAdmissionDepartmentAccess()),
 ):
     try:
         stmt = (
