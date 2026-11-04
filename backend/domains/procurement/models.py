@@ -453,6 +453,8 @@ class SupplierQuotationItem(AuditMixin, Base):
         CheckConstraint("quantity_quoted > 0", name="ck_proc_quote_qty_pos"),
         CheckConstraint("unit_price_paise >= 0", name="ck_proc_quote_price_non_neg"),
         CheckConstraint("tax_percentage >= 0 AND tax_percentage <= 100", name="ck_proc_quote_tax_range"),
+        CheckConstraint("tax_amount_paise >= 0", name="ck_proc_quote_tax_non_neg"),
+        CheckConstraint("line_total_paise = quantity_quoted * unit_price_paise + tax_amount_paise", name="ck_proc_quote_line_total"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -461,7 +463,8 @@ class SupplierQuotationItem(AuditMixin, Base):
     quantity_quoted: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     tax_percentage: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    line_total_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    tax_amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    line_total_paise: Mapped[int] = mapped_column(Integer, nullable=False)  # tax-inclusive line total
 
     quotation: Mapped["SupplierQuotation"] = relationship(back_populates="items")
     requisition_item: Mapped["PurchaseRequisitionItem"] = relationship()
