@@ -252,6 +252,7 @@ class BCMAVerificationResponse(BaseModel):
 
 class ControlledSubstanceVaultCreate(BaseModel):
     medication_id: int
+    location_id: Optional[int] = None
     vault_location: str = "MAIN_NARCOTICS_SAFE"
     initial_balance_units: int = Field(default=0, ge=0)
     unit_of_measure: str = "AMPOULE"
@@ -261,6 +262,7 @@ class ControlledSubstanceVaultCreate(BaseModel):
 class ControlledSubstanceVaultResponse(BaseModel):
     id: int
     medication_id: int
+    location_id: int
     vault_location: str
     current_balance_units: int
     unit_of_measure: str
