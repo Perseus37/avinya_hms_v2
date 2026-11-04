@@ -43,6 +43,15 @@ class PurchaseRequisitionStatusEnum(str, PyEnum):
     CANCELLED = "CANCELLED"
 
 
+class POShipmentStatusEnum(str, PyEnum):
+    PLANNED = "PLANNED"
+    DISPATCHED = "DISPATCHED"
+    IN_TRANSIT = "IN_TRANSIT"
+    DELAYED = "DELAYED"
+    DELIVERY_CONFIRMED = "DELIVERY_CONFIRMED"
+    CANCELLED = "CANCELLED"
+
+
 class POAmendmentStatusEnum(str, PyEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
@@ -179,6 +188,7 @@ class PurchaseOrder(AuditMixin, Base):
     requisition: Mapped[Optional["PurchaseRequisition"]] = relationship(back_populates="purchase_orders")
     approved_by: Mapped[Optional["User"]] = relationship(foreign_keys=[approved_by_id])
     items: Mapped[List["PurchaseOrderItem"]] = relationship(back_populates="purchase_order", cascade="all, delete-orphan")
+    shipments: Mapped[List["PurchaseOrderShipment"]] = relationship(back_populates="purchase_order", cascade="all, delete-orphan")
 
 
 class PurchaseOrderItem(AuditMixin, Base):
@@ -482,3 +492,48 @@ class PurchaseOrderAmendment(AuditMixin, Base):
 
     purchase_order: Mapped["PurchaseOrder"] = relationship()
     reviewed_by: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewed_by_id])
+
+
+class PurchaseOrderShipment(AuditMixin, Base):
+    """Shipment-level carrier tracking; does not substitute for hospital GRN acceptance."""
+    __tablename__ = "procurement_po_shipments"
+    __table_args__ = (
+        Index("ix_po_shipment_po_status", "po_id", "status"),
+        Index("ix_po_shipment_expected_status", "expected_delivery_at", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    po_id: Mapped[int] = mapped_column(ForeignKey("procurement_purchase_orders.id", ondelete="CASCADE"), nullable=False)
+    carrier: Mapped[str] = mapped_column(String(120), nullable=False)
+    tracking_number: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    expected_delivery_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    dispatched_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[POShipmentStatusEnum] = mapped_column(
+        Enum(POShipmentStatusEnum), default=POShipmentStatusEnum.PLANNED, nullable=False
+    )
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    purchase_order: Mapped["PurchaseOrder"] = relationship(back_populates="shipments")
+    events: Mapped[List["PurchaseOrderShipmentEvent"]] = relationship(
+        back_populates="shipment", cascade="all, delete-orphan", order_by="PurchaseOrderShipmentEvent.event_at"
+    )
+
+
+class PurchaseOrderShipmentEvent(Base):
+    """Append-only carrier milestone and exception history."""
+    __tablename__ = "procurement_po_shipment_events"
+    __table_args__ = (
+        Index("ix_po_shipment_event_shipment_time", "shipment_id", "event_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shipment_id: Mapped[int] = mapped_column(ForeignKey("procurement_po_shipments.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[POShipmentStatusEnum] = mapped_column(Enum(POShipmentStatusEnum), nullable=False)
+    event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    location: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    shipment: Mapped["PurchaseOrderShipment"] = relationship(back_populates="events")
+    actor: Mapped[Optional["User"]] = relationship()
