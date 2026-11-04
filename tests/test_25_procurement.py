@@ -87,12 +87,16 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
     # 2. Process GRN against the newly created PO
     po_id = po["id"]
     po_item_id = po["items"][0]["id"]
+    locations = client.get("/v1/api/pharmacy/locations", headers=pharmacist_headers)
+    assert locations.status_code == 200, locations.text
+    main_location = next(location for location in locations.json() if location["code"] == "MAIN")
 
     grn_res = client.post(
         "/v1/api/procurement/grn",
         headers=pharmacist_headers,
         json={
             "po_id": po_id,
+            "location_id": main_location["id"],
             "invoice_number": "INV-VND-999",
             "invoice_date": datetime.now(timezone.utc).isoformat(),
             "items": [{
@@ -109,6 +113,8 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
 
     accept_res = client.patch(f"/v1/api/procurement/grn/{grn['id']}/accept", headers=superuser_headers)
     assert accept_res.status_code == 200, f"GRN acceptance failed: {accept_res.text}"
+    duplicate_accept = client.patch(f"/v1/api/procurement/grn/{grn['id']}/accept", headers=superuser_headers)
+    assert duplicate_accept.status_code == 409
 
     batches = client.get(
         f"/v1/api/pharmacy/inventory/batches?medication_id={med['id']}",
