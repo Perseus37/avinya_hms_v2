@@ -42,11 +42,11 @@ def upgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
         op.execute("""
             CREATE FUNCTION prevent_inventory_movement_mutation()
-            RETURNS trigger AS $
+            RETURNS trigger AS $body$
             BEGIN
                 RAISE EXCEPTION 'inventory_movements is append-only';
             END;
-            $ LANGUAGE plpgsql
+            $body$ LANGUAGE plpgsql
         """)
         op.execute("""
             CREATE TRIGGER trg_inventory_movements_append_only
