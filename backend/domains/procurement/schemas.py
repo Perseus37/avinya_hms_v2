@@ -284,3 +284,54 @@ class PurchaseReturnCreate(BaseModel):
     vendor_id: int
     items: List[PurchaseReturnItemCreate]
     remarks: Optional[str] = None
+
+# --- Supplier Quotations ---
+class SupplierQuotationItemCreate(BaseModel):
+    requisition_item_id: int
+    quantity_quoted: int = Field(gt=0)
+    unit_price_paise: int = Field(ge=0)
+    tax_percentage: int = Field(default=0, ge=0, le=100)
+
+
+class SupplierQuotationCreate(BaseModel):
+    vendor_id: int
+    quotation_number: str = Field(min_length=1, max_length=100)
+    quoted_at: datetime
+    valid_until: Optional[datetime] = None
+    delivery_days: Optional[int] = Field(default=None, ge=0)
+    payment_terms: Optional[str] = Field(default=None, max_length=255)
+    notes: Optional[str] = None
+    items: List[SupplierQuotationItemCreate] = Field(min_length=1, max_length=100)
+
+
+class SupplierQuotationItemResponse(BaseModel):
+    id: int
+    requisition_item_id: int
+    quantity_quoted: int
+    unit_price_paise: int
+    tax_percentage: int
+    line_total_paise: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupplierQuotationResponse(BaseModel):
+    id: int
+    requisition_id: int
+    vendor_id: int
+    quotation_number: str
+    quoted_at: datetime
+    valid_until: Optional[datetime]
+    delivery_days: Optional[int]
+    payment_terms: Optional[str]
+    notes: Optional[str]
+    total_amount_paise: int
+    status: SupplierQuotationStatusEnum
+    selected_by_id: Optional[int]
+    selected_at: Optional[datetime]
+    selection_reason: Optional[str]
+    items: List[SupplierQuotationItemResponse]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupplierQuotationSelection(BaseModel):
+    selection_reason: str = Field(min_length=10, max_length=2000)
