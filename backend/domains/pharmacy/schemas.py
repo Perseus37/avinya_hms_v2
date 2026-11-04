@@ -139,6 +139,58 @@ class InventoryStockAdjustment(BaseModel):
     quantity_adjustment: int = Field(default=..., description="Must not be zero")
     reason: Optional[str] = Field(default=None, max_length=500)
 
+
+class InventoryCountSessionCreate(BaseModel):
+    location_id: int
+    count_type: str = Field(default="CYCLE", pattern=r"^(CYCLE|FULL|SPOT)$")
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class InventoryCountLineEntry(BaseModel):
+    physical_quantity: int = Field(ge=0)
+    reason_code: Optional[str] = Field(default=None, max_length=40)
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class InventoryCountLineResponse(BaseModel):
+    id: int
+    inventory_batch_id: int
+    medication_id: int
+    batch_number: str
+    expiry_date: datetime
+    physical_quantity: Optional[int] = None
+    counted_by_id: Optional[int] = None
+    counted_at: Optional[datetime] = None
+    variance: Optional[int] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InventoryCountSessionResponse(BaseModel):
+    id: int
+    location_id: int
+    count_type: str
+    status: str
+    created_by_id: int
+    submitted_by_id: Optional[int] = None
+    approved_by_id: Optional[int] = None
+    submitted_at: Optional[datetime] = None
+    approved_at: Optional[datetime] = None
+    notes: Optional[str] = None
+    lines: List[InventoryCountLineResponse] = []
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExpiryReportItem(BaseModel):
+    batch_id: int
+    location_id: int
+    medication_id: int
+    medication_name: str
+    batch_number: str
+    expiry_date: datetime
+    stock_quantity: int
+    days_to_expiry: int
+
+
 class PrescriptionItemCreate(BaseModel):
     medication_id: int
     dosage_instruction: str
