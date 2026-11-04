@@ -297,6 +297,49 @@ def user_has_department_access(
     return bool(department_code and department_code in central_department_codes)
 
 
+def RequireEncounterDepartmentAccess(encounter_id_parameter: str = "encounter_id"):
+    """Enforce encounter department scope for centrally granted branch sessions.
+
+    Legacy branch JWT authorization is intentionally unchanged during migration.
+    Encounter department is authoritative; patient-level department is not assumed.
+    """
+    def dependency(
+        request: Request,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> User:
+        central_department_codes = db.info.get("central_branch_department_codes")
+        if central_department_codes is None:
+            return current_user
+
+        raw_encounter_id = request.path_params.get(encounter_id_parameter)
+        try:
+            encounter_id = int(raw_encounter_id)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A valid encounter identifier is required.",
+            )
+
+        from backend.domains.encounters.models import PatientEncounter
+        from backend.domains.identity.models import Department
+
+        department_code = db.execute(
+            select(Department.code)
+            .join(PatientEncounter, PatientEncounter.department_id == Department.id)
+            .where(PatientEncounter.id == encounter_id)
+        ).scalar_one_or_none()
+        if department_code is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Encounter not found.")
+        if department_code not in central_department_codes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: encounter is outside your assigned department scope.",
+            )
+        return current_user
+    return dependency
+
+
 def RequireDepartmentAccess(department_id_parameter: str = "department_id"):
     """FastAPI dependency enforcing branch-local and centrally assigned department scope."""
     def dependency(
