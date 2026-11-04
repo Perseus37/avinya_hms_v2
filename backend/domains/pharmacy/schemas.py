@@ -71,6 +71,7 @@ class InventoryBatchCreate(BaseModel):
     expiry_date: datetime
     stock_quantity: int
     unit_price_paise: Decimal = Field(ge=0)
+    base_uom_code: Optional[str] = Field(default=None, max_length=24)
 
 class InventoryBatchUpdate(BaseModel):
     batch_number: Optional[str] = None
