@@ -374,3 +374,63 @@ class VendorInvoiceItem(AuditMixin, Base):
     total_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
 
     invoice: Mapped["VendorInvoice"] = relationship(back_populates="items")
+
+class SupplierQuotationStatusEnum(str, PyEnum):
+    RECEIVED = "RECEIVED"
+    SELECTED = "SELECTED"
+    NOT_SELECTED = "NOT_SELECTED"
+    WITHDRAWN = "WITHDRAWN"
+
+
+class SupplierQuotation(AuditMixin, Base):
+    """A supplier's commercial offer recorded against an approved purchase requisition."""
+    __tablename__ = "procurement_supplier_quotations"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "quotation_number", name="uq_proc_quote_vendor_number"),
+        Index("ix_proc_quote_requisition_status", "requisition_id", "status"),
+        CheckConstraint("total_amount_paise >= 0", name="ck_proc_quote_total_non_neg"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    requisition_id: Mapped[int] = mapped_column(ForeignKey("procurement_requisitions.id", ondelete="CASCADE"), nullable=False, index=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id"), nullable=False, index=True)
+    quotation_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    quoted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    valid_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    delivery_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    payment_terms: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    total_amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[SupplierQuotationStatusEnum] = mapped_column(
+        Enum(SupplierQuotationStatusEnum), default=SupplierQuotationStatusEnum.RECEIVED, nullable=False
+    )
+    selected_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    selected_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    selection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    requisition: Mapped["PurchaseRequisition"] = relationship()
+    vendor: Mapped["VendorMaster"] = relationship()
+    selected_by: Mapped[Optional["User"]] = relationship(foreign_keys=[selected_by_id])
+    items: Mapped[List["SupplierQuotationItem"]] = relationship(back_populates="quotation", cascade="all, delete-orphan")
+
+
+class SupplierQuotationItem(AuditMixin, Base):
+    """Supplier price and delivery offer for one approved requisition line."""
+    __tablename__ = "procurement_supplier_quotation_items"
+    __table_args__ = (
+        UniqueConstraint("quotation_id", "requisition_item_id", name="uq_proc_quote_item_line"),
+        CheckConstraint("quantity_quoted > 0", name="ck_proc_quote_qty_pos"),
+        CheckConstraint("unit_price_paise >= 0", name="ck_proc_quote_price_non_neg"),
+        CheckConstraint("tax_percentage >= 0 AND tax_percentage <= 100", name="ck_proc_quote_tax_range"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    quotation_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_quotations.id", ondelete="CASCADE"), nullable=False, index=True)
+    requisition_item_id: Mapped[int] = mapped_column(ForeignKey("procurement_requisition_items.id"), nullable=False, index=True)
+    quantity_quoted: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    tax_percentage: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    line_total_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    quotation: Mapped["SupplierQuotation"] = relationship(back_populates="items")
+    requisition_item: Mapped["PurchaseRequisitionItem"] = relationship()
