@@ -23,7 +23,7 @@ from backend.control_plane.models import (
 from backend.core import dependencies
 from backend.core.database import Base, TenantContext
 from backend.domains.identity.models import Department, GenderEnum, Permission, Role, User, UserRole, UserStatusEnum
-from backend.domains.encounters.models import EncounterTypeEnum, PatientEncounter
+from backend.domains.encounters.models import AdmissionTypeEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter
 from backend.domains.patients.models import Patient
 from starlette.requests import Request
 
@@ -382,3 +382,77 @@ def test_patient_visibility_does_not_block_legacy_branch_sessions(branch_grant_e
         tenant_db.commit()
         assert "central_branch_department_codes" not in tenant_db.info
         dependencies.ensure_patient_department_access(tenant_db, patient.id, patient_actor)
+
+
+def test_ipd_admission_scope_follows_parent_encounter_department(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        department = tenant_db.query(Department).filter_by(code="CARDIOLOGY").one()
+        patient = Patient(
+            mrn="MRN-ADMISSION-SCOPE-01",
+            full_name="Admission Scope Test",
+            date_of_birth=datetime(1978, 1, 1, tzinfo=timezone.utc),
+            gender=GenderEnum.MALE,
+            created_by_id=user.id,
+        )
+        tenant_db.add(patient)
+        tenant_db.flush()
+        encounter = PatientEncounter(
+            patient_id=patient.id,
+            encounter_type=EncounterTypeEnum.IPD,
+            primary_doctor_id=user.id,
+            department_id=department.id,
+        )
+        tenant_db.add(encounter)
+        tenant_db.flush()
+        admission = InpatientAdmission(
+            encounter_id=encounter.id,
+            admission_type=AdmissionTypeEnum.ROUTINE,
+            admitting_doctor_id=user.id,
+        )
+        tenant_db.add(admission)
+        tenant_db.commit()
+
+        dependencies.ensure_admission_department_access(tenant_db, admission.id, user)
+
+
+def test_ipd_admission_scope_denies_unassigned_parent_department(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        department = Department(code="NEUROLOGY", name="Neurology")
+        tenant_db.add(department)
+        tenant_db.flush()
+        patient = Patient(
+            mrn="MRN-ADMISSION-SCOPE-02",
+            full_name="Unassigned Admission Patient",
+            date_of_birth=datetime(1978, 1, 1, tzinfo=timezone.utc),
+            gender=GenderEnum.MALE,
+            created_by_id=user.id,
+        )
+        tenant_db.add(patient)
+        tenant_db.flush()
+        encounter = PatientEncounter(
+            patient_id=patient.id,
+            encounter_type=EncounterTypeEnum.IPD,
+            primary_doctor_id=user.id,
+            department_id=department.id,
+        )
+        tenant_db.add(encounter)
+        tenant_db.flush()
+        admission = InpatientAdmission(
+            encounter_id=encounter.id,
+            admission_type=AdmissionTypeEnum.ROUTINE,
+            admitting_doctor_id=user.id,
+        )
+        tenant_db.add(admission)
+        tenant_db.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            dependencies.ensure_admission_department_access(tenant_db, admission.id, user)
+        assert exc.value.status_code == 403
