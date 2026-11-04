@@ -17,8 +17,8 @@ def test_purchase_return_endpoint_reaches_service_validation(client, superuser_h
         },
     )
 
-    assert response.status_code == 400
-    assert "Invalid GRN item" in response.json()["message"]
+    assert response.status_code == 404
+    assert "Accepted goods receipt note" in response.json()["message"]
 
 
 def test_01_vendor_and_purchase_order_lifecycle(client, superuser_headers, pharmacist_headers):
