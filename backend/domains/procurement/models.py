@@ -137,14 +137,17 @@ class GoodsReceiptNote(AuditMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     grn_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     po_id: Mapped[int] = mapped_column(ForeignKey("procurement_purchase_orders.id"), nullable=False)
+    location_id: Mapped[Optional[int]] = mapped_column(ForeignKey("pharmacy_locations.id"), nullable=True, index=True)
     invoice_number: Mapped[str] = mapped_column(String(100), nullable=False)
     invoice_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[GRNStatusEnum] = mapped_column(default=GRNStatusEnum.PENDING_INSPECTION, nullable=False)
-    inspected_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    inspected_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    accepted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     inspection_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     purchase_order: Mapped["PurchaseOrder"] = relationship()
-    inspected_by: Mapped["User"] = relationship(foreign_keys=[inspected_by_id])
+    location: Mapped[Optional["PharmacyLocation"]] = relationship()
+    inspected_by: Mapped[Optional["User"]] = relationship(foreign_keys=[inspected_by_id])
     items: Mapped[List["GoodsReceiptItem"]] = relationship(back_populates="grn", cascade="all, delete-orphan")
 
 
