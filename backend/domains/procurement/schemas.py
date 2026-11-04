@@ -441,3 +441,33 @@ class OverduePurchaseOrderResponse(BaseModel):
     status: POStatusEnum
     total_amount_paise: int
     outstanding_quantity: int
+
+
+# --- Procurement units and medication pack configuration ---
+class ProcurementUnitOfMeasureResponse(BaseModel):
+    id: int
+    code: str
+    display_name: str
+    dimension: str
+    allows_fractional: bool
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MedicationPackConfigurationCreate(BaseModel):
+    purchase_uom_id: int
+    base_uom_id: int
+    units_per_purchase_unit: float = Field(gt=0, le=1000000000)
+    effective_from: datetime
+
+
+class MedicationPackConfigurationResponse(BaseModel):
+    id: int
+    medication_id: int
+    purchase_uom_id: int
+    base_uom_id: int
+    units_per_purchase_unit: float
+    effective_from: datetime
+    effective_to: Optional[datetime]
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
