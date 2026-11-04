@@ -273,14 +273,16 @@ class PharmacyReturnLog(AuditMixin, Base):
 
 
 class ControlledSubstanceVault(AuditMixin, Base):
-    """Perpetual inventory vault register for Schedule II / X controlled narcotics (e.g. Fentanyl, Morphine)."""
+    """Location-bound perpetual vault register for controlled narcotics."""
     __tablename__ = "controlled_substance_vaults"
     __table_args__ = (
         CheckConstraint("current_balance_units >= 0", name="ck_vault_bal_non_neg"),
+        UniqueConstraint("medication_id", "location_id", name="uq_controlled_vault_medication_location"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    medication_id: Mapped[int] = mapped_column(ForeignKey("medication_master.id"), unique=True, nullable=False)
+    medication_id: Mapped[int] = mapped_column(ForeignKey("medication_master.id"), nullable=False)
+    location_id: Mapped[int] = mapped_column(ForeignKey("pharmacy_locations.id"), nullable=False, index=True)
     vault_location: Mapped[str] = mapped_column(String(100), default="MAIN_NARCOTICS_SAFE", nullable=False)
     current_balance_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     unit_of_measure: Mapped[str] = mapped_column(String(30), default="AMPOULE", nullable=False)
@@ -288,6 +290,7 @@ class ControlledSubstanceVault(AuditMixin, Base):
     is_locked: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     medication: Mapped[MedicationMaster] = relationship()
+    location: Mapped[PharmacyLocation] = relationship()
 
 
 class ControlledSubstanceMovementLog(AuditMixin, Base):
