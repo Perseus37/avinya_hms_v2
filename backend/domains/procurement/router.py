@@ -182,6 +182,8 @@ def create_medication_pack_configuration(
         raise HTTPException(status_code=422, detail="Pack configuration effective_from must include a timezone.")
     if payload.units_per_purchase_unit <= 0:
         raise HTTPException(status_code=422, detail="Pack conversion must be greater than zero.")
+    if Decimal(str(payload.units_per_purchase_unit)) != Decimal(str(payload.units_per_purchase_unit)).to_integral_value():
+        raise HTTPException(status_code=422, detail="Stock base-unit conversions must be whole numbers because current inventory quantities are stored as integer units.")
     existing = db.query(MedicationPackConfiguration.id).filter(
         MedicationPackConfiguration.medication_id == medication_id,
         MedicationPackConfiguration.purchase_uom_id == purchase_uom.id,
