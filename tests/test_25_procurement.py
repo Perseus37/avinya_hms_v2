@@ -509,3 +509,111 @@ def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_he
     assert return_movement["quantity_delta"] == 4
     assert return_movement["stock_before"] == 40
     assert return_movement["stock_after"] == 44
+
+def test_supplier_quotation_comparison_and_independent_selection(
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import Department
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        department_id = db.query(Department.id).filter(
+            Department.code == "DEPT_GEN_MED"
+        ).scalar()
+
+    requisition = client.post(
+        "/v1/api/procurement/purchase-requisitions",
+        headers=pharmacist_headers,
+        json={
+            "requesting_department_id": department_id,
+            "justification": "Procure replacement examination equipment for the department.",
+            "items": [{"item_description": "Examination lamp", "requested_quantity": 5}],
+        },
+    )
+    assert requisition.status_code == 201, requisition.text
+    requisition_id = requisition.json()["id"]
+    submitted = client.post(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/submit",
+        headers=pharmacist_headers,
+    )
+    assert submitted.status_code == 200, submitted.text
+    item_id = requisition.json()["items"][0]["id"]
+    approved = client.patch(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/review",
+        headers=superuser_headers,
+        json={
+            "approved": True,
+            "review_notes": "Approved for competitive quotation.",
+            "items": [{"requisition_item_id": item_id, "approved_quantity": 5}],
+        },
+    )
+    assert approved.status_code == 200, approved.text
+
+    vendors = []
+    for suffix, name in [("A", "Quotation Vendor A"), ("B", "Quotation Vendor B")]:
+        response = client.post(
+            "/v1/api/procurement/vendors",
+            headers=pharmacist_headers,
+            json={
+                "code": f"QUOTE-{suffix}",
+                "name": name,
+                "category": "GENERAL_SUPPLIES",
+                "contact_person": "Sales Contact",
+                "phone": "9876543210",
+                "email": f"quote-{suffix.lower()}@example.com",
+                "address": "Industrial Estate",
+            },
+        )
+        assert response.status_code == 201, response.text
+        vendors.append(response.json())
+
+    for vendor, number, price in [
+        (vendors[0], "Q-A-001", 12000),
+        (vendors[1], "Q-B-001", 10000),
+    ]:
+        quote = client.post(
+            f"/v1/api/procurement/purchase-requisitions/{requisition_id}/quotations",
+            headers=pharmacist_headers,
+            json={
+                "vendor_id": vendor["id"],
+                "quotation_number": number,
+                "quoted_at": datetime.now(timezone.utc).isoformat(),
+                "delivery_days": 7,
+                "items": [{
+                    "requisition_item_id": item_id,
+                    "quantity_quoted": 5,
+                    "unit_price_paise": price,
+                    "tax_percentage": 5,
+                }],
+            },
+        )
+        assert quote.status_code == 201, quote.text
+
+    comparison = client.get(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/quotations",
+        headers=superuser_headers,
+    )
+    assert comparison.status_code == 200, comparison.text
+    assert [quote["vendor_id"] for quote in comparison.json()] == [
+        vendors[1]["id"], vendors[0]["id"]
+    ]
+
+    selected_id = comparison.json()[0]["id"]
+    selected = client.patch(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/quotations/{selected_id}/select",
+        headers=superuser_headers,
+        json={"selection_reason": "Lowest evaluated total cost and acceptable delivery timeline."},
+    )
+    assert selected.status_code == 200, selected.text
+    assert selected.json()["status"] == "SELECTED"
+    assert selected.json()["selected_by_id"] is not None
+
+    final_comparison = client.get(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/quotations",
+        headers=superuser_headers,
+    )
+    assert final_comparison.status_code == 200, final_comparison.text
+    statuses = {quote["vendor_id"]: quote["status"] for quote in final_comparison.json()}
+    assert statuses[vendors[1]["id"]] == "SELECTED"
+    assert statuses[vendors[0]["id"]] == "NOT_SELECTED"
