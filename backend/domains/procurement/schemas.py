@@ -472,6 +472,7 @@ class ProcurementUnitOfMeasureResponse(BaseModel):
     display_name: str
     dimension: str
     allows_fractional: bool
+    is_packaging_unit: bool
     is_active: bool
     model_config = ConfigDict(from_attributes=True)
 
