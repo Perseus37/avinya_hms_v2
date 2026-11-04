@@ -90,8 +90,14 @@ def _compute_next_daily_token(db: Session, doctor_id: int, appointment_time: dat
 def register_doctor_leave_blackout(
     payload: DoctorLeaveCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("opd:write", "iam:write")),
+    current_user: User = Depends(RequirePermission("opd:write", "iam:write")),
 ):
+    doctor = db.execute(
+        select(DoctorProfile).where(DoctorProfile.user_id == payload.doctor_id)
+    ).scalar_one_or_none()
+    if doctor is None:
+        raise HTTPException(status_code=404, detail="Doctor profile not found.")
+    ensure_department_id_access(db, doctor.department_id, current_user)
     if _to_utc(payload.end_time) <= _to_utc(payload.start_time):
         raise HTTPException(status_code=400, detail="Leave end_time must be after start_time.")
 
@@ -106,8 +112,14 @@ def register_doctor_leave_blackout(
 def list_doctor_leaves(
     doctor_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("opd:read")),
+    current_user: User = Depends(RequirePermission("opd:read")),
 ):
+    doctor = db.execute(
+        select(DoctorProfile).where(DoctorProfile.user_id == doctor_id)
+    ).scalar_one_or_none()
+    if doctor is None:
+        raise HTTPException(status_code=404, detail="Doctor profile not found.")
+    ensure_department_id_access(db, doctor.department_id, current_user)
     stmt = (
         select(DoctorLeave)
         .where(DoctorLeave.doctor_id == doctor_id, DoctorLeave.is_active == True)
@@ -136,6 +148,11 @@ def book_appointment(
 
     if not doctor:
         raise HTTPException(status_code=400, detail="Invalid doctor ID.")
+    if doctor.department_id != payload.department_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Appointment department must match the selected doctor's registered department.",
+        )
 
     active_leave = check_doctor_on_leave(db, payload.doctor_id, payload.appointment_time)
     if active_leave:
