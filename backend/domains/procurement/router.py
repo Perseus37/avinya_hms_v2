@@ -20,7 +20,7 @@ from backend.domains.procurement.models import (
     StoreIndent, StoreIndentItem, IndentStatusEnum
 )
 from backend.domains.procurement.schemas import (
-    VendorCreate, VendorResponse, VendorDirectoryResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
+    VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
     IndentIssueRequest, PurchaseReturnCreate
 )
 from backend.domains.procurement.services import (
@@ -61,10 +61,38 @@ def _generate_reference(prefix: str) -> str:
     return f"{prefix}-{date_part}-{secrets.token_hex(4).upper()}"
 
 # --- Vendor Management ---
-@router.post("/vendors", response_model=VendorResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/vendors", response_model=VendorDirectoryResponse, status_code=status.HTTP_201_CREATED)
 def create_vendor(payload: VendorCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
     vendor = VendorMaster(**payload.model_dump(), is_active=True, created_by_id=current_user.id)
     db.add(vendor)
+    db.commit()
+    db.refresh(vendor)
+    return vendor
+
+
+@router.patch("/vendors/{vendor_id}/status", response_model=VendorDirectoryResponse)
+def update_vendor_status(
+    vendor_id: int,
+    payload: VendorStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    vendor = db.query(VendorMaster).filter(VendorMaster.id == vendor_id).with_for_update().one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Vendor not found.")
+    if not payload.is_active:
+        open_orders = db.query(PurchaseOrder.id).filter(
+            PurchaseOrder.vendor_id == vendor.id,
+            PurchaseOrder.status.in_([
+                POStatusEnum.SUBMITTED,
+                POStatusEnum.APPROVED,
+                POStatusEnum.PARTIALLY_RECEIVED,
+            ]),
+        ).first()
+        if open_orders:
+            raise HTTPException(status_code=409, detail="Vendor cannot be deactivated while open purchase orders remain.")
+    vendor.is_active = payload.is_active
+    vendor.updated_by_id = current_user.id
     db.commit()
     db.refresh(vendor)
     return vendor
@@ -97,6 +125,9 @@ def get_vendor(
 # --- Purchase Orders ---
 @router.post("/purchase-orders", response_model=POResponse, status_code=status.HTTP_201_CREATED)
 def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
+    vendor = db.get(VendorMaster, payload.vendor_id)
+    if vendor is None or not vendor.is_active:
+        raise HTTPException(status_code=409, detail="An active registered vendor is required to create a purchase order.")
     po = PurchaseOrder(
         po_number=_generate_reference("PO"),
         vendor_id=payload.vendor_id,
