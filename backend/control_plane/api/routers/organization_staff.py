@@ -450,25 +450,22 @@ def assign_staff_to_branch(
         )
         .with_for_update()
     ).scalar_one_or_none()
-    if existing and existing.status == "ACTIVE":
-        raise HTTPException(status_code=409, detail="Staff already has an active membership in this branch.")
+    if existing:
+        if existing.status == "ACTIVE":
+            raise HTTPException(status_code=409, detail="Staff already has an active membership in this branch.")
+        if existing.status == "REVOKED":
+            raise HTTPException(status_code=409, detail="This membership was revoked. Revoked memberships are terminal; contact support to correct an accidental revocation.")
+        raise HTTPException(status_code=409, detail="This membership is suspended. Reactivate it through the membership status endpoint before changing its assignment.")
 
     try:
-        if existing:
-            membership = existing
-            membership.status = "ACTIVE"
-            membership.revoked_at = None
-            db.query(BranchMembershipRole).filter_by(membership_id=membership.id).delete()
-            db.query(BranchDepartmentAssignment).filter_by(membership_id=membership.id).delete()
-        else:
-            membership = BranchMembership(
-                organization_user_id=staff.id,
-                branch_id=branch.id,
-                group_id=identity["group_id"],
-                status="ACTIVE",
-            )
-            db.add(membership)
-            db.flush()
+        membership = BranchMembership(
+            organization_user_id=staff.id,
+            branch_id=branch.id,
+            group_id=identity["group_id"],
+            status="ACTIVE",
+        )
+        db.add(membership)
+        db.flush()
 
         for role_code in payload.role_codes:
             db.add(BranchMembershipRole(membership_id=membership.id, role_code=role_code))
