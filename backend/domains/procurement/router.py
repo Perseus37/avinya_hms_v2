@@ -1944,6 +1944,12 @@ def print_purchase_order(
             {
                 "description": item.item_description,
                 "quantity_ordered": item.quantity_ordered,
+                "purchase_uom_code": item.purchase_uom_code,
+                "base_uom_code": item.base_uom_code,
+                "units_per_purchase_unit": str(item.units_per_purchase_unit) if item.units_per_purchase_unit is not None else None,
+                "base_quantity": str(item.base_quantity) if item.base_quantity is not None else None,
+                "base_unit_price": str(item.base_unit_price_paise) if item.base_unit_price_paise is not None else None,
+                "unit_known": item.purchase_uom_code is not None,
                 "unit_price": format_amount(item.unit_price_paise),
                 "tax_percentage": item.tax_percentage,
                 "net_total_price": format_amount(item.total_price_paise),
