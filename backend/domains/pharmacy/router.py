@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import (RequirePermission, validate_pagination, ensure_department_code_access, ensure_pharmacy_prescription_access, ensure_prescription_encounter_access, ensure_encounter_department_access, get_user_assigned_department_ids)
+from backend.core.dependencies import (RequirePermission, validate_pagination, ensure_department_code_access, ensure_pharmacy_prescription_access, ensure_prescription_encounter_access, ensure_encounter_department_access, ensure_pharmacy_or_encounter_access, get_user_assigned_department_ids)
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.core.date_ranges import resolve_record_date_window
 from backend.domains.billing.models import Invoice, InvoiceLineItem, InvoiceStatusEnum, PaymentMethodEnum, RefundVoucher
@@ -934,6 +934,7 @@ def dispense_controlled_substance_from_vault(
     current_user: User = Depends(RequirePermission("pharmacy:write", "nursing:write")),
 ):
     """Dispenses controlled narcotics from perpetual safe to ward stock or patient encounter."""
+    ensure_pharmacy_or_encounter_access(db, current_user, payload.encounter_id, payload.prescription_item_id)
     from backend.domains.pharmacy.services import process_controlled_substance_movement
     return process_controlled_substance_movement(
         session=db,
@@ -957,6 +958,7 @@ def return_controlled_substance_to_vault(
     current_user: User = Depends(RequirePermission("pharmacy:write", "nursing:write")),
 ):
     """Returns unused controlled narcotics back to the perpetual safe."""
+    ensure_pharmacy_or_encounter_access(db, current_user, payload.encounter_id, payload.prescription_item_id)
     from backend.domains.pharmacy.services import process_controlled_substance_movement
     return process_controlled_substance_movement(
         session=db,
@@ -983,6 +985,7 @@ def record_controlled_substance_dual_witness_wastage(
     Mandatory Dual-Witness Narcotics Wastage:
     Co-signs partial ampoule / vial destruction with secondary healthcare witness credential validation.
     """
+    ensure_pharmacy_or_encounter_access(db, current_user, payload.encounter_id, payload.prescription_item_id)
     from backend.domains.pharmacy.services import process_controlled_substance_movement
     return process_controlled_substance_movement(
         session=db,
