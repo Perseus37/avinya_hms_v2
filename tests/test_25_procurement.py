@@ -916,3 +916,42 @@ def test_procurement_invoice_tax_rounding_uses_per_line_half_up_paise():
     assert _percentage_amount_paise(1, 50) == 1
     assert _percentage_amount_paise(10000, 18) == 1800
 
+def test_vendor_scorecard_supports_date_filter_and_empty_activity(
+    client, superuser_headers, pharmacist_headers
+):
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-SCORECARD-EMPTY",
+            "name": "Scorecard Empty Activity Vendor",
+            "category": "GENERAL_SUPPLIES",
+            "contact_person": "Procurement Desk",
+            "phone": "9876500000",
+            "email": "scorecard-empty@example.com",
+            "address": "Hyderabad",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    response = client.get(
+        f"/v1/api/procurement/vendors/{vendor_id}/metrics?from_date=2026-01-01&to_date=2026-12-31",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    metrics = response.json()
+    assert metrics["period"]["from_date"] == "2026-01-01"
+    assert metrics["period"]["to_date"] == "2026-12-31"
+    assert metrics["purchase_orders"]["total"] == 0
+    assert metrics["delivery"]["on_time_delivery_rate_pct"] is None
+    assert metrics["fulfillment"]["accepted_fulfillment_rate_pct"] is None
+    assert metrics["invoices"]["total"] == 0
+    assert metrics["invoices"]["matched_approved_unpaid_exposure_paise"] == 0
+
+    invalid_range = client.get(
+        f"/v1/api/procurement/vendors/{vendor_id}/metrics?from_date=2026-12-31&to_date=2026-01-01",
+        headers=superuser_headers,
+    )
+    assert invalid_range.status_code == 422
+
