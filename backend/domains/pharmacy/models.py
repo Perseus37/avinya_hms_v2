@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum as PyEnum
 from typing import List, Optional
 
@@ -104,7 +105,7 @@ class InventoryBatch(AuditMixin, Base):
     batch_number: Mapped[str] = mapped_column(String(50), nullable=False)
     expiry_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     stock_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
-    unit_price_paise: Mapped[float] = mapped_column(Numeric(24, 8), nullable=False)
+    unit_price_paise: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     base_uom_code: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
 
     medication: Mapped[MedicationMaster] = relationship()
