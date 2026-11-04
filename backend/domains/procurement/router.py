@@ -11,7 +11,8 @@ from backend.core.document_responses import pdf_attachment_response
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
-from backend.domains.identity.models import User
+from backend.domains.identity.models import User, Department
+from backend.domains.pharmacy.models import MedicationMaster
 from backend.domains.procurement.models import (
     VendorMaster, PurchaseOrder, PurchaseOrderItem, POStatusEnum,
     GoodsReceiptNote, GoodsReceiptItem, GRNStatusEnum,
@@ -136,7 +137,7 @@ def create_purchase_requisition(
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("procurement:write")),
 ):
-    department = db.get(__import__("backend.domains.identity.models", fromlist=["Department"]).Department, payload.requesting_department_id)
+    department = db.get(Department, payload.requesting_department_id)
     if department is None or not department.is_active:
         raise HTTPException(status_code=404, detail="Requesting department is unavailable.")
     if not user_has_department_access(db, current_user, department.id):
@@ -154,7 +155,7 @@ def create_purchase_requisition(
     db.flush()
     for item in payload.items:
         if item.medication_id is not None:
-            medication = db.get(__import__("backend.domains.pharmacy.models", fromlist=["MedicationMaster"]).MedicationMaster, item.medication_id)
+            medication = db.get(MedicationMaster, item.medication_id)
             if medication is None or not medication.is_active:
                 raise HTTPException(status_code=422, detail="A requested medication is unavailable.")
         db.add(PurchaseRequisitionItem(
