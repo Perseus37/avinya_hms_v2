@@ -113,8 +113,18 @@ def _authenticate_branch_access_token(
                 raise HTTPException(status_code=401, detail="Branch access grant identity binding is invalid.")
 
             local_user = local_db.get(User, link.local_user_id)
-            if not local_user or local_user.status != UserStatusEnum.ACTIVE:
-                raise HTTPException(status_code=401, detail="Linked branch user is unavailable.")
+            if (
+                not local_user
+                or local_user.status != UserStatusEnum.ACTIVE
+                or local_user.is_superuser
+                or local_user.email.strip().lower() != org_user.email_normalized
+                or " ".join(local_user.full_name.split()).casefold()
+                != " ".join(org_user.full_name.split()).casefold()
+            ):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Linked branch user is unavailable or no longer matches the verified organization identity.",
+                )
 
             assigned_roles = control_db.execute(
                 select(BranchMembershipRole.role_code)
