@@ -472,3 +472,36 @@ def test_pharmacy_stock_transfer_lifecycle_preserves_batch_traceability(client, 
     )
     assert source_only.status_code == 200
     assert all(item["location_id"] == source_batch["location_id"] for item in source_only.json()["items"])
+
+
+def test_inventory_count_session_is_blind_and_accepts_zero_physical_count(client, pharmacist_headers):
+    """A physical count hides system stock and treats zero as a valid count."""
+    _, batch = _setup_med_and_batch(client, pharmacist_headers)
+    created = client.post(
+        "/v1/api/pharmacy/inventory/count-sessions",
+        headers=pharmacist_headers,
+        json={"location_id": batch["location_id"], "count_type": "SPOT"},
+    )
+    assert created.status_code == 201, created.text
+    payload = created.json()
+    assert payload["status"] == "COUNTING"
+    assert payload["lines"]
+    line = payload["lines"][0]
+    assert "snapshot_quantity" not in line
+    assert "snapshot_movement_id" not in line
+
+    counted = client.put(
+        f"/v1/api/pharmacy/inventory/count-sessions/{payload['id']}/lines/{line['id']}",
+        headers=pharmacist_headers,
+        json={"physical_quantity": 0, "reason_code": "ZERO_PHYSICAL"},
+    )
+    assert counted.status_code == 200, counted.text
+    assert counted.json()["physical_quantity"] == 0
+    assert "snapshot_quantity" not in counted.json()
+
+    submitted = client.post(
+        f"/v1/api/pharmacy/inventory/count-sessions/{payload['id']}/submit",
+        headers=pharmacist_headers,
+    )
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["status"] == "SUBMITTED"
