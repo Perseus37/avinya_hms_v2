@@ -645,12 +645,30 @@ def test_supplier_quotation_comparison_and_independent_selection(
     )
     assert wrong_price.status_code == 409, wrong_price.text
 
+    wrong_tax_payload = {
+        **po_payload,
+        "items": [{**po_payload["items"][0], "tax_percentage": 18}],
+    }
+    wrong_tax = client.post(
+        f"/v1/api/procurement/purchase-requisitions/{requisition_id}/purchase-orders",
+        headers=pharmacist_headers,
+        json=wrong_tax_payload,
+    )
+    assert wrong_tax.status_code == 409, wrong_tax.text
+
     selected_supplier_po = client.post(
         f"/v1/api/procurement/purchase-requisitions/{requisition_id}/purchase-orders",
         headers=pharmacist_headers,
         json=po_payload,
     )
     assert selected_supplier_po.status_code == 201, selected_supplier_po.text
+    po_data = selected_supplier_po.json()
+    assert po_data["subtotal_paise"] == 50000
+    assert po_data["tax_amount_paise"] == 2500
+    assert po_data["total_amount_paise"] == 52500
+    assert po_data["items"][0]["tax_percentage"] == 5
+    assert po_data["items"][0]["tax_amount_paise"] == 2500
+    assert po_data["items"][0]["gross_total_paise"] == 52500
 
     final_comparison = client.get(
         f"/v1/api/procurement/purchase-requisitions/{requisition_id}/quotations",
