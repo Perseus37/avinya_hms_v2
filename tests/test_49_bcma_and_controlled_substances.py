@@ -677,3 +677,47 @@ def test_controlled_vault_physical_count_requires_dual_witness_and_independent_a
     assert reconciliation[0]["balance_before"] == 8
     assert reconciliation[0]["balance_after"] == 7
     assert reconciliation[0]["witness_verified"] is True
+
+
+def test_controlled_vault_count_rejects_approval_after_intervening_movement(
+    client, superuser_headers, pharmacist_headers
+):
+    med = _create_medication(
+        client, superuser_headers, code="MED_VAULT_COUNT_STALE", brand="Vault Count Stale",
+        generic="Vault Count Stale Generic", is_controlled=True,
+    )
+    vault_res = client.post(
+        "/v1/api/pharmacy/controlled-substances/vault",
+        headers=pharmacist_headers,
+        json={"medication_id": med["id"], "initial_balance_units": 5, "unit_of_measure": "AMPOULE"},
+    )
+    assert vault_res.status_code == 201, vault_res.text
+    vault_id = vault_res.json()["id"]
+    count_res = client.post(
+        "/v1/api/pharmacy/controlled-substances/counts",
+        headers=pharmacist_headers,
+        json={
+            "vault_id": vault_id, "physical_balance": 4, "witness_user_id": 2,
+            "witness_password": "StaffPass123!", "reason": "Count mismatch requires review",
+        },
+    )
+    assert count_res.status_code == 201, count_res.text
+
+    receipt = client.post(
+        "/v1/api/pharmacy/controlled-substances/receipt",
+        headers=pharmacist_headers,
+        json={
+            "vault_id": vault_id, "quantity_units": 1, "batch_number": "LOT-STALE-01",
+            "witness_user_id": 2, "witness_password": "StaffPass123!",
+            "notes": "Supplier invoice INV-STALE-01",
+        },
+    )
+    assert receipt.status_code == 201, receipt.text
+
+    approval = client.post(
+        f"/v1/api/pharmacy/controlled-substances/counts/{count_res.json()['id']}/approve",
+        headers=superuser_headers,
+        json={},
+    )
+    assert approval.status_code == 409
+    assert "recount is required" in approval.text
