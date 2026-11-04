@@ -49,6 +49,10 @@ def upgrade() -> None:
         "ck_po_tax_non_neg", "procurement_purchase_orders", "tax_amount_paise >= 0"
     )
     op.create_check_constraint(
+        "ck_po_financial_totals", "procurement_purchase_orders",
+        "subtotal_paise + tax_amount_paise = total_amount_paise",
+    )
+    op.create_check_constraint(
         "ck_po_item_tax_range", "procurement_po_items",
         "tax_percentage >= 0 AND tax_percentage <= 100",
     )
@@ -57,6 +61,10 @@ def upgrade() -> None:
     )
     op.create_check_constraint(
         "ck_po_item_gross_non_neg", "procurement_po_items", "gross_total_paise >= 0"
+    )
+    op.create_check_constraint(
+        "ck_po_item_financial_totals", "procurement_po_items",
+        "total_price_paise + tax_amount_paise = gross_total_paise",
     )
 
     for table, column in [
@@ -70,9 +78,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_constraint("ck_po_item_financial_totals", "procurement_po_items", type_="check")
     op.drop_constraint("ck_po_item_gross_non_neg", "procurement_po_items", type_="check")
     op.drop_constraint("ck_po_item_tax_non_neg", "procurement_po_items", type_="check")
     op.drop_constraint("ck_po_item_tax_range", "procurement_po_items", type_="check")
+    op.drop_constraint("ck_po_financial_totals", "procurement_purchase_orders", type_="check")
     op.drop_constraint("ck_po_tax_non_neg", "procurement_purchase_orders", type_="check")
     op.drop_constraint("ck_po_subtotal_non_neg", "procurement_purchase_orders", type_="check")
     op.drop_column("procurement_po_items", "gross_total_paise")
