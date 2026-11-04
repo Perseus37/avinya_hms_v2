@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from backend.control_plane.models import GlobalPatientPointer
 from backend.core.database import get_control_db, get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequirePatientDepartmentAccess, RequirePermission, validate_pagination
+from backend.core.dependencies import RequirePatientDepartmentAccess, RequirePermission, get_user_assigned_department_ids, validate_pagination
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import Department, User
 from backend.domains.encounters.models import PatientEncounter
@@ -175,17 +175,16 @@ def list_patients(
     """Lists patients with search, registration date filtering, and streaming CSV export."""
     start_at, end_at = resolve_record_date_window(start_date, end_date)
     query = db.query(Patient).filter(Patient.is_active == True)
-    central_department_codes = db.info.get("central_branch_department_codes")
-    if central_department_codes is not None:
-        if not central_department_codes:
+    assigned_department_ids = get_user_assigned_department_ids(db, actor)
+    if assigned_department_ids is not None:
+        if not assigned_department_ids:
             query = query.filter(False)
         else:
             visible_encounter = (
                 select(PatientEncounter.id)
-                .join(Department, PatientEncounter.department_id == Department.id)
                 .where(
                     PatientEncounter.patient_id == Patient.id,
-                    Department.code.in_(central_department_codes),
+                    PatientEncounter.department_id.in_(assigned_department_ids),
                 )
                 .exists()
             )
