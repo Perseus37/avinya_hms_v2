@@ -519,6 +519,8 @@ def approve_purchase_order(po_id: int, db: Session = Depends(get_db), current_us
     # FIX: Check for both DRAFT and SUBMITTED statuses
     if not po or po.status not in [POStatusEnum.DRAFT, POStatusEnum.SUBMITTED]:
         raise HTTPException(status_code=400, detail="Only DRAFT or SUBMITTED purchase orders can be approved.")
+    if po.created_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The purchase order creator cannot approve the same purchase order.")
 
     po.status = POStatusEnum.APPROVED
     po.approved_by_id = current_user.id
