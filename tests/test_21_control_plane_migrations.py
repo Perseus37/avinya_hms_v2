@@ -16,7 +16,7 @@ from backend.scripts.migrate import (
     validate_tenant_database_url,
 )
 
-CONTROL_PLANE_HEAD = "4d7e9b2c1a85"
+CONTROL_PLANE_HEAD = "6a2f9c4d1e80"
 
 
 def test_control_plane_initial_migration_matches_metadata(tmp_path):
@@ -653,3 +653,109 @@ def test_alembic_revision_graph_has_one_resolvable_head(config_path, expected_he
                 f"parent {parent_id}"
             )
 
+
+
+
+def test_hospital_group_identity_supports_branch_specific_roles_and_scoped_emails(tmp_path):
+    from sqlalchemy.exc import IntegrityError
+    from backend.control_plane.models import (
+        Branch,
+        BranchMembership,
+        BranchMembershipRole,
+        HospitalGroup,
+        OrganizationUser,
+        TenantRegistry,
+    )
+    from backend.control_plane.models import DeploymentModeEnum
+
+    database_url = f"sqlite:///{(tmp_path / 'group_identity.sqlite').as_posix()}"
+    engine = create_engine(database_url)
+    ControlBase.metadata.create_all(engine)
+    SessionLocal = __import__("sqlalchemy.orm", fromlist=["sessionmaker"]).sessionmaker(bind=engine)
+
+    try:
+        with SessionLocal() as db:
+            group = HospitalGroup(code="ACME-HEALTH", name="Acme Health")
+            other_group = HospitalGroup(code="OTHER-HEALTH", name="Other Health")
+            db.add_all([group, other_group])
+            db.flush()
+
+            user = OrganizationUser(
+                group_id=group.id,
+                email="Doctor@Example.com",
+                email_normalized="doctor@example.com",
+                full_name="Dr Example",
+                status="ACTIVE",
+            )
+            other_group_user = OrganizationUser(
+                group_id=other_group.id,
+                email="doctor@example.com",
+                email_normalized="doctor@example.com",
+                full_name="Dr Example",
+                status="ACTIVE",
+            )
+            db.add_all([user, other_group_user])
+            db.flush()
+
+            def add_branch(code, slug, db_name):
+                registry = TenantRegistry(
+                    hospital_name=code,
+                    branch_code=code,
+                    subdomain_slug=slug,
+                    db_name=db_name,
+                    admin_email="admin@example.com",
+                    jwt_secret_key="encrypted-jwt",
+                    backup_encryption_key="encrypted-backup",
+                    deployment_mode=DeploymentModeEnum.CLOUD,
+                )
+                db.add(registry)
+                db.flush()
+                branch = Branch(
+                    group_id=group.id,
+                    tenant_registry_id=registry.id,
+                    code=code,
+                    name=code,
+                )
+                db.add(branch)
+                db.flush()
+                return branch
+
+            branch_a = add_branch("ACME-A", "acme-a", "hms_acme_a")
+            branch_b = add_branch("ACME-B", "acme-b", "hms_acme_b")
+            membership_a = BranchMembership(
+                organization_user_id=user.id,
+                branch_id=branch_a.id,
+                group_id=group.id,
+                status="ACTIVE",
+            )
+            membership_b = BranchMembership(
+                organization_user_id=user.id,
+                branch_id=branch_b.id,
+                group_id=group.id,
+                status="ACTIVE",
+            )
+            db.add_all([membership_a, membership_b])
+            db.flush()
+            db.add_all([
+                BranchMembershipRole(membership_id=membership_a.id, role_code="ROLE_DOCTOR"),
+                BranchMembershipRole(membership_id=membership_b.id, role_code="ROLE_MEDICAL_DIRECTOR"),
+            ])
+            db.commit()
+
+            role_a = db.query(BranchMembershipRole).filter_by(membership_id=membership_a.id).one()
+            role_b = db.query(BranchMembershipRole).filter_by(membership_id=membership_b.id).one()
+            assert role_a.role_code == "ROLE_DOCTOR"
+            assert role_b.role_code == "ROLE_MEDICAL_DIRECTOR"
+            assert user.group_id != other_group_user.group_id
+
+            db.add(OrganizationUser(
+                group_id=group.id,
+                email="doctor@example.com",
+                email_normalized="doctor@example.com",
+                full_name="Duplicate",
+            ))
+            with pytest.raises(IntegrityError):
+                db.commit()
+            db.rollback()
+    finally:
+        engine.dispose()
