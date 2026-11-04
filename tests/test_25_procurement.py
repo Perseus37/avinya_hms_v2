@@ -617,3 +617,101 @@ def test_supplier_quotation_comparison_and_independent_selection(
     statuses = {quote["vendor_id"]: quote["status"] for quote in final_comparison.json()}
     assert statuses[vendors[1]["id"]] == "SELECTED"
     assert statuses[vendors[0]["id"]] == "NOT_SELECTED"
+
+
+def test_purchase_order_amendment_requires_independent_review_and_reapproval(
+    client, pharmacist_headers, superuser_headers
+):
+    vendor = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-AMEND-01",
+            "name": "Amendment Test Supplier",
+            "category": "GENERAL_SUPPLIES",
+            "contact_person": "Supplier Desk",
+            "phone": "9876501234",
+            "email": "amendment-supplier@example.com",
+            "address": "Industrial Estate",
+        },
+    )
+    assert vendor.status_code == 201, vendor.text
+
+    po = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor.json()["id"],
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=14)).isoformat(),
+            "payment_terms": "Net 30",
+            "items": [{
+                "item_description": "Examination lamp",
+                "quantity_ordered": 2,
+                "unit_price_paise": 150000,
+            }],
+        },
+    )
+    assert po.status_code == 201, po.text
+    po_id = po.json()["id"]
+    approved = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/approve",
+        headers=superuser_headers,
+    )
+    assert approved.status_code == 200, approved.text
+
+    amendment = client.post(
+        f"/v1/api/procurement/purchase-orders/{po_id}/amendments",
+        headers=pharmacist_headers,
+        json={
+            "reason": "Supplier revised delivery schedule and unit pricing.",
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=21)).isoformat(),
+            "payment_terms": "Net 45",
+            "items": [{
+                "item_description": "Examination lamp",
+                "quantity_ordered": 2,
+                "unit_price_paise": 160000,
+            }],
+        },
+    )
+    assert amendment.status_code == 201, amendment.text
+    amendment_id = amendment.json()["id"]
+    assert amendment.json()["prior_snapshot"]["total_amount_paise"] == 300000
+    assert amendment.json()["proposed_snapshot"]["total_amount_paise"] == 320000
+
+    self_review = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/amendments/{amendment_id}/review",
+        headers=pharmacist_headers,
+        json={"approved": True, "review_notes": "Self review attempt."},
+    )
+    assert self_review.status_code == 409, self_review.text
+
+    reviewed = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/amendments/{amendment_id}/review",
+        headers=superuser_headers,
+        json={"approved": True, "review_notes": "Commercial revision reviewed and accepted."},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    assert reviewed.json()["status"] == "APPROVED"
+
+    history = client.get(
+        f"/v1/api/procurement/purchase-orders/{po_id}/amendments",
+        headers=superuser_headers,
+    )
+    assert history.status_code == 200, history.text
+    assert len(history.json()) == 1
+    assert history.json()[0]["prior_snapshot"]["total_amount_paise"] == 300000
+
+    refreshed = client.get(
+        f"/v1/api/procurement/purchase-orders/{po_id}",
+        headers=superuser_headers,
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["status"] == "SUBMITTED"
+    assert refreshed.json()["total_amount_paise"] == 320000
+
+    reapproved = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/approve",
+        headers=superuser_headers,
+    )
+    assert reapproved.status_code == 200, reapproved.text
+    assert reapproved.json()["status"] == "APPROVED"
