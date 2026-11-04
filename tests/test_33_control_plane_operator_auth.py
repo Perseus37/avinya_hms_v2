@@ -8,6 +8,8 @@ from backend.control_plane.models import (
     ControlBase,
     ControlPlaneAuditLog,
     ControlPlaneOperator,
+    DeploymentModeEnum,
+    TenantRegistry,
 )
 from backend.control_plane.services import auth as control_auth
 from backend.core.database import get_control_db
@@ -35,6 +37,17 @@ def test_named_operator_mfa_login_auths_control_plane_and_logout_revokes(
                 password_hash=pwd_context.hash("OperatorPass123!"),
             )
         )
+        db.add(TenantRegistry(
+            hospital_name="Acme Hyderabad",
+            branch_code="ACME-HYD-01",
+            subdomain_slug="acme-hyd-01",
+            db_name="hms_acme_hyd_01",
+            admin_email="admin@acme.example",
+            jwt_secret_key="encrypted-jwt-secret",
+            backup_encryption_key="encrypted-backup-key",
+            deployment_mode=DeploymentModeEnum.CLOUD,
+            is_active=True,
+        ))
         db.commit()
 
     def override_get_control_db():
@@ -84,6 +97,44 @@ def test_named_operator_mfa_login_auths_control_plane_and_logout_revokes(
             )
             assert confirmed.status_code == 200, confirmed.text
             access_token = confirmed.json()["access_token"]
+            headers = {"Authorization": f"Bearer {access_token}"}
+
+            group_response = client.post(
+                "/api/organization-groups",
+                headers=headers,
+                json={"code": "acme-health", "name": "Acme Health Group"},
+            )
+            assert group_response.status_code == 201, group_response.text
+            group_id = group_response.json()["id"]
+            assert group_response.json()["code"] == "ACME-HEALTH"
+
+            duplicate_group = client.post(
+                "/api/organization-groups",
+                headers=headers,
+                json={"code": "ACME-HEALTH", "name": "Duplicate Group"},
+            )
+            assert duplicate_group.status_code == 409
+
+            branch_response = client.post(
+                f"/api/organization-groups/{group_id}/branches",
+                headers=headers,
+                json={"tenant_registry_id": 1},
+            )
+            assert branch_response.status_code == 201, branch_response.text
+            assert branch_response.json()["code"] == "ACME-HYD-01"
+
+            duplicate_branch = client.post(
+                f"/api/organization-groups/{group_id}/branches",
+                headers=headers,
+                json={"tenant_registry_id": 1},
+            )
+            assert duplicate_branch.status_code == 409
+
+            group_detail = client.get(
+                f"/api/organization-groups/{group_id}", headers=headers
+            )
+            assert group_detail.status_code == 200
+            assert group_detail.json()["branch_count"] == 1
 
             protected = client.get(
                 "/api/pricing/catalog",
