@@ -877,3 +877,12 @@ def test_purchase_order_shipment_tracking_and_overdue_queue(
     )
     assert current_po.status_code == 200, current_po.text
     assert current_po.json()["status"] == "APPROVED"
+
+
+def test_procurement_invoice_tax_rounding_uses_per_line_half_up_paise():
+    from backend.domains.procurement.services import _percentage_amount_paise
+
+    assert _percentage_amount_paise(101, 5) == 5
+    assert _percentage_amount_paise(1, 50) == 1
+    assert _percentage_amount_paise(10000, 18) == 1800
+
