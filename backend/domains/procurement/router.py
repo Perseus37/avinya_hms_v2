@@ -527,10 +527,11 @@ def record_supplier_quotation(
             raise HTTPException(status_code=422, detail="A quotation cannot price a line with no approved quantity.")
         if line.quantity_quoted != req_line.approved_quantity:
             raise HTTPException(status_code=422, detail="Quoted quantity must equal the approved requisition quantity for that line.")
-        line_total = line.quantity_quoted * line.unit_price_paise
-        line_total += (line_total * line.tax_percentage + 50) // 100
+        line_subtotal = line.quantity_quoted * line.unit_price_paise
+        line_tax = (line_subtotal * line.tax_percentage + 50) // 100
+        line_total = line_subtotal + line_tax
         total += line_total
-        prepared.append((line, line_total))
+        prepared.append((line, line_tax, line_total))
     quote = SupplierQuotation(
         requisition_id=requisition.id,
         vendor_id=vendor.id,
@@ -546,13 +547,14 @@ def record_supplier_quotation(
     )
     db.add(quote)
     db.flush()
-    for line, line_total in prepared:
+    for line, line_tax, line_total in prepared:
         db.add(SupplierQuotationItem(
             quotation_id=quote.id,
             requisition_item_id=line.requisition_item_id,
             quantity_quoted=line.quantity_quoted,
             unit_price_paise=line.unit_price_paise,
             tax_percentage=line.tax_percentage,
+            tax_amount_paise=line_tax,
             line_total_paise=line_total,
             created_by_id=current_user.id,
         ))
