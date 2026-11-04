@@ -15,10 +15,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.control_plane.models import (
+    Branch,
+    BranchAccessSession,
+    BranchDepartmentAssignment,
+    BranchMembership,
+    BranchMembershipRole,
+    BranchUserLink,
     ControlPlaneAuditLog,
     HospitalGroup,
     OrganizationSession,
     OrganizationUser,
+    TenantRegistry,
 )
 from backend.core.config import settings
 from backend.core.database import ControlSessionLocal, get_control_db
@@ -384,6 +391,163 @@ def refresh_session(payload: RefreshRequest, db: Session = Depends(get_control_d
         "refresh_expires_in": 30 * 24 * 60 * 60,
         "user": _user_payload(user),
     }
+
+
+@router.get("/branches")
+def list_my_branch_access(
+    identity: dict = Depends(_current_identity),
+    db: Session = Depends(get_control_db),
+):
+    """List only active, verified branch assignments belonging to this organization identity."""
+    rows = db.execute(
+        select(BranchMembership, Branch, TenantRegistry)
+        .join(Branch, Branch.id == BranchMembership.branch_id)
+        .join(TenantRegistry, TenantRegistry.id == Branch.tenant_registry_id)
+        .join(OrganizationUser, OrganizationUser.id == BranchMembership.organization_user_id)
+        .join(BranchUserLink, BranchUserLink.membership_id == BranchMembership.id)
+        .where(
+            BranchMembership.organization_user_id == identity["user_id"],
+            BranchMembership.group_id == identity["group_id"],
+            BranchMembership.status == "ACTIVE",
+            Branch.status == "ACTIVE",
+            TenantRegistry.is_active.is_(True),
+            OrganizationUser.status == "ACTIVE",
+            HospitalGroup.id == identity["group_id"],
+            HospitalGroup.status == "ACTIVE",
+            BranchUserLink.verified_at.is_not(None),
+        )
+        .order_by(Branch.name.asc(), Branch.id.asc())
+    ).all()
+    return {
+        "items": [
+            {
+                "membership_id": membership.id,
+                "branch_id": branch.id,
+                "branch_code": branch.code,
+                "branch_name": branch.name,
+                "subdomain_slug": registry.subdomain_slug,
+            }
+            for membership, branch, registry in rows
+        ],
+        "count": len(rows),
+    }
+
+
+@router.post("/branches/{branch_id}/access")
+def create_branch_access_grant(
+    branch_id: int,
+    identity: dict = Depends(_current_identity),
+    db: Session = Depends(get_control_db),
+):
+    """Issue a short-lived opaque handoff credential for one verified branch membership."""
+    now = datetime.now(timezone.utc)
+    row = db.execute(
+        select(BranchMembership, Branch, TenantRegistry, BranchUserLink)
+        .join(Branch, Branch.id == BranchMembership.branch_id)
+        .join(TenantRegistry, TenantRegistry.id == Branch.tenant_registry_id)
+        .join(BranchUserLink, BranchUserLink.membership_id == BranchMembership.id)
+        .join(OrganizationUser, OrganizationUser.id == BranchMembership.organization_user_id)
+        .join(HospitalGroup, HospitalGroup.id == BranchMembership.group_id)
+        .where(
+            BranchMembership.organization_user_id == identity["user_id"],
+            BranchMembership.group_id == identity["group_id"],
+            BranchMembership.branch_id == branch_id,
+            BranchMembership.status == "ACTIVE",
+            Branch.status == "ACTIVE",
+            TenantRegistry.is_active.is_(True),
+            OrganizationUser.status == "ACTIVE",
+            HospitalGroup.status == "ACTIVE",
+            BranchUserLink.verified_at.is_not(None),
+        )
+        .with_for_update()
+    ).first()
+    if not row:
+        raise HTTPException(status_code=403, detail="No active, verified membership grants access to this branch.")
+
+    membership, branch, registry, link = row
+    session = db.execute(
+        select(OrganizationSession).where(
+            OrganizationSession.id == identity["session_id"],
+            OrganizationSession.organization_user_id == identity["user_id"],
+            OrganizationSession.revoked_at.is_(None),
+            OrganizationSession.expires_at > now,
+        ).with_for_update()
+    ).scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=401, detail="Organization session is no longer active.")
+
+    raw_token = "br_access_" + secrets.token_urlsafe(48)
+    expires_at = now + timedelta(minutes=10)
+    grant = BranchAccessSession(
+        organization_session_id=session.id,
+        membership_id=membership.id,
+        token_hash=_token_digest(raw_token),
+        expires_at=expires_at,
+    )
+    db.add(grant)
+    roles = db.execute(
+        select(BranchMembershipRole.role_code)
+        .where(BranchMembershipRole.membership_id == membership.id)
+        .order_by(BranchMembershipRole.role_code.asc())
+    ).scalars().all()
+    departments = db.execute(
+        select(BranchDepartmentAssignment.department_code)
+        .where(BranchDepartmentAssignment.membership_id == membership.id)
+        .order_by(BranchDepartmentAssignment.department_code.asc())
+    ).scalars().all()
+    db.add(ControlPlaneAuditLog(
+        action="ORGANIZATION_BRANCH_ACCESS_GRANT_ISSUED",
+        target_slug=registry.subdomain_slug,
+        actor=str(identity["user_id"]),
+        details=f"Short-lived branch access grant issued for membership {membership.id}; grant_id is {grant.id}.",
+    ))
+    db.commit()
+    return {
+        "branch_access_token": raw_token,
+        "token_type": "bearer",
+        "expires_in": 600,
+        "expires_at": expires_at,
+        "grant_id": grant.id,
+        "branch": {
+            "id": branch.id,
+            "code": branch.code,
+            "name": branch.name,
+            "subdomain_slug": registry.subdomain_slug,
+            "api_base_url": registry.api_base_url,
+        },
+        "local_user_id": link.local_user_id,
+        "roles": roles,
+        "departments": departments,
+        "message": "Short-lived branch handoff issued. Branch-side validation is a separate integration step; this credential alone does not bypass branch authentication.",
+    }
+
+
+@router.delete("/branch-access/{grant_id}")
+def revoke_branch_access_grant(
+    grant_id: int,
+    identity: dict = Depends(_current_identity),
+    db: Session = Depends(get_control_db),
+):
+    grant = db.execute(
+        select(BranchAccessSession)
+        .join(OrganizationSession, OrganizationSession.id == BranchAccessSession.organization_session_id)
+        .where(
+            BranchAccessSession.id == grant_id,
+            OrganizationSession.organization_user_id == identity["user_id"],
+            BranchAccessSession.revoked_at.is_(None),
+        ).with_for_update()
+    ).scalar_one_or_none()
+    if not grant:
+        raise HTTPException(status_code=404, detail="Active branch access grant not found.")
+    grant.revoked_at = datetime.now(timezone.utc)
+    db.add(ControlPlaneAuditLog(
+        action="ORGANIZATION_BRANCH_ACCESS_GRANT_REVOKED",
+        target_slug="CONTROL_PLANE",
+        actor=str(identity["user_id"]),
+        details=f"Branch access grant {grant.id} revoked by its owner.",
+    ))
+    db.commit()
+    return {"status": "success", "revoked_grant_id": grant_id}
 
 
 def require_organization_roles(*roles: str):
