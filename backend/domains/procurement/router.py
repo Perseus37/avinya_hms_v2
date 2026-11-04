@@ -348,9 +348,16 @@ def create_purchase_requisition(
             medication = db.get(MedicationMaster, item.medication_id)
             if medication is None or not medication.is_active:
                 raise HTTPException(status_code=422, detail="A requested medication is unavailable.")
+        if item.purchase_uom_id is not None:
+            _resolve_medication_unit_snapshot(
+                db, medication_id=item.medication_id, purchase_uom_id=item.purchase_uom_id,
+                quantity=item.requested_quantity, unit_price_paise=0,
+                effective_at=datetime.now(timezone.utc),
+            )
         db.add(PurchaseRequisitionItem(
             requisition_id=requisition.id,
             medication_id=item.medication_id,
+            purchase_uom_id=item.purchase_uom_id,
             item_description=item.item_description.strip(),
             requested_quantity=item.requested_quantity,
             estimated_unit_price_paise=item.estimated_unit_price_paise,
@@ -425,6 +432,12 @@ def update_purchase_requisition(
             medication = db.get(MedicationMaster, item.medication_id)
             if medication is None or not medication.is_active:
                 raise HTTPException(status_code=422, detail="A requested medication is unavailable.")
+        if item.purchase_uom_id is not None:
+            _resolve_medication_unit_snapshot(
+                db, medication_id=item.medication_id, purchase_uom_id=item.purchase_uom_id,
+                quantity=item.requested_quantity, unit_price_paise=0,
+                effective_at=datetime.now(timezone.utc),
+            )
     requisition.requesting_department_id = department.id
     requisition.required_by_date = payload.required_by_date
     requisition.justification = payload.justification.strip()
@@ -436,6 +449,7 @@ def update_purchase_requisition(
         db.add(PurchaseRequisitionItem(
             requisition_id=requisition.id,
             medication_id=item.medication_id,
+            purchase_uom_id=item.purchase_uom_id,
             item_description=item.item_description.strip(),
             requested_quantity=item.requested_quantity,
             estimated_unit_price_paise=item.estimated_unit_price_paise,
@@ -597,6 +611,8 @@ def create_purchase_order_from_requisition(
                 raise HTTPException(status_code=409, detail="Purchase order tax rate must match the selected supplier quotation.")
         if req_item is None or req_item.approved_quantity is None:
             raise HTTPException(status_code=422, detail="Every purchase order line must reference an approved requisition line.")
+        if item.purchase_uom_id != req_item.purchase_uom_id:
+            raise HTTPException(status_code=422, detail="Purchase order purchasing unit must match the unit requested on the requisition line.")
         ordered = db.query(func.coalesce(func.sum(PurchaseOrderItem.quantity_ordered), 0)).join(
             PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.po_id
         ).filter(
@@ -734,6 +750,8 @@ def record_supplier_quotation(
             raise HTTPException(status_code=422, detail="A quotation cannot price a line with no approved quantity.")
         if line.quantity_quoted != req_line.approved_quantity:
             raise HTTPException(status_code=422, detail="Quoted quantity must equal the approved requisition quantity for that line.")
+        if line.purchase_uom_id != req_line.purchase_uom_id:
+            raise HTTPException(status_code=422, detail="Supplier quotation purchasing unit must match the unit requested on the requisition line.")
         unit_snapshot = _resolve_medication_unit_snapshot(
             db,
             medication_id=req_line.medication_id,
