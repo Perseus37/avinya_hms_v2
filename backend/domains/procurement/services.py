@@ -71,6 +71,7 @@ def _append_stock_movement(
         stock_before=stock_before,
         stock_after=stock_after,
         unit_price_paise=batch.unit_price_paise,
+        base_uom_code=batch.base_uom_code,
         reference_type=reference_type,
         reference_id=str(reference_id),
         actor_id=actor_user_id,
@@ -124,8 +125,12 @@ def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: 
             InventoryBatch.location_id == location.id,
         ).with_for_update()).scalar_one_or_none()
         if batch:
-            if batch.expiry_date != grn_item.expiry_date or Decimal(str(batch.unit_price_paise)) != base_unit_cost:
-                raise HTTPException(status_code=409, detail="This batch already exists at the selected location with a different expiry date or base-unit cost.")
+            if (
+                batch.expiry_date != grn_item.expiry_date
+                or Decimal(str(batch.unit_price_paise)) != base_unit_cost
+                or batch.base_uom_code != po_item.base_uom_code
+            ):
+                raise HTTPException(status_code=409, detail="This batch already exists at the selected location with conflicting expiry, base-unit cost or base unit. Reconcile legacy stock before merging.")
             stock_before = batch.stock_quantity
             batch.stock_quantity += accepted_base_quantity
         else:
@@ -133,6 +138,7 @@ def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: 
                 medication_id=po_item.medication_id, location_id=location.id,
                 batch_number=grn_item.batch_number, expiry_date=grn_item.expiry_date,
                 stock_quantity=accepted_base_quantity, unit_price_paise=base_unit_cost,
+                base_uom_code=po_item.base_uom_code,
                 created_by_id=current_user_id,
             )
             db.add(batch)
