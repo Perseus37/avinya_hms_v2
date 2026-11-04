@@ -147,10 +147,10 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
     assert len(batches) == 1
     assert batches[0]["stock_quantity"] == 1000
 
-    ledger = client.get(
+    ledger = sorted(client.get(
         f"/v1/api/pharmacy/inventory/movements?batch_id={batches[0]['id']}",
         headers=pharmacist_headers,
-    ).json()["items"]
+    ).json()["items"], key=lambda item: item["id"])
     assert len(ledger) == 2
     assert all(item["movement_type"] == "RECEIPT" for item in ledger)
     assert [item["quantity_delta"] for item in ledger] == [600, 400]
