@@ -21,7 +21,7 @@ from backend.control_plane.models import (
 )
 from backend.core import dependencies
 from backend.core.database import Base, TenantContext
-from backend.domains.identity.models import Role, User, UserStatusEnum
+from backend.domains.identity.models import Permission, Role, User, UserStatusEnum
 
 
 @pytest.fixture
@@ -176,3 +176,39 @@ def test_branch_grant_rejects_revoked_grant(branch_grant_environment):
                 "br_access_test-secret-token", tenant_context, tenant_db
             )
     assert exc.value.status_code == 401
+
+
+
+def test_branch_grant_rejects_local_superuser(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = tenant_db.get(User, 1)
+        user.is_superuser = True
+        tenant_db.commit()
+        with pytest.raises(HTTPException) as exc:
+            dependencies._authenticate_branch_access_token(
+                "br_access_test-secret-token", tenant_context, tenant_db
+            )
+    assert exc.value.status_code == 401
+
+
+def test_branch_grant_cannot_use_unassigned_local_role_permissions(
+    branch_grant_environment,
+):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        elevated_role = Role(code="LOCAL_ADMIN", name="Local Admin")
+        elevated_permission = Permission(
+            code="patient:delete",
+            description="Delete patient",
+            module="patients",
+        )
+        elevated_role.permissions.append(elevated_permission)
+        user.roles.append(elevated_role)
+        tenant_db.commit()
+        assert not dependencies.user_has_permission(
+            tenant_db, user, "patient:delete"
+        )
