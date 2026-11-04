@@ -485,7 +485,6 @@ def get_prescription(
     )
     if not rx:
         raise HTTPException(status_code=404, detail="Prescription not found.")
-    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     ensure_pharmacy_prescription_access(db, rx.id, actor)
     decisions = evaluate_tenant_patient_data_uses(
         db,
@@ -503,7 +502,7 @@ def update_prescription(
     prescription_id: int,
     payload: PrescriptionUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:write")),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
 ):
     rx = db.get(Prescription, prescription_id)
     if not rx:
@@ -526,7 +525,7 @@ def update_prescription(
 def cancel_prescription(
     prescription_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:void")),
+    current_user: User = Depends(RequirePermission("pharmacy:void")),
 ):
     rx = db.query(Prescription).options(joinedload(Prescription.items)).filter(Prescription.id == prescription_id).first()
     if not rx:
@@ -708,8 +707,9 @@ def return_dispensed_medication(
     rx = db.execute(stmt_rx).scalar_one_or_none()
     if not rx:
         raise HTTPException(status_code=404, detail="Prescription not found.")
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
 
-    return_logs: list[PharmacyReturnLog] = []
+    return_logs: list[PharmacyReturnLog] =
     total_credit_paise = 0
 
     inv_stmt = (
@@ -867,6 +867,7 @@ def create_controlled_substance_vault_entry(
     _: User = Depends(RequirePermission("pharmacy:write", "mdm:write")),
 ):
     """Initializes a perpetual narcotics inventory vault entry for a controlled substance."""
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     med = db.get(MedicationMaster, payload.medication_id)
     if not med:
         raise HTTPException(status_code=404, detail="Medication not found in formulary.")
@@ -898,6 +899,7 @@ def list_controlled_substance_vaults(
     _: User = Depends(RequirePermission("pharmacy:read", "nursing:read", "clinical:read")),
 ):
     """Lists all active perpetual narcotics vaults with current safe balances and tamper seal status."""
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     stmt = select(ControlledSubstanceVault).options(joinedload(ControlledSubstanceVault.medication)).order_by(ControlledSubstanceVault.id.asc())
     return list(db.execute(stmt).scalars().all())
 
@@ -909,6 +911,7 @@ def receive_controlled_substance_into_vault(
     current_user: User = Depends(RequirePermission("pharmacy:write")),
 ):
     """Logs stock replenishment / supplier receipt into the double-locked narcotics vault."""
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     from backend.domains.pharmacy.services import process_controlled_substance_movement
     return process_controlled_substance_movement(
         session=db,
@@ -1005,6 +1008,7 @@ def list_controlled_substance_movements(
     _: User = Depends(RequirePermission("pharmacy:read", "nursing:read", "clinical:read")),
 ):
     """Retrieves full perpetual audit ledger of all controlled substance transactions."""
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
     stmt = select(ControlledSubstanceMovementLog).order_by(ControlledSubstanceMovementLog.id.desc())
     if vault_id:
         stmt = stmt.where(ControlledSubstanceMovementLog.vault_id == vault_id)
