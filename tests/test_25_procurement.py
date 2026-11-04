@@ -1069,7 +1069,7 @@ def test_medication_pack_configuration_is_dimension_safe_and_versioned(
     assert history.status_code == 200, history.text
     assert len(history.json()) == 2
     assert history.json()[0]["is_active"] is True
-    assert history.json()[1]["units_per_purchase_unit"] == 10
+    assert float(history.json()[1]["units_per_purchase_unit"]) == 10.0
 
 
 
@@ -1146,8 +1146,8 @@ def test_pack_unit_purchase_receipt_and_supplier_return_convert_to_stock_base_un
     po_line = po["items"][0]
     assert po_line["purchase_uom_code"] == "STRIP"
     assert po_line["base_uom_code"] == "TAB"
-    assert po_line["units_per_purchase_unit"] == 10
-    assert po_line["base_quantity"] == 100
+    assert float(po_line["units_per_purchase_unit"]) == 10.0
+    assert float(po_line["base_quantity"]) == 100.0
     assert float(po_line["base_unit_price_paise"]) == 100.0
 
     approval = client.patch(
