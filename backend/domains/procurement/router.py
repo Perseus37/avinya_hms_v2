@@ -22,7 +22,8 @@ from backend.domains.procurement.models import (
     PurchaseRequisition, PurchaseRequisitionItem, PurchaseRequisitionStatusEnum,
     SupplierQuotation, SupplierQuotationItem, SupplierQuotationStatusEnum,
     PurchaseOrderApprovalAuthority, PurchaseOrderAmendment, POAmendmentStatusEnum,
-    PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum
+    PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
+    ProcurementUnitOfMeasure, MedicationPackConfiguration
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -33,7 +34,8 @@ from backend.domains.procurement.schemas import (
     PurchaseOrderApprovalAuthorityUpdate, PurchaseOrderApprovalAuthorityResponse,
     PurchaseOrderAmendmentCreate, PurchaseOrderAmendmentReview, PurchaseOrderAmendmentResponse,
     PurchaseOrderShipmentCreate, PurchaseOrderShipmentUpdate, PurchaseOrderShipmentResponse,
-    OverduePurchaseOrderResponse
+    OverduePurchaseOrderResponse, ProcurementUnitOfMeasureResponse,
+    MedicationPackConfigurationCreate, MedicationPackConfigurationResponse
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
@@ -71,6 +73,110 @@ def _load_vendor_invoice(
 def _generate_reference(prefix: str) -> str:
     date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
     return f"{prefix}-{date_part}-{secrets.token_hex(4).upper()}"
+
+
+# --- Procurement units and medication pack configurations ---
+@router.get("/units-of-measure", response_model=list[ProcurementUnitOfMeasureResponse])
+def list_procurement_units(
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    return db.query(ProcurementUnitOfMeasure).filter(
+        ProcurementUnitOfMeasure.is_active.is_(True)
+    ).order_by(ProcurementUnitOfMeasure.dimension, ProcurementUnitOfMeasure.code).all()
+
+
+@router.get(
+    "/medications/{medication_id}/pack-configurations",
+    response_model=list[MedicationPackConfigurationResponse],
+)
+def list_medication_pack_configurations(
+    medication_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    medication = db.get(MedicationMaster, medication_id)
+    if medication is None:
+        raise HTTPException(status_code=404, detail="Medication not found.")
+    return db.query(MedicationPackConfiguration).filter(
+        MedicationPackConfiguration.medication_id == medication_id
+    ).order_by(MedicationPackConfiguration.effective_from.desc(), MedicationPackConfiguration.id.desc()).all()
+
+
+@router.post(
+    "/medications/{medication_id}/pack-configurations",
+    response_model=MedicationPackConfigurationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_medication_pack_configuration(
+    medication_id: int,
+    payload: MedicationPackConfigurationCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    medication = db.get(MedicationMaster, medication_id)
+    if medication is None or not medication.is_active:
+        raise HTTPException(status_code=404, detail="Active medication not found.")
+    purchase_uom = db.get(ProcurementUnitOfMeasure, payload.purchase_uom_id)
+    base_uom = db.get(ProcurementUnitOfMeasure, payload.base_uom_id)
+    if purchase_uom is None or base_uom is None or not purchase_uom.is_active or not base_uom.is_active:
+        raise HTTPException(status_code=422, detail="Both units must be active registered units of measure.")
+    if purchase_uom.id == base_uom.id:
+        raise HTTPException(status_code=422, detail="Purchase unit and stock base unit must be different; use a conversion of 1 only when a distinct pack unit is defined.")
+    if purchase_uom.dimension != base_uom.dimension:
+        raise HTTPException(status_code=422, detail="Purchase and base units must belong to the same measurement dimension.")
+    if payload.units_per_purchase_unit <= 0:
+        raise HTTPException(status_code=422, detail="Pack conversion must be greater than zero.")
+    existing = db.query(MedicationPackConfiguration.id).filter(
+        MedicationPackConfiguration.medication_id == medication_id,
+        MedicationPackConfiguration.purchase_uom_id == purchase_uom.id,
+        MedicationPackConfiguration.is_active.is_(True),
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="An active configuration already exists for this medication and purchase unit. Deactivate it before creating a replacement.")
+    config = MedicationPackConfiguration(
+        medication_id=medication_id,
+        purchase_uom_id=purchase_uom.id,
+        base_uom_id=base_uom.id,
+        units_per_purchase_unit=payload.units_per_purchase_unit,
+        effective_from=payload.effective_from,
+        is_active=True,
+        created_by_id=current_user.id,
+    )
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+@router.patch(
+    "/medications/{medication_id}/pack-configurations/{configuration_id}/deactivate",
+    response_model=MedicationPackConfigurationResponse,
+)
+def deactivate_medication_pack_configuration(
+    medication_id: int,
+    configuration_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    config = db.query(MedicationPackConfiguration).filter(
+        MedicationPackConfiguration.id == configuration_id,
+        MedicationPackConfiguration.medication_id == medication_id,
+    ).with_for_update().one_or_none()
+    if config is None:
+        raise HTTPException(status_code=404, detail="Pack configuration not found.")
+    if not config.is_active:
+        raise HTTPException(status_code=409, detail="Pack configuration is already inactive.")
+    now = datetime.now(timezone.utc)
+    if now <= config.effective_from:
+        raise HTTPException(status_code=409, detail="A pack configuration cannot be deactivated before or at its effective start.")
+    config.is_active = False
+    config.effective_to = now
+    config.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(config)
+    return config
+
 
 # --- Vendor Management ---
 @router.post("/vendors", response_model=VendorDirectoryResponse, status_code=status.HTTP_201_CREATED)
