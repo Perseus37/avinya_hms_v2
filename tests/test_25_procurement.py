@@ -822,3 +822,14 @@ def test_purchase_order_shipment_tracking_and_overdue_queue(
     )
     assert current_po.status_code == 200, current_po.text
     assert current_po.json()["status"] == "APPROVED"
+
+    backdated = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_id}/shipments/{shipment_id}",
+        headers=pharmacist_headers,
+        json={
+            "status": "DELAYED",
+            "event_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+            "location": "Backdated location",
+        },
+    )
+    assert backdated.status_code == 422, backdated.text
