@@ -1731,45 +1731,160 @@ def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(
     return {"status": "success", "message": "Purchase return processed and Debit Note generated."}
 
 @router.get("/vendors/{vendor_id}/metrics")
-def get_vendor_metrics(vendor_id: int, db: Session = Depends(get_db), _: User = Depends(RequirePermission("procurement:read"))):
-    """Calculates fulfillment rates and delivery delays for vendor evaluation."""
+def get_vendor_metrics(
+    vendor_id: int,
+    from_date: Optional[date] = Query(default=None, description="Inclusive PO creation date (UTC)."),
+    to_date: Optional[date] = Query(default=None, description="Inclusive PO creation date (UTC)."),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    """Return a date-filtered supplier scorecard based on accepted hospital receipts."""
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date must be on or before to_date.")
+
     vendor = db.get(VendorMaster, vendor_id)
-    if not vendor:
+    if vendor is None:
         raise HTTPException(status_code=404, detail="Vendor not found.")
 
-    pos = db.query(PurchaseOrder).options(joinedload(PurchaseOrder.items)).filter(
+    start_at = datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc) if from_date else None
+    end_at = datetime.combine(to_date, datetime.max.time(), tzinfo=timezone.utc) if to_date else None
+
+    po_query = db.query(PurchaseOrder).options(
+        selectinload(PurchaseOrder.items),
+        selectinload(PurchaseOrder.shipments),
+    ).filter(
         PurchaseOrder.vendor_id == vendor_id,
-        PurchaseOrder.status.in_([POStatusEnum.COMPLETED, POStatusEnum.PARTIALLY_RECEIVED])
-    ).all()
+        PurchaseOrder.status != POStatusEnum.CANCELLED,
+    )
+    if start_at:
+        po_query = po_query.filter(PurchaseOrder.created_at >= start_at)
+    if end_at:
+        po_query = po_query.filter(PurchaseOrder.created_at <= end_at)
+    purchase_orders = po_query.order_by(PurchaseOrder.created_at.asc(), PurchaseOrder.id.asc()).all()
+    po_ids = [po.id for po in purchase_orders]
 
-    total_pos = len(pos)
-    total_items_ordered = 0
-    total_items_received = 0
-    late_deliveries = 0
-
-    for po in pos:
-        grns = db.query(GoodsReceiptNote).filter(
-            GoodsReceiptNote.po_id == po.id,
-            GoodsReceiptNote.status == GRNStatusEnum.ACCEPTED
+    accepted_grns = []
+    if po_ids:
+        accepted_grns = db.query(GoodsReceiptNote).options(
+            selectinload(GoodsReceiptNote.items)
+        ).filter(
+            GoodsReceiptNote.po_id.in_(po_ids),
+            GoodsReceiptNote.status == GRNStatusEnum.ACCEPTED,
         ).all()
 
-        # Check for late delivery
-        if grns:
-            last_delivery_date = max(grn.created_at for grn in grns)
-            if last_delivery_date > po.delivery_due_date:
-                late_deliveries += 1
+    grns_by_po = {}
+    accepted_quantity = 0
+    rejected_quantity = 0
+    received_quantity = 0
+    for grn in accepted_grns:
+        grns_by_po.setdefault(grn.po_id, []).append(grn)
+        for line in grn.items:
+            received_quantity += int(line.received_quantity or 0)
+            accepted_quantity += int(line.accepted_quantity or 0)
+            rejected_quantity += int(line.rejected_quantity or 0)
 
-        for item in po.items:
-            total_items_ordered += item.quantity_ordered
-            total_items_received += item.quantity_received
+    issued_pos = [
+        po for po in purchase_orders
+        if po.status in (
+            POStatusEnum.SUBMITTED,
+            POStatusEnum.APPROVED,
+            POStatusEnum.PARTIALLY_RECEIVED,
+            POStatusEnum.COMPLETED,
+        )
+    ]
+    received_pos = [po for po in issued_pos if grns_by_po.get(po.id)]
+    late_pos = 0
+    delivery_delays = []
+    for po in received_pos:
+        accepted_at_values = [
+            grn.accepted_at or grn.created_at
+            for grn in grns_by_po[po.id]
+        ]
+        actual_receipt_at = max(accepted_at_values)
+        due_at = po.delivery_due_date
+        # Database timestamps may be returned naive by SQLite test environments.
+        if due_at.tzinfo is None and actual_receipt_at.tzinfo is not None:
+            due_at = due_at.replace(tzinfo=actual_receipt_at.tzinfo)
+        elif actual_receipt_at.tzinfo is None and due_at.tzinfo is not None:
+            actual_receipt_at = actual_receipt_at.replace(tzinfo=due_at.tzinfo)
+        delay_days = max(0, (actual_receipt_at - due_at).total_seconds() / 86400)
+        if delay_days > 0:
+            late_pos += 1
+            delivery_delays.append(delay_days)
 
-    fulfillment_rate = (total_items_received / total_items_ordered * 100) if total_items_ordered > 0 else 0.0
+    ordered_quantity = sum(
+        int(item.quantity_ordered or 0)
+        for po in issued_pos for item in po.items
+    )
+    invoice_query = db.query(VendorInvoice).filter(VendorInvoice.vendor_id == vendor_id)
+    if start_at:
+        invoice_query = invoice_query.filter(VendorInvoice.invoice_date >= start_at)
+    if end_at:
+        invoice_query = invoice_query.filter(VendorInvoice.invoice_date <= end_at)
+    invoices = invoice_query.all()
+
+    invoice_count = len(invoices)
+    flagged_invoices = sum(
+        1 for invoice in invoices
+        if invoice.status == VendorInvoiceStatusEnum.PRICE_VARIANCE_FLAGGED
+    )
+    matched_unpaid = [
+        invoice for invoice in invoices
+        if invoice.status == VendorInvoiceStatusEnum.MATCHED_APPROVED
+    ]
+    matched_unpaid_exposure_paise = sum(int(invoice.total_amount_paise or 0) for invoice in matched_unpaid)
 
     return {
+        "vendor_id": vendor.id,
         "vendor_code": vendor.code,
         "vendor_name": vendor.name,
-        "total_completed_pos": total_pos,
-        "late_deliveries_count": late_deliveries,
-        "on_time_delivery_rate_pct": round(((total_pos - late_deliveries) / total_pos * 100), 2) if total_pos > 0 else 100.0,
-        "item_fulfillment_rate_pct": round(fulfillment_rate, 2)
+        "period": {
+            "from_date": from_date.isoformat() if from_date else None,
+            "to_date": to_date.isoformat() if to_date else None,
+            "basis": "purchase_order.created_at (UTC); invoice metrics use invoice_date",
+        },
+        "purchase_orders": {
+            "total": len(purchase_orders),
+            "issued": len(issued_pos),
+            "received": len(received_pos),
+            "open": sum(
+                1 for po in issued_pos
+                if po.status in (POStatusEnum.SUBMITTED, POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED)
+            ),
+            "ordered_value_paise": sum(int(po.total_amount_paise or 0) for po in issued_pos),
+        },
+        "delivery": {
+            "received_po_count": len(received_pos),
+            "late_po_count": late_pos,
+            "on_time_delivery_rate_pct": round(
+                (len(received_pos) - late_pos) / len(received_pos) * 100, 2
+            ) if received_pos else None,
+            "average_delay_days_for_late_pos": round(
+                sum(delivery_delays) / len(delivery_delays), 2
+            ) if delivery_delays else 0.0,
+            "definition": "A PO is counted as received only after at least one GRN is ACCEPTED; latest accepted GRN time is compared with PO due date.",
+        },
+        "fulfillment": {
+            "ordered_quantity": ordered_quantity,
+            "physically_received_quantity": received_quantity,
+            "accepted_quantity": accepted_quantity,
+            "rejected_quantity": rejected_quantity,
+            "accepted_fulfillment_rate_pct": round(
+                accepted_quantity / ordered_quantity * 100, 2
+            ) if ordered_quantity else None,
+            "rejection_rate_pct": round(
+                rejected_quantity / received_quantity * 100, 2
+            ) if received_quantity else None,
+            "definition": "Quantities are summed from accepted GRN lines only; carrier delivery events do not count as receipt.",
+        },
+        "invoices": {
+            "total": invoice_count,
+            "price_variance_flagged": flagged_invoices,
+            "price_variance_flag_rate_pct": round(
+                flagged_invoices / invoice_count * 100, 2
+            ) if invoice_count else None,
+            "matched_approved_unpaid_count": len(matched_unpaid),
+            "matched_approved_unpaid_exposure_paise": matched_unpaid_exposure_paise,
+            "exposure_definition": "Only MATCHED_APPROVED invoices are included; pending, flagged, rejected and PAID invoices are excluded. Payment execution/partial settlement is not represented by this metric.",
+        },
     }
