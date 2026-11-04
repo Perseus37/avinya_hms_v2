@@ -1050,10 +1050,23 @@ def test_medication_pack_configuration_is_dimension_safe_and_versioned(
     assert deactivated.json()["is_active"] is False
     assert deactivated.json()["effective_to"] is not None
 
+    replacement = client.post(
+        f"/v1/api/procurement/medications/{medication_id}/pack-configurations",
+        headers=superuser_headers,
+        json={
+            **payload,
+            "units_per_purchase_unit": 12,
+            "effective_from": (datetime.now(timezone.utc) + timedelta(seconds=2)).isoformat(),
+        },
+    )
+    assert replacement.status_code == 201, replacement.text
+    assert float(replacement.json()["units_per_purchase_unit"]) == 12.0
+
     history = client.get(
         f"/v1/api/procurement/medications/{medication_id}/pack-configurations",
         headers=superuser_headers,
     )
     assert history.status_code == 200, history.text
-    assert len(history.json()) == 1
-    assert history.json()[0]["units_per_purchase_unit"] == 10
+    assert len(history.json()) == 2
+    assert history.json()[0]["is_active"] is True
+    assert history.json()[1]["units_per_purchase_unit"] == 10
