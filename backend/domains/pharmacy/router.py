@@ -1873,8 +1873,7 @@ def approve_controlled_vault_count(
             primary_user_id=current_user.id,
             witness_user_id=count.witness_user_id,
             witness_verified=True,
-            wastage_reason=count.reason,
-            notes=f"Approved dual-witness physical count #{count.id}; variance {variance:+d}",
+            notes=f"Approved dual-witness physical count #{count.id}: {count.reason}. Variance {variance:+d}",
         ))
     count.status = "APPROVED"
     count.approved_by_id = current_user.id
