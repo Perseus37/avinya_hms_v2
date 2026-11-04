@@ -27,6 +27,8 @@ from backend.domains.encounters.models import AdmissionTypeEnum, EncounterTypeEn
 from backend.domains.patients.models import Patient
 from backend.domains.encounters.opd_queue_models import OPDQueue
 from backend.domains.diagnostics.models import (DiagnosticOrder, DiagnosticTask, OrderStatusEnum, ServiceCategory, ServiceCatalog, ServiceTypeEnum, TaskStatusEnum)
+from backend.domains.pharmacy.models import PharmacyLocation, PharmacyLocationAccess
+from backend.domains.pharmacy.router import _ensure_pharmacy_location_access
 from starlette.requests import Request
 
 
@@ -613,3 +615,41 @@ def test_pharmacy_operations_require_both_local_and_central_department_assignmen
                 tenant_db, {"PHARMACY", "DEPT_PHARMACY"}, user
             )
         assert local_exc.value.status_code == 403
+
+
+def test_central_pharmacy_location_access_requires_explicit_user_assignment(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        location = PharmacyLocation(code="MAIN", name="Main Store", location_type="STORE", is_active=True)
+        tenant_db.add(location)
+        tenant_db.flush()
+        tenant_db.info["central_branch_department_codes"] = frozenset({"PHARMACY"})
+        with pytest.raises(HTTPException) as denied:
+            _ensure_pharmacy_location_access(tenant_db, location.id, user)
+        assert denied.value.status_code == 403
+
+        tenant_db.add(PharmacyLocationAccess(location_id=location.id, user_id=user.id, is_active=True))
+        tenant_db.flush()
+        _ensure_pharmacy_location_access(tenant_db, location.id, user)
+
+        tenant_db.query(PharmacyLocationAccess).filter_by(
+            location_id=location.id, user_id=user.id
+        ).one().is_active = False
+        tenant_db.flush()
+        with pytest.raises(HTTPException) as revoked:
+            _ensure_pharmacy_location_access(tenant_db, location.id, user)
+        assert revoked.value.status_code == 403
+
+
+def test_legacy_branch_pharmacy_location_access_remains_compatible(branch_grant_environment):
+    _, TenantSession, _, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = tenant_db.get(User, 1)
+        location = PharmacyLocation(code="MAIN", name="Main Store", location_type="STORE", is_active=True)
+        tenant_db.add(location)
+        tenant_db.flush()
+        assert "central_branch_department_codes" not in tenant_db.info
+        _ensure_pharmacy_location_access(tenant_db, location.id, user)
