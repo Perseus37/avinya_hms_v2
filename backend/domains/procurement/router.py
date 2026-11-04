@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status,
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.document_responses import pdf_attachment_response
@@ -134,6 +135,15 @@ def create_medication_pack_configuration(
     ).first()
     if existing:
         raise HTTPException(status_code=409, detail="An active configuration already exists for this medication and purchase unit. Deactivate it before creating a replacement.")
+    latest = db.query(MedicationPackConfiguration).filter(
+        MedicationPackConfiguration.medication_id == medication_id,
+        MedicationPackConfiguration.purchase_uom_id == purchase_uom.id,
+    ).order_by(MedicationPackConfiguration.effective_from.desc(), MedicationPackConfiguration.id.desc()).first()
+    if latest is not None:
+        if payload.effective_from <= latest.effective_from:
+            raise HTTPException(status_code=422, detail="A replacement pack configuration must have a later effective start than its prior version.")
+        if latest.effective_to is not None and payload.effective_from <= latest.effective_to:
+            raise HTTPException(status_code=422, detail="Pack configuration effective periods cannot overlap.")
     config = MedicationPackConfiguration(
         medication_id=medication_id,
         purchase_uom_id=purchase_uom.id,
@@ -144,7 +154,11 @@ def create_medication_pack_configuration(
         created_by_id=current_user.id,
     )
     db.add(config)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A concurrent request created an active pack configuration for this medication and purchase unit.")
     db.refresh(config)
     return config
 
