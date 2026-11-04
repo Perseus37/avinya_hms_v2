@@ -169,6 +169,8 @@ class PurchaseOrder(AuditMixin, Base):
     __tablename__ = "procurement_purchase_orders"
     __table_args__ = (
         Index("ix_po_vendor_status", "vendor_id", "status"),
+        CheckConstraint("subtotal_paise >= 0", name="ck_po_subtotal_non_neg"),
+        CheckConstraint("tax_amount_paise >= 0", name="ck_po_tax_non_neg"),
         CheckConstraint("total_amount_paise >= 0", name="ck_po_total_non_neg"),
     )
 
