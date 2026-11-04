@@ -896,7 +896,7 @@ def create_controlled_substance_vault_entry(
 @router.get("/controlled-substances/vault", response_model=list[ControlledSubstanceVaultResponse])
 def list_controlled_substance_vaults(
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:read", "nursing:read", "clinical:read")),
+    current_user: User = Depends(RequirePermission("pharmacy:read", "nursing:read", "clinical:read")),
 ):
     """Lists all active perpetual narcotics vaults with current safe balances and tamper seal status."""
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
@@ -1005,7 +1005,7 @@ def record_controlled_substance_dual_witness_wastage(
 def list_controlled_substance_movements(
     vault_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:read", "nursing:read", "clinical:read")),
+    current_user: User = Depends(RequirePermission("pharmacy:read", "nursing:read", "clinical:read")),
 ):
     """Retrieves full perpetual audit ledger of all controlled substance transactions."""
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
