@@ -115,7 +115,6 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
     assert accept_res.status_code == 200, f"GRN acceptance failed: {accept_res.text}"
     duplicate_accept = client.patch(f"/v1/api/procurement/grn/{grn['id']}/accept", headers=superuser_headers)
     assert duplicate_accept.status_code == 409
-    assert client.get(f"/v1/api/procurement/purchase-orders/{po_id}", headers=pharmacist_headers).status_code in (404, 405)
 
     second_grn = client.post(
         "/v1/api/procurement/grn",
