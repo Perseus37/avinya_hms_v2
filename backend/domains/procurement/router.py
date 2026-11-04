@@ -1482,6 +1482,8 @@ def request_purchase_order_amendment(
             ).one_or_none()
             if req_line is None or req_line.approved_quantity is None or req_line.approved_quantity <= 0:
                 raise HTTPException(status_code=422, detail="Amended quantity must map to a positively approved requisition line.")
+            if item.purchase_uom_id != req_line.purchase_uom_id:
+                raise HTTPException(status_code=422, detail="An amended requisition-backed PO must retain the purchasing unit approved on its requisition line.")
             # Existing allocations on other non-cancelled POs remain reserved.
             # The current PO is excluded because this amendment replaces its lines.
             ordered_elsewhere = db.query(func.coalesce(func.sum(PurchaseOrderItem.quantity_ordered), 0)).join(
