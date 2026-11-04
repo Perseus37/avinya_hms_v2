@@ -1227,19 +1227,26 @@ def request_purchase_order_amendment(
             seen_requisition_lines.add(item.requisition_item_id)
         elif item.requisition_item_id is not None:
             raise HTTPException(status_code=422, detail="A standalone purchase order cannot reference a requisition line.")
-        line_total = item.quantity_ordered * item.unit_price_paise
-        proposed_total += line_total
+        line_subtotal = item.quantity_ordered * item.unit_price_paise
+        line_tax = (line_subtotal * item.tax_percentage + 50) // 100
+        line_gross = line_subtotal + line_tax
+        proposed_total += line_gross
         proposed_items.append({
             "requisition_item_id": item.requisition_item_id,
             "medication_id": req_line.medication_id if po.requisition_id is not None else item.medication_id,
             "item_description": req_line.item_description if po.requisition_id is not None else item.item_description.strip(),
             "quantity_ordered": item.quantity_ordered,
             "unit_price_paise": item.unit_price_paise,
-            "total_price_paise": line_total,
+            "total_price_paise": line_subtotal,
+            "tax_percentage": item.tax_percentage,
+            "tax_amount_paise": line_tax,
+            "gross_total_paise": line_gross,
         })
     prior_snapshot = {
         "delivery_due_date": po.delivery_due_date.isoformat(),
         "payment_terms": po.payment_terms,
+        "subtotal_paise": po.subtotal_paise,
+        "tax_amount_paise": po.tax_amount_paise,
         "total_amount_paise": po.total_amount_paise,
         "items": [{
             "id": item.id,
@@ -1250,11 +1257,16 @@ def request_purchase_order_amendment(
             "quantity_received": item.quantity_received,
             "unit_price_paise": item.unit_price_paise,
             "total_price_paise": item.total_price_paise,
+            "tax_percentage": item.tax_percentage,
+            "tax_amount_paise": item.tax_amount_paise,
+            "gross_total_paise": item.gross_total_paise,
         } for item in po.items],
     }
     proposed_snapshot = {
         "delivery_due_date": payload.delivery_due_date.isoformat(),
         "payment_terms": payload.payment_terms,
+        "subtotal_paise": sum(item["total_price_paise"] for item in proposed_items),
+        "tax_amount_paise": sum(item["tax_amount_paise"] for item in proposed_items),
         "total_amount_paise": proposed_total,
         "items": proposed_items,
     }
@@ -1326,6 +1338,8 @@ def review_purchase_order_amendment(
         snapshot = amendment.proposed_snapshot
         po.delivery_due_date = datetime.fromisoformat(snapshot["delivery_due_date"])
         po.payment_terms = snapshot["payment_terms"]
+        po.subtotal_paise = snapshot.get("subtotal_paise", snapshot["total_amount_paise"])
+        po.tax_amount_paise = snapshot.get("tax_amount_paise", 0)
         po.total_amount_paise = snapshot["total_amount_paise"]
         for old_item in list(po.items):
             db.delete(old_item)
@@ -1340,6 +1354,9 @@ def review_purchase_order_amendment(
                 quantity_received=0,
                 unit_price_paise=item["unit_price_paise"],
                 total_price_paise=item["total_price_paise"],
+                tax_percentage=item.get("tax_percentage", 0),
+                tax_amount_paise=item.get("tax_amount_paise", 0),
+                gross_total_paise=item.get("gross_total_paise", item["total_price_paise"]),
                 created_by_id=current_user.id,
             ))
         po.amendment_version = amendment.version
