@@ -175,8 +175,10 @@ def create_medication_pack_configuration(
     base_uom = db.get(ProcurementUnitOfMeasure, payload.base_uom_id)
     if purchase_uom is None or base_uom is None or not purchase_uom.is_active or not base_uom.is_active:
         raise HTTPException(status_code=422, detail="Both units must be active registered units of measure.")
-    if purchase_uom.dimension != base_uom.dimension:
-        raise HTTPException(status_code=422, detail="Purchase and base units must belong to the same measurement dimension.")
+    if base_uom.is_packaging_unit:
+        raise HTTPException(status_code=422, detail="The stock base unit must be a dispensing or measurement unit, not a packaging unit.")
+    if not purchase_uom.is_packaging_unit and purchase_uom.dimension != base_uom.dimension:
+        raise HTTPException(status_code=422, detail="Non-packaging purchase and base units must belong to the same measurement dimension.")
     existing_medication_base = db.query(MedicationPackConfiguration.base_uom_id).filter(
         MedicationPackConfiguration.medication_id == medication_id
     ).distinct().all()
