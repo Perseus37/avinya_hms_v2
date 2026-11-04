@@ -55,6 +55,7 @@ class VendorStatusUpdate(BaseModel):
 # --- Purchase Requisitions ---
 class PurchaseRequisitionItemCreate(BaseModel):
     medication_id: Optional[int] = None
+    purchase_uom_id: Optional[int] = None
     item_description: str = Field(min_length=1, max_length=200)
     requested_quantity: int = Field(gt=0)
     estimated_unit_price_paise: Optional[int] = Field(default=None, ge=0)
@@ -71,6 +72,7 @@ class PurchaseRequisitionCreate(BaseModel):
 class PurchaseRequisitionItemResponse(BaseModel):
     id: int
     medication_id: Optional[int]
+    purchase_uom_id: Optional[int] = None
     item_description: str
     requested_quantity: int
     approved_quantity: Optional[int]
