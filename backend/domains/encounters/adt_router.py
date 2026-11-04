@@ -7,12 +7,12 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequireDepartmentAccess, RequireEncounterDepartmentAccess, RequirePermission, user_has_department_access, validate_pagination
+from backend.core.dependencies import RequireEncounterDepartmentAccess, RequirePermission, validate_pagination
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.billing.models import Invoice, InvoiceStatusEnum
 from backend.domains.encounters.models import AdmissionTypeEnum, BedTransferLog, EncounterStatusEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter, DischargeDispositionEnum
 from backend.domains.facility.models import Bed, BedStatusEnum, PhysicalRoom
-from backend.domains.identity.models import User
+from backend.domains.identity.models import Department, User
 from backend.domains.insurance.models import InsurancePreAuth, PreAuthStatusEnum
 from backend.schemas.common import PaginatedResponse
 from backend.domains.encounters.schemas import BedTransferRequest, BedTransferResponse, ClinicalDischargeRequest, InpatientAdmissionCreate, InpatientAdmissionResponse, InpatientAdmissionUpdate, PatientEncounterCreate, PatientEncounterResponse, PatientEncounterUpdate
