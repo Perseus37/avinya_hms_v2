@@ -146,6 +146,7 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
     ).json()["items"]
     assert len(batches) == 1
     assert batches[0]["stock_quantity"] == 1000
+    assert batches[0]["location_id"] == main_location["id"]
 
     ledger = sorted(client.get(
         f"/v1/api/pharmacy/inventory/movements?batch_id={batches[0]['id']}",
