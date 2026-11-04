@@ -6,6 +6,7 @@ from backend.domains.procurement.models import (
     POStatusEnum,
     GRNStatusEnum,
     IndentStatusEnum,
+    PurchaseRequisitionStatusEnum,
     VendorInvoiceStatusEnum,
 )
 
@@ -47,6 +48,74 @@ class VendorDirectoryResponse(BaseModel):
 class VendorStatusUpdate(BaseModel):
     is_active: bool
 
+# --- Purchase Requisitions ---
+class PurchaseRequisitionItemCreate(BaseModel):
+    medication_id: Optional[int] = None
+    item_description: str = Field(min_length=1, max_length=200)
+    requested_quantity: int = Field(gt=0)
+    estimated_unit_price_paise: Optional[int] = Field(default=None, ge=0)
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class PurchaseRequisitionCreate(BaseModel):
+    requesting_department_id: int
+    required_by_date: Optional[datetime] = None
+    justification: str = Field(min_length=10, max_length=2000)
+    items: List[PurchaseRequisitionItemCreate] = Field(min_length=1, max_length=100)
+
+
+class PurchaseRequisitionItemResponse(BaseModel):
+    id: int
+    medication_id: Optional[int]
+    item_description: str
+    requested_quantity: int
+    approved_quantity: Optional[int]
+    estimated_unit_price_paise: Optional[int]
+    notes: Optional[str]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PurchaseRequisitionResponse(BaseModel):
+    id: int
+    requisition_number: str
+    requesting_department_id: int
+    requested_by_id: int
+    status: PurchaseRequisitionStatusEnum
+    required_by_date: Optional[datetime]
+    justification: str
+    submitted_at: Optional[datetime]
+    reviewed_by_id: Optional[int]
+    reviewed_at: Optional[datetime]
+    review_notes: Optional[str]
+    items: List[PurchaseRequisitionItemResponse]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PurchaseRequisitionItemApproval(BaseModel):
+    requisition_item_id: int
+    approved_quantity: int = Field(ge=0)
+    estimated_unit_price_paise: Optional[int] = Field(default=None, ge=0)
+
+
+class PurchaseRequisitionReview(BaseModel):
+    approved: bool
+    review_notes: str = Field(min_length=3, max_length=2000)
+    items: List[PurchaseRequisitionItemApproval] = Field(default_factory=list, max_length=100)
+
+
+class PurchaseOrderFromRequisitionItem(BaseModel):
+    requisition_item_id: int
+    quantity_ordered: int = Field(gt=0)
+    unit_price_paise: int = Field(ge=0)
+
+
+class PurchaseOrderFromRequisitionCreate(BaseModel):
+    vendor_id: int
+    delivery_due_date: datetime
+    payment_terms: str = Field(min_length=1, max_length=255)
+    items: List[PurchaseOrderFromRequisitionItem] = Field(min_length=1, max_length=100)
+
+
 # --- Purchase Orders ---
 class POItemCreate(BaseModel):
     medication_id: Optional[int] = None
@@ -62,6 +131,7 @@ class POCreate(BaseModel):
 
 class POItemResponse(POItemCreate):
     id: int
+    requisition_item_id: Optional[int] = None
     quantity_received: int
     total_price_paise: int
     model_config = ConfigDict(from_attributes=True)
@@ -70,6 +140,7 @@ class POResponse(BaseModel):
     id: int
     po_number: str
     vendor_id: int
+    requisition_id: Optional[int] = None
     status: POStatusEnum
     delivery_due_date: datetime
     payment_terms: str
