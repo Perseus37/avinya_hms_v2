@@ -108,6 +108,42 @@ def test_named_operator_mfa_login_auths_control_plane_and_logout_revokes(
             group_id = group_response.json()["id"]
             assert group_response.json()["code"] == "ACME-HEALTH"
 
+            from backend.control_plane.api.routers import organization_groups
+            import re
+
+            delivered = {}
+            monkeypatch.setattr(
+                organization_groups,
+                "send_email",
+                lambda recipient, subject, body: delivered.update(
+                    {"recipient": recipient, "subject": subject, "body": body}
+                ),
+            )
+            owner_invite = client.post(
+                f"/api/organization-groups/{group_id}/owner-invitations",
+                headers=headers,
+                json={"email": "owner@acme.example", "full_name": "Acme Owner"},
+            )
+            assert owner_invite.status_code == 202, owner_invite.text
+            assert "token" not in owner_invite.json()
+            assert delivered["recipient"] == "owner@acme.example"
+            token_match = re.search(r"token=([A-Za-z0-9_-]+)", delivered["body"])
+            assert token_match
+            owner_token = token_match.group(1)
+
+            owner_activation = client.post(
+                "/api/organization-groups/invitations/accept",
+                json={"token": owner_token, "password": "SecureOwnerPass123!"},
+            )
+            assert owner_activation.status_code == 200, owner_activation.text
+            assert owner_activation.json()["status"] == "activated"
+
+            replay_activation = client.post(
+                "/api/organization-groups/invitations/accept",
+                json={"token": owner_token, "password": "SecureOwnerPass123!"},
+            )
+            assert replay_activation.status_code == 400
+
             duplicate_group = client.post(
                 "/api/organization-groups",
                 headers=headers,
