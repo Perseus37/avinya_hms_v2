@@ -18,7 +18,9 @@ def upgrade() -> None:
         sa.Column("location_type", sa.String(length=30), server_default="STORE", nullable=False),
         sa.Column("is_active", sa.Boolean(), server_default=sa.true(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column("created_by_id", sa.Integer(), nullable=True),
+        sa.Column("updated_by_id", sa.Integer(), nullable=True),
         sa.UniqueConstraint("code", name="uq_pharmacy_locations_code"),
     )
     op.execute(
