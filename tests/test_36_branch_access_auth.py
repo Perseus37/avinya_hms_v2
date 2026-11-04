@@ -109,6 +109,13 @@ def branch_grant_environment(monkeypatch):
 
     with TenantSession() as tenant_db:
         role = Role(code="DOCTOR", name="Doctor")
+        local_admin = Role(code="LOCAL_ADMIN", name="Local Admin")
+        elevated_permission = Permission(
+            code="patient:delete",
+            description="Delete patient",
+            module="patients",
+        )
+        local_admin.permissions.append(elevated_permission)
         user = User(
             login_id="doctor-grant",
             email="doctor@grant.example",
@@ -116,7 +123,7 @@ def branch_grant_environment(monkeypatch):
             full_name="Test Doctor",
             status=UserStatusEnum.ACTIVE,
         )
-        user.roles.append(role)
+        user.roles.extend([role, local_admin])
         tenant_db.add(user)
         tenant_db.commit()
         local_user_id = user.id
@@ -200,15 +207,7 @@ def test_branch_grant_cannot_use_unassigned_local_role_permissions(
         user = dependencies._authenticate_branch_access_token(
             "br_access_test-secret-token", tenant_context, tenant_db
         )
-        elevated_role = Role(code="LOCAL_ADMIN", name="Local Admin")
-        elevated_permission = Permission(
-            code="patient:delete",
-            description="Delete patient",
-            module="patients",
-        )
-        elevated_role.permissions.append(elevated_permission)
-        user.roles.append(elevated_role)
-        tenant_db.commit()
+        assert {role.code for role in user.roles} == {"DOCTOR"}
         assert not dependencies.user_has_permission(
             tenant_db, user, "patient:delete"
         )
