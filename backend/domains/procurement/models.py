@@ -32,6 +32,16 @@ class VendorCategoryEnum(str, PyEnum):
     GENERAL_SUPPLIES = "GENERAL_SUPPLIES"
 
 
+class PurchaseRequisitionStatusEnum(str, PyEnum):
+    DRAFT = "DRAFT"
+    SUBMITTED = "SUBMITTED"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    PARTIALLY_ORDERED = "PARTIALLY_ORDERED"
+    CONVERTED = "CONVERTED"
+    CANCELLED = "CANCELLED"
+
+
 class POStatusEnum(str, PyEnum):
     DRAFT = "DRAFT"
     SUBMITTED = "SUBMITTED"
@@ -83,6 +93,61 @@ class VendorMaster(AuditMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class PurchaseRequisition(AuditMixin, Base):
+    """Department-originated request to procure goods from an external supplier."""
+    __tablename__ = "procurement_requisitions"
+    __table_args__ = (
+        Index("ix_proc_requisition_status_created", "status", "created_at"),
+        Index("ix_proc_requisition_department_status", "requesting_department_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    requisition_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    requesting_department_id: Mapped[int] = mapped_column(ForeignKey("departments.id"), nullable=False, index=True)
+    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    status: Mapped[PurchaseRequisitionStatusEnum] = mapped_column(
+        Enum(PurchaseRequisitionStatusEnum), default=PurchaseRequisitionStatusEnum.DRAFT, nullable=False
+    )
+    required_by_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    requesting_department: Mapped["Department"] = relationship()
+    requested_by: Mapped["User"] = relationship(foreign_keys=[requested_by_id])
+    reviewed_by: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewed_by_id])
+    items: Mapped[List["PurchaseRequisitionItem"]] = relationship(
+        back_populates="requisition", cascade="all, delete-orphan"
+    )
+    purchase_orders: Mapped[List["PurchaseOrder"]] = relationship(back_populates="requisition")
+
+
+class PurchaseRequisitionItem(AuditMixin, Base):
+    """Requested catalogue or free-text item and approved procurement quantity."""
+    __tablename__ = "procurement_requisition_items"
+    __table_args__ = (
+        CheckConstraint("requested_quantity > 0", name="ck_proc_req_item_qty_pos"),
+        CheckConstraint("approved_quantity IS NULL OR approved_quantity >= 0", name="ck_proc_req_item_approved_qty_nonneg"),
+        Index("ix_proc_req_items_requisition", "requisition_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    requisition_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_requisitions.id", ondelete="CASCADE"), nullable=False
+    )
+    medication_id: Mapped[Optional[int]] = mapped_column(ForeignKey("medication_master.id"), nullable=True, index=True)
+    item_description: Mapped[str] = mapped_column(String(200), nullable=False)
+    requested_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    approved_quantity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    estimated_unit_price_paise: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    requisition: Mapped["PurchaseRequisition"] = relationship(back_populates="items")
+    medication: Mapped[Optional["MedicationMaster"]] = relationship()
+
+
 class PurchaseOrder(AuditMixin, Base):
     """Official procurement order placed with a vendor."""
     __tablename__ = "procurement_purchase_orders"
@@ -94,6 +159,7 @@ class PurchaseOrder(AuditMixin, Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     po_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id"), nullable=False)
+    requisition_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_requisitions.id"), nullable=True, index=True)
     status: Mapped[POStatusEnum] = mapped_column(default=POStatusEnum.DRAFT, nullable=False)
     delivery_due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     payment_terms: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -102,6 +168,7 @@ class PurchaseOrder(AuditMixin, Base):
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     vendor: Mapped["VendorMaster"] = relationship()
+    requisition: Mapped[Optional["PurchaseRequisition"]] = relationship(back_populates="purchase_orders")
     approved_by: Mapped[Optional["User"]] = relationship(foreign_keys=[approved_by_id])
     items: Mapped[List["PurchaseOrderItem"]] = relationship(back_populates="purchase_order", cascade="all, delete-orphan")
 
@@ -116,6 +183,7 @@ class PurchaseOrderItem(AuditMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     po_id: Mapped[int] = mapped_column(ForeignKey("procurement_purchase_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    requisition_item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_requisition_items.id"), nullable=True, index=True)
     medication_id: Mapped[Optional[int]] = mapped_column(ForeignKey("medication_master.id"), nullable=True, index=True)
     item_description: Mapped[str] = mapped_column(String(200), nullable=False)
     quantity_ordered: Mapped[int] = mapped_column(Integer, nullable=False)
