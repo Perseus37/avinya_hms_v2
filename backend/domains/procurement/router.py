@@ -503,6 +503,8 @@ def approve_vendor_invoice(invoice_id: int, db: Session = Depends(get_db), curre
         raise HTTPException(status_code=409, detail="Invoice has already been posted to accounts payable.")
     if not invoice or invoice.status not in [VendorInvoiceStatusEnum.MATCHED_APPROVED, VendorInvoiceStatusEnum.PRICE_VARIANCE_FLAGGED]:
         raise HTTPException(status_code=400, detail="Invoice must be matched or flagged before financial approval.")
+    if invoice.created_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The invoice uploader cannot approve the same vendor invoice.")
 
     invoice.status = VendorInvoiceStatusEnum.MATCHED_APPROVED
     invoice.verified_by_id = current_user.id
