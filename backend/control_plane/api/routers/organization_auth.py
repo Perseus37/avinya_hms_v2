@@ -316,7 +316,7 @@ def confirm_mfa(payload: MfaVerification, db: Session = Depends(get_control_db),
         raise HTTPException(status_code=400, detail="Invalid MFA code.")
     user.mfa_enabled = True
     user.mfa_last_used_counter = counter
-    return _create_session(db, user)
+    return _create_session(db, user, user_agent)
 
 
 @router.post("/mfa/verify-login", dependencies=[Depends(_MFA_LIMIT)])
@@ -331,7 +331,7 @@ def verify_mfa_login(payload: MfaVerification, db: Session = Depends(get_control
     ):
         raise HTTPException(status_code=401, detail="Invalid MFA challenge or code.")
     user.mfa_last_used_counter = counter
-    return _create_session(db, user)
+    return _create_session(db, user, user_agent)
 
 
 @router.post("/refresh", dependencies=[Depends(_LOGIN_LIMIT)])
