@@ -423,3 +423,26 @@ class InventoryCountLine(AuditMixin, Base):
     session: Mapped[InventoryCountSession] = relationship(back_populates="lines")
     batch: Mapped[InventoryBatch] = relationship()
     medication: Mapped[MedicationMaster] = relationship()
+
+
+class ControlledVaultCount(AuditMixin, Base):
+    """Dual-witness physical count requiring independent variance approval."""
+    __tablename__ = "controlled_vault_counts"
+    __table_args__ = (
+        CheckConstraint("expected_balance >= 0 AND physical_balance >= 0", name="ck_controlled_vault_count_nonnegative"),
+        Index("ix_controlled_vault_counts_vault_status", "vault_id", "status"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    vault_id: Mapped[int] = mapped_column(ForeignKey("controlled_substance_vaults.id"), nullable=False)
+    expected_balance: Mapped[int] = mapped_column(Integer, nullable=False)
+    physical_balance: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_movement_id: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    counted_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    witness_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    approved_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"))
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", nullable=False)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    rejection_reason: Mapped[Optional[str]] = mapped_column(String(500))
+    counted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    vault: Mapped[ControlledSubstanceVault] = relationship()
