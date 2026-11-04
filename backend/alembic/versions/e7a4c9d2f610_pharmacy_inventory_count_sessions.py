@@ -24,8 +24,7 @@ def upgrade() -> None:
         sa.Column("notes", sa.String(length=500), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("created_by_id_audit", sa.Integer(), nullable=True),
-        sa.Column("updated_by_id_audit", sa.Integer(), nullable=True),
+        sa.Column("updated_by_id", sa.Integer(), nullable=True),
         sa.CheckConstraint("count_type IN ('CYCLE', 'FULL', 'SPOT')", name="ck_inventory_count_type"),
     )
     op.create_index("ix_inventory_count_sessions_location_id", "inventory_count_sessions", ["location_id"])
