@@ -399,12 +399,12 @@ class OrganizationInvitation(ControlBase):
 class OrganizationSession(ControlBase):
     """Central authentication session. Store only a token/JTI hash, never the bearer token."""
     __tablename__ = "organization_sessions"
-    __table_args__ = (UniqueConstraint("token_hash", name="uq_organization_sessions_token_hash"),)
+    __table_args__ = (\n        UniqueConstraint("token_hash", name="uq_organization_sessions_token_hash"),\n        UniqueConstraint("refresh_token_hash", name="uq_organization_sessions_refresh_token_hash"),\n    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_user_id: Mapped[int] = mapped_column(ForeignKey("organization_users.id", ondelete="CASCADE"), nullable=False, index=True)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    refresh_token_hash: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
+    refresh_token_hash: Mapped[Optional[str]] = mapped_column(String(64))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     refresh_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     device_label: Mapped[Optional[str]] = mapped_column(String(120))
