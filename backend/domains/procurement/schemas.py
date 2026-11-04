@@ -29,6 +29,21 @@ class VendorResponse(VendorCreate):
     is_active: bool
     model_config = ConfigDict(from_attributes=True)
 
+class VendorDirectoryResponse(BaseModel):
+    id: int
+    code: str
+    name: str
+    category: VendorCategoryEnum
+    gstin: Optional[str] = None
+    pan: Optional[str] = None
+    contact_person: str
+    phone: str
+    email: EmailStr
+    address: str
+    credit_period_days: int
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
+
 # --- Purchase Orders ---
 class POItemCreate(BaseModel):
     medication_id: Optional[int] = None
