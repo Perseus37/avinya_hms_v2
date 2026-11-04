@@ -26,6 +26,7 @@ from backend.domains.identity.models import Department, GenderEnum, Permission, 
 from backend.domains.encounters.models import AdmissionTypeEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter
 from backend.domains.patients.models import Patient
 from backend.domains.encounters.opd_queue_models import OPDQueue
+from backend.domains.diagnostics.models import (DiagnosticOrder, DiagnosticTask, ServiceCategory, ServiceCatalog, ServiceTypeEnum, TaskStatusEnum)
 from starlette.requests import Request
 
 
@@ -499,4 +500,74 @@ def test_opd_queue_department_scope_rejects_unassigned_department(branch_grant_e
 
         with pytest.raises(HTTPException) as exc:
             dependencies.ensure_queue_department_access(tenant_db, queue.id, user)
+        assert exc.value.status_code == 403
+
+
+
+def test_diagnostic_task_access_uses_service_department_scope(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        lab_department = Department(code="LAB", name="Laboratory")
+        lab_role = Role(code="LAB_TECH", name="Laboratory Technician")
+        tenant_db.add_all([lab_department, lab_role])
+        tenant_db.flush()
+        user.roles.append(lab_role)
+        tenant_db.flush()
+        assignment = tenant_db.query(UserRole).filter_by(
+            user_id=user.id, role_id=lab_role.id
+        ).one()
+        assignment.department_id = lab_department.id
+
+        patient = Patient(
+            mrn="MRN-DIAG-SCOPE-01",
+            full_name="Diagnostic Scope Patient",
+            date_of_birth=datetime(1985, 1, 1, tzinfo=timezone.utc),
+            gender=GenderEnum.FEMALE,
+            created_by_id=user.id,
+        )
+        tenant_db.add(patient)
+        tenant_db.flush()
+        order = DiagnosticOrder(
+            patient_id=patient.id,
+            ordering_doctor_id=user.id,
+            status="ACTIVE",
+        )
+        category = ServiceCategory(
+            department_id=lab_department.id,
+            code="LAB-CAT-SCOPE",
+            name="Laboratory",
+            is_active=True,
+        )
+        tenant_db.add_all([order, category])
+        tenant_db.flush()
+        service = ServiceCatalog(
+            category_id=category.id,
+            code="CBC-SCOPE",
+            name="Complete Blood Count",
+            service_type=ServiceTypeEnum.LAB,
+            base_price_paise=10000,
+            is_active=True,
+        )
+        tenant_db.add(service)
+        tenant_db.flush()
+        task = DiagnosticTask(
+            order_id=order.id,
+            service_id=service.id,
+            status=TaskStatusEnum.PENDING,
+        )
+        tenant_db.add(task)
+        tenant_db.flush()
+        tenant_db.info["central_branch_department_codes"] = frozenset({"LAB"})
+
+        dependencies.ensure_diagnostic_task_department_access(
+            tenant_db, task.id, user
+        )
+        tenant_db.info["central_branch_department_codes"] = frozenset({"CARDIOLOGY"})
+        with pytest.raises(HTTPException) as exc:
+            dependencies.ensure_diagnostic_task_department_access(
+                tenant_db, task.id, user
+            )
         assert exc.value.status_code == 403
