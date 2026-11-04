@@ -73,9 +73,18 @@ def upgrade() -> None:
         sa.UniqueConstraint("medication_id", "purchase_uom_id", "effective_from", name="uq_med_pack_effective_start"),
     )
     op.create_index("ix_med_pack_medication_active", "procurement_medication_pack_configurations", ["medication_id", "is_active"])
+    op.create_index(
+        "uq_med_pack_active_purchase_uom",
+        "procurement_medication_pack_configurations",
+        ["medication_id", "purchase_uom_id"],
+        unique=True,
+        postgresql_where=sa.text("is_active = true"),
+        sqlite_where=sa.text("is_active = 1"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_med_pack_active_purchase_uom", table_name="procurement_medication_pack_configurations")
     op.drop_index("ix_med_pack_medication_active", table_name="procurement_medication_pack_configurations")
     op.drop_table("procurement_medication_pack_configurations")
     op.drop_table("procurement_units_of_measure")
