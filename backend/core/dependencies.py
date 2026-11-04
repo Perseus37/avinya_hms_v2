@@ -333,6 +333,47 @@ def ensure_department_id_access(db: Session, department_id: int, actor: User) ->
 
 
 
+
+def ensure_department_code_access(
+    db: Session, department_codes: set[str] | tuple[str, ...], actor: User
+) -> None:
+    """Require a local and centrally granted assignment to one of the named departments."""
+    if db.info.get("central_branch_department_codes") is None:
+        return
+    codes = set(department_codes)
+    department_ids = db.execute(
+        select(Department.id).where(Department.code.in_(codes), Department.is_active.is_(True))
+    ).scalars().all()
+    if not any(user_has_department_access(db, actor, department_id) for department_id in department_ids):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: an active assignment to the required operational department is needed.",
+        )
+
+
+def ensure_pharmacy_prescription_access(db: Session, prescription_id: int, actor: User) -> None:
+    """Allow pharmacy staff or the treating department to access a prescription."""
+    from backend.domains.pharmacy.models import Prescription
+    from backend.domains.encounters.models import PatientEncounter
+
+    prescription = db.get(Prescription, prescription_id)
+    if prescription is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prescription not found.")
+    if db.info.get("central_branch_department_codes") is None:
+        return
+    try:
+        ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, actor)
+        return
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_403_FORBIDDEN:
+            raise
+    ensure_encounter_department_access(db, prescription.encounter_id, actor)
+
+
+def ensure_prescription_encounter_access(db: Session, encounter_id: int, actor: User) -> None:
+    """Prescription creation remains a clinical action scoped to its encounter department."""
+    ensure_encounter_department_access(db, encounter_id, actor)
+
 def ensure_diagnostic_order_access(db: Session, order_id: int, actor: User) -> None:
     """Require clinical access to the patient's encounter department for order-level data."""
     allowed_ids = get_user_assigned_department_ids(db, actor)
