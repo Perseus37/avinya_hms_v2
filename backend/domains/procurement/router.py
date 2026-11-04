@@ -20,7 +20,7 @@ from backend.domains.procurement.models import (
     StoreIndent, StoreIndentItem, IndentStatusEnum
 )
 from backend.domains.procurement.schemas import (
-    VendorCreate, VendorResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
+    VendorCreate, VendorResponse, VendorDirectoryResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
     IndentIssueRequest, PurchaseReturnCreate
 )
 from backend.domains.procurement.services import (
@@ -69,6 +69,31 @@ def create_vendor(payload: VendorCreate, db: Session = Depends(get_db), current_
     db.refresh(vendor)
     return vendor
 
+
+@router.get("/vendors", response_model=list[VendorDirectoryResponse])
+def list_vendors(
+    active_only: bool = True,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    query = db.query(VendorMaster)
+    if active_only:
+        query = query.filter(VendorMaster.is_active.is_(True))
+    return query.order_by(VendorMaster.name.asc(), VendorMaster.id.asc()).all()
+
+
+@router.get("/vendors/{vendor_id}", response_model=VendorDirectoryResponse)
+def get_vendor(
+    vendor_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    vendor = db.get(VendorMaster, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Vendor not found.")
+    return vendor
+
+
 # --- Purchase Orders ---
 @router.post("/purchase-orders", response_model=POResponse, status_code=status.HTTP_201_CREATED)
 def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
@@ -101,6 +126,43 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     db.commit()
     db.refresh(po)
     return po
+
+
+@router.get("/purchase-orders", response_model=PaginatedResponse[POResponse])
+def list_purchase_orders(
+    vendor_id: Optional[int] = None,
+    po_status: Optional[POStatusEnum] = Query(default=None, alias="status"),
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    page, page_size = validate_pagination(page, page_size)
+    query = db.query(PurchaseOrder).options(selectinload(PurchaseOrder.items))
+    if vendor_id is not None:
+        query = query.filter(PurchaseOrder.vendor_id == vendor_id)
+    if po_status is not None:
+        query = query.filter(PurchaseOrder.status == po_status)
+    total = query.count()
+    items = query.order_by(PurchaseOrder.created_at.desc(), PurchaseOrder.id.desc()).offset(
+        (page - 1) * page_size
+    ).limit(page_size).all()
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/purchase-orders/{po_id}", response_model=POResponse)
+def get_purchase_order(
+    po_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    po = db.query(PurchaseOrder).options(selectinload(PurchaseOrder.items)).filter(
+        PurchaseOrder.id == po_id
+    ).one_or_none()
+    if po is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found.")
+    return po
+
 
 # --- Goods Receipt Note (GRN) ---
 @router.post("/grn", status_code=status.HTTP_201_CREATED)
