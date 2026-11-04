@@ -387,3 +387,32 @@ class ControlledSubstanceMovementResponse(BaseModel):
     notes: Optional[str] = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+class ControlledVaultCountCreate(BaseModel):
+    vault_id: int
+    physical_balance: int = Field(ge=0)
+    witness_user_id: int
+    witness_password: str = Field(min_length=1)
+    reason: str = Field(min_length=5, max_length=500)
+
+
+class ControlledVaultCountDecision(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class ControlledVaultCountResponse(BaseModel):
+    id: int
+    vault_id: int
+    expected_balance: int
+    physical_balance: int
+    counted_by_id: int
+    witness_user_id: int
+    approved_by_id: Optional[int] = None
+    status: str
+    reason: str
+    rejection_reason: Optional[str] = None
+    counted_at: datetime
+    approved_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
