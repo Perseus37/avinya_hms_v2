@@ -592,6 +592,7 @@ class ProcurementUnitOfMeasure(Base):
     display_name: Mapped[str] = mapped_column(String(80), nullable=False)
     dimension: Mapped[str] = mapped_column(String(16), nullable=False)
     allows_fractional: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_packaging_unit: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
