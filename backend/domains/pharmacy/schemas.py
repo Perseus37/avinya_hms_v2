@@ -85,7 +85,8 @@ class InventoryBatchResponse(BaseModel):
     batch_number: str
     expiry_date: datetime
     stock_quantity: int
-    unit_price_paise: int
+    unit_price_paise: Decimal
+    base_uom_code: Optional[str] = None
     medication: MedicationMasterResponse
     model_config = ConfigDict(from_attributes=True)
 
@@ -98,7 +99,8 @@ class InventoryMovementResponse(BaseModel):
     quantity_delta: int
     stock_before: int
     stock_after: int
-    unit_price_paise: int
+    unit_price_paise: Decimal
+    base_uom_code: Optional[str] = None
     reference_type: Optional[str] = None
     reference_id: Optional[str] = None
     actor_id: Optional[int] = None
@@ -121,7 +123,8 @@ class InventoryTransferResponse(BaseModel):
     medication_id: int
     batch_number: str
     expiry_date: datetime
-    unit_price_paise: int
+    unit_price_paise: Decimal
+    base_uom_code: Optional[str] = None
     destination_location_id: int
     quantity: int
     status: InventoryTransferStatusEnum
