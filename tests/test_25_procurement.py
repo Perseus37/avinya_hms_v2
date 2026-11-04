@@ -955,3 +955,26 @@ def test_vendor_scorecard_supports_date_filter_and_empty_activity(
     )
     assert invalid_range.status_code == 422
 
+def test_procurement_cost_intelligence_empty_period_and_date_validation(
+    client, superuser_headers
+):
+    response = client.get(
+        "/v1/api/procurement/analytics/cost-intelligence?from_date=2026-01-01&to_date=2026-12-31",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["procurement_spend"]["total_paise"] == 0
+    assert payload["procurement_spend"]["monthly_paise"] == []
+    assert payload["procurement_spend"]["by_medication_form_paise"] == []
+    assert payload["medication_price_history"] == []
+    assert payload["supplier_price_comparison"] == []
+    assert payload["supplier_returns"]["returned_quantity"] == 0
+    assert payload["supplier_returns"]["returned_value_paise"] == 0
+
+    invalid_range = client.get(
+        "/v1/api/procurement/analytics/cost-intelligence?from_date=2026-12-31&to_date=2026-01-01",
+        headers=superuser_headers,
+    )
+    assert invalid_range.status_code == 422
+
