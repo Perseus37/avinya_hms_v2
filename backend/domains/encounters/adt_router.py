@@ -184,7 +184,9 @@ def admit_patient(
     if encounter.encounter_type != EncounterTypeEnum.IPD:
         raise HTTPException(status_code=400, detail="Only IPD encounters can be admitted to a bed.")
 
-    if not user_has_department_access(db, current_user, encounter.department_id):
+    if db.info.get("central_branch_department_codes") is not None and not user_has_department_access(
+        db, current_user, encounter.department_id
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied: admission is outside your assigned department scope.",
