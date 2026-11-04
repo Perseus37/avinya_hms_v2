@@ -11,6 +11,9 @@ depends_on = None
 TABLES = ("inventory_batches", "inventory_movements", "inventory_transfers")
 
 def upgrade() -> None:
+    op.add_column("inventory_batches", sa.Column("base_uom_code", sa.String(length=24), nullable=True))
+    op.add_column("inventory_movements", sa.Column("base_uom_code", sa.String(length=24), nullable=True))
+    op.add_column("inventory_transfers", sa.Column("base_uom_code", sa.String(length=24), nullable=True))
     for table in TABLES:
         with op.batch_alter_table(table) as batch_op:
             batch_op.alter_column(
