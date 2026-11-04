@@ -208,6 +208,63 @@ def _record_inventory_movement(
     ))
 
 
+
+@router.get("/inventory/movement-anomalies")
+def get_inventory_movement_anomalies(
+    within_days: int = Query(default=7, ge=1, le=90),
+    minimum_abs_delta: int = Query(default=10, ge=1),
+    location_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("pharmacy:read")),
+):
+    """Surface high-value or repeated manual stock adjustments for human review."""
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=within_days)
+    manual_types = {"ADJUSTMENT", "VOID", "COUNT_RECONCILIATION"}
+    stmt = select(InventoryMovement).where(
+        InventoryMovement.created_at >= cutoff,
+        InventoryMovement.movement_type.in_(manual_types),
+    ).order_by(InventoryMovement.created_at.desc(), InventoryMovement.id.desc())
+    if location_id is not None:
+        _ensure_pharmacy_location_access(db, location_id, current_user)
+        stmt = stmt.where(InventoryMovement.location_id == location_id)
+    elif "central_branch_department_codes" in db.info:
+        allowed = set(db.execute(select(PharmacyLocationAccess.location_id).where(
+            PharmacyLocationAccess.user_id == current_user.id,
+            PharmacyLocationAccess.is_active.is_(True),
+        )).scalars().all())
+        stmt = stmt.where(InventoryMovement.location_id.in_(allowed)) if allowed else stmt.where(InventoryMovement.id == -1)
+    rows = list(db.execute(stmt).scalars().all())
+    counts = {}
+    for movement in rows:
+        counts[movement.inventory_batch_id] = counts.get(movement.inventory_batch_id, 0) + 1
+    findings = []
+    for movement in rows:
+        reasons = []
+        if abs(movement.quantity_delta) >= minimum_abs_delta:
+            reasons.append("LARGE_MANUAL_VARIANCE")
+        if counts[movement.inventory_batch_id] >= 3:
+            reasons.append("REPEATED_MANUAL_ADJUSTMENTS")
+        if reasons:
+            findings.append({
+                "movement_id": movement.id,
+                "location_id": movement.location_id,
+                "batch_id": movement.inventory_batch_id,
+                "medication_id": movement.medication_id,
+                "movement_type": movement.movement_type,
+                "quantity_delta": movement.quantity_delta,
+                "stock_before": movement.stock_before,
+                "stock_after": movement.stock_after,
+                "actor_id": movement.actor_id if hasattr(movement, "actor_id") else movement.created_by_id,
+                "created_at": movement.created_at,
+                "reference_type": movement.reference_type,
+                "reference_id": movement.reference_id,
+                "notes": movement.notes,
+                "anomaly_reasons": reasons,
+            })
+    return {"within_days": within_days, "minimum_abs_delta": minimum_abs_delta, "items": findings}
+
+
 @router.get("/inventory/movements", response_model=PaginatedResponse[InventoryMovementResponse])
 def list_inventory_movements(
     location_id: Optional[int] = None,
