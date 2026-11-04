@@ -8,6 +8,7 @@ from fastapi.security import APIKeyHeader, HTTPBearer, OAuth2PasswordBearer
 import jwt
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from backend.core.config import settings
 from backend.control_plane.models import (
@@ -145,7 +146,18 @@ def _authenticate_branch_access_token(
 
             # Central membership narrows existing local permissions; it never creates or
             # elevates local role assignments. Superuser bypass is disabled for this mode.
-            local_db.info["central_branch_role_codes"] = frozenset(assigned_roles)
+            effective_roles = local_db.execute(
+                select(Role)
+                .join(Role.users)
+                .where(User.id == local_user.id, Role.code.in_(assigned_roles))
+                .order_by(Role.code.asc())
+            ).scalars().all() if assigned_roles else []
+            # Restrict both permission queries and direct role inspections performed by
+            # legacy endpoints to the intersection of local roles and central assignments.
+            set_committed_value(local_user, "roles", effective_roles)
+            local_db.info["central_branch_role_codes"] = frozenset(
+                role.code for role in effective_roles
+            )
             local_db.info["central_branch_department_codes"] = frozenset(assigned_departments)
             local_db.info["central_branch_membership_id"] = membership.id
             local_db.info["central_branch_grant_id"] = grant.id
