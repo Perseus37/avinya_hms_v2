@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, get_redis, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.dependencies import RequireDepartmentAccess, RequirePermission, validate_pagination
 from backend.core.export import stream_csv_response
 from backend.domains.clinical.models import (
     ClinicalEarlyWarningScore,
@@ -85,6 +85,7 @@ def fetch_department_taxonomy(
     db: Session = Depends(get_db),
     redis=Depends(get_redis),
     _: User = Depends(RequirePermission("mdm:read", "patients:read", "opd:read")),
+    __: User = Depends(RequireDepartmentAccess()),
 ):
     valid_types = ["allergies", "complaints", "comorbidities", "diagnoses", "physical_exams"]
     if taxonomy_type not in valid_types:
