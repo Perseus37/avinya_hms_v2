@@ -80,11 +80,11 @@ class POResponse(BaseModel):
 # --- Goods Receipt Note (GRN) ---
 class GRNItemCreate(BaseModel):
     po_item_id: int
-    batch_number: str
+    batch_number: str = Field(min_length=1, max_length=50)
     expiry_date: datetime
     received_quantity: int = Field(ge=0)
     accepted_quantity: int = Field(ge=0)
-    rejection_reason: Optional[str] = None
+    rejection_reason: Optional[str] = Field(default=None, max_length=255)
 
 class GRNCreate(BaseModel):
     po_id: int
