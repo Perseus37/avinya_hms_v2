@@ -14,7 +14,7 @@ from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User, Department, Role
-from backend.domains.pharmacy.models import MedicationMaster, InventoryMovement
+from backend.domains.pharmacy.models import MedicationMaster, InventoryMovement, InventoryBatch
 from backend.domains.procurement.models import (
     VendorMaster, PurchaseOrder, PurchaseOrderItem, POStatusEnum,
     GoodsReceiptNote, GoodsReceiptItem, GRNStatusEnum,
@@ -184,6 +184,12 @@ def create_medication_pack_configuration(
     ).distinct().all()
     if existing_medication_base and any(row[0] != base_uom.id for row in existing_medication_base):
         raise HTTPException(status_code=409, detail="A medication must retain one consistent stock base unit across all pack configurations.")
+    existing_stock = db.query(InventoryBatch).filter(
+        InventoryBatch.medication_id == medication_id,
+        InventoryBatch.stock_quantity > 0,
+    ).all()
+    if any(batch.base_uom_code != base_uom.code for batch in existing_stock):
+        raise HTTPException(status_code=409, detail="Existing stock batches must be reconciled to the selected base unit before pack conversion can be enabled. Historical quantities will not be converted automatically.")
     if payload.effective_from.tzinfo is None:
         raise HTTPException(status_code=422, detail="Pack configuration effective_from must include a timezone.")
     if payload.units_per_purchase_unit <= 0:
