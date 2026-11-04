@@ -20,7 +20,7 @@ from backend.domains.procurement.models import (
     VendorInvoiceItem,
     VendorInvoiceStatusEnum,
 )
-from backend.domains.pharmacy.models import InventoryBatch, MedicationMaster
+from backend.domains.pharmacy.models import (InventoryBatch, InventoryMovement, MedicationMaster, PharmacyLocation, PharmacyLocationAccess)
 from backend.domains.finance.models import ExpenseRecord, ExpenseCategoryEnum, ExpenseStatusEnum
 from backend.domains.procurement.ai_parser import DonutInvoiceParser
 from backend.domains.billing.models import Invoice, InvoiceLineItem, InvoiceStatusEnum
@@ -29,6 +29,52 @@ from backend.domains.reports.pdf import render_html_pdf
 from backend.domains.reports.templates import render_sandboxed_template
 
 logger = logging.getLogger(__name__)
+
+def _ensure_stock_location_access(db: Session, location_id: int, user_id: int) -> None:
+    """Require explicit location grants for organization-authenticated branch sessions."""
+    if "central_branch_department_codes" not in db.info:
+        return
+    assignment = db.execute(select(PharmacyLocationAccess.id).where(
+        PharmacyLocationAccess.location_id == location_id,
+        PharmacyLocationAccess.user_id == user_id,
+        PharmacyLocationAccess.is_active.is_(True),
+    )).scalar_one_or_none()
+    if assignment is None:
+        raise HTTPException(status_code=403, detail="You are not assigned to this pharmacy stock location.")
+
+
+def _append_stock_movement(
+    db: Session,
+    batch: InventoryBatch,
+    *,
+    movement_type: str,
+    quantity_delta: int,
+    stock_before: int,
+    actor_user_id: int,
+    reference_type: str,
+    reference_id: int | str,
+    notes: str | None = None,
+) -> None:
+    if quantity_delta == 0:
+        return
+    stock_after = stock_before + quantity_delta
+    if stock_before < 0 or stock_after < 0:
+        raise HTTPException(status_code=409, detail="Inventory movement would create an invalid stock balance.")
+    db.add(InventoryMovement(
+        location_id=batch.location_id,
+        medication_id=batch.medication_id,
+        inventory_batch_id=batch.id,
+        movement_type=movement_type,
+        quantity_delta=quantity_delta,
+        stock_before=stock_before,
+        stock_after=stock_after,
+        unit_price_paise=batch.unit_price_paise,
+        reference_type=reference_type,
+        reference_id=str(reference_id),
+        actor_id=actor_user_id,
+        notes=notes,
+    ))
+
 
 def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: int):
     """Atomic acceptance of goods: increments PO tracking and injects FEFO batches into Pharmacy."""
@@ -47,8 +93,18 @@ def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: 
 
             # 2. Automatically provision live Pharmacy stock batches if medication is linked
             if po_item.medication_id:
+                main_location = db.execute(
+                    select(PharmacyLocation).where(
+                        PharmacyLocation.code == "MAIN",
+                        PharmacyLocation.is_active.is_(True),
+                    )
+                ).scalar_one_or_none()
+                if main_location is None:
+                    raise HTTPException(status_code=409, detail="Default MAIN pharmacy location is unavailable.")
+                _ensure_stock_location_access(db, main_location.id, current_user_id)
                 new_batch = InventoryBatch(
                     medication_id=po_item.medication_id,
+                    location_id=main_location.id,
                     batch_number=grn_item.batch_number,
                     expiry_date=grn_item.expiry_date,
                     stock_quantity=grn_item.accepted_quantity,
@@ -57,6 +113,12 @@ def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: 
                 )
                 db.add(new_batch)
                 db.flush()
+                _append_stock_movement(
+                    db, new_batch, movement_type="RECEIPT",
+                    quantity_delta=grn_item.accepted_quantity, stock_before=0,
+                    actor_user_id=current_user_id, reference_type="GOODS_RECEIPT",
+                    reference_id=grn.id, notes=f"GRN item {grn_item.id}",
+                )
                 grn_item.created_batch_id = new_batch.id
 
     po.status = POStatusEnum.COMPLETED if all_po_items_fulfilled else POStatusEnum.PARTIALLY_RECEIVED
@@ -239,8 +301,16 @@ def issue_patient_indent(db: Session, indent: StoreIndent, issue_request: list, 
         if batch.stock_quantity < issue_item.issue_quantity:
             raise HTTPException(status_code=409, detail=f"Insufficient stock in batch {batch.batch_number}.")
 
-        # Decrement physical stock
+        # Decrement physical stock and append the ward issue movement atomically.
+        _ensure_stock_location_access(db, batch.location_id, current_user_id)
+        stock_before = batch.stock_quantity
         batch.stock_quantity -= issue_item.issue_quantity
+        _append_stock_movement(
+            db, batch, movement_type="WARD_ISSUE", quantity_delta=-issue_item.issue_quantity,
+            stock_before=stock_before, actor_user_id=current_user_id,
+            reference_type="STORE_INDENT", reference_id=indent.id,
+            notes=f"Indent item {indent_item.id}",
+        )
         indent_item.issued_quantity += issue_item.issue_quantity
 
         if indent_item.issued_quantity < indent_item.requested_quantity:
@@ -283,7 +353,15 @@ def process_purchase_return(db: Session, vendor_id: int, grn_id: int, return_ite
         if not batch or batch.stock_quantity < item.return_quantity:
             raise HTTPException(status_code=409, detail="Insufficient current stock to process return to vendor.")
 
+        _ensure_stock_location_access(db, batch.location_id, current_user_id)
+        stock_before = batch.stock_quantity
         batch.stock_quantity -= item.return_quantity
+        _append_stock_movement(
+            db, batch, movement_type="PURCHASE_RETURN", quantity_delta=-item.return_quantity,
+            stock_before=stock_before, actor_user_id=current_user_id,
+            reference_type="PURCHASE_RETURN", reference_id=grn_id,
+            notes=f"GRN item {grn_item.id}",
+        )
         total_credit_paise += (item.return_quantity * batch.unit_price_paise)
 
     # Generate Accounts Payable Debit Note (Negative Expense)
@@ -323,8 +401,16 @@ def return_patient_indent_stock(db: Session, indent: StoreIndent, return_request
         if not batch or batch.medication_id != indent_item.medication_id:
             raise HTTPException(status_code=400, detail="Invalid batch for the returned medication.")
 
-        # 1. Restore physical stock and decrement issued tracking
+        # 1. Restore physical stock and decrement issued tracking.
+        _ensure_stock_location_access(db, batch.location_id, current_user_id)
+        stock_before = batch.stock_quantity
         batch.stock_quantity += return_item.return_quantity
+        _append_stock_movement(
+            db, batch, movement_type="WARD_RETURN", quantity_delta=return_item.return_quantity,
+            stock_before=stock_before, actor_user_id=current_user_id,
+            reference_type="STORE_INDENT_RETURN", reference_id=indent.id,
+            notes=f"Indent item {indent_item.id}",
+        )
         indent_item.issued_quantity -= return_item.return_quantity
 
         # 2. Credit the patient's DRAFT invoice by reversing the specific line item
