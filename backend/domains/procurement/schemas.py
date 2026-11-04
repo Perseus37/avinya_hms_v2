@@ -44,6 +44,9 @@ class VendorDirectoryResponse(BaseModel):
     is_active: bool
     model_config = ConfigDict(from_attributes=True)
 
+class VendorStatusUpdate(BaseModel):
+    is_active: bool
+
 # --- Purchase Orders ---
 class POItemCreate(BaseModel):
     medication_id: Optional[int] = None
@@ -55,7 +58,7 @@ class POCreate(BaseModel):
     vendor_id: int
     delivery_due_date: datetime
     payment_terms: str
-    items: List[POItemCreate]
+    items: List[POItemCreate] = Field(min_length=1)
 
 class POItemResponse(POItemCreate):
     id: int
