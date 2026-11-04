@@ -319,6 +319,7 @@ class SupplierQuotationItemResponse(BaseModel):
     quantity_quoted: int
     unit_price_paise: int
     tax_percentage: int
+    tax_amount_paise: int
     line_total_paise: int
     model_config = ConfigDict(from_attributes=True)
 
