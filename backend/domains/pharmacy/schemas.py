@@ -137,6 +137,7 @@ class InventoryTransferResponse(BaseModel):
 
 class InventoryStockAdjustment(BaseModel):
     quantity_adjustment: int = Field(default=..., description="Must not be zero")
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 class PrescriptionItemCreate(BaseModel):
     medication_id: int
