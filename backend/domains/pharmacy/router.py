@@ -420,21 +420,23 @@ def receive_inventory_batch(
     med = db.get(MedicationMaster, payload.medication_id)
     if not med or not med.is_active:
         raise HTTPException(status_code=404, detail="Active medication not found.")
+    from backend.domains.procurement.models import (
+        ProcurementUnitOfMeasure, MedicationPackConfiguration
+    )
+    configured_base_ids = {
+        row[0] for row in db.query(MedicationPackConfiguration.base_uom_id).filter(
+            MedicationPackConfiguration.medication_id == med.id
+        ).distinct().all()
+    }
+    if configured_base_ids and not payload.base_uom_code:
+        raise HTTPException(status_code=422, detail="A base stock unit is required for manual stock entries once the medication has pack configurations.")
     if payload.base_uom_code:
-        from backend.domains.procurement.models import (
-            ProcurementUnitOfMeasure, MedicationPackConfiguration
-        )
         base_unit = db.query(ProcurementUnitOfMeasure).filter(
             ProcurementUnitOfMeasure.code == payload.base_uom_code,
             ProcurementUnitOfMeasure.is_active.is_(True),
         ).one_or_none()
         if base_unit is None or base_unit.is_packaging_unit:
             raise HTTPException(status_code=422, detail="Base stock unit must be an active registered dispensing or measurement unit.")
-        configured_base_ids = {
-            row[0] for row in db.query(MedicationPackConfiguration.base_uom_id).filter(
-                MedicationPackConfiguration.medication_id == med.id
-            ).distinct().all()
-        }
         if configured_base_ids and configured_base_ids != {base_unit.id}:
             raise HTTPException(status_code=409, detail="Manual stock base unit must match the medication's configured inventory base unit.")
 
