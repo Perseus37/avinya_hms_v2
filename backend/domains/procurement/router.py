@@ -21,7 +21,8 @@ from backend.domains.procurement.models import (
     StoreIndent, StoreIndentItem, IndentStatusEnum,
     PurchaseRequisition, PurchaseRequisitionItem, PurchaseRequisitionStatusEnum,
     SupplierQuotation, SupplierQuotationItem, SupplierQuotationStatusEnum,
-    PurchaseOrderApprovalAuthority, PurchaseOrderAmendment, POAmendmentStatusEnum
+    PurchaseOrderApprovalAuthority, PurchaseOrderAmendment, POAmendmentStatusEnum,
+    PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -30,7 +31,9 @@ from backend.domains.procurement.schemas import (
     PurchaseOrderFromRequisitionCreate, SupplierQuotationCreate,
     SupplierQuotationResponse, SupplierQuotationSelection,
     PurchaseOrderApprovalAuthorityUpdate, PurchaseOrderApprovalAuthorityResponse,
-    PurchaseOrderAmendmentCreate, PurchaseOrderAmendmentReview, PurchaseOrderAmendmentResponse
+    PurchaseOrderAmendmentCreate, PurchaseOrderAmendmentReview, PurchaseOrderAmendmentResponse,
+    PurchaseOrderShipmentCreate, PurchaseOrderShipmentUpdate, PurchaseOrderShipmentResponse,
+    OverduePurchaseOrderResponse
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
@@ -1248,6 +1251,162 @@ def review_purchase_order_amendment(
     db.commit()
     db.refresh(amendment)
     return amendment
+
+
+
+# --- Supplier delivery tracking and overdue PO queue ---
+_SHIPMENT_TRANSITIONS = {
+    POShipmentStatusEnum.PLANNED: {POShipmentStatusEnum.DISPATCHED, POShipmentStatusEnum.CANCELLED},
+    POShipmentStatusEnum.DISPATCHED: {
+        POShipmentStatusEnum.IN_TRANSIT, POShipmentStatusEnum.DELAYED,
+        POShipmentStatusEnum.DELIVERY_CONFIRMED,
+    },
+    POShipmentStatusEnum.IN_TRANSIT: {
+        POShipmentStatusEnum.DELAYED, POShipmentStatusEnum.DELIVERY_CONFIRMED,
+    },
+    POShipmentStatusEnum.DELAYED: {
+        POShipmentStatusEnum.IN_TRANSIT, POShipmentStatusEnum.DELIVERY_CONFIRMED,
+        POShipmentStatusEnum.CANCELLED,
+    },
+    POShipmentStatusEnum.DELIVERY_CONFIRMED: set(),
+    POShipmentStatusEnum.CANCELLED: set(),
+}
+
+
+@router.post(
+    "/purchase-orders/{po_id}/shipments",
+    response_model=PurchaseOrderShipmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_purchase_order_shipment(
+    po_id: int,
+    payload: PurchaseOrderShipmentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    po = db.query(PurchaseOrder).filter(
+        PurchaseOrder.id == po_id
+    ).with_for_update().one_or_none()
+    if po is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found.")
+    if po.status not in {POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED}:
+        raise HTTPException(status_code=409, detail="Shipment tracking can only be created for approved or partially received purchase orders.")
+    shipment = PurchaseOrderShipment(
+        po_id=po.id,
+        carrier=payload.carrier.strip(),
+        tracking_number=payload.tracking_number.strip() if payload.tracking_number else None,
+        expected_delivery_at=payload.expected_delivery_at,
+        notes=payload.notes,
+        status=POShipmentStatusEnum.PLANNED,
+        created_by_id=current_user.id,
+    )
+    db.add(shipment)
+    db.flush()
+    db.add(PurchaseOrderShipmentEvent(
+        shipment_id=shipment.id,
+        status=POShipmentStatusEnum.PLANNED,
+        event_at=datetime.now(timezone.utc),
+        notes="Shipment tracking record created.",
+        actor_user_id=current_user.id,
+    ))
+    db.commit()
+    return db.query(PurchaseOrderShipment).options(
+        selectinload(PurchaseOrderShipment.events)
+    ).filter(PurchaseOrderShipment.id == shipment.id).one()
+
+
+@router.get(
+    "/purchase-orders/{po_id}/shipments",
+    response_model=list[PurchaseOrderShipmentResponse],
+)
+def list_purchase_order_shipments(
+    po_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    if db.get(PurchaseOrder, po_id) is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found.")
+    return db.query(PurchaseOrderShipment).options(
+        selectinload(PurchaseOrderShipment.events)
+    ).filter(PurchaseOrderShipment.po_id == po_id).order_by(
+        PurchaseOrderShipment.id.asc()
+    ).all()
+
+
+@router.patch(
+    "/purchase-orders/{po_id}/shipments/{shipment_id}",
+    response_model=PurchaseOrderShipmentResponse,
+)
+def update_purchase_order_shipment(
+    po_id: int,
+    shipment_id: int,
+    payload: PurchaseOrderShipmentUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    shipment = db.query(PurchaseOrderShipment).filter(
+        PurchaseOrderShipment.id == shipment_id,
+        PurchaseOrderShipment.po_id == po_id,
+    ).with_for_update().one_or_none()
+    if shipment is None:
+        raise HTTPException(status_code=404, detail="Shipment not found.")
+    if payload.status not in _SHIPMENT_TRANSITIONS[shipment.status]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Invalid shipment transition from {shipment.status.value} to {payload.status.value}.",
+        )
+    event_at = payload.event_at or datetime.now(timezone.utc)
+    if event_at > datetime.now(timezone.utc):
+        raise HTTPException(status_code=422, detail="Shipment event time cannot be in the future.")
+    shipment.status = payload.status
+    shipment.updated_by_id = current_user.id
+    if payload.status == POShipmentStatusEnum.DISPATCHED:
+        shipment.dispatched_at = event_at
+    if payload.status == POShipmentStatusEnum.DELIVERY_CONFIRMED:
+        shipment.delivery_confirmed_at = event_at
+    db.add(PurchaseOrderShipmentEvent(
+        shipment_id=shipment.id,
+        status=payload.status,
+        event_at=event_at,
+        location=payload.location,
+        notes=payload.notes,
+        actor_user_id=current_user.id,
+    ))
+    db.commit()
+    return db.query(PurchaseOrderShipment).options(
+        selectinload(PurchaseOrderShipment.events)
+    ).filter(PurchaseOrderShipment.id == shipment.id).one()
+
+
+@router.get(
+    "/purchase-orders/overdue",
+    response_model=list[OverduePurchaseOrderResponse],
+)
+def list_overdue_purchase_orders(
+    as_of: Optional[datetime] = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    now = as_of or datetime.now(timezone.utc)
+    query = db.query(PurchaseOrder).options(joinedload(PurchaseOrder.vendor), selectinload(PurchaseOrder.items)).filter(
+        PurchaseOrder.status.in_([POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED]),
+        PurchaseOrder.delivery_due_date < now,
+    ).order_by(PurchaseOrder.delivery_due_date.asc(), PurchaseOrder.id.asc())
+    results = []
+    for po in query.all():
+        outstanding = sum(max(item.quantity_ordered - item.quantity_received, 0) for item in po.items)
+        results.append({
+            "po_id": po.id,
+            "po_number": po.po_number,
+            "vendor_id": po.vendor_id,
+            "vendor_name": po.vendor.name,
+            "delivery_due_date": po.delivery_due_date,
+            "days_overdue": max((now.date() - po.delivery_due_date.date()).days, 0),
+            "status": po.status,
+            "total_amount_paise": po.total_amount_paise,
+            "outstanding_quantity": outstanding,
+        })
+    return results
 
 
 @router.get(
