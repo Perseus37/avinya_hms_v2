@@ -2161,6 +2161,7 @@ def get_procurement_cost_intelligence(
             "medication_code": med.code,
             "brand_name": med.brand_name,
             "returned_quantity": 0,
+            "base_uom_code": row.base_uom_code,
             "returned_value_paise": 0,
         })
         entry["returned_quantity"] += abs(int(row.quantity_delta))
@@ -2190,8 +2191,10 @@ def get_procurement_cost_intelligence(
         "medication_price_history": list(medication_prices.values()),
         "supplier_price_comparison": list(supplier_comparison.values()),
         "price_comparison_note": (
-            "Prices are observed pre-tax PO line unit prices. Pack size and procurement unit-of-measure are not consistently modeled; "
-            "do not interpret differences as like-for-like savings or price variance until unit/pack equivalence is verified."
+            "Purchase-unit prices are retained for audit. Normalized base_unit_price_paise_pre_tax and "
+            "normalized_base_unit_prices_paise are available only for lines with a verified pack snapshot; "
+            "legacy lines with unknown units are excluded from normalized comparisons. Compare normalized prices "
+            "only when base_uom_code matches."
         ),
         "supplier_returns": {
             "movement_count": len(return_movements),
