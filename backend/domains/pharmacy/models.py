@@ -311,7 +311,7 @@ class ControlledSubstanceMovementLog(AuditMixin, Base):
     balance_after: Mapped[int] = mapped_column(Integer, nullable=False)
     encounter_id: Mapped[Optional[int]] = mapped_column(ForeignKey("patient_encounters.id"), nullable=True, index=True)
     prescription_item_id: Mapped[Optional[int]] = mapped_column(ForeignKey("prescription_items.id"), nullable=True, index=True)
-    primary_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    primary_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     witness_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     witness_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     wastage_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -320,8 +320,18 @@ class ControlledSubstanceMovementLog(AuditMixin, Base):
     notes: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     vault: Mapped[ControlledSubstanceVault] = relationship()
-    primary_user: Mapped["User"] = relationship(foreign_keys=[primary_user_id])
+    primary_user: Mapped[Optional["User"]] = relationship(foreign_keys=[primary_user_id])
     witness_user: Mapped[Optional["User"]] = relationship(foreign_keys=[witness_user_id])
+
+
+@event.listens_for(ControlledSubstanceMovementLog, "before_update")
+def _prevent_controlled_movement_update(mapper, connection, target):
+    raise ValueError("Controlled-substance movement records are append-only and cannot be updated.")
+
+
+@event.listens_for(ControlledSubstanceMovementLog, "before_delete")
+def _prevent_controlled_movement_delete(mapper, connection, target):
+    raise ValueError("Controlled-substance movement records are append-only and cannot be deleted.")
 
 
 class BCMAScanAuditLog(AuditMixin, Base):
