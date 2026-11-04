@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequirePermission, user_has_permission, validate_pagination
+from backend.core.dependencies import (RequirePermission, user_has_permission, validate_pagination, ensure_patient_department_access, ensure_diagnostic_order_access, ensure_diagnostic_task_department_access, get_user_assigned_department_ids)
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User
 from backend.domains.patients.models import Patient
@@ -290,6 +290,7 @@ def place_diagnostic_order(
     patient = db.get(Patient, payload.patient_id)
     if not patient or not patient.is_active:
         raise HTTPException(status_code=404, detail="Active patient not found.")
+    ensure_patient_department_access(db, patient.id, current_user)
 
     executable_tasks_dict = explode_clinical_orders(db, payload.ordered_service_ids)
 
@@ -347,6 +348,26 @@ def list_diagnostic_orders(
     )
     if patient_id:
         query = query.filter(DiagnosticOrder.patient_id == patient_id)
+    assigned_department_ids = get_user_assigned_department_ids(db, actor)
+    if assigned_department_ids is not None:
+        if not assigned_department_ids:
+            query = query.filter(DiagnosticOrder.id == -1)
+        else:
+            from sqlalchemy import or_
+            from backend.domains.encounters.models import PatientEncounter
+            clinical_scope = db.query(PatientEncounter.id).filter(
+                PatientEncounter.patient_id == DiagnosticOrder.patient_id,
+                PatientEncounter.department_id.in_(assigned_department_ids),
+            ).exists()
+            service_scope = db.query(DiagnosticTask.id).join(
+                ServiceCatalog, ServiceCatalog.id == DiagnosticTask.service_id
+            ).join(
+                ServiceCategory, ServiceCategory.id == ServiceCatalog.category_id
+            ).filter(
+                DiagnosticTask.order_id == DiagnosticOrder.id,
+                ServiceCategory.department_id.in_(assigned_department_ids),
+            ).exists()
+            query = query.filter(or_(clinical_scope, service_scope))
     if start_at is not None and end_at is not None:
         query = query.filter(
             DiagnosticOrder.created_at >= start_at,
@@ -417,6 +438,7 @@ def get_diagnostic_order(
     )
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
+    ensure_diagnostic_order_access(db, order.id, actor)
     decisions = evaluate_tenant_patient_data_uses(
         db,
         data_use_point="diagnostics.orders.read",
@@ -433,11 +455,12 @@ def update_diagnostic_order(
     order_id: int,
     payload: DiagnosticOrderUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("diagnostics:write")),
+    current_user: User = Depends(RequirePermission("diagnostics:write")),
 ):
     order = db.get(DiagnosticOrder, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
+    ensure_diagnostic_order_access(db, order.id, current_user)
     if order.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
         raise HTTPException(status_code=400, detail="Cannot modify a completed or cancelled diagnostic order.")
 
@@ -454,11 +477,12 @@ def update_diagnostic_order(
 def cancel_diagnostic_order(
     order_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("diagnostics:verify", "diagnostics:write")),
+    current_user: User = Depends(RequirePermission("diagnostics:verify", "diagnostics:write")),
 ):
     order = db.query(DiagnosticOrder).options(joinedload(DiagnosticOrder.tasks)).filter(DiagnosticOrder.id == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
+    ensure_diagnostic_order_access(db, order.id, current_user)
     if order.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
         raise HTTPException(
             status_code=400,
@@ -487,6 +511,7 @@ def list_order_tasks(
     actor: User = Depends(RequirePermission("diagnostics:read")),
 ):
     page, page_size = validate_pagination(page, page_size)
+    ensure_diagnostic_order_access(db, order_id, actor)
     query = db.query(DiagnosticTask).filter(DiagnosticTask.order_id == order_id).order_by(DiagnosticTask.id.asc())
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
@@ -517,6 +542,10 @@ def get_department_task_queue(
 ):
     page, page_size = validate_pagination(page, page_size)
     query = db.query(DiagnosticTask)
+    assigned_department_ids = get_user_assigned_department_ids(db, actor)
+    if assigned_department_ids is not None:
+        query = query.join(DiagnosticTask.service).join(ServiceCatalog.category)
+        query = query.filter(ServiceCategory.department_id.in_(assigned_department_ids))
     if status is not None:
         query = query.filter(DiagnosticTask.status == status)
     else:
@@ -554,6 +583,10 @@ def get_laboratory_worklist(
     """
     page, page_size = validate_pagination(page, page_size)
     query = db.query(DiagnosticTask)
+    assigned_department_ids = get_user_assigned_department_ids(db, actor)
+    if assigned_department_ids is not None:
+        query = query.join(DiagnosticTask.service).join(ServiceCatalog.category)
+        query = query.filter(ServiceCategory.department_id.in_(assigned_department_ids))
     if status_filter is not None:
         query = query.filter(DiagnosticTask.status == status_filter)
     else:
@@ -601,6 +634,7 @@ def submit_task_result(
     )
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
+    ensure_diagnostic_task_department_access(db, task.id, current_user)
     if not task.order or task.order.status == OrderStatusEnum.CANCELLED:
         raise HTTPException(status_code=400, detail="Cannot submit results for a cancelled order.")
     if task.status in [TaskStatusEnum.VERIFIED, TaskStatusEnum.CANCELLED]:
@@ -761,6 +795,11 @@ def list_critical_panic_lab_alerts(
         .where(DiagnosticTask.is_critical_panic == True)
         .order_by(DiagnosticTask.id.desc())
     )
+    assigned_department_ids = get_user_assigned_department_ids(db, actor)
+    if assigned_department_ids is not None:
+        stmt = stmt.join(DiagnosticTask.service).join(ServiceCatalog.category).where(
+            ServiceCategory.department_id.in_(assigned_department_ids)
+        )
     tasks = list(db.execute(stmt).scalars().all())
     decisions = evaluate_tenant_patient_data_uses(
         db,
