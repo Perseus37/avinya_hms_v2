@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -25,6 +25,7 @@ from backend.core.database import Base, TenantContext
 from backend.domains.identity.models import Department, GenderEnum, Permission, Role, User, UserRole, UserStatusEnum
 from backend.domains.encounters.models import AdmissionTypeEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter
 from backend.domains.patients.models import Patient
+from backend.domains.encounters.opd_queue_models import OPDQueue
 from starlette.requests import Request
 
 
@@ -455,4 +456,47 @@ def test_ipd_admission_scope_denies_unassigned_parent_department(branch_grant_en
 
         with pytest.raises(HTTPException) as exc:
             dependencies.ensure_admission_department_access(tenant_db, admission.id, user)
+        assert exc.value.status_code == 403
+
+
+def test_opd_queue_department_scope_uses_local_and_central_assignment(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        department = tenant_db.query(Department).filter_by(code="CARDIOLOGY").one()
+        queue = OPDQueue(
+            branch_code="GRANT-BR-01",
+            service_date=date.today(),
+            department_id=department.id,
+            doctor_id=user.id,
+        )
+        tenant_db.add(queue)
+        tenant_db.commit()
+
+        dependencies.ensure_queue_department_access(tenant_db, queue.id, user)
+        assert dependencies.get_user_assigned_department_ids(tenant_db, user) == {department.id}
+
+
+def test_opd_queue_department_scope_rejects_unassigned_department(branch_grant_environment):
+    _, TenantSession, tenant_context, _ = branch_grant_environment
+    with TenantSession() as tenant_db:
+        user = dependencies._authenticate_branch_access_token(
+            "br_access_test-secret-token", tenant_context, tenant_db
+        )
+        department = Department(code="NEUROLOGY", name="Neurology")
+        tenant_db.add(department)
+        tenant_db.flush()
+        queue = OPDQueue(
+            branch_code="GRANT-BR-01",
+            service_date=date.today(),
+            department_id=department.id,
+            doctor_id=user.id,
+        )
+        tenant_db.add(queue)
+        tenant_db.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            dependencies.ensure_queue_department_access(tenant_db, queue.id, user)
         assert exc.value.status_code == 403
