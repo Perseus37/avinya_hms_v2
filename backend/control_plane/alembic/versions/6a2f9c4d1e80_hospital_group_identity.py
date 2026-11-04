@@ -24,9 +24,8 @@ def upgrade() -> None:
         sa.Column("name", sa.String(150), nullable=False),
         sa.Column("status", sa.String(20), server_default="ACTIVE", nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.UniqueConstraint("code", name="uq_hospital_groups_code"),
     )
-    op.create_index("ix_hospital_groups_code", "hospital_groups", ["code"], unique=False)
+    op.create_index("ix_hospital_groups_code", "hospital_groups", ["code"], unique=True)
 
     op.create_table(
         "organization_branches",
