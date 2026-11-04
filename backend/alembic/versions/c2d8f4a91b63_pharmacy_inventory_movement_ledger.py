@@ -23,7 +23,7 @@ def upgrade() -> None:
         sa.Column("unit_price_paise", sa.Integer(), nullable=False),
         sa.Column("reference_type", sa.String(length=40), nullable=True),
         sa.Column("reference_id", sa.String(length=80), nullable=True),
-        sa.Column("actor_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("actor_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("notes", sa.String(length=500), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
@@ -37,6 +37,25 @@ def upgrade() -> None:
     op.create_index("ix_inventory_movements_location_created", "inventory_movements", ["location_id", "created_at"])
     op.create_index("ix_inventory_movements_batch_created", "inventory_movements", ["inventory_batch_id", "created_at"])
     op.create_index("ix_inventory_movements_reference", "inventory_movements", ["reference_type", "reference_id"])
+
+    # Capture current stock as a clearly labelled opening snapshot. This is not
+    # represented as a historical receipt; pre-ledger transactions are unknown.
+    op.execute("""
+        INSERT INTO inventory_movements (
+            location_id, medication_id, inventory_batch_id, movement_type,
+            quantity_delta, stock_before, stock_after, unit_price_paise,
+            reference_type, reference_id, actor_id, notes,
+            created_at, updated_at
+        )
+        SELECT
+            location_id, medication_id, id, 'OPENING_BALANCE',
+            stock_quantity, 0, stock_quantity, unit_price_paise,
+            'MIGRATION_SNAPSHOT', CAST(id AS TEXT), NULL,
+            'Opening balance captured when the movement ledger was introduced; prior movements are unavailable.',
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        FROM inventory_batches
+        WHERE stock_quantity > 0
+    """)
 
     # PostgreSQL enforces append-only behavior below the ORM layer as well.
     if op.get_bind().dialect.name == "postgresql":
