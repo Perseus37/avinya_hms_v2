@@ -265,7 +265,7 @@ def list_inventory_batches(
                 yield {
                     "id": item.id,
                     "medication_code": med.code if med else "",
-                    "medication_name": med.name if med else "",
+                    "medication_name": med.brand_name if med else "",
                     "batch_number": item.batch_number,
                     "expiry_date": item.expiry_date.strftime("%Y-%m-%d") if item.expiry_date else "",
                     "stock_quantity": item.stock_quantity,
@@ -589,6 +589,7 @@ def dispense_medication(
 ):
     if not payload.items:
         raise HTTPException(status_code=400, detail="Dispense request must include at least one item.")
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
 
     try:
         stmt_rx = (
@@ -600,7 +601,6 @@ def dispense_medication(
         prescription = db.execute(stmt_rx).scalar_one_or_none()
         if not prescription or prescription.status in [PrescriptionStatusEnum.DISPENSED, PrescriptionStatusEnum.CANCELLED]:
             raise HTTPException(status_code=400, detail="Prescription is invalid, cancelled, or already fully dispensed.")
-    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
 
         stmt_inv = (
             select(Invoice)
@@ -906,7 +906,7 @@ def bcma_verify_and_administer(
 def create_controlled_substance_vault_entry(
     payload: ControlledSubstanceVaultCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:write", "mdm:write")),
+    current_user: User = Depends(RequirePermission("pharmacy:write", "mdm:write")),
 ):
     """Initializes a perpetual narcotics inventory vault entry for a controlled substance."""
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
