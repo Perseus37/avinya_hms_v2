@@ -22,6 +22,9 @@ from backend.domains.pharmacy.models import (
     ControlledSubstanceVault,
     InventoryBatch,
     PharmacyLocation,
+    PharmacyLocationAccess,
+    InventoryTransfer,
+    InventoryTransferStatusEnum,
     MedicationMaster,
     PharmacyReturnLog,
     Prescription,
@@ -46,6 +49,9 @@ from backend.domains.pharmacy.schemas import (
     InventoryBatchResponse,
     PharmacyLocationCreate,
     PharmacyLocationResponse,
+    PharmacyLocationAccessCreate,
+    InventoryTransferCreate,
+    InventoryTransferResponse,
     InventoryBatchUpdate,
     InventoryStockAdjustment,
     MedicationCreate,
@@ -163,10 +169,36 @@ def _get_main_pharmacy_location(db: Session) -> PharmacyLocation:
     return location
 
 
+def _ensure_pharmacy_location_access(db: Session, location_id: int, actor: User) -> None:
+    if "central_branch_department_codes" not in db.info:
+        return
+    assignment = db.execute(select(PharmacyLocationAccess.id).where(
+        PharmacyLocationAccess.location_id == location_id,
+        PharmacyLocationAccess.user_id == actor.id,
+        PharmacyLocationAccess.is_active.is_(True),
+    )).scalar_one_or_none()
+    if assignment is None:
+        raise HTTPException(status_code=403, detail="You are not assigned to this pharmacy location.")
+
+
+def _get_active_pharmacy_location(db: Session, location_id: int) -> PharmacyLocation:
+    location = db.get(PharmacyLocation, location_id)
+    if location is None or not location.is_active:
+        raise HTTPException(status_code=404, detail="Active pharmacy location not found.")
+    return location
+
+
 @router.get("/locations", response_model=list[PharmacyLocationResponse])
 def list_pharmacy_locations(db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:read"))):
     ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
-    return list(db.execute(select(PharmacyLocation).where(PharmacyLocation.is_active.is_(True)).order_by(PharmacyLocation.code)).scalars().all())
+    locations = list(db.execute(select(PharmacyLocation).where(PharmacyLocation.is_active.is_(True)).order_by(PharmacyLocation.code)).scalars().all())
+    if "central_branch_department_codes" in db.info:
+        assigned_ids = set(db.execute(select(PharmacyLocationAccess.location_id).where(
+            PharmacyLocationAccess.user_id == current_user.id,
+            PharmacyLocationAccess.is_active.is_(True),
+        )).scalars().all())
+        locations = [location for location in locations if location.id in assigned_ids]
+    return locations
 
 
 @router.post("/locations", response_model=PharmacyLocationResponse, status_code=status.HTTP_201_CREATED)
@@ -177,9 +209,43 @@ def create_pharmacy_location(payload: PharmacyLocationCreate, db: Session = Depe
         raise HTTPException(status_code=409, detail="Pharmacy location code already exists.")
     location = PharmacyLocation(code=code, name=payload.name.strip(), location_type=payload.location_type.strip().upper(), is_active=True)
     db.add(location)
+    db.flush()
+    db.add(PharmacyLocationAccess(location_id=location.id, user_id=current_user.id, is_active=True))
     db.commit()
     db.refresh(location)
     return location
+
+
+@router.post("/locations/{location_id}/staff", status_code=status.HTTP_201_CREATED)
+def grant_pharmacy_location_access(location_id: int, payload: PharmacyLocationAccessCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:void"))):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    location = _get_active_pharmacy_location(db, location_id)
+    user = db.get(User, payload.user_id)
+    if user is None or getattr(user.status, "value", user.status) != "ACTIVE":
+        raise HTTPException(status_code=404, detail="Active branch user not found.")
+    assignment = db.execute(select(PharmacyLocationAccess).where(
+        PharmacyLocationAccess.location_id == location.id, PharmacyLocationAccess.user_id == user.id,
+    )).scalar_one_or_none()
+    if assignment:
+        assignment.is_active = True
+    else:
+        db.add(PharmacyLocationAccess(location_id=location.id, user_id=user.id, is_active=True))
+    db.commit()
+    return {"status": "success", "location_id": location.id, "user_id": user.id}
+
+
+@router.delete("/locations/{location_id}/staff/{user_id}", status_code=status.HTTP_200_OK)
+def revoke_pharmacy_location_access(location_id: int, user_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:void"))):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    assignment = db.execute(select(PharmacyLocationAccess).where(
+        PharmacyLocationAccess.location_id == location_id, PharmacyLocationAccess.user_id == user_id,
+        PharmacyLocationAccess.is_active.is_(True),
+    )).scalar_one_or_none()
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="Active pharmacy location assignment not found.")
+    assignment.is_active = False
+    db.commit()
+    return {"status": "success", "location_id": location_id, "user_id": user_id}
 
 
 @router.post("/inventory/batches", response_model=InventoryBatchResponse, status_code=status.HTTP_201_CREATED)
@@ -201,9 +267,8 @@ def receive_inventory_batch(
         raise HTTPException(status_code=404, detail="Active medication not found.")
 
     location_id = payload.location_id if payload.location_id is not None else _get_main_pharmacy_location(db).id
-    location = db.get(PharmacyLocation, location_id)
-    if not location or not location.is_active:
-        raise HTTPException(status_code=404, detail="Active pharmacy location not found.")
+    location = _get_active_pharmacy_location(db, location_id)
+    _ensure_pharmacy_location_access(db, location.id, current_user)
     batch_data = payload.model_dump(exclude={"location_id"})
     batch = InventoryBatch(**batch_data, location_id=location.id)
     db.add(batch)
@@ -232,6 +297,7 @@ def list_inventory_batches(
     selected_location = db.get(PharmacyLocation, selected_location_id)
     if not selected_location or not selected_location.is_active:
         raise HTTPException(status_code=404, detail="Active pharmacy location not found.")
+    _ensure_pharmacy_location_access(db, selected_location_id, current_user)
     query = db.query(InventoryBatch).options(joinedload(InventoryBatch.medication)).filter(InventoryBatch.location_id == selected_location_id)
     if not include_depleted:
         query = query.filter(InventoryBatch.stock_quantity > 0)
@@ -294,6 +360,7 @@ def update_inventory_batch(
     batch = db.get(InventoryBatch, batch_id)
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found.")
+    _ensure_pharmacy_location_access(db, batch.location_id, current_user)
 
     if payload.batch_number is not None:
         batch.batch_number = payload.batch_number
@@ -319,6 +386,7 @@ def adjust_inventory_stock(
         batch = db.execute(stmt).scalar_one_or_none()
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found.")
+        _ensure_pharmacy_location_access(db, batch.location_id, current_user)
 
         if batch.stock_quantity + payload.quantity_adjustment < 0:
             raise HTTPException(status_code=400, detail="Stock adjustment cannot result in negative inventory.")
@@ -344,6 +412,7 @@ def void_inventory_batch(
         batch = db.execute(stmt).scalar_one_or_none()
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found.")
+        _ensure_pharmacy_location_access(db, batch.location_id, current_user)
 
         batch.stock_quantity = 0
         db.commit()
@@ -351,6 +420,128 @@ def void_inventory_batch(
     except OperationalError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Inventory batch is locked by another transaction.")
+
+
+@router.post("/inventory/transfers", response_model=InventoryTransferResponse, status_code=status.HTTP_201_CREATED)
+def request_inventory_transfer(payload: InventoryTransferCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:write"))):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    source = db.get(InventoryBatch, payload.source_batch_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source inventory batch not found.")
+    _ensure_pharmacy_location_access(db, source.location_id, current_user)
+    destination = _get_active_pharmacy_location(db, payload.destination_location_id)
+    if destination.id == source.location_id:
+        raise HTTPException(status_code=400, detail="Source and destination locations must differ.")
+    if source.stock_quantity < payload.quantity:
+        raise HTTPException(status_code=409, detail="Insufficient source stock for transfer.")
+    item = InventoryTransfer(source_batch_id=source.id, source_location_id=source.location_id,
+        destination_location_id=destination.id, quantity=payload.quantity, status="REQUESTED",
+        requested_by_id=current_user.id, notes=payload.notes)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.get("/inventory/transfers", response_model=list[InventoryTransferResponse])
+def list_inventory_transfers(status_filter: Optional[InventoryTransferStatusEnum] = Query(default=None, alias="status"),
+    db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:read"))):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    stmt = select(InventoryTransfer).order_by(InventoryTransfer.created_at.desc())
+    if status_filter is not None:
+        stmt = stmt.where(InventoryTransfer.status == status_filter.value)
+    rows = list(db.execute(stmt).scalars().all())
+    if "central_branch_department_codes" in db.info:
+        allowed = set(db.execute(select(PharmacyLocationAccess.location_id).where(
+            PharmacyLocationAccess.user_id == current_user.id, PharmacyLocationAccess.is_active.is_(True),
+        )).scalars().all())
+        rows = [item for item in rows if item.source_location_id in allowed or item.destination_location_id in allowed]
+    return rows
+
+
+@router.post("/inventory/transfers/{transfer_id}/approve", response_model=InventoryTransferResponse)
+def approve_inventory_transfer(transfer_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:void"))):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    item = db.execute(select(InventoryTransfer).where(InventoryTransfer.id == transfer_id).with_for_update()).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Inventory transfer not found.")
+    _ensure_pharmacy_location_access(db, item.source_location_id, current_user)
+    _ensure_pharmacy_location_access(db, item.destination_location_id, current_user)
+    if item.status != "REQUESTED":
+        raise HTTPException(status_code=409, detail="Only requested transfers can be approved.")
+    item.status, item.approved_by_id, item.approved_at = "APPROVED", current_user.id, datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.post("/inventory/transfers/{transfer_id}/dispatch", response_model=InventoryTransferResponse)
+def dispatch_inventory_transfer(transfer_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:write"))):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    item = db.execute(select(InventoryTransfer).where(InventoryTransfer.id == transfer_id).with_for_update()).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Inventory transfer not found.")
+    _ensure_pharmacy_location_access(db, item.source_location_id, current_user)
+    if item.status != "APPROVED":
+        raise HTTPException(status_code=409, detail="Only approved transfers can be dispatched.")
+    batch = db.execute(select(InventoryBatch).where(InventoryBatch.id == item.source_batch_id).with_for_update()).scalar_one_or_none()
+    if batch is None or batch.location_id != item.source_location_id or batch.stock_quantity < item.quantity:
+        raise HTTPException(status_code=409, detail="Source batch changed or no longer has sufficient stock.")
+    batch.stock_quantity -= item.quantity
+    item.status, item.dispatched_by_id, item.dispatched_at = "DISPATCHED", current_user.id, datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.post("/inventory/transfers/{transfer_id}/receive", response_model=InventoryTransferResponse)
+def receive_inventory_transfer(transfer_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:write"))):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    item = db.execute(select(InventoryTransfer).where(InventoryTransfer.id == transfer_id).with_for_update()).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Inventory transfer not found.")
+    _ensure_pharmacy_location_access(db, item.destination_location_id, current_user)
+    if item.status != "DISPATCHED":
+        raise HTTPException(status_code=409, detail="Only dispatched transfers can be received.")
+    source = db.get(InventoryBatch, item.source_batch_id)
+    if source is None:
+        raise HTTPException(status_code=409, detail="Original source batch is unavailable.")
+    destination = _get_active_pharmacy_location(db, item.destination_location_id)
+    target = db.execute(select(InventoryBatch).where(
+        InventoryBatch.medication_id == source.medication_id,
+        InventoryBatch.batch_number == source.batch_number,
+        InventoryBatch.location_id == destination.id,
+    ).with_for_update()).scalar_one_or_none()
+    if target:
+        if target.expiry_date != source.expiry_date or target.unit_price_paise != source.unit_price_paise:
+            raise HTTPException(status_code=409, detail="Destination batch has conflicting expiry or valuation.")
+        target.stock_quantity += item.quantity
+    else:
+        target = InventoryBatch(medication_id=source.medication_id, location_id=destination.id,
+            batch_number=source.batch_number, expiry_date=source.expiry_date,
+            stock_quantity=item.quantity, unit_price_paise=source.unit_price_paise)
+        db.add(target)
+        db.flush()
+    item.received_batch_id = target.id
+    item.status, item.received_by_id, item.received_at = "RECEIVED", current_user.id, datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.post("/inventory/transfers/{transfer_id}/cancel", response_model=InventoryTransferResponse)
+def cancel_inventory_transfer(transfer_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:void"))):
+    ensure_department_code_access(db, {"PHARMACY", "DEPT_PHARMACY"}, current_user)
+    item = db.execute(select(InventoryTransfer).where(InventoryTransfer.id == transfer_id).with_for_update()).scalar_one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Inventory transfer not found.")
+    _ensure_pharmacy_location_access(db, item.source_location_id, current_user)
+    if item.status not in {"REQUESTED", "APPROVED"}:
+        raise HTTPException(status_code=409, detail="Only requested or approved transfers can be cancelled.")
+    item.status = "CANCELLED"
+    db.commit()
+    db.refresh(item)
+    return item
 
 
 # -----------------------------------------------------------------------------
@@ -650,6 +841,7 @@ def dispense_medication(
             batch = db.execute(stmt_batch).scalar_one_or_none()
             if not batch or batch.medication_id != rx_item.medication_id:
                 raise HTTPException(status_code=400, detail="Invalid batch ID for the requested medication.")
+            _ensure_pharmacy_location_access(db, batch.location_id, current_user)
 
             if _ensure_utc(batch.expiry_date) <= datetime.now(timezone.utc):
                 raise HTTPException(status_code=409, detail=f"Batch {batch.batch_number} is EXPIRED. Dispensing blocked.")
@@ -785,6 +977,7 @@ def return_dispensed_medication(
         ).scalar_one_or_none()
         if not batch or batch.medication_id != rx_item.medication_id:
             raise HTTPException(status_code=400, detail="Batch does not match prescription item medication.")
+        _ensure_pharmacy_location_access(db, batch.location_id, current_user)
 
         med = db.get(MedicationMaster, rx_item.medication_id)
         credit_paise = ret.quantity_to_return * batch.unit_price_paise
