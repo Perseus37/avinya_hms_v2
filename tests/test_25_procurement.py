@@ -120,7 +120,7 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
             "items": [{
                 "po_item_id": po_item_id,
                 "batch_number": "BATCH-AUTO-001",
-                "expiry_date": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
+                "expiry_date": "2030-01-01T00:00:00+00:00",
                 "received_quantity": 600,
                 "accepted_quantity": 600
             }]
@@ -145,7 +145,7 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
             "items": [{
                 "po_item_id": po_item_id,
                 "batch_number": "BATCH-AUTO-001",
-                "expiry_date": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
+                "expiry_date": "2030-01-01T00:00:00+00:00",
                 "received_quantity": 400,
                 "accepted_quantity": 400
             }]
