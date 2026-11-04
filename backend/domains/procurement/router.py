@@ -76,6 +76,13 @@ def _generate_reference(prefix: str) -> str:
     return f"{prefix}-{date_part}-{secrets.token_hex(4).upper()}"
 
 
+def _utc_aware(value: datetime) -> datetime:
+    """Normalize SQLite-naive and timezone-aware timestamps for safe comparisons."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 # --- Procurement units and medication pack configurations ---
 @router.get("/units-of-measure", response_model=list[ProcurementUnitOfMeasureResponse])
 def list_procurement_units(
@@ -126,6 +133,8 @@ def create_medication_pack_configuration(
         raise HTTPException(status_code=422, detail="Purchase unit and stock base unit must be different; use a conversion of 1 only when a distinct pack unit is defined.")
     if purchase_uom.dimension != base_uom.dimension:
         raise HTTPException(status_code=422, detail="Purchase and base units must belong to the same measurement dimension.")
+    if payload.effective_from.tzinfo is None:
+        raise HTTPException(status_code=422, detail="Pack configuration effective_from must include a timezone.")
     if payload.units_per_purchase_unit <= 0:
         raise HTTPException(status_code=422, detail="Pack conversion must be greater than zero.")
     existing = db.query(MedicationPackConfiguration.id).filter(
@@ -140,9 +149,9 @@ def create_medication_pack_configuration(
         MedicationPackConfiguration.purchase_uom_id == purchase_uom.id,
     ).order_by(MedicationPackConfiguration.effective_from.desc(), MedicationPackConfiguration.id.desc()).first()
     if latest is not None:
-        if payload.effective_from <= latest.effective_from:
+        if _utc_aware(payload.effective_from) <= _utc_aware(latest.effective_from):
             raise HTTPException(status_code=422, detail="A replacement pack configuration must have a later effective start than its prior version.")
-        if latest.effective_to is not None and payload.effective_from <= latest.effective_to:
+        if latest.effective_to is not None and _utc_aware(payload.effective_from) <= _utc_aware(latest.effective_to):
             raise HTTPException(status_code=422, detail="Pack configuration effective periods cannot overlap.")
     config = MedicationPackConfiguration(
         medication_id=medication_id,
@@ -182,7 +191,7 @@ def deactivate_medication_pack_configuration(
     if not config.is_active:
         raise HTTPException(status_code=409, detail="Pack configuration is already inactive.")
     now = datetime.now(timezone.utc)
-    if now <= config.effective_from:
+    if _utc_aware(now) <= _utc_aware(config.effective_from):
         raise HTTPException(status_code=409, detail="A pack configuration cannot be deactivated before or at its effective start.")
     config.is_active = False
     config.effective_to = now
