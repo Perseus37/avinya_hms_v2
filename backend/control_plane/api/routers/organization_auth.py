@@ -53,6 +53,10 @@ class MfaChallenge(BaseModel):
     mfa_token: str = Field(min_length=32, max_length=4096)
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=40, max_length=256)
+
+
 class MfaVerification(MfaChallenge):
     code: str = Field(pattern=r"^[0-9]{6}$")
 
@@ -103,10 +107,9 @@ def _load_challenge(db: Session, token: str, purpose: str) -> OrganizationUser:
     return user
 
 
-def _create_session(db: Session, user: OrganizationUser) -> dict:
+def _issue_access_token(user: OrganizationUser, expires_at: datetime) -> str:
     now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(minutes=settings.CONTROL_PLANE_ACCESS_TOKEN_MINUTES)
-    token = jwt.encode(
+    return jwt.encode(
         {
             "sub": str(user.id),
             "group_id": user.group_id,
@@ -118,11 +121,23 @@ def _create_session(db: Session, user: OrganizationUser) -> dict:
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM,
     )
+
+
+def _create_session(db: Session, user: OrganizationUser, device_label: Optional[str] = None) -> dict:
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=settings.CONTROL_PLANE_ACCESS_TOKEN_MINUTES)
+    refresh_expires_at = now + timedelta(days=30)
+    access_token = _issue_access_token(user, expires_at)
+    refresh_token = secrets.token_urlsafe(48)
     db.add(
         OrganizationSession(
             organization_user_id=user.id,
-            token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            token_hash=_token_digest(access_token),
+            refresh_token_hash=_token_digest(refresh_token),
             expires_at=expires_at,
+            refresh_expires_at=refresh_expires_at,
+            device_label=(device_label or "Unknown device")[:120],
+            last_used_at=now,
         )
     )
     db.add(
@@ -135,9 +150,11 @@ def _create_session(db: Session, user: OrganizationUser) -> dict:
     )
     db.commit()
     return {
-        "access_token": token,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
         "token_type": "bearer",
         "expires_in": settings.CONTROL_PLANE_ACCESS_TOKEN_MINUTES * 60,
+        "refresh_expires_in": 30 * 24 * 60 * 60,
         "user": _user_payload(user),
     }
 
@@ -194,7 +211,7 @@ def _authenticate_token(token: str) -> Optional[dict]:
             or group.status != "ACTIVE"
         ):
             return None
-        return {"user_id": user.id, "group_id": user.group_id, "token_hash": session.token_hash}
+        return {"user_id": user.id, "group_id": user.group_id, "token_hash": session.token_hash, "session_id": session.id}
 
 
 def _current_identity(
@@ -212,7 +229,7 @@ def _current_identity(
     "/login",
     dependencies=[Depends(_LOGIN_LIMIT)],
 )
-def login(payload: OrganizationLogin, db: Session = Depends(get_control_db)):
+def login(payload: OrganizationLogin, db: Session = Depends(get_control_db), user_agent: Optional[str] = Header(default=None, alias="User-Agent")):
     group = db.execute(
         select(HospitalGroup).where(HospitalGroup.code == payload.group_code)
     ).scalar_one_or_none()
@@ -264,7 +281,7 @@ def login(payload: OrganizationLogin, db: Session = Depends(get_control_db)):
             "mfa_required": True,
             "mfa_token": _challenge_token(user, "organization_mfa_login"),
         }
-    return _create_session(db, user)
+    return _create_session(db, user, user_agent)
 
 
 @router.post("/mfa/setup", dependencies=[Depends(_MFA_LIMIT)])
@@ -290,7 +307,7 @@ def setup_mfa(payload: MfaChallenge, db: Session = Depends(get_control_db)):
 
 
 @router.post("/mfa/confirm", dependencies=[Depends(_MFA_LIMIT)])
-def confirm_mfa(payload: MfaVerification, db: Session = Depends(get_control_db)):
+def confirm_mfa(payload: MfaVerification, db: Session = Depends(get_control_db), user_agent: Optional[str] = Header(default=None, alias="User-Agent")):
     user = _load_challenge(db, payload.mfa_token, "organization_mfa_setup")
     if user.mfa_enabled or not user.mfa_secret_encrypted:
         raise HTTPException(status_code=400, detail="MFA setup has not been started.")
@@ -303,7 +320,7 @@ def confirm_mfa(payload: MfaVerification, db: Session = Depends(get_control_db))
 
 
 @router.post("/mfa/verify-login", dependencies=[Depends(_MFA_LIMIT)])
-def verify_mfa_login(payload: MfaVerification, db: Session = Depends(get_control_db)):
+def verify_mfa_login(payload: MfaVerification, db: Session = Depends(get_control_db), user_agent: Optional[str] = Header(default=None, alias="User-Agent")):
     user = _load_challenge(db, payload.mfa_token, "organization_mfa_login")
     if not user.mfa_enabled or not user.mfa_secret_encrypted:
         raise HTTPException(status_code=401, detail="MFA is not configured.")
@@ -315,6 +332,145 @@ def verify_mfa_login(payload: MfaVerification, db: Session = Depends(get_control
         raise HTTPException(status_code=401, detail="Invalid MFA challenge or code.")
     user.mfa_last_used_counter = counter
     return _create_session(db, user)
+
+
+@router.post("/refresh", dependencies=[Depends(_LOGIN_LIMIT)])
+def refresh_session(payload: RefreshRequest, db: Session = Depends(get_control_db)):
+    now = datetime.now(timezone.utc)
+    session = db.execute(
+        select(OrganizationSession)
+        .where(
+            OrganizationSession.refresh_token_hash == _token_digest(payload.refresh_token),
+            OrganizationSession.revoked_at.is_(None),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if not session or not session.refresh_expires_at:
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token.")
+    expiry = session.refresh_expires_at
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    if expiry <= now:
+        session.revoked_at = now
+        db.commit()
+        raise HTTPException(status_code=401, detail="Invalid or expired refresh token.")
+    user = db.get(OrganizationUser, session.organization_user_id)
+    group = db.get(HospitalGroup, user.group_id) if user else None
+    if not user or user.status != "ACTIVE" or not group or group.status != "ACTIVE":
+        session.revoked_at = now
+        db.commit()
+        raise HTTPException(status_code=401, detail="Organization account is unavailable.")
+
+    access_expiry = now + timedelta(minutes=settings.CONTROL_PLANE_ACCESS_TOKEN_MINUTES)
+    access_token = _issue_access_token(user, access_expiry)
+    refresh_token = secrets.token_urlsafe(48)
+    session.token_hash = _token_digest(access_token)
+    session.refresh_token_hash = _token_digest(refresh_token)
+    session.expires_at = access_expiry
+    session.refresh_expires_at = now + timedelta(days=30)
+    session.last_used_at = now
+    db.add(ControlPlaneAuditLog(
+        action="ORGANIZATION_SESSION_REFRESH",
+        target_slug="CONTROL_PLANE",
+        actor=user.email,
+        details=f"Rotated organization session {session.id}.",
+    ))
+    db.commit()
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "expires_in": settings.CONTROL_PLANE_ACCESS_TOKEN_MINUTES * 60,
+        "refresh_expires_in": 30 * 24 * 60 * 60,
+        "user": _user_payload(user),
+    }
+
+
+def require_organization_roles(*roles: str):
+    allowed = frozenset(role.upper() for role in roles)
+
+    def dependency(identity: dict = Depends(_current_identity)) -> dict:
+        if not allowed:
+            return identity
+        with ControlSessionLocal() as db:
+            user = db.get(OrganizationUser, identity["user_id"])
+            if (
+                not user
+                or user.group_id != identity["group_id"]
+                or user.group_role.upper() not in allowed
+            ):
+                raise HTTPException(status_code=403, detail="Insufficient organization permissions.")
+        return identity
+
+    return dependency
+
+
+@router.get("/sessions")
+def list_sessions(identity: dict = Depends(_current_identity), db: Session = Depends(get_control_db)):
+    now = datetime.now(timezone.utc)
+    sessions = db.execute(
+        select(OrganizationSession)
+        .where(
+            OrganizationSession.organization_user_id == identity["user_id"],
+            OrganizationSession.revoked_at.is_(None),
+            OrganizationSession.refresh_expires_at > now,
+        )
+        .order_by(OrganizationSession.created_at.desc())
+    ).scalars().all()
+    return {
+        "sessions": [
+            {
+                "id": item.id,
+                "device_label": item.device_label or "Unknown device",
+                "created_at": item.created_at,
+                "last_used_at": item.last_used_at,
+                "expires_at": item.refresh_expires_at,
+                "current": item.id == identity["session_id"],
+            }
+            for item in sessions
+        ]
+    }
+
+
+@router.delete("/sessions/{session_id}")
+def revoke_session(session_id: int, identity: dict = Depends(_current_identity), db: Session = Depends(get_control_db)):
+    session = db.execute(
+        select(OrganizationSession)
+        .where(
+            OrganizationSession.id == session_id,
+            OrganizationSession.organization_user_id == identity["user_id"],
+            OrganizationSession.revoked_at.is_(None),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Active session not found.")
+    session.revoked_at = datetime.now(timezone.utc)
+    db.add(ControlPlaneAuditLog(
+        action="ORGANIZATION_SESSION_REVOKED",
+        target_slug="CONTROL_PLANE",
+        actor=str(identity["user_id"]),
+        details=f"Organization session {session.id} revoked by its owner.",
+    ))
+    db.commit()
+    return {"status": "success", "revoked_session_id": session_id}
+
+
+@router.post("/logout-all")
+def logout_all(identity: dict = Depends(_current_identity), db: Session = Depends(get_control_db)):
+    now = datetime.now(timezone.utc)
+    db.query(OrganizationSession).filter(
+        OrganizationSession.organization_user_id == identity["user_id"],
+        OrganizationSession.revoked_at.is_(None),
+    ).update({OrganizationSession.revoked_at: now}, synchronize_session=False)
+    db.add(ControlPlaneAuditLog(
+        action="ORGANIZATION_LOGOUT_ALL",
+        target_slug="CONTROL_PLANE",
+        actor=str(identity["user_id"]),
+        details="All organization sessions revoked by authenticated user.",
+    ))
+    db.commit()
+    return {"status": "success", "message": "All organization sessions have been revoked."}
 
 
 @router.get("/me")
