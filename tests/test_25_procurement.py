@@ -978,3 +978,82 @@ def test_procurement_cost_intelligence_empty_period_and_date_validation(
     )
     assert invalid_range.status_code == 422
 
+
+
+def test_medication_pack_configuration_is_dimension_safe_and_versioned(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.pharmacy.models import MedicationMaster, MedicationFormEnum
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        medication = MedicationMaster(
+            code="MED-PACK-CONFIG-001",
+            brand_name="Pack Config Test",
+            generic_name="Pack Configuration Test",
+            form=MedicationFormEnum.TABLET,
+            strength="500 mg",
+            is_active=True,
+        )
+        db.add(medication)
+        db.commit()
+        medication_id = medication.id
+
+    units = client.get(
+        "/v1/api/procurement/units-of-measure",
+        headers=superuser_headers,
+    )
+    assert units.status_code == 200, units.text
+    unit_ids = {item["code"]: item["id"] for item in units.json()}
+    assert {"TAB", "STRIP", "BOX", "ML", "MG"}.issubset(unit_ids)
+
+    effective_from = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    payload = {
+        "purchase_uom_id": unit_ids["STRIP"],
+        "base_uom_id": unit_ids["TAB"],
+        "units_per_purchase_unit": 10,
+        "effective_from": effective_from,
+    }
+    created = client.post(
+        f"/v1/api/procurement/medications/{medication_id}/pack-configurations",
+        headers=superuser_headers,
+        json=payload,
+    )
+    assert created.status_code == 201, created.text
+    assert float(created.json()["units_per_purchase_unit"]) == 10.0
+
+    duplicate = client.post(
+        f"/v1/api/procurement/medications/{medication_id}/pack-configurations",
+        headers=superuser_headers,
+        json=payload,
+    )
+    assert duplicate.status_code == 409, duplicate.text
+
+    incompatible_dimension = client.post(
+        f"/v1/api/procurement/medications/{medication_id}/pack-configurations",
+        headers=superuser_headers,
+        json={
+            **payload,
+            "purchase_uom_id": unit_ids["BOX"],
+            "base_uom_id": unit_ids["ML"],
+        },
+    )
+    assert incompatible_dimension.status_code == 422, incompatible_dimension.text
+
+    configuration_id = created.json()["id"]
+    deactivated = client.patch(
+        f"/v1/api/procurement/medications/{medication_id}/pack-configurations/{configuration_id}/deactivate",
+        headers=superuser_headers,
+    )
+    assert deactivated.status_code == 200, deactivated.text
+    assert deactivated.json()["is_active"] is False
+    assert deactivated.json()["effective_to"] is not None
+
+    history = client.get(
+        f"/v1/api/procurement/medications/{medication_id}/pack-configurations",
+        headers=superuser_headers,
+    )
+    assert history.status_code == 200, history.text
+    assert len(history.json()) == 1
+    assert history.json()[0]["units_per_purchase_unit"] == 10
