@@ -2142,3 +2142,58 @@ def test_supplier_compliance_document_verification_expiry_and_audited_download(
     )
     assert download.status_code == 200
     assert download.content.startswith(b"%PDF-1.4")
+
+
+def test_supplier_compliance_policy_blocks_purchase_order_for_missing_required_document(
+    client, pharmacist_headers, superuser_headers
+):
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-POLICY-01",
+            "name": "Policy Controlled Pharmaceutical Supplier",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Regulatory Contact",
+            "phone": "9876543211",
+            "email": "policy-supplier@example.test",
+            "address": "Supplier registered address",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    policy = client.put(
+        "/v1/api/procurement/supplier-compliance/policies/PHARMACEUTICALS/DRUG_LICENSE",
+        headers=superuser_headers,
+        json={"is_required": True},
+    )
+    assert policy.status_code == 200, policy.text
+    assert policy.json()["is_required"] is True
+
+    policies = client.get(
+        "/v1/api/procurement/supplier-compliance/policies?vendor_category=PHARMACEUTICALS",
+        headers=superuser_headers,
+    )
+    assert policies.status_code == 200, policies.text
+    assert any(
+        item["document_type"] == "DRUG_LICENSE" and item["is_required"] is True
+        for item in policies.json()
+    )
+
+    po_response = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor_id,
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+            "payment_terms": "Net 30",
+            "items": [{
+                "item_description": "Test pharmaceutical supply",
+                "quantity_ordered": 10,
+                "unit_price_paise": 1000,
+            }],
+        },
+    )
+    assert po_response.status_code == 409, po_response.text
+    assert "DRUG_LICENSE" in str(po_response.json())
