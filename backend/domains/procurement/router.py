@@ -260,11 +260,19 @@ def _reserve_purchase_order_budget(db: Session, po: PurchaseOrder, actor: User) 
     """
     order_date = (po.created_at.date() if po.created_at else datetime.now(timezone.utc).date())
     mapped_count = 0
-    for line in po.items:
-        if line.budget_department_id is None and po.requisition_id is not None:
-            requisition = po.requisition or db.get(PurchaseRequisition, po.requisition_id)
-            if requisition is not None:
-                line.budget_department_id = requisition.requesting_department_id
+    if po.requisition_id is not None:
+        requisition = po.requisition or db.get(PurchaseRequisition, po.requisition_id)
+        if requisition is not None:
+            for line in po.items:
+                if line.budget_department_id is None:
+                    line.budget_department_id = requisition.requesting_department_id
+    # Stable lock order avoids deadlocks when concurrent POs span several
+    # department/category budget allocations.
+    ordered_lines = sorted(
+        po.items,
+        key=lambda item: (item.budget_department_id or 0, item.budget_category, item.id),
+    )
+    for line in ordered_lines:
         if line.budget_department_id is None:
             continue
         mapped_count += 1
