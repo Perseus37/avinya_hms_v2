@@ -4364,6 +4364,210 @@ def _supplier_compliance_status(document: SupplierComplianceDocument, today: dat
 
 
 
+@router.get("/analytics/supplier-compliance")
+def get_supplier_compliance_analytics(
+    vendor_category: Optional[str] = Query(default=None),
+    active_only: bool = True,
+    search: Optional[str] = Query(default=None, min_length=1, max_length=150),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    """Policy-aware supplier compliance dashboard; all data remains tenant-local."""
+    today = datetime.now(timezone.utc).date()
+    category = vendor_category.strip().upper() if vendor_category else None
+    if category is not None and category not in {item.value for item in VendorCategoryEnum}:
+        raise HTTPException(status_code=422, detail="Unsupported supplier category.")
+
+    vendor_query = db.query(VendorMaster)
+    if category is not None:
+        vendor_query = vendor_query.filter(VendorMaster.category == category)
+    if active_only:
+        vendor_query = vendor_query.filter(VendorMaster.is_active.is_(True))
+    if search:
+        term = f"%{search.strip()}%"
+        vendor_query = vendor_query.filter(or_(
+            VendorMaster.name.ilike(term), VendorMaster.code.ilike(term),
+            VendorMaster.email.ilike(term),
+        ))
+    total_suppliers = vendor_query.count()
+    vendors = vendor_query.order_by(VendorMaster.name.asc(), VendorMaster.id.asc()).offset(offset).limit(limit).all()
+    vendor_ids = [vendor.id for vendor in vendors]
+    categories = sorted({v.category.value if hasattr(v.category, "value") else str(v.category) for v in vendors})
+
+    policies = db.query(SupplierCompliancePolicy).filter(
+        SupplierCompliancePolicy.is_required.is_(True),
+        SupplierCompliancePolicy.vendor_category.in_(categories) if categories else False,
+    ).order_by(SupplierCompliancePolicy.vendor_category.asc(),
+               SupplierCompliancePolicy.document_type.asc()).all()
+    policy_map = {}
+    for policy in policies:
+        policy_map.setdefault(policy.vendor_category, []).append(policy.document_type)
+
+    documents = db.query(SupplierComplianceDocument).filter(
+        SupplierComplianceDocument.vendor_id.in_(vendor_ids)
+    ).order_by(SupplierComplianceDocument.uploaded_at.desc(),
+               SupplierComplianceDocument.id.desc()).all() if vendor_ids else []
+    docs_by_vendor = {}
+    for document in documents:
+        docs_by_vendor.setdefault(document.vendor_id, []).append(document)
+
+    document_counts = {
+        "total": len(documents),
+        "pending_verification": sum(d.status == "PENDING_VERIFICATION" for d in documents),
+        "verified": sum(d.status == "VERIFIED" for d in documents),
+        "rejected": sum(d.status == "REJECTED" for d in documents),
+        "expired": 0,
+        "not_yet_valid": 0,
+        "expiring_within_30_days": 0,
+        "expiring_within_60_days": 0,
+        "expiring_within_90_days": 0,
+    }
+    for document in documents:
+        if document.status != "VERIFIED":
+            continue
+        if document.issue_date is not None and document.issue_date > today:
+            document_counts["not_yet_valid"] += 1
+            continue
+        if document.expiry_date is None:
+            continue
+        days_left = (document.expiry_date - today).days
+        if days_left < 0:
+            document_counts["expired"] += 1
+        else:
+            if days_left <= 30:
+                document_counts["expiring_within_30_days"] += 1
+            if days_left <= 60:
+                document_counts["expiring_within_60_days"] += 1
+            if days_left <= 90:
+                document_counts["expiring_within_90_days"] += 1
+
+    supplier_rows = []
+    category_totals = {}
+    configured_supplier_count = 0
+    compliant_supplier_count = 0
+    blocked_supplier_count = 0
+    unconfigured_supplier_count = 0
+    total_required_obligations = 0
+    satisfied_required_obligations = 0
+    turnaround_hours = []
+
+    for vendor in vendors:
+        vendor_category_code = vendor.category.value if hasattr(vendor.category, "value") else str(vendor.category)
+        required_types = policy_map.get(vendor_category_code, [])
+        vendor_docs = docs_by_vendor.get(vendor.id, [])
+        valid_by_type = {}
+        for document in vendor_docs:
+            if document.status != "VERIFIED":
+                continue
+            if document.issue_date is not None and document.issue_date > today:
+                continue
+            if document.expiry_date is not None and document.expiry_date < today:
+                continue
+            valid_by_type.setdefault(document.document_type, document)
+        missing = [kind for kind in required_types if kind not in valid_by_type]
+        if not required_types:
+            compliance_state = "NOT_CONFIGURED"
+            unconfigured_supplier_count += 1
+            score = None
+        else:
+            configured_supplier_count += 1
+            total_required_obligations += len(required_types)
+            satisfied = len(required_types) - len(missing)
+            satisfied_required_obligations += satisfied
+            score = round((satisfied / len(required_types)) * 100, 2)
+            compliance_state = "BLOCKED" if missing else "COMPLIANT"
+            if missing:
+                blocked_supplier_count += 1
+            else:
+                compliant_supplier_count += 1
+        nearest_expiry = min(
+            (d.expiry_date for d in vendor_docs
+             if d.status == "VERIFIED" and d.expiry_date is not None
+             and d.expiry_date >= today
+             and (d.issue_date is None or d.issue_date <= today)),
+            default=None,
+        )
+        category_row = category_totals.setdefault(vendor_category_code, {
+            "vendor_count": 0, "compliant": 0, "blocked": 0,
+            "not_configured": 0, "required_obligations": 0,
+            "satisfied_obligations": 0,
+        })
+        category_row["vendor_count"] += 1
+        if compliance_state == "COMPLIANT":
+            category_row["compliant"] += 1
+        elif compliance_state == "BLOCKED":
+            category_row["blocked"] += 1
+        else:
+            category_row["not_configured"] += 1
+        category_row["required_obligations"] += len(required_types)
+        category_row["satisfied_obligations"] += len(required_types) - len(missing)
+        supplier_rows.append({
+            "vendor_id": vendor.id, "vendor_code": vendor.code, "vendor_name": vendor.name,
+            "vendor_category": vendor_category_code, "is_active": vendor.is_active,
+            "compliance_state": compliance_state, "compliance_score_pct": score,
+            "required_document_types": required_types,
+            "missing_or_invalid_document_types": missing,
+            "valid_required_document_count": len(required_types) - len(missing),
+            "required_document_count": len(required_types),
+            "document_count": len(vendor_docs), "nearest_verified_expiry_date": nearest_expiry,
+        })
+
+    for document in documents:
+        if document.status == "VERIFIED" and document.verified_at is not None and document.uploaded_at is not None:
+            seconds = (document.verified_at - document.uploaded_at).total_seconds()
+            if seconds >= 0:
+                turnaround_hours.append(seconds / 3600)
+    turnaround_hours.sort()
+    median_turnaround = None
+    if turnaround_hours:
+        middle = len(turnaround_hours) // 2
+        median_turnaround = (
+            turnaround_hours[middle] if len(turnaround_hours) % 2
+            else (turnaround_hours[middle - 1] + turnaround_hours[middle]) / 2
+        )
+
+    return {
+        "as_of_date": today,
+        "filters": {"vendor_category": category, "active_only": active_only, "search": search},
+        "pagination": {"total": total_suppliers, "limit": limit, "offset": offset,
+                       "returned": len(vendors)},
+        "supplier_summary": {
+            "total": total_suppliers, "evaluated_on_page": len(vendors),
+            "configured": configured_supplier_count, "compliant": compliant_supplier_count,
+            "blocked": blocked_supplier_count, "not_configured": unconfigured_supplier_count,
+        },
+        "compliance_score_pct": (
+            round(satisfied_required_obligations / total_required_obligations * 100, 2)
+            if total_required_obligations else None
+        ),
+        "required_obligations": {
+            "total": total_required_obligations, "satisfied": satisfied_required_obligations,
+            "missing_or_invalid": total_required_obligations - satisfied_required_obligations,
+        },
+        "document_summary": document_counts,
+        "verification_turnaround": {
+            "sample_count": len(turnaround_hours),
+            "average_hours": round(sum(turnaround_hours) / len(turnaround_hours), 2) if turnaround_hours else None,
+            "median_hours": round(median_turnaround, 2) if median_turnaround is not None else None,
+        },
+        "by_supplier_category": [
+            {"vendor_category": key, **value}
+            for key, value in sorted(category_totals.items())
+        ],
+        "suppliers": supplier_rows,
+        "definitions": {
+            "blocked": "At least one currently required document type has no verified, currently valid document.",
+            "not_configured": "No active mandatory document policy exists for this supplier category; this is not counted as compliant.",
+            "compliance_score_pct": "Satisfied required document obligations divided by all required obligations for suppliers on this page.",
+            "expiry_counts": "Verified documents only; 30/60/90-day buckets are cumulative and may overlap.",
+            "verification_turnaround": "Elapsed hours from upload to verification for verified documents on this page; excludes negative durations.",
+            "scope": "Supplier compliance is evaluated from tenant-local supplier, policy and document records. No historical compliance state is inferred.",
+        },
+    }
+
+
 @router.get("/supplier-compliance/policies", response_model=list[SupplierCompliancePolicyResponse])
 def list_supplier_compliance_policies(
     vendor_category: Optional[str] = Query(default=None),
