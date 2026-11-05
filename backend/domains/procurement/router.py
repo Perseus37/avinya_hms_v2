@@ -27,7 +27,7 @@ from backend.domains.procurement.models import (
     PurchaseOrderApprovalAuthority, PurchaseOrderAmendment, POAmendmentStatusEnum,
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
-    MedicationPriceControl, PurchaseOrderPriceReview
+    MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -41,7 +41,10 @@ from backend.domains.procurement.schemas import (
     OverduePurchaseOrderResponse, ProcurementUnitOfMeasureResponse,
     MedicationPackConfigurationCreate, MedicationPackConfigurationResponse,
     MedicationPriceControlUpdate, MedicationPriceControlResponse,
-    PurchaseOrderApprovalRequest, PurchaseOrderPriceReviewResponse
+    PurchaseOrderApprovalRequest, PurchaseOrderPriceReviewResponse,
+    ProcurementBudgetCreate, ProcurementBudgetResponse,
+    ProcurementBudgetRevisionCreate, ProcurementBudgetRevisionReview,
+    ProcurementBudgetRevisionResponse
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
