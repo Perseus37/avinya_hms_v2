@@ -28,7 +28,7 @@ from backend.domains.procurement.models import (
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
     MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement,
-    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit
+    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -47,7 +47,7 @@ from backend.domains.procurement.schemas import (
     ProcurementBudgetRevisionCreate, ProcurementBudgetRevisionReview,
     ProcurementBudgetRevisionResponse, PurchaseOrderCancelRequest,
     SupplierContractCreate, SupplierContractResponse, SupplierContractRevisionCreate,
-    SupplierContractRevisionReview, SupplierContractRevisionResponse, SupplierComplianceDocumentResponse, SupplierComplianceDocumentReview
+    SupplierContractRevisionReview, SupplierContractRevisionResponse, SupplierComplianceDocumentResponse, SupplierComplianceDocumentReview, SupplierCompliancePolicyUpdate, SupplierCompliancePolicyResponse
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
@@ -998,6 +998,7 @@ def create_purchase_order_from_requisition(
     vendor = db.get(VendorMaster, payload.vendor_id)
     if vendor is None or not vendor.is_active:
         raise HTTPException(status_code=409, detail="An active registered vendor is required.")
+    _assert_supplier_compliance_ready(db, vendor)
     if payload.contract_id is not None:
         linked_contract = db.get(SupplierContract, payload.contract_id)
         today = datetime.now(timezone.utc).date()
@@ -1321,6 +1322,7 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     vendor = db.get(VendorMaster, payload.vendor_id)
     if vendor is None or not vendor.is_active:
         raise HTTPException(status_code=409, detail="An active registered vendor is required to create a purchase order.")
+    _assert_supplier_compliance_ready(db, vendor)
     if payload.contract_id is not None:
         linked_contract = db.get(SupplierContract, payload.contract_id)
         today = datetime.now(timezone.utc).date()
@@ -2417,6 +2419,10 @@ def approve_purchase_order(
         raise HTTPException(status_code=400, detail="Only DRAFT or SUBMITTED purchase orders can be approved.")
     if po.created_by_id == current_user.id:
         raise HTTPException(status_code=409, detail="The purchase order creator cannot approve the same purchase order.")
+    vendor = db.get(VendorMaster, po.vendor_id)
+    if vendor is None or not vendor.is_active:
+        raise HTTPException(status_code=409, detail="The purchase-order supplier is no longer active.")
+    _assert_supplier_compliance_ready(db, vendor)
 
     if po.contract_id is not None:
         contract = db.query(SupplierContract).options(
@@ -4296,6 +4302,44 @@ def list_procurement_budget_movements(
 # --- Supplier contract lifecycle and negotiated rates ---
 
 # --- Supplier regulatory compliance documents ---
+
+def _assert_supplier_compliance_ready(db: Session, vendor: VendorMaster) -> None:
+    category = vendor.category.value if hasattr(vendor.category, "value") else str(vendor.category)
+    policies = db.query(SupplierCompliancePolicy).filter(
+        SupplierCompliancePolicy.vendor_category == category,
+        SupplierCompliancePolicy.is_required.is_(True),
+    ).order_by(SupplierCompliancePolicy.document_type.asc()).all()
+    if not policies:
+        return
+    today = datetime.now(timezone.utc).date()
+    failures = []
+    for policy in policies:
+        valid_document = db.query(SupplierComplianceDocument.id).filter(
+            SupplierComplianceDocument.vendor_id == vendor.id,
+            SupplierComplianceDocument.document_type == policy.document_type,
+            SupplierComplianceDocument.status == "VERIFIED",
+            or_(
+                SupplierComplianceDocument.expiry_date.is_(None),
+                SupplierComplianceDocument.expiry_date >= today,
+            ),
+        ).order_by(
+            SupplierComplianceDocument.verified_at.desc(),
+            SupplierComplianceDocument.uploaded_at.desc(),
+        ).first()
+        if valid_document is None:
+            failures.append(policy.document_type)
+    if failures:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Supplier does not satisfy the configured mandatory compliance requirements.",
+                "vendor_id": vendor.id,
+                "vendor_category": category,
+                "missing_or_invalid_documents": failures,
+            },
+        )
+
+
 _SUPPLIER_COMPLIANCE_TYPES = {
     "GST_REGISTRATION", "PAN", "DRUG_LICENSE", "WHO_GMP", "ISO_CERTIFICATE",
     "FSSAI_LICENSE", "BIOMEDICAL_AUTHORIZATION", "FIRE_SAFETY_CERTIFICATE",
@@ -4314,6 +4358,60 @@ def _supplier_compliance_status(document: SupplierComplianceDocument, today: dat
         if document.expiry_date <= today + timedelta(days=30):
             return "EXPIRING_SOON"
     return "VALID"
+
+
+
+@router.get("/supplier-compliance/policies", response_model=list[SupplierCompliancePolicyResponse])
+def list_supplier_compliance_policies(
+    vendor_category: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    query = db.query(SupplierCompliancePolicy)
+    if vendor_category is not None:
+        category = vendor_category.strip().upper()
+        if category not in {item.value for item in VendorCategoryEnum}:
+            raise HTTPException(status_code=422, detail="Unsupported supplier category.")
+        query = query.filter(SupplierCompliancePolicy.vendor_category == category)
+    return query.order_by(
+        SupplierCompliancePolicy.vendor_category.asc(),
+        SupplierCompliancePolicy.document_type.asc(),
+    ).all()
+
+
+@router.put(
+    "/supplier-compliance/policies/{vendor_category}/{document_type}",
+    response_model=SupplierCompliancePolicyResponse,
+)
+def upsert_supplier_compliance_policy(
+    vendor_category: str,
+    document_type: str,
+    payload: SupplierCompliancePolicyUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    category = vendor_category.strip().upper()
+    kind = document_type.strip().upper()
+    if category not in {item.value for item in VendorCategoryEnum}:
+        raise HTTPException(status_code=422, detail="Unsupported supplier category.")
+    if kind not in _SUPPLIER_COMPLIANCE_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported supplier compliance document type.")
+    policy = db.query(SupplierCompliancePolicy).filter(
+        SupplierCompliancePolicy.vendor_category == category,
+        SupplierCompliancePolicy.document_type == kind,
+    ).with_for_update().one_or_none()
+    if policy is None:
+        policy = SupplierCompliancePolicy(
+            vendor_category=category, document_type=kind,
+            is_required=payload.is_required, updated_by_id=current_user.id,
+        )
+        db.add(policy)
+    else:
+        policy.is_required = payload.is_required
+        policy.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(policy)
+    return policy
 
 
 @router.post("/vendors/{vendor_id}/compliance-documents", status_code=status.HTTP_201_CREATED)
