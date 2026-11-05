@@ -44,7 +44,7 @@ from backend.domains.procurement.schemas import (
     PurchaseOrderApprovalRequest, PurchaseOrderPriceReviewResponse,
     ProcurementBudgetCreate, ProcurementBudgetResponse,
     ProcurementBudgetRevisionCreate, ProcurementBudgetRevisionReview,
-    ProcurementBudgetRevisionResponse
+    ProcurementBudgetRevisionResponse, PurchaseOrderCancelRequest
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
@@ -140,7 +140,7 @@ def _budget_ledger_totals(db: Session, budget_id: int) -> dict:
 
 def _resolve_active_procurement_budget(
     db: Session, department_id: int, category: str, order_date: date
-) -> ProcurementBudget:
+) -> Optional[ProcurementBudget]:
     candidates = db.query(ProcurementBudget).filter(
         ProcurementBudget.requesting_department_id == department_id,
         ProcurementBudget.category == category,
