@@ -21,6 +21,7 @@ from backend.domains.procurement.models import (
     VendorInvoice,
     VendorInvoiceItem,
     VendorInvoiceStatusEnum,
+    ProcurementBudgetMovement,
 )
 from backend.domains.pharmacy.models import (InventoryBatch, InventoryMovement, MedicationMaster, PharmacyLocation, PharmacyLocationAccess)
 from backend.domains.finance.models import ExpenseRecord, ExpenseCategoryEnum, ExpenseStatusEnum
@@ -99,7 +100,31 @@ def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: 
             raise HTTPException(status_code=409, detail=f"GRN would over-receive PO item {po_item.id}.")
         if grn_item.accepted_quantity <= 0:
             continue
+        prior_received_quantity = po_item.quantity_received
         po_item.quantity_received += grn_item.accepted_quantity
+        if po_item.budget_id is not None:
+            prior_target = int(
+                (Decimal(po_item.gross_total_paise) * Decimal(prior_received_quantity) / Decimal(po_item.quantity_ordered))
+                .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+            new_target = int(
+                (Decimal(po_item.gross_total_paise) * Decimal(po_item.quantity_received) / Decimal(po_item.quantity_ordered))
+                .quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+            receipt_value = new_target - prior_target
+            if receipt_value > 0:
+                db.add(ProcurementBudgetMovement(
+                    budget_id=po_item.budget_id,
+                    po_id=po.id,
+                    po_item_id=po_item.id,
+                    grn_item_id=grn_item.id,
+                    movement_type="RECEIPT",
+                    amount_paise=receipt_value,
+                    reference_key=f"GRN_ITEM:{grn_item.id}:BUDGET_RECEIPT",
+                    notes="Accepted goods moved from open PO commitment to received budget consumption.",
+                    actor_user_id=current_user_id,
+                    created_by_id=current_user_id,
+                ))
         if not po_item.medication_id:
             continue
         conversion = Decimal(str(po_item.units_per_purchase_unit)) if po_item.units_per_purchase_unit is not None else Decimal("1")
