@@ -13,7 +13,7 @@ from backend.core.document_responses import pdf_attachment_response
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
-from backend.domains.identity.models import User, Department, Role
+from backend.domains.identity.models import User, Department, Role, UserRole
 from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
 from backend.domains.pharmacy.models import MedicationMaster, InventoryMovement, InventoryBatch
 from backend.domains.procurement.models import (
@@ -147,12 +147,11 @@ def _resolve_active_procurement_budget(
         ProcurementBudget.status == "ACTIVE",
         ProcurementBudget.period_start <= order_date,
         ProcurementBudget.period_end >= order_date,
-    ).all()
+    ).with_for_update().all()
+    # Budget management is opt-in per department/category. Once an active
+    # allocation exists, that allocation becomes an approval control.
     if not candidates:
-        raise HTTPException(
-            status_code=409,
-            detail=f"No active {category} procurement budget covers department {department_id} on {order_date.isoformat()}.",
-        )
+        return None
     quarterly = [b for b in candidates if b.period_type == "QUARTERLY"]
     roots = [b for b in candidates if b.period_type == "ANNUAL" and b.parent_budget_id is None]
     if len(quarterly) > 1 or len(roots) > 1:
@@ -187,6 +186,8 @@ def _reserve_purchase_order_budget(db: Session, po: PurchaseOrder, actor: User) 
         budget = _resolve_active_procurement_budget(
             db, line.budget_department_id, line.budget_category, order_date
         )
+        if budget is None:
+            continue
         existing = db.query(ProcurementBudgetMovement.id).filter(
             ProcurementBudgetMovement.reference_key == f"PO:{po.id}:ITEM:{line.id}:RESERVE"
         ).first()
@@ -221,7 +222,9 @@ def _reserve_purchase_order_budget(db: Session, po: PurchaseOrder, actor: User) 
             actor_user_id=actor.id,
             created_by_id=actor.id,
         ))
-    # A requisition-backed PO must never silently bypass budget control.
+        db.flush()
+    # Requisition-backed lines must always resolve their department. Budget
+    # allocations themselves remain optional until configured for that category.
     if po.requisition_id is not None and mapped_count != len(po.items):
         raise HTTPException(status_code=409, detail="Every requisition-backed PO line must have a department budget allocation.")
 
@@ -1057,9 +1060,20 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     db.add(po)
     db.flush()
 
+    assigned_department_ids = set(
+        value for value in db.query(UserRole.department_id).filter(
+            UserRole.user_id == current_user.id,
+            UserRole.department_id.is_not(None),
+        ).distinct().all() if value is not None
+    )
+    inferred_department_id = next(iter(assigned_department_ids)) if len(assigned_department_ids) == 1 else None
     subtotal = 0
     tax_total = 0
     for item in payload.items:
+        budget_department_id = item.budget_department_id or inferred_department_id
+        if budget_department_id is not None and not user_has_department_access(db, current_user, budget_department_id):
+            raise HTTPException(status_code=403, detail="You are not assigned to the PO line budget department.")
+        budget_category = item.budget_category or ("PHARMACY" if item.medication_id is not None else "GENERAL_SUPPLIES")
         line_subtotal = item.quantity_ordered * item.unit_price_paise
         line_tax = (line_subtotal * item.tax_percentage + 50) // 100
         unit_snapshot = _resolve_medication_unit_snapshot(
@@ -1083,8 +1097,8 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
             tax_amount_paise=line_tax,
             gross_total_paise=line_subtotal + line_tax,
             **unit_snapshot,
-            budget_department_id=item.budget_department_id,
-            budget_category=item.budget_category,
+            budget_department_id=budget_department_id,
+            budget_category=budget_category,
             created_by_id=current_user.id
         ))
 
@@ -1697,6 +1711,15 @@ def request_purchase_order_amendment(
             "tax_percentage": item.tax_percentage,
             "tax_amount_paise": line_tax,
             "gross_total_paise": line_gross,
+            "budget_department_id": (
+                po.requisition.requesting_department_id
+                if po.requisition_id is not None
+                else item.budget_department_id
+            ),
+            "budget_category": item.budget_category or (
+                "PHARMACY" if (req_line.medication_id if po.requisition_id is not None else item.medication_id) is not None
+                else "GENERAL_SUPPLIES"
+            ),
             **unit_snapshot,
         })
     prior_snapshot = {
@@ -1722,6 +1745,8 @@ def request_purchase_order_amendment(
             "tax_percentage": item.tax_percentage,
             "tax_amount_paise": item.tax_amount_paise,
             "gross_total_paise": item.gross_total_paise,
+            "budget_department_id": item.budget_department_id,
+            "budget_category": item.budget_category,
         } for item in po.items],
     }
     proposed_snapshot = {
@@ -1804,6 +1829,32 @@ def review_purchase_order_amendment(
         po.tax_amount_paise = snapshot.get("tax_amount_paise", 0)
         po.total_amount_paise = snapshot["total_amount_paise"]
         for old_item in list(po.items):
+            if old_item.budget_id is not None:
+                movements = db.query(
+                    ProcurementBudgetMovement.movement_type,
+                    func.coalesce(func.sum(ProcurementBudgetMovement.amount_paise), 0),
+                ).filter(
+                    ProcurementBudgetMovement.po_item_id == old_item.id
+                ).group_by(ProcurementBudgetMovement.movement_type).all()
+                totals = {kind: int(amount or 0) for kind, amount in movements}
+                outstanding = max(
+                    totals.get("RESERVATION", 0)
+                    - totals.get("RELEASE", 0)
+                    - totals.get("RECEIPT", 0),
+                    0,
+                )
+                if outstanding:
+                    db.add(ProcurementBudgetMovement(
+                        budget_id=old_item.budget_id,
+                        po_id=po.id,
+                        po_item_id=old_item.id,
+                        movement_type="RELEASE",
+                        amount_paise=outstanding,
+                        reference_key=f"PO:{po.id}:ITEM:{old_item.id}:AMEND:{amendment.id}:RELEASE",
+                        notes="Outstanding commitment released because the approved PO was amended and requires fresh approval.",
+                        actor_user_id=current_user.id,
+                        created_by_id=current_user.id,
+                    ))
             db.delete(old_item)
         db.flush()
         for item in snapshot["items"]:
@@ -1824,6 +1875,8 @@ def review_purchase_order_amendment(
                 units_per_purchase_unit=item.get("units_per_purchase_unit"),
                 base_quantity=item.get("base_quantity"),
                 base_unit_price_paise=item.get("base_unit_price_paise"),
+                budget_department_id=item.get("budget_department_id"),
+                budget_category=item.get("budget_category", "GENERAL_SUPPLIES"),
                 created_by_id=current_user.id,
             ))
         po.amendment_version = amendment.version
@@ -3400,3 +3453,48 @@ def close_procurement_budget(
     db.commit()
     db.refresh(budget)
     return budget
+
+
+@router.get("/budgets/{budget_id}/utilization")
+def get_procurement_budget_utilization(
+    budget_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    budget = db.query(ProcurementBudget).filter(
+        ProcurementBudget.id == budget_id
+    ).one_or_none()
+    if budget is None:
+        raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    totals = _budget_ledger_totals(db, budget.id)
+    committed_and_consumed = totals["reserved_open_paise"] + totals["received_consumption_paise"]
+    available = budget.total_amount_paise - committed_and_consumed
+    utilization_pct = (
+        round((committed_and_consumed * 100) / budget.total_amount_paise, 2)
+        if budget.total_amount_paise > 0 else None
+    )
+    if available < 0:
+        alert = "OVER_BUDGET"
+    elif utilization_pct is not None and utilization_pct >= budget.warning_threshold_pct:
+        alert = "WARNING"
+    else:
+        alert = "NORMAL"
+    return {
+        "budget_id": budget.id,
+        "budget_number": budget.budget_number,
+        "requesting_department_id": budget.requesting_department_id,
+        "category": budget.category,
+        "period_start": budget.period_start,
+        "period_end": budget.period_end,
+        "status": budget.status,
+        "total_amount_paise": budget.total_amount_paise,
+        "reserved_open_commitment_paise": totals["reserved_open_paise"],
+        "received_consumption_paise": totals["received_consumption_paise"],
+        "committed_and_consumed_paise": committed_and_consumed,
+        "available_paise": available,
+        "utilization_pct": utilization_pct,
+        "warning_threshold_pct": budget.warning_threshold_pct,
+        "alert": alert,
+        "invoice_actuals_included": False,
+        "note": "Invoice values are financial actuals and are deliberately not added to budget consumption; invoice reconciliation is reported separately.",
+    }
