@@ -2520,15 +2520,23 @@ def get_procurement_financial_intelligence(
     accepted_value_paise = 0
     accepted_quantity = 0
     received_quantity = 0
-    grn_po_item_ids = set()
+    accepted_po_item_ids = {
+        line.po_item_id for grn in accepted_grns for line in grn.items
+    }
+    po_items_by_id = {}
+    if accepted_po_item_ids:
+        po_items_by_id = {
+            item.id: item for item in db.query(PurchaseOrderItem).filter(
+                PurchaseOrderItem.id.in_(accepted_po_item_ids)
+            ).all()
+        }
     for grn in accepted_grns:
         for line in grn.items:
-            po_item = db.get(PurchaseOrderItem, line.po_item_id)
+            po_item = po_items_by_id.get(line.po_item_id)
             if po_item is None:
                 continue
             accepted_quantity += int(line.accepted_quantity or 0)
             received_quantity += int(line.received_quantity or 0)
-            grn_po_item_ids.add(po_item.id)
             if po_item.quantity_ordered > 0:
                 accepted_value_paise += (
                     int(po_item.gross_total_paise or 0)
