@@ -3697,6 +3697,28 @@ def get_procurement_budget_dashboard(
             "forecast_note": "Straight-line projection of accepted GRN consumption from period start through today; excludes open commitments and is not a purchasing recommendation.",
         })
 
+    allocation_summary = {}
+    for row in allocation_rows:
+        key = (row["department_id"], row["category"], row["period_type"])
+        summary = allocation_summary.setdefault(key, {
+            "department_id": row["department_id"],
+            "department_name": row["department_name"],
+            "category": row["category"],
+            "period_type": row["period_type"],
+            "allocation_count": 0,
+            "allocated_paise": 0,
+            "engaged_paise": 0,
+            "available_paise": 0,
+            "warning_count": 0,
+            "over_budget_count": 0,
+        })
+        summary["allocation_count"] += 1
+        summary["allocated_paise"] += row["allocated_paise"]
+        summary["engaged_paise"] += row["engaged_paise"]
+        summary["available_paise"] += row["available_paise"]
+        summary["warning_count"] += int(row["alert"] == "WARNING")
+        summary["over_budget_count"] += int(row["alert"] == "OVER_BUDGET")
+
     # Movement rows are read once and grouped by month/category/department.
     visible_budget_id_list = list(visible_budget_ids)
     movements = db.query(
@@ -3791,6 +3813,7 @@ def get_procurement_budget_dashboard(
         "to_date": window_end,
         "allocation_count": len(allocation_rows),
         "allocations": allocation_rows,
+        "allocation_summary_by_department_category_period": list(allocation_summary.values()),
         "department_category_movement_summary": list(department_category.values()),
         "monthly_movement_trend": monthly_trend,
         "invoice_actuals_by_budget": invoice_actuals,
