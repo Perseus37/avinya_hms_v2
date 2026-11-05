@@ -1405,6 +1405,21 @@ def test_procurement_financial_intelligence_empty_period_and_date_validation(
     assert payload["accounts_payable"]["approved_unpaid_value_paise"] == 0
     assert payload["supplier_concentration"]["suppliers"] == []
 
+    quotation_outcomes = client.get(
+        "/v1/api/procurement/analytics/quotation-outcomes",
+        headers=superuser_headers,
+    )
+    assert quotation_outcomes.status_code == 200, quotation_outcomes.text
+    assert quotation_outcomes.json()["items"] == []
+    assert quotation_outcomes.json()["summary"]["competitive_savings_paise"] == 0
+
+    invalid_quotation_range = client.get(
+        "/v1/api/procurement/analytics/quotation-outcomes"
+        "?from_date=2026-11-10&to_date=2026-11-01",
+        headers=superuser_headers,
+    )
+    assert invalid_quotation_range.status_code == 422
+
     invalid_range = client.get(
         "/v1/api/procurement/analytics/financial-intelligence"
         "?from_date=2026-11-10&to_date=2026-11-01",
