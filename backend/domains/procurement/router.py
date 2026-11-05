@@ -3096,7 +3096,7 @@ def activate_procurement_budget(
         ProcurementBudget.status == "ACTIVE",
         ProcurementBudget.period_start <= budget.period_end,
         ProcurementBudget.period_end >= budget.period_start,
-    ).with_for_update().first()
+    ).first()
     if overlapping:
         raise HTTPException(status_code=409, detail="An active budget already overlaps this department, category and period.")
     budget.status = "ACTIVE"
