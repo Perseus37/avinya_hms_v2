@@ -94,12 +94,28 @@ def upgrade() -> None:
         sa.UniqueConstraint("contract_id", "revision_number", name="uq_proc_contract_revision_number"),
     )
     op.create_index("ix_proc_contract_revision_status", "procurement_supplier_contract_revisions", ["contract_id", "status"])
+    op.create_table(
+        "procurement_contract_document_download_audits",
+        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+        sa.Column("contract_id", sa.Integer(), nullable=True),
+        sa.Column("contract_number", sa.String(80), nullable=False),
+        sa.Column("actor_user_id", sa.Integer(), nullable=True),
+        sa.Column("actor_email", sa.String(255), nullable=False),
+        sa.Column("requested_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.ForeignKeyConstraint(["contract_id"], ["procurement_supplier_contracts.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["actor_user_id"], ["users.id"], ondelete="SET NULL"),
+    )
+    op.create_index("ix_proc_contract_doc_audit_contract_time", "procurement_contract_document_download_audits", ["contract_id", "requested_at"])
+    op.create_index("ix_proc_contract_doc_audit_actor_time", "procurement_contract_document_download_audits", ["actor_user_id", "requested_at"])
     op.add_column("procurement_purchase_orders", sa.Column("contract_id", sa.Integer(), nullable=True))
     op.create_foreign_key("fk_po_supplier_contract", "procurement_purchase_orders", "procurement_supplier_contracts", ["contract_id"], ["id"], ondelete="RESTRICT")
     op.create_index("ix_procurement_purchase_orders_contract_id", "procurement_purchase_orders", ["contract_id"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_proc_contract_doc_audit_actor_time", table_name="procurement_contract_document_download_audits")
+    op.drop_index("ix_proc_contract_doc_audit_contract_time", table_name="procurement_contract_document_download_audits")
+    op.drop_table("procurement_contract_document_download_audits")
     op.drop_index("ix_procurement_purchase_orders_contract_id", table_name="procurement_purchase_orders")
     op.drop_constraint("fk_po_supplier_contract", "procurement_purchase_orders", type_="foreignkey")
     op.drop_column("procurement_purchase_orders", "contract_id")
