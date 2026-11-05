@@ -2268,3 +2268,51 @@ def test_supplier_compliance_analytics_reports_policy_block_and_category_filter(
         headers=superuser_headers,
     )
     assert invalid_category.status_code == 422
+
+
+
+def test_supplier_risk_register_flags_missing_compliance_and_supports_filters(
+    client, pharmacist_headers, superuser_headers
+):
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-RISK-REGISTER-01",
+            "name": "Risk Register Supplier",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Risk Contact",
+            "phone": "9876543213",
+            "email": "risk-register@example.test",
+            "address": "Supplier registered address",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    policy = client.put(
+        "/v1/api/procurement/supplier-compliance/policies/PHARMACEUTICALS/DRUG_LICENSE",
+        headers=superuser_headers,
+        json={"is_required": True},
+    )
+    assert policy.status_code == 200, policy.text
+
+    response = client.get(
+        "/v1/api/procurement/analytics/supplier-risk-register"
+        "?vendor_category=PHARMACEUTICALS&risk_level=HIGH",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    supplier = next(item for item in body["suppliers"] if item["vendor_id"] == vendor_id)
+    assert supplier["risk_level"] == "HIGH"
+    assert supplier["compliance_state"] == "BLOCKED"
+    assert supplier["missing_or_invalid_document_types"] == ["DRUG_LICENSE"]
+    assert supplier["open_purchase_order_count"] == 0
+    assert body["summary"]["high_count"] >= 1
+
+    invalid_risk = client.get(
+        "/v1/api/procurement/analytics/supplier-risk-register?risk_level=URGENT",
+        headers=superuser_headers,
+    )
+    assert invalid_risk.status_code == 422
