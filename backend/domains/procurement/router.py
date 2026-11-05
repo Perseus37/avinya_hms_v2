@@ -301,8 +301,6 @@ def _budget_invoice_actuals_by_budget_ids(db: Session, budget_ids: set[int]) -> 
             else:
                 actuals["unpaid_verified_invoice_actuals_paise"] += value
             actuals["verified_invoice_ids"].add(invoice.id)
-    for actuals in result.values():
-        actuals["verified_invoice_count"] = len(actuals.pop("verified_invoice_ids"))
     return result
 
 def _resolve_active_procurement_budget(
@@ -3786,8 +3784,9 @@ def get_procurement_budget_dashboard(
             "verified_invoice_actuals_paise": 0,
             "paid_invoice_actuals_paise": 0,
             "unpaid_verified_invoice_actuals_paise": 0,
-            "verified_invoice_count": 0,
+            "verified_invoice_ids": set(),
         })
+        invoice_ids = set(actuals["verified_invoice_ids"])
         if budget.id in annual_root_ids:
             for child in child_budget_rows:
                 if child.parent_budget_id != budget.id:
@@ -3799,13 +3798,13 @@ def get_procurement_budget_dashboard(
                     "unpaid_verified_invoice_actuals_paise",
                 ):
                     actuals[field] += child_actuals.get(field, 0)
-                actuals["verified_invoice_count"] += child_actuals.get("verified_invoice_count", 0)
+                invoice_ids.update(child_actuals.get("verified_invoice_ids", set()))
         invoice_actuals.append({
             "budget_id": budget.id,
             "verified_invoice_actuals_paise": actuals["verified_invoice_actuals_paise"],
             "paid_invoice_actuals_paise": actuals["paid_invoice_actuals_paise"],
             "unpaid_verified_invoice_actuals_paise": actuals["unpaid_verified_invoice_actuals_paise"],
-            "verified_invoice_count": actuals["verified_invoice_count"],
+            "verified_invoice_count": len(invoice_ids),
         })
 
     return {
