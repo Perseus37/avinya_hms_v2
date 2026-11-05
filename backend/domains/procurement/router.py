@@ -3414,14 +3414,11 @@ def activate_procurement_budget(
             ProcurementBudget.period_start <= budget.period_end,
             ProcurementBudget.period_end >= budget.period_start,
         ).first()
-        allocated = db.query(func.coalesce(func.sum(ProcurementBudget.total_amount_paise), 0)).filter(
-            ProcurementBudget.parent_budget_id == parent.id,
-            ProcurementBudget.status == "ACTIVE",
-        ).scalar() or 0
+        parent_available, _ = _budget_available_paise(db, parent)
         if overlapping:
             raise HTTPException(status_code=409, detail="An active quarterly allocation already overlaps this period.")
-        if int(allocated) + budget.total_amount_paise > parent.total_amount_paise:
-            raise HTTPException(status_code=409, detail="Quarterly allocations cannot exceed the parent annual budget.")
+        if budget.total_amount_paise > parent_available:
+            raise HTTPException(status_code=409, detail="The quarterly allocation exceeds annual capacity after existing receipts, commitments and other quarterly earmarks.")
     else:
         overlapping = db.query(ProcurementBudget.id).filter(
             ProcurementBudget.id != budget.id,
