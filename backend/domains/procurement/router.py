@@ -845,7 +845,7 @@ def create_purchase_order_from_requisition(
             tax_amount_paise=line_tax,
             gross_total_paise=gross_total,
             budget_department_id=requisition.requesting_department_id,
-            budget_category="PHARMACY" if req_item.medication_id is not None else "GENERAL_SUPPLIES",
+            budget_category=item.budget_category or ("PHARMACY" if req_item.medication_id is not None else "GENERAL_SUPPLIES"),
             **unit_snapshot,
             created_by_id=current_user.id,
         ))
@@ -1060,12 +1060,12 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     db.add(po)
     db.flush()
 
-    assigned_department_ids = set(
-        value for value in db.query(UserRole.department_id).filter(
+    assigned_department_ids = {
+        row[0] for row in db.query(UserRole.department_id).filter(
             UserRole.user_id == current_user.id,
             UserRole.department_id.is_not(None),
-        ).distinct().all() if value is not None
-    )
+        ).distinct().all() if row[0] is not None
+    }
     inferred_department_id = next(iter(assigned_department_ids)) if len(assigned_department_ids) == 1 else None
     subtotal = 0
     tax_total = 0
