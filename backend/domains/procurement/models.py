@@ -763,6 +763,52 @@ class ProcurementBudgetMovement(AuditMixin, Base):
     actor: Mapped["User"] = relationship(foreign_keys=[actor_user_id])
 
 
+
+class SupplierComplianceDocument(Base):
+    """Vendor-level regulatory evidence; upload does not itself establish legal validity."""
+    __tablename__ = "procurement_supplier_compliance_documents"
+    __table_args__ = (
+        CheckConstraint("status IN ('PENDING_VERIFICATION','VERIFIED','REJECTED')", name="ck_supplier_compliance_status"),
+        CheckConstraint("expiry_date IS NULL OR issue_date IS NULL OR expiry_date >= issue_date", name="ck_supplier_compliance_dates"),
+        Index("ix_supplier_compliance_vendor_type", "vendor_id", "document_type"),
+        Index("ix_supplier_compliance_expiry_status", "status", "expiry_date"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    document_number: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    issuer: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    issue_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    expiry_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    storage_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING_VERIFICATION", nullable=False)
+    uploaded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    verified_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    vendor: Mapped["VendorMaster"] = relationship()
+    uploaded_by: Mapped["User"] = relationship(foreign_keys=[uploaded_by_id])
+    verified_by: Mapped[Optional["User"]] = relationship(foreign_keys=[verified_by_id])
+
+
+class SupplierComplianceDocumentDownloadAudit(Base):
+    """Append-only access record for supplier regulatory documents."""
+    __tablename__ = "procurement_supplier_compliance_download_audits"
+    __table_args__ = (
+        Index("ix_supplier_compliance_audit_doc_time", "document_id", "requested_at"),
+        Index("ix_supplier_compliance_audit_actor_time", "actor_user_id", "requested_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_supplier_compliance_documents.id", ondelete="SET NULL"), nullable=True)
+    vendor_name: Mapped[str] = mapped_column(String(150), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class SupplierContract(AuditMixin, Base):
     """Structured supplier agreement; signed evidence remains in tenant document storage."""
     __tablename__ = "procurement_supplier_contracts"
