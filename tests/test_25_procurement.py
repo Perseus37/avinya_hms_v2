@@ -2064,3 +2064,81 @@ def test_supplier_contract_approval_rate_enforcement_and_revision(
     )
     assert renewal_queue.status_code == 200, renewal_queue.text
     assert any(item["contract_id"] == contract_id for item in renewal_queue.json())
+
+
+def test_supplier_compliance_document_verification_expiry_and_audited_download(
+    client, pharmacist_headers, superuser_headers, monkeypatch
+):
+    from backend.domains.procurement import documents as procurement_documents
+
+    # Keep this API test independent from a running ClamAV daemon while still
+    # exercising signature validation, tenant storage and the document lifecycle.
+    monkeypatch.setattr(procurement_documents, "scan_file_with_clamav", lambda _path: None)
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-COMPLIANCE-01",
+            "name": "Compliance Evidence Supplier",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Compliance Officer",
+            "phone": "9876543210",
+            "email": "compliance@example.test",
+            "address": "Supplier registered address",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+    today = datetime.now(timezone.utc).date()
+    upload = client.post(
+        f"/v1/api/procurement/vendors/{vendor_id}/compliance-documents",
+        headers=pharmacist_headers,
+        data={
+            "document_type": "DRUG_LICENSE",
+            "document_number": "DL-TEST-2026",
+            "issuer": "State Drug Control Authority",
+            "issue_date": today.isoformat(),
+            "expiry_date": (today + timedelta(days=20)).isoformat(),
+        },
+        files={"file": ("drug-license.pdf", b"%PDF-1.4 test supplier license", "application/pdf")},
+    )
+    assert upload.status_code == 201, upload.text
+    document_id = upload.json()["id"]
+    assert upload.json()["status"] == "PENDING_VERIFICATION"
+
+    self_review = client.patch(
+        f"/v1/api/procurement/vendors/{vendor_id}/compliance-documents/{document_id}/review",
+        headers=pharmacist_headers,
+        json={"approved": True, "review_notes": "Uploader cannot independently verify this evidence."},
+    )
+    assert self_review.status_code == 403
+
+    review = client.patch(
+        f"/v1/api/procurement/vendors/{vendor_id}/compliance-documents/{document_id}/review",
+        headers=superuser_headers,
+        json={"approved": True, "review_notes": "Document details checked against the supplier submission."},
+    )
+    assert review.status_code == 200, review.text
+    assert review.json()["status"] == "VERIFIED"
+    assert review.json()["compliance_status"] == "EXPIRING_SOON"
+
+    listing = client.get(
+        f"/v1/api/procurement/vendors/{vendor_id}/compliance-documents",
+        headers=superuser_headers,
+    )
+    assert listing.status_code == 200, listing.text
+    assert listing.json()[0]["compliance_status"] == "EXPIRING_SOON"
+
+    expiry_queue = client.get(
+        "/v1/api/procurement/supplier-compliance/expiring?within_days=30",
+        headers=superuser_headers,
+    )
+    assert expiry_queue.status_code == 200, expiry_queue.text
+    assert any(row["document_id"] == document_id for row in expiry_queue.json())
+
+    download = client.get(
+        f"/v1/api/procurement/vendors/{vendor_id}/compliance-documents/{document_id}/download",
+        headers=superuser_headers,
+    )
+    assert download.status_code == 200
+    assert download.content.startswith(b"%PDF-1.4")
