@@ -288,6 +288,9 @@ def _reserve_purchase_order_budget(db: Session, po: PurchaseOrder, actor: User) 
             if line.budget_id != budget.id:
                 raise HTTPException(status_code=409, detail="A PO line already has a reservation against a different budget.")
             continue
+        line.budget_id = budget.id
+        if line.gross_total_paise == 0:
+            continue
         available, _ = _budget_available_paise(db, budget)
         if line.gross_total_paise > available:
             raise HTTPException(
@@ -302,7 +305,6 @@ def _reserve_purchase_order_budget(db: Session, po: PurchaseOrder, actor: User) 
                     "department_id": line.budget_department_id,
                 },
             )
-        line.budget_id = budget.id
         db.add(ProcurementBudgetMovement(
             budget_id=budget.id,
             po_id=po.id,
