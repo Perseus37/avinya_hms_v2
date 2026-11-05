@@ -3522,13 +3522,13 @@ def review_procurement_budget_revision(
             ).with_for_update().one_or_none()
             if parent is None or parent.status != "ACTIVE":
                 raise HTTPException(status_code=409, detail="The quarterly budget's annual parent is not active.")
-            other_quarter_allocations = db.query(func.coalesce(func.sum(ProcurementBudget.total_amount_paise), 0)).filter(
-                ProcurementBudget.parent_budget_id == parent.id,
-                ProcurementBudget.id != budget.id,
-                ProcurementBudget.status == "ACTIVE",
-            ).scalar() or 0
-            if int(other_quarter_allocations) + revision.proposed_amount_paise > parent.total_amount_paise:
-                raise HTTPException(status_code=409, detail="The revised quarterly allocation would exceed its annual parent budget.")
+            parent_available, _ = _budget_available_paise(db, parent)
+            child_totals = _budget_ledger_totals(db, budget.id)
+            child_used = child_totals["reserved_open_paise"] + child_totals["received_consumption_paise"]
+            current_child_unspent = max(budget.total_amount_paise - child_used, 0)
+            proposed_child_unspent = max(revision.proposed_amount_paise - child_used, 0)
+            if proposed_child_unspent > parent_available + current_child_unspent:
+                raise HTTPException(status_code=409, detail="The revised quarterly allocation would exceed the remaining annual parent capacity.")
         budget.total_amount_paise = revision.proposed_amount_paise
         budget.updated_by_id = current_user.id
     db.commit()
