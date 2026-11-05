@@ -843,6 +843,8 @@ def create_purchase_order_from_requisition(
                 raise HTTPException(status_code=409, detail="Purchase order tax rate must match the selected supplier quotation.")
         if req_item is None or req_item.approved_quantity is None:
             raise HTTPException(status_code=422, detail="Every purchase order line must reference an approved requisition line.")
+        if req_item.medication_id is not None and item.budget_category not in (None, "PHARMACY"):
+            raise HTTPException(status_code=422, detail="Medication requisition lines must use the PHARMACY budget category.")
         if item.purchase_uom_id != req_item.purchase_uom_id:
             raise HTTPException(status_code=422, detail="Purchase order purchasing unit must match the unit requested on the requisition line.")
         ordered = db.query(func.coalesce(func.sum(PurchaseOrderItem.quantity_ordered), 0)).join(
@@ -3514,6 +3516,19 @@ def review_procurement_budget_revision(
         already_committed_or_earmarked = budget.total_amount_paise - current_available
         if already_committed_or_earmarked > revision.proposed_amount_paise:
             raise HTTPException(status_code=409, detail="The revised budget cannot be lower than existing commitments, accepted receipts and active quarterly allocations.")
+        if budget.period_type == "QUARTERLY" and budget.parent_budget_id is not None:
+            parent = db.query(ProcurementBudget).filter(
+                ProcurementBudget.id == budget.parent_budget_id
+            ).with_for_update().one_or_none()
+            if parent is None or parent.status != "ACTIVE":
+                raise HTTPException(status_code=409, detail="The quarterly budget's annual parent is not active.")
+            other_quarter_allocations = db.query(func.coalesce(func.sum(ProcurementBudget.total_amount_paise), 0)).filter(
+                ProcurementBudget.parent_budget_id == parent.id,
+                ProcurementBudget.id != budget.id,
+                ProcurementBudget.status == "ACTIVE",
+            ).scalar() or 0
+            if int(other_quarter_allocations) + revision.proposed_amount_paise > parent.total_amount_paise:
+                raise HTTPException(status_code=409, detail="The revised quarterly allocation would exceed its annual parent budget.")
         budget.total_amount_paise = revision.proposed_amount_paise
         budget.updated_by_id = current_user.id
     db.commit()
