@@ -2284,9 +2284,15 @@ def get_procurement_price_benchmarks(
             "maximum_base_unit_price_paise": float(prices[-1]),
             "latest_purchase_at": group["latest_purchase_at"].isoformat(),
             "suppliers": sorted(suppliers, key=lambda row: row["median_base_unit_price_paise"]),
-            "comparison_basis": "Pre-tax normalized prices; same medication and base UOM; approved, partially received or completed POs only.",
+            "comparison_basis": "Pre-tax normalized PO line prices; same medication and base UOM; approved, partially received or completed POs only. These are approved purchase commitments, not verified final paid invoice prices.",
         })
-    return {"lookback_days": lookback_days, "minimum_observations": minimum_observations, "items": results}
+    return {
+        "lookback_days": lookback_days,
+        "minimum_observations": minimum_observations,
+        "price_source": "Approved purchase-order line prices, not final paid invoice settlement prices.",
+        "normalization": "Only verified normalized base-unit prices are compared; unknown legacy units are excluded.",
+        "items": results,
+    }
 
 
 @router.get("/analytics/cost-intelligence")
