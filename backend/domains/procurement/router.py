@@ -14,6 +14,7 @@ from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User, Department, Role
+from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
 from backend.domains.pharmacy.models import MedicationMaster, InventoryMovement, InventoryBatch
 from backend.domains.procurement.models import (
     VendorMaster, PurchaseOrder, PurchaseOrderItem, POStatusEnum,
@@ -2473,6 +2474,171 @@ def get_procurement_cost_intelligence(
             "by_medication": list(return_by_medication.values()),
             "definition": "Value uses immutable PURCHASE_RETURN movement quantity and unit-price snapshots; it is not a supplier credit-note settlement balance.",
         },
+    }
+
+
+@router.get("/analytics/financial-intelligence")
+def get_procurement_financial_intelligence(
+    from_date: Optional[date] = Query(default=None, description="Inclusive PO creation/invoice date filter (UTC)."),
+    to_date: Optional[date] = Query(default=None, description="Inclusive PO creation/invoice date filter (UTC)."),
+    due_within_days: int = Query(default=30, ge=1, le=365),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    """Executive procurement financial view using approved PO, accepted GRN, invoice and AP records."""
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date must be on or before to_date.")
+
+    start_at = datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc) if from_date else None
+    end_at = datetime.combine(to_date, datetime.max.time(), tzinfo=timezone.utc) if to_date else None
+    now = datetime.now(timezone.utc)
+    due_cutoff = now + timedelta(days=due_within_days)
+    issued_statuses = (
+        POStatusEnum.SUBMITTED, POStatusEnum.APPROVED,
+        POStatusEnum.PARTIALLY_RECEIVED, POStatusEnum.COMPLETED,
+    )
+
+    po_query = db.query(PurchaseOrder).options(
+        selectinload(PurchaseOrder.items), joinedload(PurchaseOrder.vendor)
+    ).filter(PurchaseOrder.status.in_(issued_statuses))
+    if start_at:
+        po_query = po_query.filter(PurchaseOrder.created_at >= start_at)
+    if end_at:
+        po_query = po_query.filter(PurchaseOrder.created_at <= end_at)
+    purchase_orders = po_query.order_by(PurchaseOrder.created_at.asc(), PurchaseOrder.id.asc()).all()
+    po_ids = [po.id for po in purchase_orders]
+
+    accepted_grns = []
+    if po_ids:
+        accepted_grns = db.query(GoodsReceiptNote).options(
+            selectinload(GoodsReceiptNote.items)
+        ).filter(
+            GoodsReceiptNote.po_id.in_(po_ids),
+            GoodsReceiptNote.status == GRNStatusEnum.ACCEPTED,
+        ).all()
+
+    accepted_value_paise = 0
+    accepted_quantity = 0
+    received_quantity = 0
+    grn_po_item_ids = set()
+    for grn in accepted_grns:
+        for line in grn.items:
+            po_item = db.get(PurchaseOrderItem, line.po_item_id)
+            if po_item is None:
+                continue
+            accepted_quantity += int(line.accepted_quantity or 0)
+            received_quantity += int(line.received_quantity or 0)
+            grn_po_item_ids.add(po_item.id)
+            if po_item.quantity_ordered > 0:
+                accepted_value_paise += (
+                    int(po_item.gross_total_paise or 0)
+                    * int(line.accepted_quantity or 0)
+                    // int(po_item.quantity_ordered)
+                )
+
+    committed_paise = sum(int(po.total_amount_paise or 0) for po in purchase_orders)
+    vendor_commitments = {}
+    for po in purchase_orders:
+        row = vendor_commitments.setdefault(po.vendor_id, {
+            "vendor_id": po.vendor_id,
+            "vendor_name": po.vendor.name if po.vendor else "Unknown vendor",
+            "committed_paise": 0,
+            "purchase_order_count": 0,
+        })
+        row["committed_paise"] += int(po.total_amount_paise or 0)
+        row["purchase_order_count"] += 1
+    concentration = []
+    for row in sorted(vendor_commitments.values(), key=lambda x: x["committed_paise"], reverse=True):
+        row["commitment_share_pct"] = round(
+            row["committed_paise"] / committed_paise * 100, 2
+        ) if committed_paise else None
+        concentration.append(row)
+
+    invoice_query = db.query(VendorInvoice).filter(
+        VendorInvoice.status.in_([
+            VendorInvoiceStatusEnum.PENDING_VERIFICATION,
+            VendorInvoiceStatusEnum.PRICE_VARIANCE_FLAGGED,
+            VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            VendorInvoiceStatusEnum.PAID,
+        ])
+    )
+    if start_at:
+        invoice_query = invoice_query.filter(VendorInvoice.invoice_date >= start_at)
+    if end_at:
+        invoice_query = invoice_query.filter(VendorInvoice.invoice_date <= end_at)
+    invoices = invoice_query.all()
+    invoice_total_paise = sum(int(row.total_amount_paise or 0) for row in invoices)
+    pending_verification_paise = sum(
+        int(row.total_amount_paise or 0) for row in invoices
+        if row.status in (VendorInvoiceStatusEnum.PENDING_VERIFICATION, VendorInvoiceStatusEnum.PRICE_VARIANCE_FLAGGED)
+    )
+
+    linked_expense_ids = [row.linked_expense_id for row in invoices if row.linked_expense_id]
+    ap_expenses = []
+    if linked_expense_ids:
+        ap_expenses = db.query(ExpenseRecord).filter(
+            ExpenseRecord.id.in_(linked_expense_ids)
+        ).all()
+    outstanding_expenses = [
+        row for row in ap_expenses if row.status == ExpenseStatusEnum.APPROVED
+    ]
+    paid_expenses = [row for row in ap_expenses if row.status == ExpenseStatusEnum.PAID]
+    overdue_expenses = [
+        row for row in outstanding_expenses
+        if row.due_date is not None and row.due_date < now
+    ]
+    upcoming_expenses = [
+        row for row in outstanding_expenses
+        if row.due_date is not None and now <= row.due_date <= due_cutoff
+    ]
+
+    return {
+        "period": {
+            "from_date": from_date.isoformat() if from_date else None,
+            "to_date": to_date.isoformat() if to_date else None,
+            "purchase_basis": "Purchase order creation date (UTC).",
+            "invoice_basis": "Vendor invoice date (UTC).",
+        },
+        "commitments": {
+            "purchase_order_count": len(purchase_orders),
+            "committed_value_paise": committed_paise,
+            "definition": "Tax-inclusive value of submitted and approved/received purchase orders; excludes draft and cancelled POs.",
+        },
+        "receipts": {
+            "accepted_grn_count": len(accepted_grns),
+            "received_quantity": received_quantity,
+            "accepted_quantity": accepted_quantity,
+            "accepted_goods_value_paise": accepted_value_paise,
+            "valuation_basis": "Accepted quantity valued proportionally at the linked approved PO line's tax-inclusive gross unit value; this is receipt valuation, not a supplier invoice or payment.",
+        },
+        "invoices": {
+            "invoice_count": len(invoices),
+            "invoiced_value_paise": invoice_total_paise,
+            "pending_verification_or_variance_value_paise": pending_verification_paise,
+            "definition": "Includes pending verification, price-variance flagged, matched-approved and paid invoices in the selected invoice-date period.",
+        },
+        "accounts_payable": {
+            "posted_invoice_count": len(ap_expenses),
+            "approved_unpaid_value_paise": sum(int(row.amount_paise or 0) for row in outstanding_expenses),
+            "paid_expense_value_paise": sum(int(row.amount_paise or 0) for row in paid_expenses),
+            "overdue_approved_count": len(overdue_expenses),
+            "overdue_approved_value_paise": sum(int(row.amount_paise or 0) for row in overdue_expenses),
+            "due_within_days": due_within_days,
+            "due_soon_count": len(upcoming_expenses),
+            "due_soon_value_paise": sum(int(row.amount_paise or 0) for row in upcoming_expenses),
+            "definition": "Derived from finance expenses linked to vendor invoices. APPROVED is treated as unpaid; PAID as paid. No partial settlement ledger exists, so partial payments are not represented.",
+        },
+        "supplier_concentration": {
+            "basis": "Tax-inclusive PO commitments in the selected PO creation-date period.",
+            "suppliers": concentration,
+            "top_supplier_share_pct": concentration[0]["commitment_share_pct"] if concentration else None,
+        },
+        "limitations": [
+            "No procurement budget or department budget allocation model exists; budget utilization and budget variance are not reported.",
+            "PO commitment, accepted receipt valuation, invoice value and AP expense value are distinct lifecycle measures and must not be added together.",
+            "AP payment tracking is expense-status based; partial settlements and bank reconciliation are not modeled.",
+            "Supplier concentration is based on PO commitments, not settled payments or accepted receipt value.",
+        ],
     }
 
 
