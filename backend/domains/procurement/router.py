@@ -4568,6 +4568,203 @@ def get_supplier_compliance_analytics(
     }
 
 
+@router.get("/analytics/supplier-risk-register")
+def get_supplier_risk_register(
+    vendor_category: Optional[str] = Query(default=None),
+    risk_level: Optional[str] = Query(default=None),
+    active_only: bool = True,
+    include_no_open_orders: bool = True,
+    within_days: int = Query(default=90, ge=0, le=730),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    """Consolidated supplier risk register across compliance, contracts and open POs."""
+    today = datetime.now(timezone.utc).date()
+    category = vendor_category.strip().upper() if vendor_category else None
+    if category is not None and category not in {item.value for item in VendorCategoryEnum}:
+        raise HTTPException(status_code=422, detail="Unsupported supplier category.")
+    requested_risk = risk_level.strip().upper() if risk_level else None
+    allowed_risks = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "NOT_EVALUATED"}
+    if requested_risk is not None and requested_risk not in allowed_risks:
+        raise HTTPException(status_code=422, detail="Unsupported risk level.")
+
+    vendor_query = db.query(VendorMaster)
+    if category is not None:
+        vendor_query = vendor_query.filter(VendorMaster.category == category)
+    if active_only:
+        vendor_query = vendor_query.filter(VendorMaster.is_active.is_(True))
+    all_vendors = vendor_query.order_by(VendorMaster.name.asc(), VendorMaster.id.asc()).all()
+    vendor_ids = [vendor.id for vendor in all_vendors]
+    category_codes = sorted({
+        vendor.category.value if hasattr(vendor.category, "value") else str(vendor.category)
+        for vendor in all_vendors
+    })
+    required_policies = db.query(SupplierCompliancePolicy).filter(
+        SupplierCompliancePolicy.is_required.is_(True),
+        SupplierCompliancePolicy.vendor_category.in_(category_codes) if category_codes else False,
+    ).all()
+    required_by_category = {}
+    for policy in required_policies:
+        required_by_category.setdefault(policy.vendor_category, []).append(policy.document_type)
+
+    docs = db.query(SupplierComplianceDocument).filter(
+        SupplierComplianceDocument.vendor_id.in_(vendor_ids)
+    ).all() if vendor_ids else []
+    docs_by_vendor = {}
+    for document in docs:
+        docs_by_vendor.setdefault(document.vendor_id, []).append(document)
+
+    contracts = db.query(SupplierContract).filter(
+        SupplierContract.vendor_id.in_(vendor_ids),
+        SupplierContract.status == "ACTIVE",
+    ).all() if vendor_ids else []
+    contracts_by_vendor = {}
+    for contract in contracts:
+        contracts_by_vendor.setdefault(contract.vendor_id, []).append(contract)
+
+    open_statuses = [
+        POStatusEnum.SUBMITTED, POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED
+    ]
+    open_pos = db.query(PurchaseOrder).filter(
+        PurchaseOrder.vendor_id.in_(vendor_ids),
+        PurchaseOrder.status.in_(open_statuses),
+    ).all() if vendor_ids else []
+    pos_by_vendor = {}
+    for po in open_pos:
+        pos_by_vendor.setdefault(po.vendor_id, []).append(po)
+
+    rows = []
+    for vendor in all_vendors:
+        vendor_category_code = vendor.category.value if hasattr(vendor.category, "value") else str(vendor.category)
+        required_types = required_by_category.get(vendor_category_code, [])
+        vendor_docs = docs_by_vendor.get(vendor.id, [])
+        valid_types = set()
+        missing_types = []
+        for document in vendor_docs:
+            if (document.status == "VERIFIED"
+                and (document.issue_date is None or document.issue_date <= today)
+                and (document.expiry_date is None or document.expiry_date >= today)):
+                valid_types.add(document.document_type)
+        missing_types = [kind for kind in required_types if kind not in valid_types]
+        compliance_state = (
+            "NOT_CONFIGURED" if not required_types
+            else ("BLOCKED" if missing_types else "COMPLIANT")
+        )
+        nearest_doc_expiry = min((
+            document.expiry_date for document in vendor_docs
+            if document.status == "VERIFIED" and document.expiry_date is not None
+            and document.expiry_date >= today
+            and (document.issue_date is None or document.issue_date <= today)
+        ), default=None)
+
+        vendor_contracts = contracts_by_vendor.get(vendor.id, [])
+        expired_contracts = [
+            contract for contract in vendor_contracts if contract.valid_to < today
+        ]
+        expiring_contracts = [
+            contract for contract in vendor_contracts
+            if today <= contract.valid_to <= today + timedelta(days=within_days)
+        ]
+        nearest_contract_expiry = min(
+            (contract.valid_to for contract in vendor_contracts if contract.valid_to >= today),
+            default=None,
+        )
+        vendor_pos = pos_by_vendor.get(vendor.id, [])
+        overdue_pos = [
+            po for po in vendor_pos
+            if po.delivery_due_date is not None and po.delivery_due_date.date() < today
+        ]
+        open_value = sum(int(po.total_amount_paise or 0) for po in vendor_pos)
+        has_open_exposure = bool(vendor_pos)
+        if not include_no_open_orders and not has_open_exposure:
+            continue
+
+        if compliance_state == "BLOCKED" and has_open_exposure:
+            level = "CRITICAL"
+        elif compliance_state == "BLOCKED" or expired_contracts or overdue_pos:
+            level = "HIGH"
+        elif (
+            (nearest_doc_expiry is not None and nearest_doc_expiry <= today + timedelta(days=30))
+            or expiring_contracts
+        ):
+            level = "MEDIUM"
+        elif compliance_state == "NOT_CONFIGURED":
+            level = "NOT_EVALUATED"
+        else:
+            level = "LOW"
+
+        rows.append({
+            "vendor_id": vendor.id, "vendor_code": vendor.code,
+            "vendor_name": vendor.name, "vendor_category": vendor_category_code,
+            "is_active": vendor.is_active, "risk_level": level,
+            "compliance_state": compliance_state,
+            "missing_or_invalid_document_types": missing_types,
+            "nearest_verified_document_expiry": nearest_doc_expiry,
+            "active_contract_count": len(vendor_contracts),
+            "expired_active_contract_count": len(expired_contracts),
+            "contracts_expiring_within_window": len(expiring_contracts),
+            "nearest_active_contract_expiry": nearest_contract_expiry,
+            "open_purchase_order_count": len(vendor_pos),
+            "overdue_purchase_order_count": len(overdue_pos),
+            "open_purchase_order_value_paise": open_value,
+            "currency": "INR",
+            "risk_reasons": [
+                * (["Mandatory supplier compliance documents are missing or invalid."] if missing_types else []),
+                * (["Open purchase orders exist while mandatory compliance is blocked."] if missing_types and has_open_exposure else []),
+                * ([f"{len(expired_contracts)} active contract(s) have passed their validity end date."] if expired_contracts else []),
+                * ([f"{len(overdue_pos)} open purchase order(s) are past delivery due date."] if overdue_pos else []),
+                * ([f"{len(expiring_contracts)} active contract(s) expire within the selected window."] if expiring_contracts else []),
+                * (["No mandatory compliance policy is configured for this supplier category."] if compliance_state == "NOT_CONFIGURED" else []),
+            ],
+        })
+
+    if requested_risk:
+        rows = [row for row in rows if row["risk_level"] == requested_risk]
+    risk_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "NOT_EVALUATED": 4}
+    rows.sort(key=lambda row: (
+        risk_order[row["risk_level"]],
+        row["vendor_name"].lower(),
+        row["vendor_id"],
+    ))
+    total = len(rows)
+    summary = {
+        level.lower(): sum(row["risk_level"] == level for row in rows)
+        for level in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "NOT_EVALUATED")
+    }
+    return {
+        "as_of_date": today,
+        "filters": {
+            "vendor_category": category, "risk_level": requested_risk,
+            "active_only": active_only, "include_no_open_orders": include_no_open_orders,
+            "contract_expiry_window_days": within_days,
+        },
+        "summary": {
+            "supplier_count": total,
+            "critical_count": summary["critical"], "high_count": summary["high"],
+            "medium_count": summary["medium"], "low_count": summary["low"],
+            "not_evaluated_count": summary["not_evaluated"],
+            "suppliers_with_open_pos": sum(row["open_purchase_order_count"] > 0 for row in rows),
+            "overdue_open_po_count": sum(row["overdue_purchase_order_count"] for row in rows),
+            "open_po_exposure_paise": sum(row["open_purchase_order_value_paise"] for row in rows),
+        },
+        "pagination": {"total": total, "limit": limit, "offset": offset,
+                       "returned": len(rows[offset:offset + limit])},
+        "suppliers": rows[offset:offset + limit],
+        "definitions": {
+            "critical": "Mandatory compliance is blocked and at least one open purchase order exists.",
+            "high": "Mandatory compliance is blocked, an active contract is past its validity end date, or an open PO is overdue.",
+            "medium": "A verified document expires within 30 days or an active contract expires within the selected contract window.",
+            "low": "Configured compliance obligations are satisfied and no higher-severity condition was found.",
+            "not_evaluated": "No mandatory policy exists for the supplier category; this is not a compliant rating.",
+            "open_po_value": "Sum of tax-inclusive totals for SUBMITTED, APPROVED and PARTIALLY_RECEIVED purchase orders; not an accounts-payable balance.",
+            "contract_expiry": "Uses ACTIVE contract records and their valid_to date; it does not mutate contract status.",
+            "scope": "Risk classification is an operational triage indicator, not a legal or creditworthiness determination.",
+        },
+    }
+
+
 @router.get("/supplier-compliance/policies", response_model=list[SupplierCompliancePolicyResponse])
 def list_supplier_compliance_policies(
     vendor_category: Optional[str] = Query(default=None),
