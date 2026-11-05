@@ -794,6 +794,25 @@ class SupplierComplianceDocument(Base):
     verified_by: Mapped[Optional["User"]] = relationship(foreign_keys=[verified_by_id])
 
 
+
+class SupplierCompliancePolicy(Base):
+    """Tenant-configured mandatory evidence rules for each supplier category."""
+    __tablename__ = "procurement_supplier_compliance_policies"
+    __table_args__ = (
+        UniqueConstraint("vendor_category", "document_type", name="uq_supplier_compliance_policy_scope"),
+        CheckConstraint("vendor_category IN ('PHARMACEUTICALS','SURGICAL_IMPLANTS','LAB_REAGENTS','EQUIPMENT_MAINTENANCE','GENERAL_SUPPLIES')", name="ck_supplier_compliance_policy_category"),
+        CheckConstraint("length(document_type) BETWEEN 2 AND 40", name="ck_supplier_compliance_policy_document_type"),
+        Index("ix_supplier_compliance_policy_category_required", "vendor_category", "is_required"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_category: Mapped[str] = mapped_column(String(40), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    is_required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    updated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_by: Mapped["User"] = relationship()
+
+
 class SupplierComplianceDocumentDownloadAudit(Base):
     """Append-only access record for supplier regulatory documents."""
     __tablename__ = "procurement_supplier_compliance_download_audits"
