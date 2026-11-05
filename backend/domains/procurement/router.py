@@ -2336,6 +2336,29 @@ def get_procurement_quotation_outcomes(
                 ),
             })
 
+    supplier_outcomes = {}
+    for row in rows:
+        supplier = supplier_outcomes.setdefault(row["selected_vendor_id"], {
+            "vendor_id": row["selected_vendor_id"],
+            "vendor_name": row["selected_vendor_name"],
+            "purchase_order_line_count": 0,
+            "selected_offer_value_paise": 0,
+            "competitive_savings_paise": 0,
+            "selected_offer_premium_paise": 0,
+            "comparable_line_count": 0,
+        })
+        supplier["purchase_order_line_count"] += 1
+        supplier["selected_offer_value_paise"] += row["selected_gross_paise"]
+        supplier["competitive_savings_paise"] += row["competitive_saving_paise"]
+        supplier["selected_offer_premium_paise"] += row["selected_offer_premium_paise"]
+        if row["comparison_status"] == "COMPARABLE":
+            supplier["comparable_line_count"] += 1
+    supplier_outcome_rows = sorted(
+        supplier_outcomes.values(),
+        key=lambda row: row["competitive_savings_paise"],
+        reverse=True,
+    )
+
     return {
         "period": {
             "from_date": from_date.isoformat() if from_date else None,
@@ -2352,6 +2375,7 @@ def get_procurement_quotation_outcomes(
             "selected_offer_premium_paise": sum(row["selected_offer_premium_paise"] for row in rows),
             "competitive_savings_definition": "Difference between the best comparable non-selected quotation and the selected quotation, applied to the PO ordered quantity. This is an estimated competitive price advantage, not realized cash savings.",
         },
+        "supplier_outcomes": supplier_outcome_rows,
         "items": rows,
         "limitations": [
             "Only selected and explicitly not-selected quotations are compared; withdrawn or unselected incomplete offers are excluded.",
