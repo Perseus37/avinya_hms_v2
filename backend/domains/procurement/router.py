@@ -2,7 +2,7 @@ import secrets
 from decimal import Decimal
 
 from datetime import date, datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, BackgroundTasks, Response, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, BackgroundTasks, Response, Query, Request, Form
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import select, func
@@ -28,7 +28,7 @@ from backend.domains.procurement.models import (
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
     MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement,
-    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit
+    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -47,7 +47,7 @@ from backend.domains.procurement.schemas import (
     ProcurementBudgetRevisionCreate, ProcurementBudgetRevisionReview,
     ProcurementBudgetRevisionResponse, PurchaseOrderCancelRequest,
     SupplierContractCreate, SupplierContractResponse, SupplierContractRevisionCreate,
-    SupplierContractRevisionReview, SupplierContractRevisionResponse
+    SupplierContractRevisionReview, SupplierContractRevisionResponse, SupplierComplianceDocumentResponse, SupplierComplianceDocumentReview
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
@@ -59,6 +59,8 @@ from backend.domains.procurement.documents import (
     store_vendor_invoice_document,
     store_supplier_contract_document,
     resolve_supplier_contract_document,
+    store_supplier_compliance_document,
+    resolve_supplier_compliance_document,
 )
 
 from backend.domains.reports.models import PrintModeEnum, ReportTypeEnum
@@ -4292,6 +4294,182 @@ def list_procurement_budget_movements(
 
 
 # --- Supplier contract lifecycle and negotiated rates ---
+
+# --- Supplier regulatory compliance documents ---
+_SUPPLIER_COMPLIANCE_TYPES = {
+    "GST_REGISTRATION", "PAN", "DRUG_LICENSE", "WHO_GMP", "ISO_CERTIFICATE",
+    "FSSAI_LICENSE", "BIOMEDICAL_AUTHORIZATION", "FIRE_SAFETY_CERTIFICATE",
+    "EQUIPMENT_CALIBRATION", "OTHER",
+}
+
+
+def _supplier_compliance_status(document: SupplierComplianceDocument, today: date) -> str:
+    if document.status == "PENDING_VERIFICATION":
+        return "PENDING_VERIFICATION"
+    if document.status == "REJECTED":
+        return "REJECTED"
+    if document.expiry_date is not None:
+        if document.expiry_date < today:
+            return "EXPIRED"
+        if document.expiry_date <= today + timedelta(days=30):
+            return "EXPIRING_SOON"
+    return "VALID"
+
+
+@router.post("/vendors/{vendor_id}/compliance-documents", status_code=status.HTTP_201_CREATED)
+def upload_supplier_compliance_document(
+    vendor_id: int,
+    request: Request,
+    document_type: str = Form(...),
+    document_number: Optional[str] = Form(default=None),
+    issuer: Optional[str] = Form(default=None),
+    issue_date: Optional[date] = Form(default=None),
+    expiry_date: Optional[date] = Form(default=None),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    vendor = db.get(VendorMaster, vendor_id)
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    kind = document_type.strip().upper()
+    if kind not in _SUPPLIER_COMPLIANCE_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported supplier compliance document type.")
+    if issue_date and expiry_date and expiry_date < issue_date:
+        raise HTTPException(status_code=422, detail="Document expiry date cannot precede its issue date.")
+    tenant = resolve_tenant_context(request)
+    try:
+        storage_key, path = store_supplier_compliance_document(
+            tenant.subdomain_slug, file.filename, file.file
+        )
+    finally:
+        file.file.close()
+    document = SupplierComplianceDocument(
+        vendor_id=vendor.id, document_type=kind,
+        document_number=document_number.strip() if document_number else None,
+        issuer=issuer.strip() if issuer else None,
+        issue_date=issue_date, expiry_date=expiry_date,
+        storage_key=storage_key, original_filename=(file.filename or "supplier-document")[:255],
+        status="PENDING_VERIFICATION", uploaded_by_id=current_user.id,
+    )
+    db.add(document)
+    try:
+        db.commit()
+        db.refresh(document)
+    except Exception:
+        db.rollback()
+        path.unlink(missing_ok=True)
+        raise
+    return {**SupplierComplianceDocumentResponse.model_validate(document).model_dump(),
+            "compliance_status": "PENDING_VERIFICATION"}
+
+
+@router.get("/vendors/{vendor_id}/compliance-documents")
+def list_supplier_compliance_documents(
+    vendor_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    if db.get(VendorMaster, vendor_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    today = datetime.now(timezone.utc).date()
+    documents = db.query(SupplierComplianceDocument).filter(
+        SupplierComplianceDocument.vendor_id == vendor_id
+    ).order_by(SupplierComplianceDocument.document_type.asc(),
+               SupplierComplianceDocument.uploaded_at.desc()).all()
+    return [{**SupplierComplianceDocumentResponse.model_validate(item).model_dump(),
+             "compliance_status": _supplier_compliance_status(item, today)}
+            for item in documents]
+
+
+@router.patch("/vendors/{vendor_id}/compliance-documents/{document_id}/review")
+def review_supplier_compliance_document(
+    vendor_id: int,
+    document_id: int,
+    payload: SupplierComplianceDocumentReview,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    document = db.query(SupplierComplianceDocument).filter(
+        SupplierComplianceDocument.id == document_id,
+        SupplierComplianceDocument.vendor_id == vendor_id,
+    ).with_for_update().one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Supplier compliance document not found.")
+    if document.status != "PENDING_VERIFICATION":
+        raise HTTPException(status_code=409, detail="Only pending compliance documents can be reviewed.")
+    if document.uploaded_by_id == current_user.id:
+        raise HTTPException(status_code=403, detail="The uploader cannot verify their own compliance document.")
+    document.status = "VERIFIED" if payload.approved else "REJECTED"
+    document.verified_by_id = current_user.id
+    document.verified_at = datetime.now(timezone.utc)
+    document.review_notes = payload.review_notes.strip()
+    db.commit()
+    db.refresh(document)
+    today = datetime.now(timezone.utc).date()
+    return {**SupplierComplianceDocumentResponse.model_validate(document).model_dump(),
+            "compliance_status": _supplier_compliance_status(document, today)}
+
+
+@router.get("/supplier-compliance/expiring")
+def list_expiring_supplier_compliance_documents(
+    within_days: int = Query(default=60, ge=0, le=730),
+    include_expired: bool = True,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    today = datetime.now(timezone.utc).date()
+    upper = today + timedelta(days=within_days)
+    query = db.query(SupplierComplianceDocument, VendorMaster).join(
+        VendorMaster, VendorMaster.id == SupplierComplianceDocument.vendor_id
+    ).filter(
+        SupplierComplianceDocument.status == "VERIFIED",
+        SupplierComplianceDocument.expiry_date.is_not(None),
+        SupplierComplianceDocument.expiry_date <= upper,
+    )
+    if not include_expired:
+        query = query.filter(SupplierComplianceDocument.expiry_date >= today)
+    rows = query.order_by(SupplierComplianceDocument.expiry_date.asc()).all()
+    return [{
+        "document_id": document.id, "vendor_id": vendor.id,
+        "vendor_name": vendor.name, "document_type": document.document_type,
+        "document_number": document.document_number, "expiry_date": document.expiry_date,
+        "days_remaining": (document.expiry_date - today).days,
+        "compliance_status": _supplier_compliance_status(document, today),
+    } for document, vendor in rows]
+
+
+@router.get("/vendors/{vendor_id}/compliance-documents/{document_id}/download")
+def download_supplier_compliance_document(
+    vendor_id: int,
+    document_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:read")),
+):
+    tenant = resolve_tenant_context(request)
+    row = db.query(SupplierComplianceDocument, VendorMaster).join(
+        VendorMaster, VendorMaster.id == SupplierComplianceDocument.vendor_id
+    ).filter(
+        SupplierComplianceDocument.id == document_id,
+        SupplierComplianceDocument.vendor_id == vendor_id,
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Supplier compliance document not found.")
+    document, vendor = row
+    path = resolve_supplier_compliance_document(tenant.subdomain_slug, document.storage_key)
+    db.add(SupplierComplianceDocumentDownloadAudit(
+        document_id=document.id, vendor_name=vendor.name,
+        document_type=document.document_type, actor_user_id=current_user.id,
+        actor_email=current_user.email,
+    ))
+    db.commit()
+    media_type = {".pdf": "application/pdf", ".png": "image/png",
+                  ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}[path.suffix.lower()]
+    return FileResponse(path, media_type=media_type,
+                        filename=f"{vendor.code}-{document.document_type}{path.suffix}")
+
+
 @router.post("/supplier-contracts", response_model=SupplierContractResponse, status_code=status.HTTP_201_CREATED)
 def create_supplier_contract(
     payload: SupplierContractCreate,
