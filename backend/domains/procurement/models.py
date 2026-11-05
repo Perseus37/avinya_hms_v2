@@ -596,6 +596,50 @@ class ProcurementUnitOfMeasure(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class MedicationPriceControl(AuditMixin, Base):
+    """Explicit per-medication threshold for normalized purchase-price escalation."""
+    __tablename__ = "procurement_medication_price_controls"
+    __table_args__ = (
+        CheckConstraint("max_variance_pct >= 0 AND max_variance_pct <= 1000", name="ck_med_price_control_variance_range"),
+        CheckConstraint("minimum_observations >= 2 AND minimum_observations <= 100", name="ck_med_price_control_min_observations"),
+        CheckConstraint("lookback_days >= 1 AND lookback_days <= 1825", name="ck_med_price_control_lookback_days"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    medication_id: Mapped[int] = mapped_column(ForeignKey("medication_master.id", ondelete="RESTRICT"), nullable=False, unique=True)
+    max_variance_pct: Mapped[int] = mapped_column(Integer, nullable=False)
+    minimum_observations: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    lookback_days: Mapped[int] = mapped_column(Integer, default=180, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    medication: Mapped["MedicationMaster"] = relationship()
+
+
+class PurchaseOrderPriceReview(AuditMixin, Base):
+    """Immutable evidence and reason for accepting a PO above its comparable price threshold."""
+    __tablename__ = "procurement_po_price_reviews"
+    __table_args__ = (
+        UniqueConstraint("po_id", "po_item_id", name="uq_po_price_review_line"),
+        CheckConstraint("benchmark_observations >= 0", name="ck_po_price_review_observations_non_neg"),
+        CheckConstraint("threshold_pct >= 0", name="ck_po_price_review_threshold_non_neg"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    po_id: Mapped[int] = mapped_column(ForeignKey("procurement_purchase_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    po_item_id: Mapped[int] = mapped_column(ForeignKey("procurement_po_items.id", ondelete="CASCADE"), nullable=False)
+    medication_id: Mapped[int] = mapped_column(ForeignKey("medication_master.id", ondelete="RESTRICT"), nullable=False)
+    base_uom_code: Mapped[str] = mapped_column(String(24), nullable=False)
+    proposed_base_unit_price_paise: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    benchmark_median_paise: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    benchmark_min_paise: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    benchmark_max_paise: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    benchmark_observations: Mapped[int] = mapped_column(Integer, nullable=False)
+    threshold_pct: Mapped[int] = mapped_column(Integer, nullable=False)
+    variance_pct: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    override_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    reviewed_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class MedicationPackConfiguration(AuditMixin, Base):
     """Effective-dated, auditable conversion from a medication purchase unit to its stock base unit."""
     __tablename__ = "procurement_medication_pack_configurations"
