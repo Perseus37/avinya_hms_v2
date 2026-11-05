@@ -173,3 +173,71 @@ def resolve_vendor_invoice_document(tenant_slug: str, document_key: str) -> Path
     if document_path.suffix.lower() not in _ALLOWED_SIGNATURES or not document_path.is_file():
         raise HTTPException(status_code=404, detail="Invoice document not found.")
     return document_path
+
+
+def _contract_storage_directory(tenant_slug: str, *, create: bool) -> Path:
+    if not _TENANT_SLUG.fullmatch(tenant_slug):
+        raise RuntimeError("Tenant slug is not a safe storage path component.")
+    try:
+        return tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_slug,
+            "procurement-contracts",
+            create=create,
+        )
+    except StoragePathError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Contract document storage is unavailable.") from exc
+
+
+def store_supplier_contract_document(
+    tenant_slug: str, filename: str | None, source: BinaryIO
+) -> tuple[str, Path]:
+    if not _TENANT_SLUG.fullmatch(tenant_slug):
+        raise RuntimeError("Tenant slug is not a safe storage path component.")
+    suffix = Path(filename or "").suffix.lower()
+    signature = _ALLOWED_SIGNATURES.get(suffix)
+    if signature is None:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                            detail="Contract documents must be PDF, PNG, or JPEG files.")
+    tenant_dir = _contract_storage_directory(tenant_slug, create=True)
+    document_id = uuid.uuid4().hex
+    destination_name = f"{document_id}{suffix}"
+    try:
+        stage_and_publish_upload(
+            tenant_dir, destination_name, f".{document_id}.part", source,
+            max_bytes=settings.MAX_ATTACHMENT_UPLOAD_BYTES,
+            signature=signature, scanner=scan_file_with_clamav,
+        )
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail="Contract document exceeds the configured upload limit.") from exc
+    except UploadEmptyError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Contract document cannot be empty.") from exc
+    except UploadContentError as exc:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                            detail="Contract document content does not match its file type.") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Contract document storage is unavailable.") from exc
+    destination = tenant_dir / destination_name
+    return PurePosixPath(tenant_slug, "procurement-contracts", destination.name).as_posix(), destination
+
+
+def resolve_supplier_contract_document(tenant_slug: str, document_key: str) -> Path:
+    if not _TENANT_SLUG.fullmatch(tenant_slug):
+        raise RuntimeError("Tenant slug is not a safe storage path component.")
+    key = PurePosixPath(document_key)
+    expected_prefix = PurePosixPath(tenant_slug, "procurement-contracts")
+    if (key.is_absolute() or key.parts[:2] != expected_prefix.parts or len(key.parts) != 3
+            or not re.fullmatch(r"[0-9a-f]{32}\.(?:pdf|png|jpg|jpeg)", key.name)):
+        raise HTTPException(status_code=404, detail="Contract document not found.")
+    tenant_dir = _contract_storage_directory(tenant_slug, create=False)
+    try:
+        path = resolve_tenant_storage_file(tenant_dir, key.name)
+    except StoragePathError as exc:
+        raise HTTPException(status_code=404, detail="Contract document not found.") from exc
+    if path.suffix.lower() not in _ALLOWED_SIGNATURES or not path.is_file():
+        raise HTTPException(status_code=404, detail="Contract document not found.")
+    return path
