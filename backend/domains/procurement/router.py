@@ -3411,6 +3411,181 @@ def get_vendor_metrics(
     }
 
 
+
+@router.get("/budgets/analytics/dashboard")
+def get_procurement_budget_dashboard(
+    from_date: Optional[date] = Query(default=None, description="Inclusive movement date filter (UTC)."),
+    to_date: Optional[date] = Query(default=None, description="Inclusive movement date filter (UTC)."),
+    department_id: Optional[int] = Query(default=None, gt=0),
+    category: Optional[str] = Query(default=None, pattern="^(PHARMACY|LABORATORY|GENERAL_SUPPLIES|EQUIPMENT|SERVICES|OTHER)$"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:read")),
+):
+    """Budget portfolio, department/category allocation, movement trend and run-rate forecast."""
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date must be on or before to_date.")
+    today = datetime.now(timezone.utc).date()
+    window_end = to_date or today
+    window_start = from_date or (window_end - timedelta(days=364))
+    start_at = datetime.combine(window_start, datetime.min.time(), tzinfo=timezone.utc)
+    end_at = datetime.combine(window_end, datetime.max.time(), tzinfo=timezone.utc)
+
+    query = db.query(ProcurementBudget).options(
+        joinedload(ProcurementBudget.department)
+    ).filter(
+        ProcurementBudget.period_start <= window_end,
+        ProcurementBudget.period_end >= window_start,
+    )
+    if department_id is not None:
+        query = query.filter(ProcurementBudget.requesting_department_id == department_id)
+        if not current_user.is_superuser and not user_has_department_access(db, current_user, department_id):
+            raise HTTPException(status_code=403, detail="You are not assigned to the requested budget department.")
+    elif not current_user.is_superuser:
+        assigned_department_ids = {
+            row[0] for row in db.query(UserRole.department_id).filter(
+                UserRole.user_id == current_user.id,
+                UserRole.department_id.is_not(None),
+            ).distinct().all()
+            if row[0] is not None and user_has_department_access(db, current_user, row[0])
+        }
+        query = query.filter(ProcurementBudget.requesting_department_id.in_(assigned_department_ids or [-1]))
+    if category:
+        query = query.filter(ProcurementBudget.category == category)
+    budgets = query.order_by(
+        ProcurementBudget.requesting_department_id.asc(),
+        ProcurementBudget.category.asc(),
+        ProcurementBudget.period_start.asc(),
+        ProcurementBudget.period_type.asc(),
+    ).all()
+
+    allocation_rows = []
+    for budget in budgets:
+        totals = _budget_ledger_totals(db, budget.id)
+        available, earmarked = _budget_available_paise(db, budget)
+        engaged = totals["reserved_open_paise"] + totals["received_consumption_paise"] + earmarked
+        utilization = round(engaged * 100 / budget.total_amount_paise, 2) if budget.total_amount_paise else None
+        if available < 0:
+            alert = "OVER_BUDGET"
+        elif utilization is not None and utilization >= budget.warning_threshold_pct:
+            alert = "WARNING"
+        else:
+            alert = "NORMAL"
+        elapsed_days = max((min(today, budget.period_end) - budget.period_start).days + 1, 0)
+        total_days = max((budget.period_end - budget.period_start).days + 1, 1)
+        received = totals["received_consumption_paise"]
+        projected_received = round(received * total_days / elapsed_days) if elapsed_days > 0 else 0
+        allocation_rows.append({
+            "budget_id": budget.id,
+            "budget_number": budget.budget_number,
+            "department_id": budget.requesting_department_id,
+            "department_name": budget.department.name if budget.department else None,
+            "category": budget.category,
+            "period_type": budget.period_type,
+            "parent_budget_id": budget.parent_budget_id,
+            "period_start": budget.period_start,
+            "period_end": budget.period_end,
+            "status": budget.status,
+            "allocated_paise": budget.total_amount_paise,
+            "reserved_open_commitment_paise": totals["reserved_open_paise"],
+            "received_consumption_paise": received,
+            "active_quarter_earmark_paise": earmarked,
+            "engaged_paise": engaged,
+            "available_paise": available,
+            "utilization_pct": utilization,
+            "warning_threshold_pct": budget.warning_threshold_pct,
+            "alert": alert,
+            "projected_period_receipts_paise": projected_received,
+            "forecast_note": "Straight-line projection of accepted GRN consumption from period start through today; excludes open commitments and is not a purchasing recommendation.",
+        })
+
+    # Movement rows are read once and grouped by month/category/department.
+    visible_budget_ids = [row["budget_id"] for row in allocation_rows]
+    movements = db.query(
+        ProcurementBudgetMovement,
+        ProcurementBudget.requesting_department_id,
+        ProcurementBudget.category,
+    ).join(
+        ProcurementBudget, ProcurementBudget.id == ProcurementBudgetMovement.budget_id
+    ).filter(
+        ProcurementBudgetMovement.budget_id.in_(visible_budget_ids or [-1]),
+        ProcurementBudgetMovement.created_at >= start_at,
+        ProcurementBudgetMovement.created_at <= end_at,
+    ).order_by(ProcurementBudgetMovement.created_at.asc()).all()
+
+    monthly = {}
+    department_category = {}
+    for movement, movement_department_id, movement_category in movements:
+        month = movement.created_at.strftime("%Y-%m")
+        key = (movement_department_id, movement_category)
+        monthly_row = monthly.setdefault(month, {
+            "month": month,
+            "reserved_paise": 0,
+            "released_paise": 0,
+            "received_paise": 0,
+        })
+        monthly_row[{
+            "RESERVATION": "reserved_paise",
+            "RELEASE": "released_paise",
+            "RECEIPT": "received_paise",
+        }[movement.movement_type]] += movement.amount_paise
+        summary = department_category.setdefault(key, {
+            "department_id": movement_department_id,
+            "category": movement_category,
+            "reservation_movement_paise": 0,
+            "release_movement_paise": 0,
+            "received_movement_paise": 0,
+        })
+        summary[{
+            "RESERVATION": "reservation_movement_paise",
+            "RELEASE": "release_movement_paise",
+            "RECEIPT": "received_movement_paise",
+        }[movement.movement_type]] += movement.amount_paise
+
+    month_cursor = date(window_start.year, window_start.month, 1)
+    month_end = date(window_end.year, window_end.month, 1)
+    monthly_trend = []
+    while month_cursor <= month_end:
+        key = month_cursor.strftime("%Y-%m")
+        monthly_trend.append(monthly.get(key, {
+            "month": key,
+            "reserved_paise": 0,
+            "released_paise": 0,
+            "received_paise": 0,
+        }))
+        month_cursor = date(
+            month_cursor.year + (1 if month_cursor.month == 12 else 0),
+            1 if month_cursor.month == 12 else month_cursor.month + 1,
+            1,
+        )
+
+    # Invoice actuals are distinct from budget consumption and are returned
+    # once per allocation to preserve the existing reconciliation definition.
+    invoice_actuals = []
+    for budget in budgets:
+        actuals = _budget_invoice_actuals(db, budget)
+        invoice_actuals.append({
+            "budget_id": budget.id,
+            "verified_invoice_actuals_paise": actuals["verified_invoice_actuals_paise"],
+            "paid_invoice_actuals_paise": actuals["paid_invoice_actuals_paise"],
+            "unpaid_verified_invoice_actuals_paise": actuals["unpaid_verified_invoice_actuals_paise"],
+        })
+
+    return {
+        "from_date": window_start,
+        "to_date": window_end,
+        "allocation_count": len(allocation_rows),
+        "allocations": allocation_rows,
+        "department_category_movement_summary": list(department_category.values()),
+        "monthly_movement_trend": monthly_trend,
+        "invoice_actuals_by_budget": invoice_actuals,
+        "definitions": {
+            "movement_trend": "RESERVATION, RELEASE and accepted GRN receipt movements in the selected date window; each ledger movement is counted once.",
+            "allocation_rows": "Annual and quarterly allocations are shown separately. Annual utilization includes its child-quarter movements and earmarks; do not sum annual and quarterly rows into a single portfolio total.",
+            "forecast": "Straight-line accepted-receipt run rate, not an AI forecast; invoice actuals are informational and are not added to budget consumption.",
+        },
+    }
+
+
 # --- Procurement budget allocation and controlled revisions ---
 @router.post("/budgets", response_model=ProcurementBudgetResponse, status_code=status.HTTP_201_CREATED)
 def create_procurement_budget(
