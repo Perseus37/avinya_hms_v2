@@ -648,6 +648,30 @@ class SupplierContractRateCreate(BaseModel):
         return self
 
 
+
+class SupplierComplianceDocumentResponse(BaseModel):
+    id: int
+    vendor_id: int
+    document_type: str
+    document_number: Optional[str]
+    issuer: Optional[str]
+    issue_date: Optional[date]
+    expiry_date: Optional[date]
+    original_filename: str
+    status: str
+    uploaded_by_id: int
+    uploaded_at: datetime
+    verified_by_id: Optional[int]
+    verified_at: Optional[datetime]
+    review_notes: Optional[str]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupplierComplianceDocumentReview(BaseModel):
+    approved: bool
+    review_notes: str = Field(min_length=3, max_length=2000)
+
+
 class SupplierContractCreate(BaseModel):
     vendor_id: int
     contract_number: str = Field(min_length=2, max_length=80)
