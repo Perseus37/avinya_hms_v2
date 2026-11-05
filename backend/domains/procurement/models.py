@@ -813,6 +813,25 @@ class SupplierCompliancePolicy(Base):
     updated_by: Mapped["User"] = relationship()
 
 
+
+class SupplierCompliancePolicyAudit(Base):
+    """Immutable history of changes to mandatory supplier evidence requirements."""
+    __tablename__ = "procurement_supplier_compliance_policy_audits"
+    __table_args__ = (
+        Index("ix_supplier_compliance_policy_audit_policy_time", "policy_id", "changed_at"),
+        Index("ix_supplier_compliance_policy_audit_actor_time", "changed_by_id", "changed_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    policy_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_supplier_compliance_policies.id", ondelete="SET NULL"), nullable=True)
+    vendor_category: Mapped[str] = mapped_column(String(40), nullable=False)
+    document_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    previous_is_required: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    new_is_required: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    changed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    changed_by_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class SupplierComplianceDocumentDownloadAudit(Base):
     """Append-only access record for supplier regulatory documents."""
     __tablename__ = "procurement_supplier_compliance_download_audits"
