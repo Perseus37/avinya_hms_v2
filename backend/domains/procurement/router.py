@@ -28,7 +28,7 @@ from backend.domains.procurement.models import (
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
     MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement,
-    SupplierContract, SupplierContractRate, SupplierContractRevision
+    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -57,6 +57,8 @@ from backend.domains.procurement.services import (
 from backend.domains.procurement.documents import (
     resolve_vendor_invoice_document,
     store_vendor_invoice_document,
+    store_supplier_contract_document,
+    resolve_supplier_contract_document,
 )
 
 from backend.domains.reports.models import PrintModeEnum, ReportTypeEnum
@@ -4531,3 +4533,69 @@ def list_supplier_contract_renewals(
         "notice_due": c.valid_to - timedelta(days=c.renewal_notice_days) <= today,
         "auto_renew": c.auto_renew,
     } for c in contracts]
+
+
+@router.post("/supplier-contracts/{contract_id}/document")
+def upload_supplier_contract_document(
+    contract_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    tenant = resolve_tenant_context(request)
+    contract = db.query(SupplierContract).filter(
+        SupplierContract.id == contract_id
+    ).with_for_update().one_or_none()
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Supplier contract not found.")
+    if contract.status != "DRAFT":
+        raise HTTPException(status_code=409, detail="Signed contract evidence can only be attached while the contract is a draft.")
+    try:
+        document_key, document_path = store_supplier_contract_document(
+            tenant.subdomain_slug, file.filename, file.file
+        )
+    finally:
+        file.file.close()
+    old_key = contract.document_file_url
+    contract.document_file_url = document_key
+    contract.updated_by_id = current_user.id
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        document_path.unlink(missing_ok=True)
+        raise
+    if old_key:
+        try:
+            old_path = resolve_supplier_contract_document(tenant.subdomain_slug, old_key)
+            old_path.unlink(missing_ok=True)
+        except HTTPException:
+            pass
+    return {"contract_id": contract.id, "document_attached": True}
+
+
+@router.get("/supplier-contracts/{contract_id}/document")
+def download_supplier_contract_document(
+    contract_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:read")),
+):
+    tenant = resolve_tenant_context(request)
+    contract = db.get(SupplierContract, contract_id)
+    if contract is None or not contract.document_file_url:
+        raise HTTPException(status_code=404, detail="Contract document not found.")
+    path = resolve_supplier_contract_document(tenant.subdomain_slug, contract.document_file_url)
+    media_type = {
+        ".pdf": "application/pdf", ".png": "image/png",
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    }[path.suffix.lower()]
+    db.add(SupplierContractDocumentDownloadAudit(
+        contract_id=contract.id,
+        contract_number=contract.contract_number,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+    ))
+    db.commit()
+    return FileResponse(path, media_type=media_type, filename=f"{contract.contract_number}{path.suffix}")
