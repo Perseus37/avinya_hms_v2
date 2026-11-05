@@ -3080,6 +3080,13 @@ def activate_procurement_budget(
         raise HTTPException(status_code=409, detail="Only draft budgets can be activated.")
     if budget.created_by_id == current_user.id:
         raise HTTPException(status_code=409, detail="The budget creator cannot activate their own budget.")
+    # Serialize activation attempts for the same department so concurrent requests
+    # cannot create overlapping active allocations.
+    department = db.query(Department).filter(
+        Department.id == budget.requesting_department_id
+    ).with_for_update().one_or_none()
+    if department is None:
+        raise HTTPException(status_code=409, detail="The budget department no longer exists.")
     overlapping = db.query(ProcurementBudget.id).filter(
         ProcurementBudget.id != budget.id,
         ProcurementBudget.requesting_department_id == budget.requesting_department_id,
