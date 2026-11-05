@@ -1719,6 +1719,33 @@ def test_procurement_budget_creation_activation_and_independent_revision(
     assert movement_audit.status_code == 200, movement_audit.text
     assert {row["movement_type"] for row in movement_audit.json()} == {"RESERVATION", "RELEASE", "RECEIPT"}
 
+    dashboard = client.get(
+        "/v1/api/procurement/budgets/analytics/dashboard",
+        headers=superuser_headers,
+        params={
+            "from_date": today.isoformat(),
+            "to_date": today.isoformat(),
+            "department_id": department_id,
+            "category": "PHARMACY",
+        },
+    )
+    assert dashboard.status_code == 200, dashboard.text
+    dashboard_data = dashboard.json()
+    assert dashboard_data["allocation_count"] == 2
+    assert {row["budget_id"] for row in dashboard_data["allocations"]} == {
+        budget["id"], quarter_child.json()["id"]
+    }
+    assert any(row["received_paise"] == 1000000 for row in dashboard_data["monthly_movement_trend"])
+    assert any(row["verified_invoice_actuals_paise"] == 1040000 for row in dashboard_data["invoice_actuals_by_budget"])
+    assert dashboard_data["definitions"]["forecast"].startswith("Straight-line")
+
+    invalid_dashboard_range = client.get(
+        "/v1/api/procurement/budgets/analytics/dashboard",
+        headers=superuser_headers,
+        params={"from_date": today.isoformat(), "to_date": start.isoformat()},
+    )
+    assert invalid_dashboard_range.status_code == 422
+
     revision = client.post(
         f"/v1/api/procurement/budgets/{budget['id']}/revisions",
         headers=pharmacist_headers,
