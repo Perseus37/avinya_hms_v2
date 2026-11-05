@@ -4123,7 +4123,6 @@ def review_procurement_budget_revision(
     revision.reviewed_by_id = current_user.id
     revision.reviewed_at = datetime.now(timezone.utc)
     revision.review_notes = payload.review_notes.strip()
-    revision.updated_by_id = current_user.id
     revision.status = "APPROVED" if payload.approved else "REJECTED"
     if payload.approved:
         current_available, _ = _budget_available_paise(db, budget)
@@ -4455,7 +4454,7 @@ def request_supplier_contract_revision(
     revision = SupplierContractRevision(
         contract_id=contract.id, revision_number=contract.version_number + 1,
         prior_snapshot=prior, proposed_snapshot=proposed, reason=payload.reason.strip(),
-        requested_by_id=current_user.id, created_by_id=current_user.id,
+        requested_by_id=current_user.id,
     )
     db.add(revision)
     db.commit()
@@ -4513,7 +4512,7 @@ def list_supplier_contract_revisions(
     ).order_by(SupplierContractRevision.revision_number.asc()).all()
 
 
-@router.get("/supplier-contracts/renewals/due")
+@router.get("/supplier-contract-renewals/due")
 def list_supplier_contract_renewals(
     within_days: int = Query(default=90, ge=0, le=730),
     db: Session = Depends(get_db),
