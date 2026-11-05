@@ -237,6 +237,74 @@ def _budget_invoice_actuals(db: Session, budget: ProcurementBudget) -> dict:
     }
 
 
+
+def _budget_invoice_actuals_by_budget_ids(db: Session, budget_ids: set[int]) -> dict[int, dict]:
+    """Fetch and allocate verified invoice actuals once for a dashboard portfolio."""
+    result = {
+        budget_id: {
+            "verified_invoice_actuals_paise": 0,
+            "paid_invoice_actuals_paise": 0,
+            "unpaid_verified_invoice_actuals_paise": 0,
+            "verified_invoice_ids": set(),
+        }
+        for budget_id in budget_ids
+    }
+    if not budget_ids:
+        return result
+    invoices = db.query(VendorInvoice).options(
+        selectinload(VendorInvoice.items)
+    ).filter(
+        VendorInvoice.status.in_([
+            VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            VendorInvoiceStatusEnum.PAID,
+        ])
+    ).all()
+    po_item_ids = {
+        line.po_item_id
+        for invoice in invoices
+        for line in invoice.items
+        if line.po_item_id is not None
+    }
+    po_items = {
+        item.id: item for item in db.query(PurchaseOrderItem).filter(
+            PurchaseOrderItem.id.in_(po_item_ids or {-1})
+        ).all()
+    }
+    for invoice in invoices:
+        lines = sorted(invoice.items, key=lambda item: item.id)
+        subtotal = sum(int(line.total_price_paise) for line in lines)
+        if subtotal <= 0:
+            continue
+        discount = min(max(int(invoice.discount_paise or 0), 0), subtotal)
+        shares = []
+        allocated_discount = 0
+        for line in lines:
+            share, remainder = divmod(discount * int(line.total_price_paise), subtotal)
+            shares.append([line, share, remainder])
+            allocated_discount += share
+        remaining_discount = discount - allocated_discount
+        for entry in sorted(shares, key=lambda value: (-value[2], value[0].id))[:remaining_discount]:
+            entry[1] += 1
+        for line, discount_share, _ in shares:
+            po_item = po_items.get(line.po_item_id) if line.po_item_id is not None else None
+            if po_item is None or po_item.budget_id not in budget_ids:
+                continue
+            net = int(line.total_price_paise)
+            tax = (net * int(line.tax_percentage or 0) + 50) // 100
+            value = max(net + tax - discount_share, 0)
+            if value <= 0:
+                continue
+            actuals = result[po_item.budget_id]
+            actuals["verified_invoice_actuals_paise"] += value
+            if invoice.status == VendorInvoiceStatusEnum.PAID:
+                actuals["paid_invoice_actuals_paise"] += value
+            else:
+                actuals["unpaid_verified_invoice_actuals_paise"] += value
+            actuals["verified_invoice_ids"].add(invoice.id)
+    for actuals in result.values():
+        actuals["verified_invoice_count"] = len(actuals.pop("verified_invoice_ids"))
+    return result
+
 def _resolve_active_procurement_budget(
     db: Session, department_id: int, category: str, order_date: date
 ) -> Optional[ProcurementBudget]:
@@ -3458,10 +3526,62 @@ def get_procurement_budget_dashboard(
         ProcurementBudget.period_type.asc(),
     ).all()
 
+    visible_budget_ids = {budget.id for budget in budgets}
+    annual_root_ids = {
+        budget.id for budget in budgets
+        if budget.period_type == "ANNUAL" and budget.parent_budget_id is None
+    }
+    child_budget_rows = db.query(ProcurementBudget).filter(
+        ProcurementBudget.parent_budget_id.in_(annual_root_ids or {-1})
+    ).all()
+    all_ledger_budget_ids = visible_budget_ids | {child.id for child in child_budget_rows}
+    ledger_rows = db.query(
+        ProcurementBudgetMovement.budget_id,
+        ProcurementBudgetMovement.movement_type,
+        func.coalesce(func.sum(ProcurementBudgetMovement.amount_paise), 0),
+    ).filter(
+        ProcurementBudgetMovement.budget_id.in_(all_ledger_budget_ids or {-1})
+    ).group_by(
+        ProcurementBudgetMovement.budget_id,
+        ProcurementBudgetMovement.movement_type,
+    ).all()
+    direct_totals = {}
+    for ledger_budget_id, movement_type, amount in ledger_rows:
+        direct_totals.setdefault(ledger_budget_id, {})[movement_type] = int(amount or 0)
+
+    def _totals_for_dashboard_budget(budget_id: int, include_children: bool = False) -> dict:
+        ids = [budget_id]
+        if include_children:
+            ids.extend(child.id for child in child_budget_rows if child.parent_budget_id == budget_id)
+        totals = {"RESERVATION": 0, "RELEASE": 0, "RECEIPT": 0}
+        for ledger_budget_id in ids:
+            for movement_type, amount in direct_totals.get(ledger_budget_id, {}).items():
+                totals[movement_type] = totals.get(movement_type, 0) + amount
+        return {
+            "reserved_open_paise": max(totals["RESERVATION"] - totals["RELEASE"] - totals["RECEIPT"], 0),
+            "received_consumption_paise": totals["RECEIPT"],
+        }
+
+    direct_child_totals = {
+        child.id: _totals_for_dashboard_budget(child.id)
+        for child in child_budget_rows
+    }
+    invoice_budget_ids = all_ledger_budget_ids
+    invoice_actuals_by_id = _budget_invoice_actuals_by_budget_ids(db, invoice_budget_ids)
+
     allocation_rows = []
     for budget in budgets:
-        totals = _budget_ledger_totals(db, budget.id)
-        available, earmarked = _budget_available_paise(db, budget)
+        is_annual_root = budget.id in annual_root_ids
+        totals = _totals_for_dashboard_budget(budget.id, include_children=is_annual_root)
+        earmarked = 0
+        if is_annual_root:
+            for child in child_budget_rows:
+                if child.parent_budget_id != budget.id or child.status != "ACTIVE":
+                    continue
+                child_totals = direct_child_totals[child.id]
+                child_used = child_totals["reserved_open_paise"] + child_totals["received_consumption_paise"]
+                earmarked += max(child.total_amount_paise - child_used, 0)
+        available = budget.total_amount_paise - totals["reserved_open_paise"] - totals["received_consumption_paise"] - earmarked
         engaged = totals["reserved_open_paise"] + totals["received_consumption_paise"] + earmarked
         utilization = round(engaged * 100 / budget.total_amount_paise, 2) if budget.total_amount_paise else None
         if available < 0:
@@ -3499,7 +3619,7 @@ def get_procurement_budget_dashboard(
         })
 
     # Movement rows are read once and grouped by month/category/department.
-    visible_budget_ids = [row["budget_id"] for row in allocation_rows]
+    visible_budget_id_list = list(visible_budget_ids)
     movements = db.query(
         ProcurementBudgetMovement,
         ProcurementBudget.requesting_department_id,
@@ -3507,7 +3627,7 @@ def get_procurement_budget_dashboard(
     ).join(
         ProcurementBudget, ProcurementBudget.id == ProcurementBudgetMovement.budget_id
     ).filter(
-        ProcurementBudgetMovement.budget_id.in_(visible_budget_ids or [-1]),
+        ProcurementBudgetMovement.budget_id.in_(visible_budget_id_list or [-1]),
         ProcurementBudgetMovement.created_at >= start_at,
         ProcurementBudgetMovement.created_at <= end_at,
     ).order_by(ProcurementBudgetMovement.created_at.asc()).all()
@@ -3558,16 +3678,33 @@ def get_procurement_budget_dashboard(
             1,
         )
 
-    # Invoice actuals are distinct from budget consumption and are returned
-    # once per allocation to preserve the existing reconciliation definition.
+    # Invoice actuals are fetched once, then rolled up to annual roots.
     invoice_actuals = []
     for budget in budgets:
-        actuals = _budget_invoice_actuals(db, budget)
+        actuals = invoice_actuals_by_id.get(budget.id, {
+            "verified_invoice_actuals_paise": 0,
+            "paid_invoice_actuals_paise": 0,
+            "unpaid_verified_invoice_actuals_paise": 0,
+            "verified_invoice_count": 0,
+        })
+        if budget.id in annual_root_ids:
+            for child in child_budget_rows:
+                if child.parent_budget_id != budget.id:
+                    continue
+                child_actuals = invoice_actuals_by_id.get(child.id, {})
+                for field in (
+                    "verified_invoice_actuals_paise",
+                    "paid_invoice_actuals_paise",
+                    "unpaid_verified_invoice_actuals_paise",
+                ):
+                    actuals[field] += child_actuals.get(field, 0)
+                actuals["verified_invoice_count"] += child_actuals.get("verified_invoice_count", 0)
         invoice_actuals.append({
             "budget_id": budget.id,
             "verified_invoice_actuals_paise": actuals["verified_invoice_actuals_paise"],
             "paid_invoice_actuals_paise": actuals["paid_invoice_actuals_paise"],
             "unpaid_verified_invoice_actuals_paise": actuals["unpaid_verified_invoice_actuals_paise"],
+            "verified_invoice_count": actuals["verified_invoice_count"],
         })
 
     return {
