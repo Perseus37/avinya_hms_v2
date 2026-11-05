@@ -1882,3 +1882,160 @@ def test_procurement_budget_rejects_invalid_period_and_unassigned_department(
         },
     )
     assert unassigned.status_code == 403
+
+
+
+def test_supplier_contract_approval_rate_enforcement_and_revision(
+    client, pharmacist_headers, superuser_headers
+):
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "CONTRACT-RATE-VENDOR",
+            "name": "Contract Rate Supplier",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Contracts",
+            "phone": "9000000099",
+            "email": "contract-rate@example.com",
+            "address": "Hyderabad",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    medication_response = client.post(
+        "/v1/api/pharmacy/medications",
+        headers=pharmacist_headers,
+        json={
+            "code": "CONTRACT-RATE-MED",
+            "brand_name": "Contract Rate Medicine",
+            "generic_name": "Contract Generic",
+            "form": "TABLET",
+            "strength": "500mg",
+        },
+    )
+    assert medication_response.status_code == 201, medication_response.text
+    medication_id = medication_response.json()["id"]
+
+    units_response = client.get(
+        "/v1/api/procurement/units-of-measure",
+        headers=superuser_headers,
+    )
+    assert units_response.status_code == 200, units_response.text
+    unit_ids = {unit["code"]: unit["id"] for unit in units_response.json()}
+    config = client.post(
+        f"/v1/api/procurement/medications/{medication_id}/pack-configurations",
+        headers=superuser_headers,
+        json={
+            "purchase_uom_id": unit_ids["STRIP"],
+            "base_uom_id": unit_ids["TAB"],
+            "units_per_purchase_unit": 10,
+            "effective_from": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        },
+    )
+    assert config.status_code == 201, config.text
+
+    today = datetime.now(timezone.utc).date()
+    contract_response = client.post(
+        "/v1/api/procurement/supplier-contracts",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor_id,
+            "contract_number": "AGR-CONTRACT-RATE-001",
+            "title": "Annual generic medicine rate agreement",
+            "valid_from": today.isoformat(),
+            "valid_to": (today + timedelta(days=180)).isoformat(),
+            "renewal_notice_days": 60,
+            "payment_terms": "Net 30",
+            "summary": "Negotiated tablet base-unit rate.",
+            "rates": [{
+                "scope_type": "MEDICATION",
+                "medication_id": medication_id,
+                "uom_code": "TAB",
+                "unit_price_paise": 100,
+                "tax_percentage": 0,
+            }],
+        },
+    )
+    assert contract_response.status_code == 201, contract_response.text
+    contract_id = contract_response.json()["id"]
+    submitted = client.post(
+        f"/v1/api/procurement/supplier-contracts/{contract_id}/submit",
+        headers=pharmacist_headers,
+    )
+    assert submitted.status_code == 200, submitted.text
+    approved = client.patch(
+        f"/v1/api/procurement/supplier-contracts/{contract_id}/approve",
+        headers=superuser_headers,
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "ACTIVE"
+
+    def create_contract_po(unit_price_paise: int):
+        return client.post(
+            "/v1/api/procurement/purchase-orders",
+            headers=pharmacist_headers,
+            json={
+                "vendor_id": vendor_id,
+                "contract_id": contract_id,
+                "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+                "payment_terms": "Net 30",
+                "items": [{
+                    "medication_id": medication_id,
+                    "item_description": "Contract medicine - 10 tablet strip",
+                    "quantity_ordered": 10,
+                    "unit_price_paise": unit_price_paise,
+                    "purchase_uom_id": unit_ids["STRIP"],
+                }],
+            },
+        )
+
+    mismatch_po = create_contract_po(1500)
+    assert mismatch_po.status_code == 201, mismatch_po.text
+    mismatch = client.patch(
+        f"/v1/api/procurement/purchase-orders/{mismatch_po.json()['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert mismatch.status_code == 409
+    assert "differs from the linked supplier contract rate" in mismatch.json()["detail"]
+
+    matching_po = create_contract_po(1000)
+    assert matching_po.status_code == 201, matching_po.text
+    matching = client.patch(
+        f"/v1/api/procurement/purchase-orders/{matching_po.json()['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert matching.status_code == 200, matching.text
+    assert matching.json()["contract_id"] == contract_id
+
+    revision = client.post(
+        f"/v1/api/procurement/supplier-contracts/{contract_id}/revisions",
+        headers=pharmacist_headers,
+        json={
+            "proposed_valid_to": (today + timedelta(days=240)).isoformat(),
+            "reason": "Extend the negotiated agreement for the next procurement cycle.",
+        },
+    )
+    assert revision.status_code == 201, revision.text
+    reviewed = client.patch(
+        f"/v1/api/procurement/supplier-contracts/{contract_id}/revisions/{revision.json()['id']}/review",
+        headers=superuser_headers,
+        json={"approved": True, "review_notes": "Extension reviewed and approved."},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    assert reviewed.json()["status"] == "APPROVED"
+    contract_detail = client.get(
+        f"/v1/api/procurement/supplier-contracts/{contract_id}",
+        headers=superuser_headers,
+    )
+    assert contract_detail.status_code == 200, contract_detail.text
+    assert contract_detail.json()["version_number"] == 2
+    assert contract_detail.json()["valid_to"] == (today + timedelta(days=240)).isoformat()
+
+    renewal_queue = client.get(
+        "/v1/api/procurement/supplier-contract-renewals/due?within_days=365",
+        headers=superuser_headers,
+    )
+    assert renewal_queue.status_code == 200, renewal_queue.text
+    assert any(item["contract_id"] == contract_id for item in renewal_queue.json())
