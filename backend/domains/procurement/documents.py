@@ -295,7 +295,7 @@ def resolve_supplier_compliance_document(tenant_slug: str, document_key: str) ->
     key = PurePosixPath(document_key)
     expected_prefix = PurePosixPath(tenant_slug, "procurement-vendor-compliance")
     if (key.is_absolute() or key.parts[:2] != expected_prefix.parts or len(key.parts) != 3
-            or not re.fullmatch(r"[0-9a-f]{32}\\.(?:pdf|png|jpg|jpeg)", key.name)):
+            or not re.fullmatch(r"[0-9a-f]{32}\.(?:pdf|png|jpg|jpeg)", key.name)):
         raise HTTPException(status_code=404, detail="Supplier compliance document not found.")
     tenant_dir = _supplier_compliance_storage_directory(tenant_slug, create=False)
     try:
