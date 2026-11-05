@@ -27,7 +27,7 @@ from backend.domains.procurement.models import (
     PurchaseOrderApprovalAuthority, PurchaseOrderAmendment, POAmendmentStatusEnum,
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
-    MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision
+    MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -116,6 +116,114 @@ def _normalized_price_benchmark(
         "minimum": values[0],
         "maximum": values[-1],
     }
+
+
+
+
+def _budget_ledger_totals(db: Session, budget_id: int) -> dict:
+    rows = db.query(
+        ProcurementBudgetMovement.movement_type,
+        func.coalesce(func.sum(ProcurementBudgetMovement.amount_paise), 0),
+    ).filter(
+        ProcurementBudgetMovement.budget_id == budget_id
+    ).group_by(ProcurementBudgetMovement.movement_type).all()
+    totals = {kind: int(amount or 0) for kind, amount in rows}
+    reserved = max(
+        totals.get("RESERVATION", 0)
+        - totals.get("RELEASE", 0)
+        - totals.get("RECEIPT", 0),
+        0,
+    )
+    received = totals.get("RECEIPT", 0)
+    return {"reserved_open_paise": reserved, "received_consumption_paise": received}
+
+
+def _resolve_active_procurement_budget(
+    db: Session, department_id: int, category: str, order_date: date
+) -> ProcurementBudget:
+    candidates = db.query(ProcurementBudget).filter(
+        ProcurementBudget.requesting_department_id == department_id,
+        ProcurementBudget.category == category,
+        ProcurementBudget.status == "ACTIVE",
+        ProcurementBudget.period_start <= order_date,
+        ProcurementBudget.period_end >= order_date,
+    ).all()
+    if not candidates:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No active {category} procurement budget covers department {department_id} on {order_date.isoformat()}.",
+        )
+    quarterly = [b for b in candidates if b.period_type == "QUARTERLY"]
+    roots = [b for b in candidates if b.period_type == "ANNUAL" and b.parent_budget_id is None]
+    if len(quarterly) > 1 or len(roots) > 1:
+        raise HTTPException(status_code=409, detail="Overlapping active budgets require administrative reconciliation.")
+    if quarterly:
+        chosen = quarterly[0]
+        parent = db.get(ProcurementBudget, chosen.parent_budget_id) if chosen.parent_budget_id else None
+        if parent is None or parent.status != "ACTIVE":
+            raise HTTPException(status_code=409, detail="The quarterly budget's annual parent is not active.")
+        return chosen
+    if roots:
+        return roots[0]
+    raise HTTPException(status_code=409, detail="No valid root annual or quarterly budget covers this purchase.")
+
+
+def _reserve_purchase_order_budget(db: Session, po: PurchaseOrder, actor: User) -> None:
+    """Reserve mapped PO lines atomically before the PO becomes approved.
+
+    Requisition-backed lines inherit their department. Direct PO lines must carry
+    an explicit budget department to participate in budget enforcement.
+    """
+    order_date = (po.created_at.date() if po.created_at else datetime.now(timezone.utc).date())
+    mapped_count = 0
+    for line in po.items:
+        if line.budget_department_id is None and po.requisition_id is not None:
+            requisition = po.requisition or db.get(PurchaseRequisition, po.requisition_id)
+            if requisition is not None:
+                line.budget_department_id = requisition.requesting_department_id
+        if line.budget_department_id is None:
+            continue
+        mapped_count += 1
+        budget = _resolve_active_procurement_budget(
+            db, line.budget_department_id, line.budget_category, order_date
+        )
+        existing = db.query(ProcurementBudgetMovement.id).filter(
+            ProcurementBudgetMovement.reference_key == f"PO:{po.id}:ITEM:{line.id}:RESERVE"
+        ).first()
+        if existing:
+            if line.budget_id != budget.id:
+                raise HTTPException(status_code=409, detail="A PO line already has a reservation against a different budget.")
+            continue
+        totals = _budget_ledger_totals(db, budget.id)
+        available = budget.total_amount_paise - totals["reserved_open_paise"] - totals["received_consumption_paise"]
+        if line.gross_total_paise > available:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Insufficient procurement budget for purchase-order approval.",
+                    "budget_id": budget.id,
+                    "budget_number": budget.budget_number,
+                    "available_paise": available,
+                    "required_paise": line.gross_total_paise,
+                    "category": line.budget_category,
+                    "department_id": line.budget_department_id,
+                },
+            )
+        line.budget_id = budget.id
+        db.add(ProcurementBudgetMovement(
+            budget_id=budget.id,
+            po_id=po.id,
+            po_item_id=line.id,
+            movement_type="RESERVATION",
+            amount_paise=line.gross_total_paise,
+            reference_key=f"PO:{po.id}:ITEM:{line.id}:RESERVE",
+            notes="Approved purchase-order commitment.",
+            actor_user_id=actor.id,
+            created_by_id=actor.id,
+        ))
+    # A requisition-backed PO must never silently bypass budget control.
+    if po.requisition_id is not None and mapped_count != len(po.items):
+        raise HTTPException(status_code=409, detail="Every requisition-backed PO line must have a department budget allocation.")
 
 
 def _generate_reference(prefix: str) -> str:
@@ -733,6 +841,8 @@ def create_purchase_order_from_requisition(
             tax_percentage=tax_percentage,
             tax_amount_paise=line_tax,
             gross_total_paise=gross_total,
+            budget_department_id=requisition.requesting_department_id,
+            budget_category="PHARMACY" if req_item.medication_id is not None else "GENERAL_SUPPLIES",
             **unit_snapshot,
             created_by_id=current_user.id,
         ))
@@ -973,6 +1083,8 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
             tax_amount_paise=line_tax,
             gross_total_paise=line_subtotal + line_tax,
             **unit_snapshot,
+            budget_department_id=item.budget_department_id,
+            budget_category=item.budget_category,
             created_by_id=current_user.id
         ))
 
@@ -1997,6 +2109,7 @@ def approve_purchase_order(
                 reviewed_at=datetime.now(timezone.utc),
                 created_by_id=current_user.id,
             ))
+    _reserve_purchase_order_budget(db, po, current_user)
     po.status = POStatusEnum.APPROVED
     po.approved_by_id = current_user.id
     po.approved_at = datetime.now(timezone.utc)
