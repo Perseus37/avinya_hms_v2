@@ -120,6 +120,7 @@ class PurchaseOrderFromRequisitionItem(BaseModel):
 
 class PurchaseOrderFromRequisitionCreate(BaseModel):
     vendor_id: int
+    contract_id: Optional[int] = None
     delivery_due_date: datetime
     payment_terms: str = Field(min_length=1, max_length=255)
     items: List[PurchaseOrderFromRequisitionItem] = Field(min_length=1, max_length=100)
@@ -144,6 +145,7 @@ class POItemCreate(BaseModel):
 
 class POCreate(BaseModel):
     vendor_id: int
+    contract_id: Optional[int] = None
     delivery_due_date: datetime
     payment_terms: str
     items: List[POItemCreate] = Field(min_length=1)
@@ -170,6 +172,7 @@ class POResponse(BaseModel):
     po_number: str
     vendor_id: int
     requisition_id: Optional[int] = None
+    contract_id: Optional[int] = None
     status: POStatusEnum
     delivery_due_date: datetime
     payment_terms: str
@@ -624,3 +627,104 @@ class ProcurementBudgetResponse(BaseModel):
 
 class PurchaseOrderCancelRequest(BaseModel):
     reason: str = Field(min_length=10, max_length=2000)
+
+
+# --- Supplier contracts and negotiated rate cards ---
+class SupplierContractRateCreate(BaseModel):
+    scope_type: str = Field(pattern="^(MEDICATION|CATEGORY)$")
+    medication_id: Optional[int] = None
+    category: Optional[str] = Field(default=None, pattern="^(PHARMACY|LABORATORY|GENERAL_SUPPLIES|EQUIPMENT|SERVICES|OTHER)$")
+    uom_code: str = Field(min_length=1, max_length=24)
+    unit_price_paise: int = Field(ge=0)
+    tax_percentage: int = Field(default=0, ge=0, le=100)
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_scope(self):
+        if self.scope_type == "MEDICATION" and (self.medication_id is None or self.category is not None):
+            raise ValueError("Medication rates require medication_id and no category.")
+        if self.scope_type == "CATEGORY" and (self.category is None or self.medication_id is not None):
+            raise ValueError("Category rates require category and no medication_id.")
+        return self
+
+
+class SupplierContractCreate(BaseModel):
+    vendor_id: int
+    contract_number: str = Field(min_length=2, max_length=80)
+    title: str = Field(min_length=3, max_length=200)
+    valid_from: date
+    valid_to: date
+    renewal_notice_days: int = Field(default=90, ge=0, le=730)
+    auto_renew: bool = False
+    payment_terms: Optional[str] = Field(default=None, max_length=255)
+    summary: Optional[str] = Field(default=None, max_length=5000)
+    rates: List[SupplierContractRateCreate] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_dates_and_rates(self):
+        if self.valid_to < self.valid_from:
+            raise ValueError("Contract valid_to cannot be earlier than valid_from.")
+        keys = [(r.scope_type, r.medication_id, r.category, r.uom_code) for r in self.rates]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Contract rate scope and UOM combinations must be unique.")
+        return self
+
+
+class SupplierContractRateResponse(BaseModel):
+    id: int
+    scope_type: str
+    medication_id: Optional[int]
+    category: Optional[str]
+    uom_code: str
+    unit_price_paise: int
+    tax_percentage: int
+    notes: Optional[str]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupplierContractResponse(BaseModel):
+    id: int
+    vendor_id: int
+    contract_number: str
+    title: str
+    valid_from: date
+    valid_to: date
+    renewal_notice_days: int
+    auto_renew: bool
+    status: str
+    payment_terms: Optional[str]
+    summary: Optional[str]
+    document_file_url: Optional[str]
+    version_number: int
+    submitted_at: Optional[datetime]
+    approved_by_id: Optional[int]
+    approved_at: Optional[datetime]
+    rates: List[SupplierContractRateResponse]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupplierContractRevisionCreate(BaseModel):
+    proposed_valid_to: Optional[date] = None
+    proposed_payment_terms: Optional[str] = Field(default=None, max_length=255)
+    proposed_summary: Optional[str] = Field(default=None, max_length=5000)
+    reason: str = Field(min_length=10, max_length=2000)
+
+
+class SupplierContractRevisionReview(BaseModel):
+    approved: bool
+    review_notes: str = Field(min_length=3, max_length=2000)
+
+
+class SupplierContractRevisionResponse(BaseModel):
+    id: int
+    contract_id: int
+    revision_number: int
+    prior_snapshot: dict
+    proposed_snapshot: dict
+    reason: str
+    status: str
+    requested_by_id: int
+    reviewed_by_id: Optional[int]
+    reviewed_at: Optional[datetime]
+    review_notes: Optional[str]
+    model_config = ConfigDict(from_attributes=True)
