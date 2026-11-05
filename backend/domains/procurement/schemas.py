@@ -136,6 +136,12 @@ class POItemCreate(BaseModel):
     budget_department_id: Optional[int] = None
     budget_category: Optional[str] = Field(default=None, pattern="^(PHARMACY|LABORATORY|GENERAL_SUPPLIES|EQUIPMENT|SERVICES|OTHER)$")
 
+    @model_validator(mode="after")
+    def validate_medication_budget_category(self):
+        if self.medication_id is not None and self.budget_category not in (None, "PHARMACY"):
+            raise ValueError("Medication purchase lines must use the PHARMACY budget category.")
+        return self
+
 class POCreate(BaseModel):
     vendor_id: int
     delivery_due_date: datetime
