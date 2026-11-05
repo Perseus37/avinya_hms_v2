@@ -1368,3 +1368,26 @@ def test_normalized_price_benchmark_and_po_approval_variance_override(
     assert benchmark.status_code == 200, benchmark.text
     assert benchmark.json()["items"][0]["base_uom_code"] == "TAB"
     assert benchmark.json()["items"][0]["observation_count"] == 3
+
+def test_procurement_financial_intelligence_empty_period_and_date_validation(
+    client, superuser_headers
+):
+    response = client.get(
+        "/v1/api/procurement/analytics/financial-intelligence",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["commitments"]["committed_value_paise"] == 0
+    assert payload["receipts"]["accepted_goods_value_paise"] == 0
+    assert payload["invoices"]["invoiced_value_paise"] == 0
+    assert payload["accounts_payable"]["approved_unpaid_value_paise"] == 0
+    assert payload["supplier_concentration"]["suppliers"] == []
+
+    invalid_range = client.get(
+        "/v1/api/procurement/analytics/financial-intelligence"
+        "?from_date=2026-11-10&to_date=2026-11-01",
+        headers=superuser_headers,
+    )
+    assert invalid_range.status_code == 422
+
