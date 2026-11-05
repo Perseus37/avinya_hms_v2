@@ -2209,6 +2209,160 @@ def set_medication_price_control(
     return policy
 
 
+@router.get("/analytics/quotation-outcomes")
+def get_procurement_quotation_outcomes(
+    from_date: Optional[date] = Query(default=None, description="Inclusive PO creation date filter (UTC)."),
+    to_date: Optional[date] = Query(default=None, description="Inclusive PO creation date filter (UTC)."),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    """Compare selected quotation pricing with comparable non-selected offers."""
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date must be on or before to_date.")
+    start_at = datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc) if from_date else None
+    end_at = datetime.combine(to_date, datetime.max.time(), tzinfo=timezone.utc) if to_date else None
+
+    po_query = db.query(PurchaseOrder).options(selectinload(PurchaseOrder.items)).filter(
+        PurchaseOrder.requisition_id.is_not(None),
+        PurchaseOrder.status.in_([
+            POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED, POStatusEnum.COMPLETED,
+        ]),
+    )
+    if start_at:
+        po_query = po_query.filter(PurchaseOrder.created_at >= start_at)
+    if end_at:
+        po_query = po_query.filter(PurchaseOrder.created_at <= end_at)
+    purchase_orders = po_query.order_by(PurchaseOrder.created_at.asc(), PurchaseOrder.id.asc()).all()
+
+    requisition_ids = {po.requisition_id for po in purchase_orders}
+    quotes_by_requisition = {}
+    if requisition_ids:
+        quotes = db.query(SupplierQuotation).options(
+            joinedload(SupplierQuotation.vendor), selectinload(SupplierQuotation.items)
+        ).filter(
+            SupplierQuotation.requisition_id.in_(requisition_ids),
+            SupplierQuotation.status.in_([
+                SupplierQuotationStatusEnum.SELECTED,
+                SupplierQuotationStatusEnum.NOT_SELECTED,
+            ]),
+        ).all()
+        for quote in quotes:
+            quotes_by_requisition.setdefault(quote.requisition_id, []).append(quote)
+
+    rows = []
+    total_selected_gross = 0
+    total_best_alternative_gross = 0
+    comparable_line_count = 0
+    missing_comparison_count = 0
+    for po in purchase_orders:
+        quotes = quotes_by_requisition.get(po.requisition_id, [])
+        selected_quotes = [q for q in quotes if q.status == SupplierQuotationStatusEnum.SELECTED]
+        if len(selected_quotes) != 1:
+            continue
+        selected = selected_quotes[0]
+        selected_lines = {line.requisition_item_id: line for line in selected.items}
+        alternatives = [q for q in quotes if q.id != selected.id and q.status == SupplierQuotationStatusEnum.NOT_SELECTED]
+        for po_line in po.items:
+            selected_line = selected_lines.get(po_line.requisition_item_id)
+            if selected_line is None or po_line.requisition_item_id is None:
+                continue
+            selected_tax = int(selected_line.tax_percentage or 0)
+            selected_uom = (selected_line.purchase_uom_code, selected_line.base_uom_code)
+            if (
+                selected_line.unit_price_paise != po_line.unit_price_paise
+                or selected_tax != int(po_line.tax_percentage or 0)
+                or selected_uom != (po_line.purchase_uom_code, po_line.base_uom_code)
+            ):
+                continue
+            selected_net = int(po_line.quantity_ordered) * int(selected_line.unit_price_paise)
+            selected_tax_amount = (selected_net * selected_tax + 50) // 100
+            selected_gross = selected_net + selected_tax_amount
+            total_selected_gross += selected_gross
+
+            comparable = []
+            for alternative in alternatives:
+                for alt_line in alternative.items:
+                    if (
+                        alt_line.requisition_item_id == po_line.requisition_item_id
+                        and (alt_line.purchase_uom_code, alt_line.base_uom_code) == selected_uom
+                        and int(alt_line.tax_percentage or 0) == selected_tax
+                        and alt_line.unit_price_paise is not None
+                    ):
+                        alt_net = int(po_line.quantity_ordered) * int(alt_line.unit_price_paise)
+                        alt_tax = (alt_net * selected_tax + 50) // 100
+                        comparable.append({
+                            "vendor_id": alternative.vendor_id,
+                            "vendor_name": alternative.vendor.name if alternative.vendor else "Unknown vendor",
+                            "quotation_number": alternative.quotation_number,
+                            "net_paise": alt_net,
+                            "tax_paise": alt_tax,
+                            "gross_paise": alt_net + alt_tax,
+                            "unit_price_paise": int(alt_line.unit_price_paise),
+                        })
+            comparable.sort(key=lambda item: (item["gross_paise"], item["vendor_id"]))
+            best_alternative = comparable[0] if comparable else None
+            if best_alternative:
+                comparable_line_count += 1
+                total_best_alternative_gross += best_alternative["gross_paise"]
+                delta = best_alternative["gross_paise"] - selected_gross
+            else:
+                missing_comparison_count += 1
+                delta = None
+            rows.append({
+                "purchase_order_id": po.id,
+                "purchase_order_number": po.po_number,
+                "requisition_id": po.requisition_id,
+                "requisition_item_id": po_line.requisition_item_id,
+                "medication_id": po_line.medication_id,
+                "item_description": po_line.item_description,
+                "quantity_ordered": po_line.quantity_ordered,
+                "purchase_uom_code": po_line.purchase_uom_code,
+                "base_uom_code": po_line.base_uom_code,
+                "selected_vendor_id": selected.vendor_id,
+                "selected_vendor_name": selected.vendor.name if selected.vendor else "Unknown vendor",
+                "selected_quotation_number": selected.quotation_number,
+                "selected_unit_price_paise": int(selected_line.unit_price_paise),
+                "selected_net_paise": selected_net,
+                "selected_tax_paise": selected_tax_amount,
+                "selected_gross_paise": selected_gross,
+                "best_comparable_alternative": best_alternative,
+                "competitive_saving_paise": delta if delta is not None and delta > 0 else 0,
+                "selected_offer_premium_paise": abs(delta) if delta is not None and delta < 0 else 0,
+                "comparison_status": "COMPARABLE" if best_alternative else "NO_COMPARABLE_ALTERNATIVE",
+                "classification": "COMPETITIVE_SAVING_VS_BEST_COMPARABLE_OFFER" if delta is not None and delta > 0 else (
+                    "SELECTED_OFFER_PREMIUM_VS_BEST_COMPARABLE_OFFER" if delta is not None and delta < 0 else (
+                        "PRICE_PARITY" if delta == 0 else "NOT_COMPARABLE"
+                    )
+                ),
+            })
+
+    return {
+        "period": {
+            "from_date": from_date.isoformat() if from_date else None,
+            "to_date": to_date.isoformat() if to_date else None,
+            "basis": "Purchase order creation date (UTC).",
+        },
+        "summary": {
+            "purchase_order_line_count": len(rows),
+            "comparable_line_count": comparable_line_count,
+            "no_comparable_alternative_count": missing_comparison_count,
+            "selected_offer_value_paise": total_selected_gross,
+            "best_alternative_value_for_ordered_quantities_paise": total_best_alternative_gross,
+            "competitive_savings_paise": sum(row["competitive_saving_paise"] for row in rows),
+            "selected_offer_premium_paise": sum(row["selected_offer_premium_paise"] for row in rows),
+            "competitive_savings_definition": "Difference between the best comparable non-selected quotation and the selected quotation, applied to the PO ordered quantity. This is an estimated competitive price advantage, not realized cash savings.",
+        },
+        "items": rows,
+        "limitations": [
+            "Only selected and explicitly not-selected quotations are compared; withdrawn or unselected incomplete offers are excluded.",
+            "Comparison requires the same requisition line, purchase UOM, base UOM and tax percentage.",
+            "The selected quotation price must still match the approved PO line; the system does not claim a post-selection negotiated discount.",
+            "This is an alternative-offer benchmark, not actual savings against a paid supplier invoice.",
+            "Multiple POs for one requisition line are evaluated independently at each PO quantity and can repeat the same quotation comparison.",
+        ],
+    }
+
+
 @router.get("/analytics/price-benchmarks")
 def get_procurement_price_benchmarks(
     lookback_days: int = Query(default=180, ge=1, le=1825),
