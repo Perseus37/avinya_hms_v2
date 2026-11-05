@@ -121,11 +121,17 @@ def _normalized_price_benchmark(
 
 
 def _budget_ledger_totals(db: Session, budget_id: int) -> dict:
+    budget = db.get(ProcurementBudget, budget_id)
+    budget_ids = [budget_id]
+    if budget is not None and budget.period_type == "ANNUAL" and budget.parent_budget_id is None:
+        budget_ids.extend(db.query(ProcurementBudget.id).filter(
+            ProcurementBudget.parent_budget_id == budget_id
+        ).scalars().all())
     rows = db.query(
         ProcurementBudgetMovement.movement_type,
         func.coalesce(func.sum(ProcurementBudgetMovement.amount_paise), 0),
     ).filter(
-        ProcurementBudgetMovement.budget_id == budget_id
+        ProcurementBudgetMovement.budget_id.in_(budget_ids)
     ).group_by(ProcurementBudgetMovement.movement_type).all()
     totals = {kind: int(amount or 0) for kind, amount in rows}
     reserved = max(
@@ -136,6 +142,22 @@ def _budget_ledger_totals(db: Session, budget_id: int) -> dict:
     )
     received = totals.get("RECEIPT", 0)
     return {"reserved_open_paise": reserved, "received_consumption_paise": received}
+
+
+def _budget_available_paise(db: Session, budget: ProcurementBudget) -> tuple[int, int]:
+    totals = _budget_ledger_totals(db, budget.id)
+    used = totals["reserved_open_paise"] + totals["received_consumption_paise"]
+    earmarked_for_active_quarters = 0
+    if budget.period_type == "ANNUAL" and budget.parent_budget_id is None:
+        children = db.query(ProcurementBudget).filter(
+            ProcurementBudget.parent_budget_id == budget.id,
+            ProcurementBudget.status == "ACTIVE",
+        ).all()
+        for child in children:
+            child_totals = _budget_ledger_totals(db, child.id)
+            child_used = child_totals["reserved_open_paise"] + child_totals["received_consumption_paise"]
+            earmarked_for_active_quarters += max(child.total_amount_paise - child_used, 0)
+    return budget.total_amount_paise - used - earmarked_for_active_quarters, earmarked_for_active_quarters
 
 
 def _resolve_active_procurement_budget(
@@ -241,8 +263,7 @@ def _reserve_purchase_order_budget(db: Session, po: PurchaseOrder, actor: User) 
             if line.budget_id != budget.id:
                 raise HTTPException(status_code=409, detail="A PO line already has a reservation against a different budget.")
             continue
-        totals = _budget_ledger_totals(db, budget.id)
-        available = budget.total_amount_paise - totals["reserved_open_paise"] - totals["received_consumption_paise"]
+        available, _ = _budget_available_paise(db, budget)
         if line.gross_total_paise > available:
             raise HTTPException(
                 status_code=409,
@@ -3489,16 +3510,10 @@ def review_procurement_budget_revision(
     revision.updated_by_id = current_user.id
     revision.status = "APPROVED" if payload.approved else "REJECTED"
     if payload.approved:
-        active_quarter_allocations = db.query(func.coalesce(func.sum(ProcurementBudget.total_amount_paise), 0)).filter(
-            ProcurementBudget.parent_budget_id == budget.id,
-            ProcurementBudget.status == "ACTIVE",
-        ).scalar() or 0
-        if int(active_quarter_allocations) > revision.proposed_amount_paise:
-            raise HTTPException(status_code=409, detail="The revised annual amount cannot be lower than its active quarterly allocations.")
-        ledger_totals = _budget_ledger_totals(db, budget.id)
-        committed_and_consumed = ledger_totals["reserved_open_paise"] + ledger_totals["received_consumption_paise"]
-        if committed_and_consumed > revision.proposed_amount_paise:
-            raise HTTPException(status_code=409, detail="The revised budget cannot be lower than existing open commitments plus accepted receipt consumption.")
+        current_available, _ = _budget_available_paise(db, budget)
+        already_committed_or_earmarked = budget.total_amount_paise - current_available
+        if already_committed_or_earmarked > revision.proposed_amount_paise:
+            raise HTTPException(status_code=409, detail="The revised budget cannot be lower than existing commitments, accepted receipts and active quarterly allocations.")
         budget.total_amount_paise = revision.proposed_amount_paise
         budget.updated_by_id = current_user.id
     db.commit()
@@ -3551,7 +3566,7 @@ def get_procurement_budget_utilization(
         raise HTTPException(status_code=404, detail="Procurement budget not found.")
     totals = _budget_ledger_totals(db, budget.id)
     committed_and_consumed = totals["reserved_open_paise"] + totals["received_consumption_paise"]
-    available = budget.total_amount_paise - committed_and_consumed
+    available, earmarked_for_active_quarters = _budget_available_paise(db, budget)
     utilization_pct = (
         round((committed_and_consumed * 100) / budget.total_amount_paise, 2)
         if budget.total_amount_paise > 0 else None
@@ -3575,9 +3590,42 @@ def get_procurement_budget_utilization(
         "received_consumption_paise": totals["received_consumption_paise"],
         "committed_and_consumed_paise": committed_and_consumed,
         "available_paise": available,
+        "allocated_to_active_quarters_paise": earmarked_for_active_quarters,
         "utilization_pct": utilization_pct,
         "warning_threshold_pct": budget.warning_threshold_pct,
         "alert": alert,
         "invoice_actuals_included": False,
         "note": "Invoice values are financial actuals and are deliberately not added to budget consumption; invoice reconciliation is reported separately.",
     }
+
+
+@router.get("/budgets/{budget_id}/movements")
+def list_procurement_budget_movements(
+    budget_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    budget = db.get(ProcurementBudget, budget_id)
+    if budget is None:
+        raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    budget_ids = [budget.id]
+    if budget.period_type == "ANNUAL" and budget.parent_budget_id is None:
+        budget_ids.extend(db.query(ProcurementBudget.id).filter(
+            ProcurementBudget.parent_budget_id == budget.id
+        ).scalars().all())
+    rows = db.query(ProcurementBudgetMovement).filter(
+        ProcurementBudgetMovement.budget_id.in_(budget_ids)
+    ).order_by(ProcurementBudgetMovement.created_at.asc(), ProcurementBudgetMovement.id.asc()).all()
+    return [{
+        "id": row.id,
+        "budget_id": row.budget_id,
+        "po_id": row.po_id,
+        "po_item_id": row.po_item_id,
+        "grn_item_id": row.grn_item_id,
+        "movement_type": row.movement_type,
+        "amount_paise": row.amount_paise,
+        "reference_key": row.reference_key,
+        "notes": row.notes,
+        "actor_user_id": row.actor_user_id,
+        "created_at": row.created_at,
+    } for row in rows]
