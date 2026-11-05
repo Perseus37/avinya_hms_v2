@@ -1474,6 +1474,28 @@ def test_procurement_budget_creation_activation_and_independent_revision(
     assert activated.status_code == 200, activated.text
     assert activated.json()["status"] == "ACTIVE"
 
+    quarter_child = client.post(
+        "/v1/api/procurement/budgets",
+        headers=pharmacist_headers,
+        json={
+            "budget_number": "BUD-FY26-Q1-GENMED-PHARM",
+            "parent_budget_id": budget["id"],
+            "requesting_department_id": department_id,
+            "period_type": "QUARTERLY",
+            "period_start": "2026-04-01",
+            "period_end": "2026-06-30",
+            "category": "PHARMACY",
+            "total_amount_paise": 5000000,
+            "warning_threshold_pct": 75,
+        },
+    )
+    assert quarter_child.status_code == 201, quarter_child.text
+    quarter_activated = client.post(
+        f"/v1/api/procurement/budgets/{quarter_child.json()['id']}/activate",
+        headers=superuser_headers,
+    )
+    assert quarter_activated.status_code == 200, quarter_activated.text
+
     duplicate_overlap = client.post(
         "/v1/api/procurement/budgets",
         headers=pharmacist_headers,
