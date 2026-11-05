@@ -41,6 +41,15 @@ def upgrade() -> None:
         "WHERE medication_id IS NOT NULL"
     )
     op.execute(
+        "UPDATE procurement_po_items SET budget_department_id = ("
+        "SELECT r.requesting_department_id FROM procurement_purchase_orders po "
+        "JOIN procurement_requisitions r ON r.id = po.requisition_id "
+        "WHERE po.id = procurement_po_items.po_id) "
+        "WHERE EXISTS (SELECT 1 FROM procurement_purchase_orders po "
+        "JOIN procurement_requisitions r ON r.id = po.requisition_id "
+        "WHERE po.id = procurement_po_items.po_id)"
+    )
+    op.execute(
         "UPDATE procurement_po_items "
         "SET budget_department_id = ("
         "SELECT r.requesting_department_id "
