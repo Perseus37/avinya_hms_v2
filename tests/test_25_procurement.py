@@ -1517,6 +1517,52 @@ def test_procurement_budget_creation_activation_and_independent_revision(
     )
     assert blocked_activation.status_code == 409, blocked_activation.text
 
+    vendor = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "BUDGET-PO-VENDOR",
+            "name": "Budget Control Supplier",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Budget Desk",
+            "phone": "9876501234",
+            "email": "budget-control@example.com",
+            "address": "Hyderabad",
+        },
+    )
+    assert vendor.status_code == 201, vendor.text
+    po = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor.json()["id"],
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
+            "payment_terms": "Net 30",
+            "items": [{
+                "item_description": "Budget controlled pharmacy purchase",
+                "quantity_ordered": 1,
+                "unit_price_paise": 1000000,
+                "budget_department_id": department_id,
+                "budget_category": "PHARMACY",
+            }],
+        },
+    )
+    assert po.status_code == 201, po.text
+    po_approved = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po.json()['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert po_approved.status_code == 200, po_approved.text
+    assert po_approved.json()["items"][0]["budget_id"] == quarter_child.json()["id"]
+    utilization = client.get(
+        f"/v1/api/procurement/budgets/{quarter_child.json()['id']}/utilization",
+        headers=superuser_headers,
+    )
+    assert utilization.status_code == 200, utilization.text
+    assert utilization.json()["reserved_open_commitment_paise"] == 1000000
+    assert utilization.json()["received_consumption_paise"] == 0
+    assert utilization.json()["available_paise"] == 4000000
+
     revision = client.post(
         f"/v1/api/procurement/budgets/{budget['id']}/revisions",
         headers=pharmacist_headers,
