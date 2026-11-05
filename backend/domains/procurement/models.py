@@ -687,6 +687,7 @@ class ProcurementBudget(AuditMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     budget_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    parent_budget_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_budgets.id", ondelete="RESTRICT"), nullable=True, index=True)
     requesting_department_id: Mapped[int] = mapped_column(ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False)
     period_type: Mapped[str] = mapped_column(String(12), nullable=False)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
@@ -697,6 +698,9 @@ class ProcurementBudget(AuditMixin, Base):
     status: Mapped[str] = mapped_column(String(12), default="DRAFT", nullable=False)
 
     department: Mapped["Department"] = relationship()
+    parent_budget: Mapped[Optional["ProcurementBudget"]] = relationship(
+        remote_side="ProcurementBudget.id", foreign_keys=[parent_budget_id]
+    )
 
 
 class ProcurementBudgetRevision(AuditMixin, Base):
