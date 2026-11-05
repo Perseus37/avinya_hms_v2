@@ -4337,6 +4337,10 @@ def upload_supplier_compliance_document(
         raise HTTPException(status_code=422, detail="Unsupported supplier compliance document type.")
     if issue_date and expiry_date and expiry_date < issue_date:
         raise HTTPException(status_code=422, detail="Document expiry date cannot precede its issue date.")
+    if document_number and len(document_number.strip()) > 100:
+        raise HTTPException(status_code=422, detail="Document number must be 100 characters or fewer.")
+    if issuer and len(issuer.strip()) > 160:
+        raise HTTPException(status_code=422, detail="Issuer must be 160 characters or fewer.")
     tenant = resolve_tenant_context(request)
     try:
         storage_key, path = store_supplier_compliance_document(
