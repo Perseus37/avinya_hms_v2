@@ -1563,6 +1563,41 @@ def test_procurement_budget_creation_activation_and_independent_revision(
     assert utilization.json()["received_consumption_paise"] == 0
     assert utilization.json()["available_paise"] == 4000000
 
+    cancellable_po = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor.json()["id"],
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
+            "payment_terms": "Net 30",
+            "items": [{
+                "item_description": "Purchase commitment to cancel",
+                "quantity_ordered": 1,
+                "unit_price_paise": 500000,
+                "budget_department_id": department_id,
+                "budget_category": "PHARMACY",
+            }],
+        },
+    )
+    assert cancellable_po.status_code == 201, cancellable_po.text
+    cancellable_approved = client.patch(
+        f"/v1/api/procurement/purchase-orders/{cancellable_po.json()['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert cancellable_approved.status_code == 200, cancellable_approved.text
+    cancelled = client.patch(
+        f"/v1/api/procurement/purchase-orders/{cancellable_po.json()['id']}/cancel",
+        headers=superuser_headers,
+        json={"reason": "Supplier could not fulfil the agreed delivery schedule."},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    after_cancel = client.get(
+        f"/v1/api/procurement/budgets/{quarter_child.json()['id']}/utilization",
+        headers=superuser_headers,
+    )
+    assert after_cancel.json()["reserved_open_commitment_paise"] == 1000000
+    assert after_cancel.json()["available_paise"] == 4000000
+
     over_budget_po = client.post(
         "/v1/api/procurement/purchase-orders",
         headers=pharmacist_headers,
