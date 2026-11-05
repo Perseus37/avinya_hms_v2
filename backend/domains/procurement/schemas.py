@@ -494,3 +494,44 @@ class MedicationPackConfigurationResponse(BaseModel):
     effective_to: Optional[datetime]
     is_active: bool
     model_config = ConfigDict(from_attributes=True)
+
+
+# --- Procurement price benchmarking and variance controls ---
+class MedicationPriceControlUpdate(BaseModel):
+    max_variance_pct: int = Field(ge=0, le=1000)
+    minimum_observations: int = Field(default=3, ge=2, le=100)
+    lookback_days: int = Field(default=180, ge=1, le=1825)
+    is_active: bool = True
+
+
+class MedicationPriceControlResponse(BaseModel):
+    id: int
+    medication_id: int
+    max_variance_pct: int
+    minimum_observations: int
+    lookback_days: int
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PurchaseOrderApprovalRequest(BaseModel):
+    override_reason: Optional[str] = Field(default=None, min_length=10, max_length=2000)
+
+
+class PurchaseOrderPriceReviewResponse(BaseModel):
+    id: int
+    po_id: int
+    po_item_id: int
+    medication_id: int
+    base_uom_code: str
+    proposed_base_unit_price_paise: Decimal
+    benchmark_median_paise: Decimal
+    benchmark_min_paise: Decimal
+    benchmark_max_paise: Decimal
+    benchmark_observations: int
+    threshold_pct: int
+    variance_pct: Decimal
+    override_reason: str
+    reviewed_by_id: int
+    reviewed_at: datetime
+    model_config = ConfigDict(from_attributes=True)
