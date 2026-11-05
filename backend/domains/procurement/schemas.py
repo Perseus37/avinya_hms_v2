@@ -115,7 +115,7 @@ class PurchaseOrderFromRequisitionItem(BaseModel):
     unit_price_paise: int = Field(ge=0)
     tax_percentage: Optional[int] = Field(default=None, ge=0, le=100)
     purchase_uom_id: Optional[int] = None
-    budget_category: str = Field(default="PHARMACY", pattern="^(PHARMACY|LABORATORY|GENERAL_SUPPLIES|EQUIPMENT|SERVICES|OTHER)$")
+    budget_category: Optional[str] = Field(default=None, pattern="^(PHARMACY|LABORATORY|GENERAL_SUPPLIES|EQUIPMENT|SERVICES|OTHER)$")
 
 
 class PurchaseOrderFromRequisitionCreate(BaseModel):
@@ -134,7 +134,7 @@ class POItemCreate(BaseModel):
     tax_percentage: int = Field(default=0, ge=0, le=100)
     purchase_uom_id: Optional[int] = None
     budget_department_id: Optional[int] = None
-    budget_category: str = Field(default="GENERAL_SUPPLIES", pattern="^(PHARMACY|LABORATORY|GENERAL_SUPPLIES|EQUIPMENT|SERVICES|OTHER)$")
+    budget_category: Optional[str] = Field(default=None, pattern="^(PHARMACY|LABORATORY|GENERAL_SUPPLIES|EQUIPMENT|SERVICES|OTHER)$")
 
 class POCreate(BaseModel):
     vendor_id: int
