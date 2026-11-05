@@ -2180,6 +2180,25 @@ def test_supplier_compliance_policy_blocks_purchase_order_for_missing_required_d
         item["document_type"] == "DRUG_LICENSE" and item["is_required"] is True
         for item in policies.json()
     )
+    disabled = client.put(
+        "/v1/api/procurement/supplier-compliance/policies/PHARMACEUTICALS/DRUG_LICENSE",
+        headers=superuser_headers,
+        json={"is_required": False},
+    )
+    assert disabled.status_code == 200, disabled.text
+    re_enabled = client.put(
+        "/v1/api/procurement/supplier-compliance/policies/PHARMACEUTICALS/DRUG_LICENSE",
+        headers=superuser_headers,
+        json={"is_required": True},
+    )
+    assert re_enabled.status_code == 200, re_enabled.text
+    history = client.get(
+        "/v1/api/procurement/supplier-compliance/policies/PHARMACEUTICALS/DRUG_LICENSE/history",
+        headers=superuser_headers,
+    )
+    assert history.status_code == 200, history.text
+    assert len(history.json()) == 3
+    assert [row["new_is_required"] for row in history.json()] == [True, False, True]
 
     po_response = client.post(
         "/v1/api/procurement/purchase-orders",
