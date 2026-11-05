@@ -535,3 +535,59 @@ class PurchaseOrderPriceReviewResponse(BaseModel):
     reviewed_by_id: int
     reviewed_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+# --- Procurement budget allocation and maker-checker revisions ---
+class ProcurementBudgetCreate(BaseModel):
+    budget_number: str = Field(min_length=3, max_length=50)
+    requesting_department_id: int
+    period_type: str = Field(pattern="^(ANNUAL|QUARTERLY)$")
+    period_start: date
+    period_end: date
+    category: str = Field(pattern="^(PHARMACY|LABORATORY|GENERAL_SUPPLIES|EQUIPMENT|SERVICES|OTHER)$")
+    total_amount_paise: int = Field(ge=0)
+    warning_threshold_pct: int = Field(default=80, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def validate_period(self):
+        if self.period_end < self.period_start:
+            raise ValueError("Budget period_end cannot be earlier than period_start.")
+        return self
+
+
+class ProcurementBudgetRevisionCreate(BaseModel):
+    proposed_amount_paise: int = Field(ge=0)
+    reason: str = Field(min_length=10, max_length=2000)
+
+
+class ProcurementBudgetRevisionReview(BaseModel):
+    approved: bool
+    review_notes: str = Field(min_length=3, max_length=2000)
+
+
+class ProcurementBudgetRevisionResponse(BaseModel):
+    id: int
+    budget_id: int
+    revision_number: int
+    prior_amount_paise: int
+    proposed_amount_paise: int
+    reason: str
+    status: str
+    reviewed_by_id: Optional[int]
+    reviewed_at: Optional[datetime]
+    review_notes: Optional[str]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProcurementBudgetResponse(BaseModel):
+    id: int
+    budget_number: str
+    requesting_department_id: int
+    period_type: str
+    period_start: date
+    period_end: date
+    category: str
+    total_amount_paise: int
+    warning_threshold_pct: int
+    status: str
+    model_config = ConfigDict(from_attributes=True)
