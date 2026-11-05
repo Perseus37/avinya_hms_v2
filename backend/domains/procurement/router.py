@@ -3011,6 +3011,20 @@ def create_procurement_budget(
         raise HTTPException(status_code=404, detail="Budget department is unavailable.")
     if not user_has_department_access(db, current_user, department.id):
         raise HTTPException(status_code=403, detail="You are not assigned to the budget department.")
+    parent_budget = None
+    if payload.parent_budget_id is not None:
+        parent_budget = db.get(ProcurementBudget, payload.parent_budget_id)
+        if (
+            payload.period_type != "QUARTERLY"
+            or parent_budget is None
+            or parent_budget.period_type != "ANNUAL"
+            or parent_budget.requesting_department_id != department.id
+            or parent_budget.category != payload.category
+            or payload.period_start < parent_budget.period_start
+            or payload.period_end > parent_budget.period_end
+            or parent_budget.status == "CLOSED"
+        ):
+            raise HTTPException(status_code=422, detail="A quarterly child budget must fit within an annual budget for the same department and category.")
     duplicate = db.query(ProcurementBudget.id).filter(
         ProcurementBudget.budget_number == payload.budget_number.strip()
     ).first()
@@ -3018,6 +3032,7 @@ def create_procurement_budget(
         raise HTTPException(status_code=409, detail="Budget number already exists.")
     budget = ProcurementBudget(
         budget_number=payload.budget_number.strip(),
+        parent_budget_id=payload.parent_budget_id,
         requesting_department_id=payload.requesting_department_id,
         period_type=payload.period_type,
         period_start=payload.period_start,
@@ -3092,16 +3107,46 @@ def activate_procurement_budget(
     ).with_for_update().one_or_none()
     if department is None:
         raise HTTPException(status_code=409, detail="The budget department no longer exists.")
-    overlapping = db.query(ProcurementBudget.id).filter(
-        ProcurementBudget.id != budget.id,
-        ProcurementBudget.requesting_department_id == budget.requesting_department_id,
-        ProcurementBudget.category == budget.category,
-        ProcurementBudget.status == "ACTIVE",
-        ProcurementBudget.period_start <= budget.period_end,
-        ProcurementBudget.period_end >= budget.period_start,
-    ).first()
-    if overlapping:
-        raise HTTPException(status_code=409, detail="An active budget already overlaps this department, category and period.")
+    if budget.period_type == "QUARTERLY" and budget.parent_budget_id is not None:
+        parent = db.query(ProcurementBudget).filter(
+            ProcurementBudget.id == budget.parent_budget_id
+        ).with_for_update().one_or_none()
+        if (
+            parent is None or parent.status != "ACTIVE"
+            or parent.period_type != "ANNUAL"
+            or parent.requesting_department_id != budget.requesting_department_id
+            or parent.category != budget.category
+            or budget.period_start < parent.period_start
+            or budget.period_end > parent.period_end
+        ):
+            raise HTTPException(status_code=409, detail="The parent annual budget must be active and cover this quarterly allocation.")
+        overlapping = db.query(ProcurementBudget.id).filter(
+            ProcurementBudget.id != budget.id,
+            ProcurementBudget.parent_budget_id == parent.id,
+            ProcurementBudget.status == "ACTIVE",
+            ProcurementBudget.period_start <= budget.period_end,
+            ProcurementBudget.period_end >= budget.period_start,
+        ).first()
+        allocated = db.query(func.coalesce(func.sum(ProcurementBudget.total_amount_paise), 0)).filter(
+            ProcurementBudget.parent_budget_id == parent.id,
+            ProcurementBudget.status == "ACTIVE",
+        ).scalar() or 0
+        if overlapping:
+            raise HTTPException(status_code=409, detail="An active quarterly allocation already overlaps this period.")
+        if int(allocated) + budget.total_amount_paise > parent.total_amount_paise:
+            raise HTTPException(status_code=409, detail="Quarterly allocations cannot exceed the parent annual budget.")
+    else:
+        overlapping = db.query(ProcurementBudget.id).filter(
+            ProcurementBudget.id != budget.id,
+            ProcurementBudget.parent_budget_id.is_(None),
+            ProcurementBudget.requesting_department_id == budget.requesting_department_id,
+            ProcurementBudget.category == budget.category,
+            ProcurementBudget.status == "ACTIVE",
+            ProcurementBudget.period_start <= budget.period_end,
+            ProcurementBudget.period_end >= budget.period_start,
+        ).first()
+        if overlapping:
+            raise HTTPException(status_code=409, detail="An active root budget already overlaps this department, category and period.")
     budget.status = "ACTIVE"
     budget.updated_by_id = current_user.id
     db.commit()
@@ -3199,6 +3244,12 @@ def review_procurement_budget_revision(
     revision.updated_by_id = current_user.id
     revision.status = "APPROVED" if payload.approved else "REJECTED"
     if payload.approved:
+        active_quarter_allocations = db.query(func.coalesce(func.sum(ProcurementBudget.total_amount_paise), 0)).filter(
+            ProcurementBudget.parent_budget_id == budget.id,
+            ProcurementBudget.status == "ACTIVE",
+        ).scalar() or 0
+        if int(active_quarter_allocations) > revision.proposed_amount_paise:
+            raise HTTPException(status_code=409, detail="The revised annual amount cannot be lower than its active quarterly allocations.")
         budget.total_amount_paise = revision.proposed_amount_paise
         budget.updated_by_id = current_user.id
     db.commit()
@@ -3225,6 +3276,12 @@ def close_procurement_budget(
     ).first()
     if pending:
         raise HTTPException(status_code=409, detail="Resolve pending budget revisions before closing the budget.")
+    active_children = db.query(ProcurementBudget.id).filter(
+        ProcurementBudget.parent_budget_id == budget.id,
+        ProcurementBudget.status == "ACTIVE",
+    ).first()
+    if active_children:
+        raise HTTPException(status_code=409, detail="Close active quarterly child budgets before closing the annual budget.")
     budget.status = "CLOSED"
     budget.updated_by_id = current_user.id
     db.commit()
