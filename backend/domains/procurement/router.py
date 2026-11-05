@@ -3004,8 +3004,10 @@ def create_procurement_budget(
     current_user: User = Depends(RequirePermission("procurement:write")),
 ):
     department = db.get(Department, payload.requesting_department_id)
-    if department is None:
-        raise HTTPException(status_code=404, detail="Budget department not found.")
+    if department is None or not department.is_active:
+        raise HTTPException(status_code=404, detail="Budget department is unavailable.")
+    if not user_has_department_access(db, current_user, department.id):
+        raise HTTPException(status_code=403, detail="You are not assigned to the budget department.")
     duplicate = db.query(ProcurementBudget.id).filter(
         ProcurementBudget.budget_number == payload.budget_number.strip()
     ).first()
