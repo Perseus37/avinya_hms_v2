@@ -167,6 +167,52 @@ def _resolve_active_procurement_budget(
     raise HTTPException(status_code=409, detail="No valid root annual or quarterly budget covers this purchase.")
 
 
+
+
+
+def _budget_item_open_reservation(db: Session, po_item_id: int) -> int:
+    rows = db.query(
+        ProcurementBudgetMovement.movement_type,
+        func.coalesce(func.sum(ProcurementBudgetMovement.amount_paise), 0),
+    ).filter(
+        ProcurementBudgetMovement.po_item_id == po_item_id
+    ).group_by(ProcurementBudgetMovement.movement_type).all()
+    totals = {kind: int(amount or 0) for kind, amount in rows}
+    return max(
+        totals.get("RESERVATION", 0)
+        - totals.get("RELEASE", 0)
+        - totals.get("RECEIPT", 0),
+        0,
+    )
+
+
+def _release_po_budget_reservations(
+    db: Session,
+    po: PurchaseOrder,
+    actor: User,
+    *,
+    reference_suffix: str,
+    note: str,
+) -> None:
+    for line in po.items:
+        if line.budget_id is None:
+            continue
+        outstanding = _budget_item_open_reservation(db, line.id)
+        if outstanding <= 0:
+            continue
+        db.add(ProcurementBudgetMovement(
+            budget_id=line.budget_id,
+            po_id=po.id,
+            po_item_id=line.id,
+            movement_type="RELEASE",
+            amount_paise=outstanding,
+            reference_key=f"PO:{po.id}:ITEM:{line.id}:{reference_suffix}:RELEASE",
+            notes=note,
+            actor_user_id=actor.id,
+            created_by_id=actor.id,
+        ))
+
+
 def _reserve_purchase_order_budget(db: Session, po: PurchaseOrder, actor: User) -> None:
     """Reserve mapped PO lines atomically before the PO becomes approved.
 
@@ -1110,6 +1156,51 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     return po
 
 
+
+
+@router.patch("/purchase-orders/{po_id}/cancel")
+def cancel_purchase_order(
+    po_id: int,
+    payload: PurchaseOrderCancelRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    po = db.query(PurchaseOrder).options(
+        selectinload(PurchaseOrder.items)
+    ).filter(PurchaseOrder.id == po_id).with_for_update().one_or_none()
+    if po is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found.")
+    if po.status not in {
+        POStatusEnum.SUBMITTED,
+        POStatusEnum.APPROVED,
+        POStatusEnum.PARTIALLY_RECEIVED,
+    }:
+        raise HTTPException(status_code=409, detail="Only submitted or open approved purchase orders can be cancelled.")
+    pending_grn = db.query(GoodsReceiptNote.id).filter(
+        GoodsReceiptNote.po_id == po.id,
+        GoodsReceiptNote.status == GRNStatusEnum.PENDING_INSPECTION,
+    ).first()
+    if pending_grn:
+        raise HTTPException(status_code=409, detail="Resolve pending GRN inspection before cancelling the purchase order.")
+    _release_po_budget_reservations(
+        db,
+        po,
+        current_user,
+        reference_suffix=f"CANCEL:{secrets.token_hex(4)}",
+        note=f"Outstanding PO commitment released on cancellation: {payload.reason.strip()}",
+    )
+    po.status = POStatusEnum.CANCELLED
+    po.updated_by_id = current_user.id
+    db.commit()
+    return {
+        "status": "CANCELLED",
+        "po_id": po.id,
+        "po_number": po.po_number,
+        "released_commitment": True,
+        "reason": payload.reason.strip(),
+    }
+
+
 @router.get("/purchase-orders", response_model=PaginatedResponse[POResponse])
 def list_purchase_orders(
     vendor_id: Optional[int] = None,
@@ -1830,19 +1921,7 @@ def review_purchase_order_amendment(
         po.total_amount_paise = snapshot["total_amount_paise"]
         for old_item in list(po.items):
             if old_item.budget_id is not None:
-                movements = db.query(
-                    ProcurementBudgetMovement.movement_type,
-                    func.coalesce(func.sum(ProcurementBudgetMovement.amount_paise), 0),
-                ).filter(
-                    ProcurementBudgetMovement.po_item_id == old_item.id
-                ).group_by(ProcurementBudgetMovement.movement_type).all()
-                totals = {kind: int(amount or 0) for kind, amount in movements}
-                outstanding = max(
-                    totals.get("RESERVATION", 0)
-                    - totals.get("RELEASE", 0)
-                    - totals.get("RECEIPT", 0),
-                    0,
-                )
+                outstanding = _budget_item_open_reservation(db, old_item.id)
                 if outstanding:
                     db.add(ProcurementBudgetMovement(
                         budget_id=old_item.budget_id,
