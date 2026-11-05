@@ -1482,8 +1482,8 @@ def test_procurement_budget_creation_activation_and_independent_revision(
             "parent_budget_id": budget["id"],
             "requesting_department_id": department_id,
             "period_type": "QUARTERLY",
-            "period_start": "2026-04-01",
-            "period_end": "2026-06-30",
+            "period_start": "2026-10-01",
+            "period_end": "2026-12-31",
             "category": "PHARMACY",
             "total_amount_paise": 5000000,
             "warning_threshold_pct": 75,
@@ -1503,8 +1503,8 @@ def test_procurement_budget_creation_activation_and_independent_revision(
             "budget_number": "BUD-FY26-GENMED-PHARM-OVERLAP",
             "requesting_department_id": department_id,
             "period_type": "QUARTERLY",
-            "period_start": "2026-04-01",
-            "period_end": "2026-06-30",
+            "period_start": "2026-10-01",
+            "period_end": "2026-12-31",
             "category": "PHARMACY",
             "total_amount_paise": 5000000,
             "warning_threshold_pct": 75,
@@ -1562,6 +1562,60 @@ def test_procurement_budget_creation_activation_and_independent_revision(
     assert utilization.json()["reserved_open_commitment_paise"] == 1000000
     assert utilization.json()["received_consumption_paise"] == 0
     assert utilization.json()["available_paise"] == 4000000
+
+    over_budget_po = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor.json()["id"],
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
+            "payment_terms": "Net 30",
+            "items": [{
+                "item_description": "Purchase exceeding remaining allocation",
+                "quantity_ordered": 1,
+                "unit_price_paise": 4000001,
+                "budget_department_id": department_id,
+                "budget_category": "PHARMACY",
+            }],
+        },
+    )
+    assert over_budget_po.status_code == 201, over_budget_po.text
+    blocked_po_approval = client.patch(
+        f"/v1/api/procurement/purchase-orders/{over_budget_po.json()['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert blocked_po_approval.status_code == 409, blocked_po_approval.text
+
+    grn = client.post(
+        "/v1/api/procurement/grn",
+        headers=pharmacist_headers,
+        json={
+            "po_id": po.json()["id"],
+            "invoice_number": "BUDGET-GRN-001",
+            "invoice_date": datetime.now(timezone.utc).isoformat(),
+            "items": [{
+                "po_item_id": po.json()["items"][0]["id"],
+                "batch_number": "BUDGET-BATCH-001",
+                "expiry_date": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
+                "received_quantity": 1,
+                "accepted_quantity": 1,
+            }],
+        },
+    )
+    assert grn.status_code == 201, grn.text
+    accepted_grn = client.patch(
+        f"/v1/api/procurement/grn/{grn.json()['id']}/accept",
+        headers=superuser_headers,
+    )
+    assert accepted_grn.status_code == 200, accepted_grn.text
+    utilization_after_receipt = client.get(
+        f"/v1/api/procurement/budgets/{quarter_child.json()['id']}/utilization",
+        headers=superuser_headers,
+    )
+    assert utilization_after_receipt.status_code == 200, utilization_after_receipt.text
+    assert utilization_after_receipt.json()["reserved_open_commitment_paise"] == 0
+    assert utilization_after_receipt.json()["received_consumption_paise"] == 1000000
+    assert utilization_after_receipt.json()["available_paise"] == 4000000
 
     revision = client.post(
         f"/v1/api/procurement/budgets/{budget['id']}/revisions",
