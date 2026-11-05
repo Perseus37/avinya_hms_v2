@@ -694,7 +694,6 @@ class SupplierContractResponse(BaseModel):
     status: str
     payment_terms: Optional[str]
     summary: Optional[str]
-    document_file_url: Optional[str]
     version_number: int
     submitted_at: Optional[datetime]
     approved_by_id: Optional[int]
