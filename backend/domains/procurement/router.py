@@ -160,6 +160,83 @@ def _budget_available_paise(db: Session, budget: ProcurementBudget) -> tuple[int
     return budget.total_amount_paise - used - earmarked_for_active_quarters, earmarked_for_active_quarters
 
 
+def _budget_invoice_actuals(db: Session, budget: ProcurementBudget) -> dict:
+    """Calculate verified invoice actuals separately from budget consumption.
+
+    Header discounts are allocated proportionally across invoice lines using a
+    largest-remainder paise allocation so the distributed discount reconciles
+    exactly to the invoice header.
+    """
+    budget_ids = {budget.id}
+    if budget.period_type == "ANNUAL" and budget.parent_budget_id is None:
+        budget_ids.update(
+            row[0] for row in db.query(ProcurementBudget.id).filter(
+                ProcurementBudget.parent_budget_id == budget.id
+            ).all()
+        )
+    invoices = db.query(VendorInvoice).options(
+        selectinload(VendorInvoice.items)
+    ).filter(
+        VendorInvoice.status.in_([
+            VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            VendorInvoiceStatusEnum.PAID,
+        ])
+    ).all()
+    po_item_ids = {
+        line.po_item_id
+        for invoice in invoices
+        for line in invoice.items
+        if line.po_item_id is not None
+    }
+    po_items = {
+        item.id: item for item in db.query(PurchaseOrderItem).filter(
+            PurchaseOrderItem.id.in_(po_item_ids or {-1})
+        ).all()
+    }
+    verified_total = 0
+    paid_total = 0
+    unpaid_total = 0
+    invoice_ids = set()
+    for invoice in invoices:
+        lines = sorted(invoice.items, key=lambda item: item.id)
+        subtotal = sum(int(line.total_price_paise) for line in lines)
+        if subtotal <= 0:
+            continue
+        discount = min(max(int(invoice.discount_paise or 0), 0), subtotal)
+        shares = []
+        allocated_discount = 0
+        for line in lines:
+            numerator = discount * int(line.total_price_paise)
+            share, remainder = divmod(numerator, subtotal)
+            shares.append([line, share, remainder])
+            allocated_discount += share
+        remaining_discount = discount - allocated_discount
+        for entry in sorted(shares, key=lambda value: (-value[2], value[0].id))[:remaining_discount]:
+            entry[1] += 1
+        invoice_budget_value = 0
+        for line, discount_share, _ in shares:
+            po_item = po_items.get(line.po_item_id) if line.po_item_id is not None else None
+            if po_item is None or po_item.budget_id not in budget_ids:
+                continue
+            net = int(line.total_price_paise)
+            tax = (net * int(line.tax_percentage or 0) + 50) // 100
+            invoice_budget_value += max(net + tax - discount_share, 0)
+        if invoice_budget_value <= 0:
+            continue
+        invoice_ids.add(invoice.id)
+        verified_total += invoice_budget_value
+        if invoice.status == VendorInvoiceStatusEnum.PAID:
+            paid_total += invoice_budget_value
+        else:
+            unpaid_total += invoice_budget_value
+    return {
+        "verified_invoice_actuals_paise": verified_total,
+        "paid_invoice_actuals_paise": paid_total,
+        "unpaid_verified_invoice_actuals_paise": unpaid_total,
+        "verified_invoice_count": len(invoice_ids),
+    }
+
+
 def _resolve_active_procurement_budget(
     db: Session, department_id: int, category: str, order_date: date
 ) -> Optional[ProcurementBudget]:
@@ -3666,6 +3743,7 @@ def get_procurement_budget_utilization(
     totals = _budget_ledger_totals(db, budget.id)
     committed_and_consumed = totals["reserved_open_paise"] + totals["received_consumption_paise"]
     available, earmarked_for_active_quarters = _budget_available_paise(db, budget)
+    invoice_actuals = _budget_invoice_actuals(db, budget)
     budget_engaged_paise = committed_and_consumed + earmarked_for_active_quarters
     utilization_pct = (
         round((budget_engaged_paise * 100) / budget.total_amount_paise, 2)
@@ -3695,8 +3773,9 @@ def get_procurement_budget_utilization(
         "utilization_pct": utilization_pct,
         "warning_threshold_pct": budget.warning_threshold_pct,
         "alert": alert,
-        "invoice_actuals_included": False,
-        "note": "Invoice values are financial actuals and are deliberately not added to budget consumption; invoice reconciliation is reported separately.",
+        **invoice_actuals,
+        "invoice_actuals_included": True,
+        "invoice_actuals_note": "Only matched-approved and paid invoice lines linked to budget-mapped PO lines are included. Header discounts are allocated proportionally across invoice lines. Invoice actuals are informational and are not added again to budget consumption.",
     }
 
 
