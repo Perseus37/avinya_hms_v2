@@ -1433,3 +1433,142 @@ def test_procurement_financial_intelligence_empty_period_and_date_validation(
     )
     assert invalid_range.status_code == 422
 
+
+
+def test_procurement_budget_creation_activation_and_independent_revision(
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import Department
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        department = db.query(Department).filter(Department.code == "DEPT_GEN_MED").one()
+        department_id = department.id
+
+    start = datetime(2026, 4, 1).date()
+    end = datetime(2027, 3, 31).date()
+    created = client.post(
+        "/v1/api/procurement/budgets",
+        headers=pharmacist_headers,
+        json={
+            "budget_number": "BUD-FY26-GENMED-PHARM",
+            "requesting_department_id": department_id,
+            "period_type": "ANNUAL",
+            "period_start": start.isoformat(),
+            "period_end": end.isoformat(),
+            "category": "PHARMACY",
+            "total_amount_paise": 25000000,
+            "warning_threshold_pct": 80,
+        },
+    )
+    assert created.status_code == 201, created.text
+    budget = created.json()
+    assert budget["status"] == "DRAFT"
+    assert budget["total_amount_paise"] == 25000000
+
+    activated = client.post(
+        f"/v1/api/procurement/budgets/{budget['id']}/activate",
+        headers=superuser_headers,
+    )
+    assert activated.status_code == 200, activated.text
+    assert activated.json()["status"] == "ACTIVE"
+
+    duplicate_overlap = client.post(
+        "/v1/api/procurement/budgets",
+        headers=pharmacist_headers,
+        json={
+            "budget_number": "BUD-FY26-GENMED-PHARM-OVERLAP",
+            "requesting_department_id": department_id,
+            "period_type": "QUARTERLY",
+            "period_start": "2026-04-01",
+            "period_end": "2026-06-30",
+            "category": "PHARMACY",
+            "total_amount_paise": 5000000,
+            "warning_threshold_pct": 75,
+        },
+    )
+    assert duplicate_overlap.status_code == 201, duplicate_overlap.text
+    blocked_activation = client.post(
+        f"/v1/api/procurement/budgets/{duplicate_overlap.json()['id']}/activate",
+        headers=superuser_headers,
+    )
+    assert blocked_activation.status_code == 409, blocked_activation.text
+
+    revision = client.post(
+        f"/v1/api/procurement/budgets/{budget['id']}/revisions",
+        headers=pharmacist_headers,
+        json={
+            "proposed_amount_paise": 30000000,
+            "reason": "Increase allocation due to revised annual medicine demand forecast.",
+        },
+    )
+    assert revision.status_code == 201, revision.text
+    assert revision.json()["status"] == "PENDING"
+    assert revision.json()["prior_amount_paise"] == 25000000
+
+    reviewed = client.patch(
+        f"/v1/api/procurement/budgets/{budget['id']}/revisions/{revision.json()['id']}/review",
+        headers=superuser_headers,
+        json={
+            "approved": True,
+            "review_notes": "Approved after reviewing updated department forecast.",
+        },
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    assert reviewed.json()["status"] == "APPROVED"
+
+    refreshed = client.get(
+        f"/v1/api/procurement/budgets/{budget['id']}",
+        headers=superuser_headers,
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["total_amount_paise"] == 30000000
+
+
+def test_procurement_budget_rejects_invalid_period_and_unassigned_department(
+    client, pharmacist_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import Department
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        department = db.query(Department).filter(Department.code == "DEPT_GEN_MED").one()
+        department_id = department.id
+
+    invalid_period = client.post(
+        "/v1/api/procurement/budgets",
+        headers=pharmacist_headers,
+        json={
+            "budget_number": "BUD-INVALID-PERIOD",
+            "requesting_department_id": department_id,
+            "period_type": "ANNUAL",
+            "period_start": "2026-04-01",
+            "period_end": "2026-06-30",
+            "category": "PHARMACY",
+            "total_amount_paise": 100000,
+        },
+    )
+    assert invalid_period.status_code == 422
+
+    with session_factory() as db:
+        department = Department(code="BUDGET-UNASSIGNED", name="Budget Unassigned")
+        db.add(department)
+        db.commit()
+        unassigned_id = department.id
+
+    unassigned = client.post(
+        "/v1/api/procurement/budgets",
+        headers=pharmacist_headers,
+        json={
+            "budget_number": "BUD-UNASSIGNED",
+            "requesting_department_id": unassigned_id,
+            "period_type": "QUARTERLY",
+            "period_start": "2026-04-01",
+            "period_end": "2026-06-30",
+            "category": "GENERAL_SUPPLIES",
+            "total_amount_paise": 100000,
+        },
+    )
+    assert unassigned.status_code == 403
