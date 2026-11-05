@@ -1232,3 +1232,102 @@ def test_pack_unit_purchase_receipt_and_supplier_return_convert_to_stock_base_un
     )
     batch_after_return = next(item for item in refreshed.json()["items"] if item["batch_number"] == "PACK-BASE-BATCH-01")
     assert batch_after_return["stock_quantity"] == 80
+
+
+
+def test_normalized_price_benchmark_and_po_approval_variance_override(
+    client, superuser_headers, pharmacist_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.pharmacy.models import MedicationMaster, MedicationFormEnum
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        medication = MedicationMaster(
+            code="MED-PRICE-CONTROL-001",
+            brand_name="Price Control Test",
+            generic_name="Price Control Medicine",
+            form=MedicationFormEnum.TABLET,
+            strength="500 mg",
+            is_active=True,
+        )
+        db.add(medication)
+        db.commit()
+        medication_id = medication.id
+
+    units = client.get("/v1/api/procurement/units-of-measure", headers=superuser_headers)
+    assert units.status_code == 200, units.text
+    unit_ids = {unit["code"]: unit["id"] for unit in units.json()}
+    config = client.post(
+        f"/v1/api/procurement/medications/{medication_id}/pack-configurations",
+        headers=superuser_headers,
+        json={
+            "purchase_uom_id": unit_ids["STRIP"],
+            "base_uom_id": unit_ids["TAB"],
+            "units_per_purchase_unit": 10,
+            "effective_from": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+        },
+    )
+    assert config.status_code == 201, config.text
+
+    vendor = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-PRICE-CONTROL-001",
+            "name": "Price Control Supplier",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Procurement",
+            "phone": "9000000011",
+            "email": "price-control@example.com",
+            "address": "Hyderabad",
+        },
+    )
+    assert vendor.status_code == 201, vendor.text
+
+    def create_po(unit_price):
+        response = client.post(
+            "/v1/api/procurement/purchase-orders",
+            headers=pharmacist_headers,
+            json={
+                "vendor_id": vendor.json()["id"],
+                "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+                "payment_terms": "Net 30",
+                "items": [{
+                    "medication_id": medication_id,
+                    "item_description": "Price Control Medicine - 10 tablet strip",
+                    "quantity_ordered": 10,
+                    "unit_price_paise": unit_price,
+                    "purchase_uom_id": unit_ids["STRIP"],
+                }],
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    baseline_po = create_po(1000)
+    baseline_approval = client.patch(
+        f"/v1/api/procurement/purchase-orders/{baseline_po['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert baseline_approval.status_code == 200, baseline_approval.text
+
+    policy = client.put(
+        f"/v1/api/procurement/medications/{medication_id}/price-control",
+        headers=superuser_headers,
+        json={
+            "max_variance_pct": 20,
+            "minimum_observations": 2,
+            "lookback_days": 180,
+            "is_active": True,
+        },
+    )
+    assert policy.status_code == 200, policy.text
+
+    # One observation is deliberately insufficient: no false positive is raised.
+    candidate_po = create_po(1500)
+    blocked = client.patch(
+        f"/v1/api/procurement/purchase-orders/{candidate_po['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert blocked.status_code == 200, blocked.text
