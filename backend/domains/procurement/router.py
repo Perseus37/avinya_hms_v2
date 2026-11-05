@@ -996,6 +996,13 @@ def create_purchase_order_from_requisition(
     vendor = db.get(VendorMaster, payload.vendor_id)
     if vendor is None or not vendor.is_active:
         raise HTTPException(status_code=409, detail="An active registered vendor is required.")
+    if payload.contract_id is not None:
+        linked_contract = db.get(SupplierContract, payload.contract_id)
+        today = datetime.now(timezone.utc).date()
+        if (linked_contract is None or linked_contract.vendor_id != vendor.id
+                or linked_contract.status != "ACTIVE"
+                or linked_contract.valid_from > today or linked_contract.valid_to < today):
+            raise HTTPException(status_code=409, detail="The selected supplier contract must be active, in date, and belong to the PO vendor.")
     vendor_category_code = vendor.category.value if hasattr(vendor.category, "value") else str(vendor.category)
     vendor_budget_category = {
         "PHARMACEUTICALS": "PHARMACY",
@@ -1312,6 +1319,13 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     vendor = db.get(VendorMaster, payload.vendor_id)
     if vendor is None or not vendor.is_active:
         raise HTTPException(status_code=409, detail="An active registered vendor is required to create a purchase order.")
+    if payload.contract_id is not None:
+        linked_contract = db.get(SupplierContract, payload.contract_id)
+        today = datetime.now(timezone.utc).date()
+        if (linked_contract is None or linked_contract.vendor_id != vendor.id
+                or linked_contract.status != "ACTIVE"
+                or linked_contract.valid_from > today or linked_contract.valid_to < today):
+            raise HTTPException(status_code=409, detail="The selected supplier contract must be active, in date, and belong to the PO vendor.")
     po = PurchaseOrder(
         po_number=_generate_reference("PO"),
         vendor_id=payload.vendor_id,
@@ -4299,6 +4313,10 @@ def create_supplier_contract(
     for rate in payload.rates:
         if rate.medication_id is not None and db.get(MedicationMaster, rate.medication_id) is None:
             raise HTTPException(status_code=404, detail=f"Medication {rate.medication_id} not found.")
+        if db.query(ProcurementUnitOfMeasure.id).filter(
+            ProcurementUnitOfMeasure.code == rate.uom_code
+        ).one_or_none() is None:
+            raise HTTPException(status_code=422, detail=f"Unknown contract rate UOM: {rate.uom_code}.")
         db.add(SupplierContractRate(**rate.model_dump(), contract_id=contract.id, created_by_id=current_user.id))
     try:
         db.commit()
@@ -4463,6 +4481,10 @@ def request_supplier_contract_revision(
         for rate in payload.proposed_rates:
             if rate.medication_id is not None and db.get(MedicationMaster, rate.medication_id) is None:
                 raise HTTPException(status_code=404, detail=f"Medication {rate.medication_id} not found.")
+            if db.query(ProcurementUnitOfMeasure.id).filter(
+                ProcurementUnitOfMeasure.code == rate.uom_code
+            ).one_or_none() is None:
+                raise HTTPException(status_code=422, detail=f"Unknown contract rate UOM: {rate.uom_code}.")
         proposed["rates"] = [rate.model_dump() for rate in payload.proposed_rates]
     revision = SupplierContractRevision(
         contract_id=contract.id, revision_number=contract.version_number + 1,
