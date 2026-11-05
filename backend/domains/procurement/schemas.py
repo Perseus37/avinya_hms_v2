@@ -707,7 +707,16 @@ class SupplierContractRevisionCreate(BaseModel):
     proposed_valid_to: Optional[date] = None
     proposed_payment_terms: Optional[str] = Field(default=None, max_length=255)
     proposed_summary: Optional[str] = Field(default=None, max_length=5000)
+    proposed_rates: Optional[List[SupplierContractRateCreate]] = Field(default=None, min_length=1, max_length=500)
     reason: str = Field(min_length=10, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_proposed_rate_scopes(self):
+        if self.proposed_rates is not None:
+            keys = [(r.scope_type, r.medication_id, r.category, r.uom_code) for r in self.proposed_rates]
+            if len(keys) != len(set(keys)):
+                raise ValueError("Proposed contract rate scope and UOM combinations must be unique.")
+        return self
 
 
 class SupplierContractRevisionReview(BaseModel):
