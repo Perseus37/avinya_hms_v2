@@ -1163,6 +1163,14 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
         ).distinct().all() if row[0] is not None
     }
     inferred_department_id = next(iter(assigned_department_ids)) if len(assigned_department_ids) == 1 else None
+    vendor_category_code = vendor.category.value if hasattr(vendor.category, "value") else str(vendor.category)
+    vendor_budget_category = {
+        "PHARMACEUTICALS": "PHARMACY",
+        "LAB_REAGENTS": "LABORATORY",
+        "EQUIPMENT_MAINTENANCE": "SERVICES",
+        "GENERAL_SUPPLIES": "GENERAL_SUPPLIES",
+        "SURGICAL_IMPLANTS": "OTHER",
+    }.get(vendor_category_code, "OTHER")
     subtotal = 0
     tax_total = 0
     for item in payload.items:
@@ -1171,7 +1179,7 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
             raise HTTPException(status_code=422, detail="Select the requesting department for each direct purchase-order line.")
         if budget_department_id is not None and not user_has_department_access(db, current_user, budget_department_id):
             raise HTTPException(status_code=403, detail="You are not assigned to the PO line budget department.")
-        budget_category = item.budget_category or ("PHARMACY" if item.medication_id is not None else "GENERAL_SUPPLIES")
+        budget_category = item.budget_category or ("PHARMACY" if item.medication_id is not None else vendor_budget_category)
         line_subtotal = item.quantity_ordered * item.unit_price_paise
         line_tax = (line_subtotal * item.tax_percentage + 50) // 100
         unit_snapshot = _resolve_medication_unit_snapshot(
