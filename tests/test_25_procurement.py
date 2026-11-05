@@ -1512,11 +1512,11 @@ def test_procurement_budget_creation_activation_and_independent_revision(
         json={
             "budget_number": "BUD-FY26-GENMED-PHARM-OVERLAP",
             "requesting_department_id": department_id,
-            "period_type": "QUARTERLY",
-            "period_start": quarter_start.isoformat(),
-            "period_end": quarter_end.isoformat(),
+            "period_type": "ANNUAL",
+            "period_start": datetime(today.year, 1, 1).date().isoformat(),
+            "period_end": datetime(today.year, 12, 31).date().isoformat(),
             "category": "PHARMACY",
-            "total_amount_paise": 5000000,
+            "total_amount_paise": 20000000,
             "warning_threshold_pct": 75,
         },
     )
