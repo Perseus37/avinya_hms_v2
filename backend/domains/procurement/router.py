@@ -27,7 +27,8 @@ from backend.domains.procurement.models import (
     PurchaseOrderApprovalAuthority, PurchaseOrderAmendment, POAmendmentStatusEnum,
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
-    MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement
+    MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement,
+    SupplierContract, SupplierContractRate, SupplierContractRevision
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -44,7 +45,9 @@ from backend.domains.procurement.schemas import (
     PurchaseOrderApprovalRequest, PurchaseOrderPriceReviewResponse,
     ProcurementBudgetCreate, ProcurementBudgetResponse,
     ProcurementBudgetRevisionCreate, ProcurementBudgetRevisionReview,
-    ProcurementBudgetRevisionResponse, PurchaseOrderCancelRequest
+    ProcurementBudgetRevisionResponse, PurchaseOrderCancelRequest,
+    SupplierContractCreate, SupplierContractResponse, SupplierContractRevisionCreate,
+    SupplierContractRevisionReview, SupplierContractRevisionResponse
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
@@ -1074,6 +1077,7 @@ def create_purchase_order_from_requisition(
     po = PurchaseOrder(
         po_number=_generate_reference("PO"),
         vendor_id=vendor.id,
+        contract_id=payload.contract_id,
         requisition_id=requisition.id,
         status=POStatusEnum.SUBMITTED,
         delivery_due_date=payload.delivery_due_date,
@@ -1309,6 +1313,7 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     po = PurchaseOrder(
         po_number=_generate_reference("PO"),
         vendor_id=payload.vendor_id,
+        contract_id=payload.contract_id,
         status=POStatusEnum.SUBMITTED,
         delivery_due_date=payload.delivery_due_date,
         payment_terms=payload.payment_terms,
@@ -2394,6 +2399,33 @@ def approve_purchase_order(
         raise HTTPException(status_code=400, detail="Only DRAFT or SUBMITTED purchase orders can be approved.")
     if po.created_by_id == current_user.id:
         raise HTTPException(status_code=409, detail="The purchase order creator cannot approve the same purchase order.")
+
+    if po.contract_id is not None:
+        contract = db.query(SupplierContract).options(
+            selectinload(SupplierContract.rates)
+        ).filter(SupplierContract.id == po.contract_id).with_for_update().one_or_none()
+        if contract is None or contract.vendor_id != po.vendor_id:
+            raise HTTPException(status_code=409, detail="The linked supplier contract does not belong to this PO vendor.")
+        today = datetime.now(timezone.utc).date()
+        if contract.status != "ACTIVE" or contract.valid_from > today or contract.valid_to < today:
+            raise HTTPException(status_code=409, detail="The linked supplier contract is not active for today's date.")
+        for line in po.items:
+            uom_code = line.base_uom_code or line.purchase_uom_code
+            if not uom_code:
+                raise HTTPException(status_code=409, detail=f"PO line {line.id} has no normalized UOM and cannot be checked against the contract.")
+            matching = [
+                rate for rate in contract.rates
+                if rate.uom_code == uom_code and (
+                    (line.medication_id is not None and rate.scope_type == "MEDICATION" and rate.medication_id == line.medication_id)
+                    or (rate.scope_type == "CATEGORY" and rate.category == line.budget_category)
+                )
+            ]
+            if len(matching) != 1:
+                raise HTTPException(status_code=409, detail=f"PO line {line.id} must match exactly one negotiated contract rate.")
+            rate = matching[0]
+            normalized_price = line.base_unit_price_paise if line.base_unit_price_paise is not None else Decimal(line.unit_price_paise)
+            if Decimal(str(normalized_price)) != Decimal(rate.unit_price_paise) or line.tax_percentage != rate.tax_percentage:
+                raise HTTPException(status_code=409, detail=f"PO line {line.id} price or tax differs from the linked supplier contract rate.")
 
     if not current_user.is_superuser:
         role_ids = [role.id for role in current_user.roles]
@@ -4236,3 +4268,267 @@ def list_procurement_budget_movements(
         "actor_user_id": row.actor_user_id,
         "created_at": row.created_at,
     } for row in rows]
+
+
+# --- Supplier contract lifecycle and negotiated rates ---
+@router.post("/supplier-contracts", response_model=SupplierContractResponse, status_code=status.HTTP_201_CREATED)
+def create_supplier_contract(
+    payload: SupplierContractCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    vendor = db.get(VendorMaster, payload.vendor_id)
+    if vendor is None or not vendor.is_active:
+        raise HTTPException(status_code=404, detail="Active supplier not found.")
+    contract = SupplierContract(
+        vendor_id=vendor.id,
+        contract_number=payload.contract_number.strip(),
+        title=payload.title.strip(),
+        valid_from=payload.valid_from,
+        valid_to=payload.valid_to,
+        renewal_notice_days=payload.renewal_notice_days,
+        auto_renew=payload.auto_renew,
+        payment_terms=payload.payment_terms,
+        summary=payload.summary,
+        status="DRAFT",
+        created_by_id=current_user.id,
+    )
+    db.add(contract)
+    db.flush()
+    for rate in payload.rates:
+        if rate.medication_id is not None and db.get(MedicationMaster, rate.medication_id) is None:
+            raise HTTPException(status_code=404, detail=f"Medication {rate.medication_id} not found.")
+        db.add(SupplierContractRate(**rate.model_dump(), contract_id=contract.id, created_by_id=current_user.id))
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Contract number or rate scope already exists.") from exc
+    return db.query(SupplierContract).options(selectinload(SupplierContract.rates)).filter(
+        SupplierContract.id == contract.id
+    ).one()
+
+
+@router.get("/supplier-contracts", response_model=list[SupplierContractResponse])
+def list_supplier_contracts(
+    vendor_id: Optional[int] = None,
+    status_filter: Optional[str] = Query(default=None, alias="status", pattern="^(DRAFT|PENDING_APPROVAL|ACTIVE|EXPIRED|TERMINATED)$"),
+    expiring_within_days: Optional[int] = Query(default=None, ge=0, le=730),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    query = db.query(SupplierContract).options(selectinload(SupplierContract.rates))
+    if vendor_id is not None:
+        query = query.filter(SupplierContract.vendor_id == vendor_id)
+    if status_filter:
+        query = query.filter(SupplierContract.status == status_filter)
+    if expiring_within_days is not None:
+        today = datetime.now(timezone.utc).date()
+        query = query.filter(
+            SupplierContract.status == "ACTIVE",
+            SupplierContract.valid_to <= today + timedelta(days=expiring_within_days),
+            SupplierContract.valid_to >= today,
+        )
+    return query.order_by(SupplierContract.valid_to.asc(), SupplierContract.id.asc()).all()
+
+
+@router.get("/supplier-contracts/{contract_id}", response_model=SupplierContractResponse)
+def get_supplier_contract(
+    contract_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    contract = db.query(SupplierContract).options(selectinload(SupplierContract.rates)).filter(
+        SupplierContract.id == contract_id
+    ).one_or_none()
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Supplier contract not found.")
+    return contract
+
+
+@router.post("/supplier-contracts/{contract_id}/submit", response_model=SupplierContractResponse)
+def submit_supplier_contract(
+    contract_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    contract = db.query(SupplierContract).filter(SupplierContract.id == contract_id).with_for_update().one_or_none()
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Supplier contract not found.")
+    if contract.status != "DRAFT":
+        raise HTTPException(status_code=409, detail="Only draft contracts can be submitted.")
+    if contract.created_by_id == current_user.id:
+        # Submission is allowed; independent review is enforced at approval.
+        pass
+    contract.status = "PENDING_APPROVAL"
+    contract.submitted_at = datetime.now(timezone.utc)
+    contract.updated_by_id = current_user.id
+    db.commit()
+    return db.query(SupplierContract).options(selectinload(SupplierContract.rates)).filter(
+        SupplierContract.id == contract.id
+    ).one()
+
+
+@router.patch("/supplier-contracts/{contract_id}/approve", response_model=SupplierContractResponse)
+def approve_supplier_contract(
+    contract_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    contract = db.query(SupplierContract).filter(SupplierContract.id == contract_id).with_for_update().one_or_none()
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Supplier contract not found.")
+    if contract.status != "PENDING_APPROVAL":
+        raise HTTPException(status_code=409, detail="Only pending supplier contracts can be approved.")
+    if contract.created_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The contract creator cannot approve the same contract.")
+    if contract.valid_to < datetime.now(timezone.utc).date():
+        raise HTTPException(status_code=409, detail="An expired contract cannot be activated.")
+    contract.status = "ACTIVE"
+    contract.approved_by_id = current_user.id
+    contract.approved_at = datetime.now(timezone.utc)
+    contract.updated_by_id = current_user.id
+    db.commit()
+    return db.query(SupplierContract).options(selectinload(SupplierContract.rates)).filter(
+        SupplierContract.id == contract.id
+    ).one()
+
+
+@router.patch("/supplier-contracts/{contract_id}/terminate", response_model=SupplierContractResponse)
+def terminate_supplier_contract(
+    contract_id: int,
+    reason: str = Query(..., min_length=10, max_length=2000),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    contract = db.query(SupplierContract).filter(SupplierContract.id == contract_id).with_for_update().one_or_none()
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Supplier contract not found.")
+    if contract.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail="Only active contracts can be terminated.")
+    open_po = db.query(PurchaseOrder.id).filter(
+        PurchaseOrder.contract_id == contract.id,
+        PurchaseOrder.status.in_([POStatusEnum.SUBMITTED, POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED]),
+    ).first()
+    if open_po:
+        raise HTTPException(status_code=409, detail="Contract cannot be terminated while linked purchase orders remain open.")
+    contract.status = "TERMINATED"
+    contract.terminated_by_id = current_user.id
+    contract.terminated_at = datetime.now(timezone.utc)
+    contract.termination_reason = reason.strip()
+    contract.updated_by_id = current_user.id
+    db.commit()
+    return db.query(SupplierContract).options(selectinload(SupplierContract.rates)).filter(
+        SupplierContract.id == contract.id
+    ).one()
+
+
+@router.post("/supplier-contracts/{contract_id}/revisions", response_model=SupplierContractRevisionResponse, status_code=status.HTTP_201_CREATED)
+def request_supplier_contract_revision(
+    contract_id: int,
+    payload: SupplierContractRevisionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    contract = db.query(SupplierContract).filter(SupplierContract.id == contract_id).with_for_update().one_or_none()
+    if contract is None:
+        raise HTTPException(status_code=404, detail="Supplier contract not found.")
+    if contract.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail="Only active contracts can be amended.")
+    if payload.proposed_valid_to is not None and payload.proposed_valid_to < contract.valid_from:
+        raise HTTPException(status_code=422, detail="Proposed contract end date cannot precede its start date.")
+    pending = db.query(SupplierContractRevision.id).filter(
+        SupplierContractRevision.contract_id == contract.id,
+        SupplierContractRevision.status == "PENDING",
+    ).first()
+    if pending:
+        raise HTTPException(status_code=409, detail="A pending contract revision already exists.")
+    prior = {"valid_from": contract.valid_from.isoformat(), "valid_to": contract.valid_to.isoformat(),
+             "payment_terms": contract.payment_terms, "summary": contract.summary, "version_number": contract.version_number}
+    proposed = dict(prior)
+    if payload.proposed_valid_to is not None:
+        proposed["valid_to"] = payload.proposed_valid_to.isoformat()
+    if payload.proposed_payment_terms is not None:
+        proposed["payment_terms"] = payload.proposed_payment_terms
+    if payload.proposed_summary is not None:
+        proposed["summary"] = payload.proposed_summary
+    revision = SupplierContractRevision(
+        contract_id=contract.id, revision_number=contract.version_number + 1,
+        prior_snapshot=prior, proposed_snapshot=proposed, reason=payload.reason.strip(),
+        requested_by_id=current_user.id, created_by_id=current_user.id,
+    )
+    db.add(revision)
+    db.commit()
+    db.refresh(revision)
+    return revision
+
+
+@router.patch("/supplier-contracts/{contract_id}/revisions/{revision_id}/review", response_model=SupplierContractRevisionResponse)
+def review_supplier_contract_revision(
+    contract_id: int,
+    revision_id: int,
+    payload: SupplierContractRevisionReview,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    revision = db.query(SupplierContractRevision).filter(
+        SupplierContractRevision.id == revision_id,
+        SupplierContractRevision.contract_id == contract_id,
+    ).with_for_update().one_or_none()
+    if revision is None:
+        raise HTTPException(status_code=404, detail="Contract revision not found.")
+    contract = db.query(SupplierContract).filter(SupplierContract.id == contract_id).with_for_update().one_or_none()
+    if revision.status != "PENDING" or contract is None:
+        raise HTTPException(status_code=409, detail="Contract revision is no longer pending.")
+    if revision.requested_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The revision requester cannot review their own revision.")
+    revision.status = "APPROVED" if payload.approved else "REJECTED"
+    revision.reviewed_by_id = current_user.id
+    revision.reviewed_at = datetime.now(timezone.utc)
+    revision.review_notes = payload.review_notes.strip()
+    revision.updated_by_id = current_user.id
+    if payload.approved:
+        contract.valid_to = date.fromisoformat(revision.proposed_snapshot["valid_to"])
+        contract.payment_terms = revision.proposed_snapshot["payment_terms"]
+        contract.summary = revision.proposed_snapshot["summary"]
+        contract.version_number = revision.revision_number
+        contract.approved_by_id = current_user.id
+        contract.approved_at = datetime.now(timezone.utc)
+        contract.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(revision)
+    return revision
+
+
+@router.get("/supplier-contracts/{contract_id}/revisions", response_model=list[SupplierContractRevisionResponse])
+def list_supplier_contract_revisions(
+    contract_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    if db.get(SupplierContract, contract_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier contract not found.")
+    return db.query(SupplierContractRevision).filter(
+        SupplierContractRevision.contract_id == contract_id
+    ).order_by(SupplierContractRevision.revision_number.asc()).all()
+
+
+@router.get("/supplier-contracts/renewals/due")
+def list_supplier_contract_renewals(
+    within_days: int = Query(default=90, ge=0, le=730),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    today = datetime.now(timezone.utc).date()
+    contracts = db.query(SupplierContract).options(joinedload(SupplierContract.vendor)).filter(
+        SupplierContract.status == "ACTIVE",
+        SupplierContract.valid_to <= today + timedelta(days=within_days),
+    ).order_by(SupplierContract.valid_to.asc()).all()
+    return [{
+        "contract_id": c.id, "contract_number": c.contract_number, "title": c.title,
+        "vendor_id": c.vendor_id, "vendor_name": c.vendor.name,
+        "valid_to": c.valid_to, "days_remaining": (c.valid_to - today).days,
+        "renewal_notice_days": c.renewal_notice_days,
+        "notice_due": c.valid_to - timedelta(days=c.renewal_notice_days) <= today,
+        "auto_renew": c.auto_renew,
+    } for c in contracts]
