@@ -1714,9 +1714,9 @@ def request_purchase_order_amendment(
             "budget_department_id": (
                 po.requisition.requesting_department_id
                 if po.requisition_id is not None
-                else item.budget_department_id
+                else (item.budget_department_id or (prior_line.budget_department_id if prior_line else None))
             ),
-            "budget_category": item.budget_category or (
+            "budget_category": item.budget_category or (prior_line.budget_category if prior_line else None) or (
                 "PHARMACY" if (req_line.medication_id if po.requisition_id is not None else item.medication_id) is not None
                 else "GENERAL_SUPPLIES"
             ),
@@ -3416,6 +3416,10 @@ def review_procurement_budget_revision(
         ).scalar() or 0
         if int(active_quarter_allocations) > revision.proposed_amount_paise:
             raise HTTPException(status_code=409, detail="The revised annual amount cannot be lower than its active quarterly allocations.")
+        ledger_totals = _budget_ledger_totals(db, budget.id)
+        committed_and_consumed = ledger_totals["reserved_open_paise"] + ledger_totals["received_consumption_paise"]
+        if committed_and_consumed > revision.proposed_amount_paise:
+            raise HTTPException(status_code=409, detail="The revised budget cannot be lower than existing open commitments plus accepted receipt consumption.")
         budget.total_amount_paise = revision.proposed_amount_paise
         budget.updated_by_id = current_user.id
     db.commit()
