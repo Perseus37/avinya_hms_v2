@@ -232,8 +232,13 @@ class PurchaseOrderItem(AuditMixin, Base):
     units_per_purchase_unit: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 6), nullable=True)
     base_quantity: Mapped[Optional[Decimal]] = mapped_column(Numeric(20, 6), nullable=True)
     base_unit_price_paise: Mapped[Optional[Decimal]] = mapped_column(Numeric(24, 8), nullable=True)
+    budget_department_id: Mapped[Optional[int]] = mapped_column(ForeignKey("departments.id", ondelete="RESTRICT"), nullable=True, index=True)
+    budget_category: Mapped[str] = mapped_column(String(24), default="GENERAL_SUPPLIES", nullable=False)
+    budget_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_budgets.id", ondelete="RESTRICT"), nullable=True, index=True)
 
     purchase_order: Mapped["PurchaseOrder"] = relationship(back_populates="items")
+    budget_department: Mapped[Optional["Department"]] = relationship(foreign_keys=[budget_department_id])
+    budget: Mapped[Optional["ProcurementBudget"]] = relationship()
     medication: Mapped[Optional["MedicationMaster"]] = relationship()
 
 
@@ -726,3 +731,31 @@ class ProcurementBudgetRevision(AuditMixin, Base):
 
     budget: Mapped["ProcurementBudget"] = relationship()
     reviewed_by: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewed_by_id])
+
+
+class ProcurementBudgetMovement(AuditMixin, Base):
+    """Append-only monetary ledger for PO commitments and accepted receipt consumption."""
+    __tablename__ = "procurement_budget_movements"
+    __table_args__ = (
+        CheckConstraint("movement_type IN ('RESERVATION', 'RELEASE', 'RECEIPT')", name="ck_proc_budget_movement_type"),
+        CheckConstraint("amount_paise > 0", name="ck_proc_budget_movement_amount_positive"),
+        UniqueConstraint("reference_key", name="uq_proc_budget_movement_reference"),
+        Index("ix_proc_budget_movement_budget_type", "budget_id", "movement_type"),
+        Index("ix_proc_budget_movement_po", "po_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    budget_id: Mapped[int] = mapped_column(ForeignKey("procurement_budgets.id", ondelete="RESTRICT"), nullable=False)
+    po_id: Mapped[int] = mapped_column(ForeignKey("procurement_purchase_orders.id", ondelete="RESTRICT"), nullable=False)
+    # Historical numeric identifiers intentionally have no FK: PO amendment replaces line rows.
+    po_item_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    grn_item_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    movement_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    reference_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+    budget: Mapped["ProcurementBudget"] = relationship()
+    purchase_order: Mapped["PurchaseOrder"] = relationship()
+    actor: Mapped["User"] = relationship(foreign_keys=[actor_user_id])
