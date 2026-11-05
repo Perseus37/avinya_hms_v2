@@ -1695,6 +1695,25 @@ def test_procurement_budget_creation_activation_and_independent_revision(
     assert refreshed.status_code == 200, refreshed.text
     assert refreshed.json()["total_amount_paise"] == 30000000
 
+    quarter_revision = client.post(
+        f"/v1/api/procurement/budgets/{quarter_child.json()['id']}/revisions",
+        headers=pharmacist_headers,
+        json={
+            "proposed_amount_paise": 31000000,
+            "reason": "Requested quarter allocation exceeds the remaining annual budget capacity.",
+        },
+    )
+    assert quarter_revision.status_code == 201, quarter_revision.text
+    quarter_revision_review = client.patch(
+        f"/v1/api/procurement/budgets/{quarter_child.json()['id']}/revisions/{quarter_revision.json()['id']}/review",
+        headers=superuser_headers,
+        json={
+            "approved": True,
+            "review_notes": "Rejected because the quarterly allocation would exceed annual capacity.",
+        },
+    )
+    assert quarter_revision_review.status_code == 409, quarter_revision_review.text
+
 
 def test_procurement_budget_rejects_invalid_period_and_unassigned_department(
     client, pharmacist_headers, multi_tenant_env
