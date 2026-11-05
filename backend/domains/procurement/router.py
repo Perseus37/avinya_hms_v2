@@ -3504,19 +3504,21 @@ def get_procurement_budget_dashboard(
         ProcurementBudget.period_start <= window_end,
         ProcurementBudget.period_end >= window_start,
     )
+    scope_department_ids = None
     if department_id is not None:
-        query = query.filter(ProcurementBudget.requesting_department_id == department_id)
         if not current_user.is_superuser and not user_has_department_access(db, current_user, department_id):
             raise HTTPException(status_code=403, detail="You are not assigned to the requested budget department.")
+        scope_department_ids = {department_id}
+        query = query.filter(ProcurementBudget.requesting_department_id == department_id)
     elif not current_user.is_superuser:
-        assigned_department_ids = {
+        scope_department_ids = {
             row[0] for row in db.query(UserRole.department_id).filter(
                 UserRole.user_id == current_user.id,
                 UserRole.department_id.is_not(None),
             ).distinct().all()
             if row[0] is not None and user_has_department_access(db, current_user, row[0])
         }
-        query = query.filter(ProcurementBudget.requesting_department_id.in_(assigned_department_ids or [-1]))
+        query = query.filter(ProcurementBudget.requesting_department_id.in_(scope_department_ids or [-1]))
     if category:
         query = query.filter(ProcurementBudget.category == category)
     budgets = query.order_by(
@@ -3525,6 +3527,60 @@ def get_procurement_budget_dashboard(
         ProcurementBudget.period_start.asc(),
         ProcurementBudget.period_type.asc(),
     ).all()
+
+    unbudgeted_query = db.query(
+        PurchaseOrderItem.budget_department_id,
+        PurchaseOrderItem.budget_category,
+        VendorMaster.id,
+        VendorMaster.name,
+        func.count(func.distinct(PurchaseOrder.id)),
+        func.count(PurchaseOrderItem.id),
+        func.coalesce(func.sum(PurchaseOrderItem.gross_total_paise), 0),
+    ).join(
+        PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.po_id
+    ).join(
+        VendorMaster, VendorMaster.id == PurchaseOrder.vendor_id
+    ).filter(
+        PurchaseOrderItem.budget_id.is_(None),
+        PurchaseOrder.status.in_([
+            POStatusEnum.APPROVED,
+            POStatusEnum.PARTIALLY_RECEIVED,
+            POStatusEnum.COMPLETED,
+        ]),
+        PurchaseOrder.created_at >= start_at,
+        PurchaseOrder.created_at <= end_at,
+    )
+    if scope_department_ids is not None:
+        unbudgeted_query = unbudgeted_query.filter(
+            PurchaseOrderItem.budget_department_id.in_(scope_department_ids or [-1])
+        )
+    unbudgeted_rows = unbudgeted_query.group_by(
+        PurchaseOrderItem.budget_department_id,
+        PurchaseOrderItem.budget_category,
+        VendorMaster.id,
+        VendorMaster.name,
+    ).all()
+    unbudgeted_by_department_category = {}
+    unbudgeted_total_paise = 0
+    unbudgeted_po_count = 0
+    unbudgeted_line_count = 0
+    for dept_id, item_category, vendor_id, vendor_name, po_count, line_count, amount in unbudgeted_rows:
+        key = (dept_id, item_category or "UNCLASSIFIED")
+        row = unbudgeted_by_department_category.setdefault(key, {
+            "department_id": dept_id,
+            "category": item_category or "UNCLASSIFIED",
+            "po_count": 0,
+            "line_count": 0,
+            "gross_value_paise": 0,
+            "suppliers": [],
+        })
+        row["po_count"] += int(po_count)
+        row["line_count"] += int(line_count)
+        row["gross_value_paise"] += int(amount or 0)
+        row["suppliers"].append({"vendor_id": vendor_id, "vendor_name": vendor_name})
+        unbudgeted_total_paise += int(amount or 0)
+        unbudgeted_po_count += int(po_count)
+        unbudgeted_line_count += int(line_count)
 
     visible_budget_ids = {budget.id for budget in budgets}
     annual_root_ids = {
@@ -3715,6 +3771,19 @@ def get_procurement_budget_dashboard(
         "department_category_movement_summary": list(department_category.values()),
         "monthly_movement_trend": monthly_trend,
         "invoice_actuals_by_budget": invoice_actuals,
+        "unbudgeted_procurement": {
+            "purchase_order_count": unbudgeted_po_count,
+            "line_count": unbudgeted_line_count,
+            "gross_value_paise": unbudgeted_total_paise,
+            "by_department_category": [
+                {
+                    **row,
+                    "suppliers": sorted(row["suppliers"], key=lambda supplier: (supplier["vendor_name"] or "").lower()),
+                }
+                for row in unbudgeted_by_department_category.values()
+            ],
+            "definition": "Approved, partially received and completed PO lines without a budget allocation, filtered by PO creation date. This includes legacy lines and purchases made where no active budget control was configured; it is not automatically proof of policy violation.",
+        },
         "definitions": {
             "movement_trend": "RESERVATION, RELEASE and accepted GRN receipt movements in the selected date window; each ledger movement is counted once.",
             "allocation_rows": "Annual and quarterly allocations are shown separately. Annual utilization includes its child-quarter movements and earmarks; do not sum annual and quarterly rows into a single portfolio total.",
