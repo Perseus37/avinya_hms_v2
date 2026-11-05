@@ -1739,6 +1739,43 @@ def test_procurement_budget_creation_activation_and_independent_revision(
     assert any(row["verified_invoice_actuals_paise"] == 1040000 for row in dashboard_data["invoice_actuals_by_budget"])
     assert dashboard_data["definitions"]["forecast"].startswith("Straight-line")
 
+    unbudgeted_po = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor.json()["id"],
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
+            "payment_terms": "Net 30",
+            "items": [{
+                "item_description": "Unbudgeted laboratory supply",
+                "quantity_ordered": 1,
+                "unit_price_paise": 250000,
+                "budget_department_id": department_id,
+                "budget_category": "LABORATORY",
+            }],
+        },
+    )
+    assert unbudgeted_po.status_code == 201, unbudgeted_po.text
+    unbudgeted_approved = client.patch(
+        f"/v1/api/procurement/purchase-orders/{unbudgeted_po.json()['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert unbudgeted_approved.status_code == 200, unbudgeted_approved.text
+    assert unbudgeted_approved.json()["items"][0]["budget_id"] is None
+    unbudgeted_dashboard = client.get(
+        "/v1/api/procurement/budgets/analytics/dashboard",
+        headers=superuser_headers,
+        params={
+            "from_date": today.isoformat(),
+            "to_date": today.isoformat(),
+            "department_id": department_id,
+            "category": "LABORATORY",
+        },
+    )
+    assert unbudgeted_dashboard.status_code == 200, unbudgeted_dashboard.text
+    assert unbudgeted_dashboard.json()["unbudgeted_procurement"]["purchase_order_count"] == 1
+    assert unbudgeted_dashboard.json()["unbudgeted_procurement"]["gross_value_paise"] == 250000
+
     invalid_dashboard_range = client.get(
         "/v1/api/procurement/budgets/analytics/dashboard",
         headers=superuser_headers,
