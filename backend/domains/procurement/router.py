@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, BackgroundTasks, Response, Query, Request, Form
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 from sqlalchemy.exc import IntegrityError
 from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
