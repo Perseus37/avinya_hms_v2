@@ -28,7 +28,7 @@ from backend.domains.procurement.models import (
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
     MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement,
-    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy
+    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -4318,6 +4318,7 @@ def _assert_supplier_compliance_ready(db: Session, vendor: VendorMaster) -> None
             SupplierComplianceDocument.vendor_id == vendor.id,
             SupplierComplianceDocument.document_type == policy.document_type,
             SupplierComplianceDocument.status == "VERIFIED",
+            or_(SupplierComplianceDocument.issue_date.is_(None), SupplierComplianceDocument.issue_date <= today),
             or_(
                 SupplierComplianceDocument.expiry_date.is_(None),
                 SupplierComplianceDocument.expiry_date >= today,
@@ -4352,6 +4353,8 @@ def _supplier_compliance_status(document: SupplierComplianceDocument, today: dat
         return "PENDING_VERIFICATION"
     if document.status == "REJECTED":
         return "REJECTED"
+    if document.issue_date is not None and document.issue_date > today:
+        return "NOT_YET_VALID"
     if document.expiry_date is not None:
         if document.expiry_date < today:
             return "EXPIRED"
@@ -4400,18 +4403,51 @@ def upsert_supplier_compliance_policy(
         SupplierCompliancePolicy.vendor_category == category,
         SupplierCompliancePolicy.document_type == kind,
     ).with_for_update().one_or_none()
+    previous_value = policy.is_required if policy is not None else None
     if policy is None:
         policy = SupplierCompliancePolicy(
             vendor_category=category, document_type=kind,
             is_required=payload.is_required, updated_by_id=current_user.id,
         )
         db.add(policy)
+        db.flush()
     else:
         policy.is_required = payload.is_required
         policy.updated_by_id = current_user.id
+    if previous_value != payload.is_required:
+        db.add(SupplierCompliancePolicyAudit(
+            policy_id=policy.id,
+            vendor_category=category,
+            document_type=kind,
+            previous_is_required=previous_value,
+            new_is_required=payload.is_required,
+            changed_by_id=current_user.id,
+            changed_by_email=current_user.email,
+        ))
     db.commit()
     db.refresh(policy)
     return policy
+
+
+
+@router.get("/supplier-compliance/policies/{vendor_category}/{document_type}/history")
+def list_supplier_compliance_policy_history(
+    vendor_category: str,
+    document_type: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    category = vendor_category.strip().upper()
+    kind = document_type.strip().upper()
+    if category not in {item.value for item in VendorCategoryEnum}:
+        raise HTTPException(status_code=422, detail="Unsupported supplier category.")
+    if kind not in _SUPPLIER_COMPLIANCE_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported supplier compliance document type.")
+    return db.query(SupplierCompliancePolicyAudit).filter(
+        SupplierCompliancePolicyAudit.vendor_category == category,
+        SupplierCompliancePolicyAudit.document_type == kind,
+    ).order_by(SupplierCompliancePolicyAudit.changed_at.desc(),
+               SupplierCompliancePolicyAudit.id.desc()).all()
 
 
 @router.post("/vendors/{vendor_id}/compliance-documents", status_code=status.HTTP_201_CREATED)
