@@ -184,6 +184,7 @@ class PurchaseOrder(AuditMixin, Base):
     po_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id"), nullable=False)
     requisition_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_requisitions.id"), nullable=True, index=True)
+    contract_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_supplier_contracts.id", ondelete="RESTRICT"), nullable=True, index=True)
     status: Mapped[POStatusEnum] = mapped_column(default=POStatusEnum.DRAFT, nullable=False)
     delivery_due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     payment_terms: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -760,3 +761,87 @@ class ProcurementBudgetMovement(AuditMixin, Base):
     budget: Mapped["ProcurementBudget"] = relationship()
     purchase_order: Mapped["PurchaseOrder"] = relationship()
     actor: Mapped["User"] = relationship(foreign_keys=[actor_user_id])
+
+
+class SupplierContract(AuditMixin, Base):
+    """Structured supplier agreement; signed evidence remains in tenant document storage."""
+    __tablename__ = "procurement_supplier_contracts"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "contract_number", name="uq_proc_contract_vendor_number"),
+        CheckConstraint("valid_to >= valid_from", name="ck_proc_contract_valid_period"),
+        CheckConstraint("renewal_notice_days >= 0 AND renewal_notice_days <= 730", name="ck_proc_contract_notice_days"),
+        CheckConstraint("status IN ('DRAFT','PENDING_APPROVAL','ACTIVE','EXPIRED','TERMINATED')", name="ck_proc_contract_status"),
+        Index("ix_proc_contract_vendor_status", "vendor_id", "status"),
+        Index("ix_proc_contract_validity", "status", "valid_to"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    contract_number: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_to: Mapped[date] = mapped_column(Date, nullable=False)
+    renewal_notice_days: Mapped[int] = mapped_column(Integer, default=90, nullable=False)
+    auto_renew: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="DRAFT", nullable=False)
+    payment_terms: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    document_file_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    version_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    terminated_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    terminated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    termination_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    vendor: Mapped["VendorMaster"] = relationship()
+    approved_by: Mapped[Optional["User"]] = relationship(foreign_keys=[approved_by_id])
+    rates: Mapped[List["SupplierContractRate"]] = relationship(back_populates="contract", cascade="all, delete-orphan")
+
+
+class SupplierContractRate(AuditMixin, Base):
+    """A negotiated price for one medication or procurement category and UOM."""
+    __tablename__ = "procurement_supplier_contract_rates"
+    __table_args__ = (
+        CheckConstraint("scope_type IN ('MEDICATION','CATEGORY')", name="ck_proc_contract_rate_scope"),
+        CheckConstraint("(scope_type = 'MEDICATION' AND medication_id IS NOT NULL AND category IS NULL) OR (scope_type = 'CATEGORY' AND medication_id IS NULL AND category IS NOT NULL)", name="ck_proc_contract_rate_scope_target"),
+        CheckConstraint("unit_price_paise >= 0", name="ck_proc_contract_rate_price_non_neg"),
+        CheckConstraint("tax_percentage >= 0 AND tax_percentage <= 100", name="ck_proc_contract_rate_tax_range"),
+        UniqueConstraint("contract_id", "scope_type", "medication_id", "category", "uom_code", name="uq_proc_contract_rate_scope_uom"),
+        Index("ix_proc_contract_rate_medication", "medication_id", "uom_code"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    contract_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_contracts.id", ondelete="CASCADE"), nullable=False, index=True)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    medication_id: Mapped[Optional[int]] = mapped_column(ForeignKey("medication_master.id", ondelete="RESTRICT"), nullable=True)
+    category: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    uom_code: Mapped[str] = mapped_column(String(24), nullable=False)
+    unit_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    tax_percentage: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    contract: Mapped["SupplierContract"] = relationship(back_populates="rates")
+    medication: Mapped[Optional["MedicationMaster"]] = relationship()
+
+
+class SupplierContractRevision(Base):
+    """Immutable record of proposed contract amendments and independent decisions."""
+    __tablename__ = "procurement_supplier_contract_revisions"
+    __table_args__ = (
+        UniqueConstraint("contract_id", "revision_number", name="uq_proc_contract_revision_number"),
+        CheckConstraint("status IN ('PENDING','APPROVED','REJECTED')", name="ck_proc_contract_revision_status"),
+        Index("ix_proc_contract_revision_status", "contract_id", "status"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    contract_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_contracts.id", ondelete="RESTRICT"), nullable=False)
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    prior_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    proposed_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(12), default="PENDING", nullable=False)
+    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    contract: Mapped["SupplierContract"] = relationship()
+    requested_by: Mapped["User"] = relationship(foreign_keys=[requested_by_id])
+    reviewed_by: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewed_by_id])
