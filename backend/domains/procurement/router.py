@@ -17,7 +17,7 @@ from backend.domains.identity.models import User, Department, Role, UserRole
 from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
 from backend.domains.pharmacy.models import MedicationMaster, InventoryMovement, InventoryBatch
 from backend.domains.procurement.models import (
-    VendorMaster, PurchaseOrder, PurchaseOrderItem, POStatusEnum,
+    VendorMaster, VendorCategoryEnum, PurchaseOrder, PurchaseOrderItem, POStatusEnum,
     GoodsReceiptNote, GoodsReceiptItem, GRNStatusEnum,
     VendorInvoice, VendorInvoiceItem, VendorInvoiceStatusEnum,
     ProcurementDocumentDownloadAudit,
