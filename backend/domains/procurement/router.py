@@ -4595,7 +4595,10 @@ def get_supplier_risk_register(
         vendor_query = vendor_query.filter(VendorMaster.category == category)
     if active_only:
         vendor_query = vendor_query.filter(VendorMaster.is_active.is_(True))
-    all_vendors = vendor_query.order_by(VendorMaster.name.asc(), VendorMaster.id.asc()).all()
+    total_vendor_count = vendor_query.count()
+    all_vendors = vendor_query.order_by(
+        VendorMaster.name.asc(), VendorMaster.id.asc()
+    ).offset(offset).limit(limit).all()
     vendor_ids = [vendor.id for vendor in all_vendors]
     category_codes = sorted({
         vendor.category.value if hasattr(vendor.category, "value") else str(vendor.category)
@@ -4741,7 +4744,8 @@ def get_supplier_risk_register(
             "contract_expiry_window_days": within_days,
         },
         "summary": {
-            "supplier_count": total,
+            "supplier_count_after_risk_filter_on_page": total,
+            "suppliers_evaluated_on_page": len(all_vendors),
             "critical_count": summary["critical"], "high_count": summary["high"],
             "medium_count": summary["medium"], "low_count": summary["low"],
             "not_evaluated_count": summary["not_evaluated"],
@@ -4749,9 +4753,13 @@ def get_supplier_risk_register(
             "overdue_open_po_count": sum(row["overdue_purchase_order_count"] for row in rows),
             "open_po_exposure_paise": sum(row["open_purchase_order_value_paise"] for row in rows),
         },
-        "pagination": {"total": total, "limit": limit, "offset": offset,
-                       "returned": len(rows[offset:offset + limit])},
-        "suppliers": rows[offset:offset + limit],
+        "pagination": {
+            "total_suppliers_before_risk_filter": total_vendor_count,
+            "limit": limit, "offset": offset,
+            "evaluated_on_page": len(all_vendors),
+            "returned_after_risk_filter": len(rows),
+        },
+        "suppliers": rows,
         "definitions": {
             "critical": "Mandatory compliance is blocked and at least one open purchase order exists.",
             "high": "Mandatory compliance is blocked, an active contract is past its validity end date, or an open PO is overdue.",
@@ -4761,6 +4769,7 @@ def get_supplier_risk_register(
             "open_po_value": "Sum of tax-inclusive totals for SUBMITTED, APPROVED and PARTIALLY_RECEIVED purchase orders; not an accounts-payable balance.",
             "contract_expiry": "Uses ACTIVE contract records and their valid_to date; it does not mutate contract status.",
             "scope": "Risk classification is an operational triage indicator, not a legal or creditworthiness determination.",
+            "pagination": "Supplier rows and summary metrics are computed only for the requested vendor page; risk_level and include_no_open_orders filters are applied to that page.",
         },
     }
 
