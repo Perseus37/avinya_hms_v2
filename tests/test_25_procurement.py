@@ -1651,6 +1651,19 @@ def test_procurement_budget_creation_activation_and_independent_revision(
     assert utilization_after_receipt.json()["reserved_open_commitment_paise"] == 0
     assert utilization_after_receipt.json()["received_consumption_paise"] == 1000000
     assert utilization_after_receipt.json()["available_paise"] == 4000000
+    annual_utilization = client.get(
+        f"/v1/api/procurement/budgets/{budget['id']}/utilization",
+        headers=superuser_headers,
+    )
+    assert annual_utilization.status_code == 200, annual_utilization.text
+    assert annual_utilization.json()["received_consumption_paise"] == 1000000
+    assert annual_utilization.json()["allocated_to_active_quarters_paise"] == 4000000
+    movement_audit = client.get(
+        f"/v1/api/procurement/budgets/{budget['id']}/movements",
+        headers=superuser_headers,
+    )
+    assert movement_audit.status_code == 200, movement_audit.text
+    assert {row["movement_type"] for row in movement_audit.json()} == {"RESERVATION", "RELEASE", "RECEIPT"}
 
     revision = client.post(
         f"/v1/api/procurement/budgets/{budget['id']}/revisions",
