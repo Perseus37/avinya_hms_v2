@@ -212,6 +212,7 @@ class PurchaseOrderItem(AuditMixin, Base):
         CheckConstraint("tax_amount_paise >= 0", name="ck_po_item_tax_non_neg"),
         CheckConstraint("gross_total_paise >= 0", name="ck_po_item_gross_non_neg"),
         CheckConstraint("total_price_paise + tax_amount_paise = gross_total_paise", name="ck_po_item_financial_totals"),
+        CheckConstraint("budget_category IN ('PHARMACY', 'LABORATORY', 'GENERAL_SUPPLIES', 'EQUIPMENT', 'SERVICES', 'OTHER')", name="ck_po_item_budget_category"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
