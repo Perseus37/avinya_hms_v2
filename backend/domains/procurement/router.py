@@ -838,6 +838,14 @@ def create_purchase_order_from_requisition(
     vendor = db.get(VendorMaster, payload.vendor_id)
     if vendor is None or not vendor.is_active:
         raise HTTPException(status_code=409, detail="An active registered vendor is required.")
+    vendor_category_code = vendor.category.value if hasattr(vendor.category, "value") else str(vendor.category)
+    vendor_budget_category = {
+        "PHARMACEUTICALS": "PHARMACY",
+        "LAB_REAGENTS": "LABORATORY",
+        "EQUIPMENT_MAINTENANCE": "SERVICES",
+        "GENERAL_SUPPLIES": "GENERAL_SUPPLIES",
+        "SURGICAL_IMPLANTS": "OTHER",
+    }.get(vendor_category_code, "OTHER")
     selected_quotes = db.query(SupplierQuotation).options(
         selectinload(SupplierQuotation.items)
     ).filter(
@@ -941,7 +949,7 @@ def create_purchase_order_from_requisition(
             tax_amount_paise=line_tax,
             gross_total_paise=gross_total,
             budget_department_id=requisition.requesting_department_id,
-            budget_category=item.budget_category or ("PHARMACY" if req_item.medication_id is not None else "GENERAL_SUPPLIES"),
+            budget_category=item.budget_category or ("PHARMACY" if req_item.medication_id is not None else vendor_budget_category),
             **unit_snapshot,
             created_by_id=current_user.id,
         ))
