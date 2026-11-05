@@ -701,6 +701,12 @@ def test_supplier_quotation_comparison_and_independent_selection(
     assert outcome["best_comparable_alternative"]["gross_paise"] == 63000
     assert outcome["competitive_saving_paise"] == 10500
     assert outcomes.json()["summary"]["competitive_savings_paise"] == 10500
+    supplier_outcome = next(
+        row for row in outcomes.json()["supplier_outcomes"]
+        if row["vendor_id"] == vendors[1]["id"]
+    )
+    assert supplier_outcome["competitive_savings_paise"] == 10500
+    assert supplier_outcome["comparable_line_count"] == 1
 
 
 def test_purchase_order_amendment_requires_independent_review_and_reapproval(
