@@ -124,9 +124,9 @@ def _budget_ledger_totals(db: Session, budget_id: int) -> dict:
     budget = db.get(ProcurementBudget, budget_id)
     budget_ids = [budget_id]
     if budget is not None and budget.period_type == "ANNUAL" and budget.parent_budget_id is None:
-        budget_ids.extend(db.query(ProcurementBudget.id).filter(
+        budget_ids.extend(row[0] for row in db.query(ProcurementBudget.id).filter(
             ProcurementBudget.parent_budget_id == budget_id
-        ).scalars().all())
+        ).all())
     rows = db.query(
         ProcurementBudgetMovement.movement_type,
         func.coalesce(func.sum(ProcurementBudgetMovement.amount_paise), 0),
@@ -173,6 +173,14 @@ def _resolve_active_procurement_budget(
     # Budget management is opt-in per department/category. Once an active
     # allocation exists, that allocation becomes an approval control.
     if not candidates:
+        historical_allocation = db.query(ProcurementBudget.id).filter(
+            ProcurementBudget.requesting_department_id == department_id,
+            ProcurementBudget.category == category,
+            ProcurementBudget.period_start <= order_date,
+            ProcurementBudget.period_end >= order_date,
+        ).first()
+        if historical_allocation:
+            raise HTTPException(status_code=409, detail="A budget exists for this department/category/period but is not active; procurement cannot bypass its closed or draft control.")
         return None
     quarterly = [b for b in candidates if b.period_type == "QUARTERLY"]
     roots = [b for b in candidates if b.period_type == "ANNUAL" and b.parent_budget_id is None]
@@ -3555,6 +3563,9 @@ def close_procurement_budget(
     ).first()
     if pending:
         raise HTTPException(status_code=409, detail="Resolve pending budget revisions before closing the budget.")
+    ledger_totals = _budget_ledger_totals(db, budget.id)
+    if ledger_totals["reserved_open_paise"] > 0:
+        raise HTTPException(status_code=409, detail="Release or receive all outstanding purchase-order commitments before closing the budget.")
     active_children = db.query(ProcurementBudget.id).filter(
         ProcurementBudget.parent_budget_id == budget.id,
         ProcurementBudget.status == "ACTIVE",
@@ -3625,9 +3636,9 @@ def list_procurement_budget_movements(
         raise HTTPException(status_code=404, detail="Procurement budget not found.")
     budget_ids = [budget.id]
     if budget.period_type == "ANNUAL" and budget.parent_budget_id is None:
-        budget_ids.extend(db.query(ProcurementBudget.id).filter(
+        budget_ids.extend(row[0] for row in db.query(ProcurementBudget.id).filter(
             ProcurementBudget.parent_budget_id == budget.id
-        ).scalars().all())
+        ).all())
     rows = db.query(ProcurementBudgetMovement).filter(
         ProcurementBudgetMovement.budget_id.in_(budget_ids)
     ).order_by(ProcurementBudgetMovement.created_at.asc(), ProcurementBudgetMovement.id.asc()).all()
