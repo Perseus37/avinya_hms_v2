@@ -649,6 +649,21 @@ class SupplierContractRateCreate(BaseModel):
 
 
 
+
+class SupplierCompliancePolicyUpdate(BaseModel):
+    is_required: bool
+
+
+class SupplierCompliancePolicyResponse(BaseModel):
+    id: int
+    vendor_category: str
+    document_type: str
+    is_required: bool
+    updated_by_id: int
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SupplierComplianceDocumentResponse(BaseModel):
     id: int
     vendor_id: int
