@@ -2518,8 +2518,9 @@ def get_procurement_financial_intelligence(
         ).all()
 
     accepted_value_paise = 0
-    accepted_quantity = 0
-    received_quantity = 0
+    accepted_quantity_by_uom = {}
+    received_quantity_by_uom = {}
+    accepted_grn_line_count = 0
     accepted_po_item_ids = {
         line.po_item_id for grn in accepted_grns for line in grn.items
     }
@@ -2535,14 +2536,21 @@ def get_procurement_financial_intelligence(
             po_item = po_items_by_id.get(line.po_item_id)
             if po_item is None:
                 continue
-            accepted_quantity += int(line.accepted_quantity or 0)
-            received_quantity += int(line.received_quantity or 0)
+            uom_key = line.base_uom_code or "UNKNOWN"
+            accepted_quantity_by_uom[uom_key] = (
+                accepted_quantity_by_uom.get(uom_key, 0) + int(line.accepted_quantity or 0)
+            )
+            received_quantity_by_uom[uom_key] = (
+                received_quantity_by_uom.get(uom_key, 0) + int(line.received_quantity or 0)
+            )
+            accepted_grn_line_count += 1
             if po_item.quantity_ordered > 0:
-                accepted_value_paise += (
-                    int(po_item.gross_total_paise or 0)
-                    * int(line.accepted_quantity or 0)
-                    // int(po_item.quantity_ordered)
+                line_value_numerator = (
+                    int(po_item.gross_total_paise or 0) * int(line.accepted_quantity or 0)
                 )
+                accepted_value_paise += (
+                    line_value_numerator + int(po_item.quantity_ordered) // 2
+                ) // int(po_item.quantity_ordered)
 
     committed_paise = sum(int(po.total_amount_paise or 0) for po in purchase_orders)
     vendor_commitments = {}
@@ -2614,10 +2622,11 @@ def get_procurement_financial_intelligence(
         },
         "receipts": {
             "accepted_grn_count": len(accepted_grns),
-            "received_quantity": received_quantity,
-            "accepted_quantity": accepted_quantity,
+            "accepted_grn_line_count": accepted_grn_line_count,
+            "received_quantity_by_base_uom": received_quantity_by_uom,
+            "accepted_quantity_by_base_uom": accepted_quantity_by_uom,
             "accepted_goods_value_paise": accepted_value_paise,
-            "valuation_basis": "Accepted quantity valued proportionally at the linked approved PO line's tax-inclusive gross unit value; this is receipt valuation, not a supplier invoice or payment.",
+            "valuation_basis": "Accepted quantity valued proportionally at the linked approved PO line's tax-inclusive gross unit value, rounded to the nearest paise per GRN line; quantities are grouped by base UOM to avoid adding incompatible units. This is receipt valuation, not a supplier invoice or payment.",
         },
         "invoices": {
             "invoice_count": len(invoices),
