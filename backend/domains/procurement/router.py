@@ -209,6 +209,16 @@ def _resolve_active_procurement_budget(
 
 
 
+
+
+
+def _ensure_budget_department_access(db: Session, budget: ProcurementBudget, actor: User) -> None:
+    if not actor.is_superuser and not user_has_department_access(
+        db, actor, budget.requesting_department_id
+    ):
+        raise HTTPException(status_code=403, detail="You are not assigned to this procurement budget department.")
+
+
 def _budget_item_open_reservation(db: Session, po_item_id: int) -> int:
     rows = db.query(
         ProcurementBudgetMovement.movement_type,
@@ -1185,7 +1195,7 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
         budget_department_id = item.budget_department_id or inferred_department_id
         if budget_department_id is None:
             raise HTTPException(status_code=422, detail="Select the requesting department for each direct purchase-order line.")
-        if budget_department_id is not None and not user_has_department_access(db, current_user, budget_department_id):
+        if budget_department_id is not None and not current_user.is_superuser and not user_has_department_access(db, current_user, budget_department_id):
             raise HTTPException(status_code=403, detail="You are not assigned to the PO line budget department.")
         budget_category = item.budget_category or ("PHARMACY" if item.medication_id is not None else vendor_budget_category)
         line_subtotal = item.quantity_ordered * item.unit_price_paise
@@ -1858,7 +1868,7 @@ def request_purchase_order_amendment(
             raise HTTPException(status_code=422, detail="Medication PO lines must use the PHARMACY budget category.")
         if effective_budget_department_id is None:
             raise HTTPException(status_code=422, detail="Amended PO lines must identify their requesting department.")
-        if not user_has_department_access(db, current_user, effective_budget_department_id):
+        if not current_user.is_superuser and not user_has_department_access(db, current_user, effective_budget_department_id):
             raise HTTPException(status_code=403, detail="You are not assigned to the amended PO line budget department.")
         unit_snapshot = _resolve_medication_unit_snapshot(
             db,
@@ -3334,7 +3344,7 @@ def create_procurement_budget(
     department = db.get(Department, payload.requesting_department_id)
     if department is None or not department.is_active:
         raise HTTPException(status_code=404, detail="Budget department is unavailable.")
-    if not user_has_department_access(db, current_user, department.id):
+    if not current_user.is_superuser and not user_has_department_access(db, current_user, department.id):
         raise HTTPException(status_code=403, detail="You are not assigned to the budget department.")
     parent_budget = None
     if payload.parent_budget_id is not None:
@@ -3382,9 +3392,18 @@ def list_procurement_budgets(
     period_end: Optional[date] = None,
     budget_status: Optional[str] = Query(default=None, alias="status", pattern="^(DRAFT|ACTIVE|CLOSED)$"),
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("procurement:read")),
+    current_user: User = Depends(RequirePermission("procurement:read")),
 ):
     query = db.query(ProcurementBudget)
+    if not current_user.is_superuser:
+        assigned_department_ids = {
+            row[0] for row in db.query(UserRole.department_id).filter(
+                UserRole.user_id == current_user.id,
+                UserRole.department_id.is_not(None),
+            ).distinct().all()
+            if row[0] is not None and user_has_department_access(db, current_user, row[0])
+        }
+        query = query.filter(ProcurementBudget.requesting_department_id.in_(assigned_department_ids or [-1]))
     if requesting_department_id is not None:
         query = query.filter(ProcurementBudget.requesting_department_id == requesting_department_id)
     if category is not None:
@@ -3402,11 +3421,12 @@ def list_procurement_budgets(
 def get_procurement_budget(
     budget_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("procurement:read")),
+    current_user: User = Depends(RequirePermission("procurement:read")),
 ):
     budget = db.get(ProcurementBudget, budget_id)
     if budget is None:
         raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    _ensure_budget_department_access(db, budget, current_user)
     return budget
 
 
@@ -3421,6 +3441,7 @@ def activate_procurement_budget(
     ).with_for_update().one_or_none()
     if budget is None:
         raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    _ensure_budget_department_access(db, budget, current_user)
     if budget.status != "DRAFT":
         raise HTTPException(status_code=409, detail="Only draft budgets can be activated.")
     if budget.created_by_id == current_user.id:
@@ -3492,6 +3513,7 @@ def request_procurement_budget_revision(
     ).with_for_update().one_or_none()
     if budget is None:
         raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    _ensure_budget_department_access(db, budget, current_user)
     if budget.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Only active budgets can be revised.")
     pending = db.query(ProcurementBudgetRevision.id).filter(
@@ -3525,10 +3547,12 @@ def request_procurement_budget_revision(
 def list_procurement_budget_revisions(
     budget_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("procurement:read")),
+    current_user: User = Depends(RequirePermission("procurement:read")),
 ):
-    if db.get(ProcurementBudget, budget_id) is None:
+    budget = db.get(ProcurementBudget, budget_id)
+    if budget is None:
         raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    _ensure_budget_department_access(db, budget, current_user)
     return db.query(ProcurementBudgetRevision).filter(
         ProcurementBudgetRevision.budget_id == budget_id
     ).order_by(ProcurementBudgetRevision.revision_number.asc()).all()
@@ -3550,6 +3574,7 @@ def review_procurement_budget_revision(
     ).with_for_update().one_or_none()
     if budget is None:
         raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    _ensure_budget_department_access(db, budget, current_user)
     revision = db.query(ProcurementBudgetRevision).filter(
         ProcurementBudgetRevision.id == revision_id,
         ProcurementBudgetRevision.budget_id == budget_id,
@@ -3601,6 +3626,7 @@ def close_procurement_budget(
     ).with_for_update().one_or_none()
     if budget is None:
         raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    _ensure_budget_department_access(db, budget, current_user)
     if budget.status != "ACTIVE":
         raise HTTPException(status_code=409, detail="Only active budgets can be closed.")
     pending = db.query(ProcurementBudgetRevision.id).filter(
@@ -3629,13 +3655,14 @@ def close_procurement_budget(
 def get_procurement_budget_utilization(
     budget_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("procurement:read")),
+    current_user: User = Depends(RequirePermission("procurement:read")),
 ):
     budget = db.query(ProcurementBudget).filter(
         ProcurementBudget.id == budget_id
     ).one_or_none()
     if budget is None:
         raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    _ensure_budget_department_access(db, budget, current_user)
     totals = _budget_ledger_totals(db, budget.id)
     committed_and_consumed = totals["reserved_open_paise"] + totals["received_consumption_paise"]
     available, earmarked_for_active_quarters = _budget_available_paise(db, budget)
@@ -3677,11 +3704,12 @@ def get_procurement_budget_utilization(
 def list_procurement_budget_movements(
     budget_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("procurement:read")),
+    current_user: User = Depends(RequirePermission("procurement:read")),
 ):
     budget = db.get(ProcurementBudget, budget_id)
     if budget is None:
         raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    _ensure_budget_department_access(db, budget, current_user)
     budget_ids = [budget.id]
     if budget.period_type == "ANNUAL" and budget.parent_budget_id is None:
         budget_ids.extend(row[0] for row in db.query(ProcurementBudget.id).filter(
