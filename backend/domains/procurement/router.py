@@ -2429,12 +2429,18 @@ def approve_purchase_order(
             uom_code = line.base_uom_code or line.purchase_uom_code
             if not uom_code:
                 raise HTTPException(status_code=409, detail=f"PO line {line.id} has no normalized UOM and cannot be checked against the contract.")
-            matching = [
+            medication_rates = [
                 rate for rate in contract.rates
-                if rate.uom_code == uom_code and (
-                    (line.medication_id is not None and rate.scope_type == "MEDICATION" and rate.medication_id == line.medication_id)
-                    or (rate.scope_type == "CATEGORY" and rate.category == line.budget_category)
-                )
+                if line.medication_id is not None
+                and rate.scope_type == "MEDICATION"
+                and rate.medication_id == line.medication_id
+                and rate.uom_code == uom_code
+            ]
+            matching = medication_rates or [
+                rate for rate in contract.rates
+                if rate.scope_type == "CATEGORY"
+                and rate.category == line.budget_category
+                and rate.uom_code == uom_code
             ]
             if len(matching) != 1:
                 raise HTTPException(status_code=409, detail=f"PO line {line.id} must match exactly one negotiated contract rate.")
