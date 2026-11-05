@@ -3554,6 +3554,8 @@ def get_procurement_budget_dashboard(
         unbudgeted_query = unbudgeted_query.filter(
             PurchaseOrderItem.budget_department_id.in_(scope_department_ids or [-1])
         )
+    if category:
+        unbudgeted_query = unbudgeted_query.filter(PurchaseOrderItem.budget_category == category)
     unbudgeted_rows = unbudgeted_query.group_by(
         PurchaseOrderItem.budget_department_id,
         PurchaseOrderItem.budget_category,
@@ -3579,8 +3581,29 @@ def get_procurement_budget_dashboard(
         row["gross_value_paise"] += int(amount or 0)
         row["suppliers"].append({"vendor_id": vendor_id, "vendor_name": vendor_name})
         unbudgeted_total_paise += int(amount or 0)
-        unbudgeted_po_count += int(po_count)
         unbudgeted_line_count += int(line_count)
+
+    unbudgeted_count_query = db.query(func.count(func.distinct(PurchaseOrder.id))).select_from(
+        PurchaseOrderItem
+    ).join(
+        PurchaseOrder, PurchaseOrder.id == PurchaseOrderItem.po_id
+    ).filter(
+        PurchaseOrderItem.budget_id.is_(None),
+        PurchaseOrder.status.in_([
+            POStatusEnum.APPROVED,
+            POStatusEnum.PARTIALLY_RECEIVED,
+            POStatusEnum.COMPLETED,
+        ]),
+        PurchaseOrder.created_at >= start_at,
+        PurchaseOrder.created_at <= end_at,
+    )
+    if scope_department_ids is not None:
+        unbudgeted_count_query = unbudgeted_count_query.filter(
+            PurchaseOrderItem.budget_department_id.in_(scope_department_ids or [-1])
+        )
+    if category:
+        unbudgeted_count_query = unbudgeted_count_query.filter(PurchaseOrderItem.budget_category == category)
+    unbudgeted_po_count = int(unbudgeted_count_query.scalar() or 0)
 
     visible_budget_ids = {budget.id for budget in budgets}
     annual_root_ids = {
