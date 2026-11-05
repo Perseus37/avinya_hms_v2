@@ -1653,6 +1653,45 @@ def test_procurement_budget_creation_activation_and_independent_revision(
         headers=superuser_headers,
     )
     assert accepted_grn.status_code == 200, accepted_grn.text
+
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import (
+        VendorInvoice, VendorInvoiceItem, VendorInvoiceStatusEnum,
+    )
+    with session_factory() as db:
+        verifier_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        invoice = VendorInvoice(
+            vendor_id=vendor.json()["id"],
+            po_id=po.json()["id"],
+            grn_id=grn.json()["id"],
+            invoice_number="BUDGET-INVOICE-001",
+            invoice_date=datetime.now(timezone.utc),
+            due_date=datetime.now(timezone.utc) + timedelta(days=30),
+            subtotal_paise=1000000,
+            tax_amount_paise=50000,
+            discount_paise=10000,
+            total_amount_paise=1040000,
+            status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            verified_by_id=verifier_id,
+            verified_at=datetime.now(timezone.utc),
+            created_by_id=verifier_id,
+        )
+        db.add(invoice)
+        db.flush()
+        db.add(VendorInvoiceItem(
+            invoice_id=invoice.id,
+            po_item_id=po.json()["items"][0]["id"],
+            item_description="Budget controlled pharmacy purchase",
+            batch_number="BUDGET-BATCH-001",
+            expiry_date=datetime.now(timezone.utc) + timedelta(days=365),
+            quantity=1,
+            unit_price_paise=1000000,
+            tax_percentage=5,
+            total_price_paise=1000000,
+            created_by_id=verifier_id,
+        ))
+        db.commit()
+
     utilization_after_receipt = client.get(
         f"/v1/api/procurement/budgets/{quarter_child.json()['id']}/utilization",
         headers=superuser_headers,
@@ -1661,6 +1700,9 @@ def test_procurement_budget_creation_activation_and_independent_revision(
     assert utilization_after_receipt.json()["reserved_open_commitment_paise"] == 0
     assert utilization_after_receipt.json()["received_consumption_paise"] == 1000000
     assert utilization_after_receipt.json()["available_paise"] == 4000000
+    assert utilization_after_receipt.json()["verified_invoice_actuals_paise"] == 1040000
+    assert utilization_after_receipt.json()["unpaid_verified_invoice_actuals_paise"] == 1040000
+    assert utilization_after_receipt.json()["paid_invoice_actuals_paise"] == 0
     annual_utilization = client.get(
         f"/v1/api/procurement/budgets/{budget['id']}/utilization",
         headers=superuser_headers,
