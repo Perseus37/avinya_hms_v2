@@ -2167,7 +2167,7 @@ def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(
     return {"status": "success", "message": "Purchase return processed and Debit Note generated."}
 
 
-@router.get("/medications/{medication_id}/price-control", response_model=MedicationPriceControlResponse)
+@router.get("/medications/{medication_id}/price-control", response_model=Optional[MedicationPriceControlResponse])
 def get_medication_price_control(
     medication_id: int,
     db: Session = Depends(get_db),
