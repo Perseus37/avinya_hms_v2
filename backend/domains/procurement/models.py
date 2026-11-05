@@ -5,6 +5,7 @@ from typing import List, Optional
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -688,8 +689,8 @@ class ProcurementBudget(AuditMixin, Base):
     budget_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     requesting_department_id: Mapped[int] = mapped_column(ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False)
     period_type: Mapped[str] = mapped_column(String(12), nullable=False)
-    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
-    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    period_start: Mapped[datetime] = mapped_column(Date, nullable=False)
+    period_end: Mapped[datetime] = mapped_column(Date, nullable=False)
     category: Mapped[str] = mapped_column(String(24), nullable=False)
     total_amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     warning_threshold_pct: Mapped[int] = mapped_column(Integer, default=80, nullable=False)
