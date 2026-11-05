@@ -1312,6 +1312,13 @@ def test_normalized_price_benchmark_and_po_approval_variance_override(
     )
     assert baseline_approval.status_code == 200, baseline_approval.text
 
+    second_baseline_po = create_po(1000)
+    second_baseline_approval = client.patch(
+        f"/v1/api/procurement/purchase-orders/{second_baseline_po['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert second_baseline_approval.status_code == 200, second_baseline_approval.text
+
     policy = client.put(
         f"/v1/api/procurement/medications/{medication_id}/price-control",
         headers=superuser_headers,
@@ -1324,10 +1331,40 @@ def test_normalized_price_benchmark_and_po_approval_variance_override(
     )
     assert policy.status_code == 200, policy.text
 
-    # One observation is deliberately insufficient: no false positive is raised.
     candidate_po = create_po(1500)
     blocked = client.patch(
         f"/v1/api/procurement/purchase-orders/{candidate_po['id']}/approve",
         headers=superuser_headers,
     )
-    assert blocked.status_code == 200, blocked.text
+    assert blocked.status_code == 409, blocked.text
+    variance = blocked.json()["detail"]["price_variances"][0]
+    assert variance["base_uom_code"] == "TAB"
+    assert variance["benchmark_observations"] == 2
+    assert variance["threshold_pct"] == 20
+    assert variance["variance_pct"] == 50.0
+
+    approved = client.patch(
+        f"/v1/api/procurement/purchase-orders/{candidate_po['id']}/approve",
+        headers=superuser_headers,
+        json={"override_reason": "Urgent supplier shortage; approved alternate source."},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "APPROVED"
+
+    reviews = client.get(
+        f"/v1/api/procurement/purchase-orders/{candidate_po['id']}/price-reviews",
+        headers=superuser_headers,
+    )
+    assert reviews.status_code == 200, reviews.text
+    assert len(reviews.json()) == 1
+    assert reviews.json()[0]["benchmark_median_paise"] == 100.0
+    assert reviews.json()[0]["variance_pct"] == 50.0
+    assert "Urgent supplier shortage" in reviews.json()[0]["override_reason"]
+
+    benchmark = client.get(
+        f"/v1/api/procurement/analytics/price-benchmarks?medication_id={medication_id}&lookback_days=180&minimum_observations=2",
+        headers=superuser_headers,
+    )
+    assert benchmark.status_code == 200, benchmark.text
+    assert benchmark.json()["items"][0]["base_uom_code"] == "TAB"
+    assert benchmark.json()["items"][0]["observation_count"] == 3
