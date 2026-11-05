@@ -1446,8 +1446,18 @@ def test_procurement_budget_creation_activation_and_independent_revision(
         department = db.query(Department).filter(Department.code == "DEPT_GEN_MED").one()
         department_id = department.id
 
-    start = datetime(2026, 4, 1).date()
-    end = datetime(2027, 3, 31).date()
+    import calendar
+    today = datetime.now(timezone.utc).date()
+    fiscal_year_start = today.year if today.month >= 4 else today.year - 1
+    start = datetime(fiscal_year_start, 4, 1).date()
+    end = datetime(fiscal_year_start + 1, 3, 31).date()
+    quarter_start_month = ((today.month - 1) // 3) * 3 + 1
+    quarter_start = datetime(today.year, quarter_start_month, 1).date()
+    quarter_end = datetime(
+        today.year,
+        quarter_start_month + 2,
+        calendar.monthrange(today.year, quarter_start_month + 2)[1],
+    ).date()
     created = client.post(
         "/v1/api/procurement/budgets",
         headers=pharmacist_headers,
@@ -1482,8 +1492,8 @@ def test_procurement_budget_creation_activation_and_independent_revision(
             "parent_budget_id": budget["id"],
             "requesting_department_id": department_id,
             "period_type": "QUARTERLY",
-            "period_start": "2026-10-01",
-            "period_end": "2026-12-31",
+            "period_start": quarter_start.isoformat(),
+            "period_end": quarter_end.isoformat(),
             "category": "PHARMACY",
             "total_amount_paise": 5000000,
             "warning_threshold_pct": 75,
