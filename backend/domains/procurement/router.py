@@ -1157,7 +1157,7 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     tax_total = 0
     for item in payload.items:
         budget_department_id = item.budget_department_id or inferred_department_id
-        if budget_department_id is None and not current_user.is_superuser:
+        if budget_department_id is None:
             raise HTTPException(status_code=422, detail="Select the requesting department for each direct purchase-order line.")
         if budget_department_id is not None and not user_has_department_access(db, current_user, budget_department_id):
             raise HTTPException(status_code=403, detail="You are not assigned to the PO line budget department.")
