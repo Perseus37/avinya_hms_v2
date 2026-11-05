@@ -35,7 +35,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["requesting_department_id"], ["departments.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["created_by_id"], ["users.id"]),
         sa.ForeignKeyConstraint(["updated_by_id"], ["users.id"]),
-        sa.UniqueConstraint("budget_number", name="uq_procurement_budgets_budget_number"),
         sa.UniqueConstraint("requesting_department_id", "category", "period_start", "period_end", name="uq_proc_budget_department_category_period"),
     )
     op.create_index("ix_procurement_budgets_budget_number", "procurement_budgets", ["budget_number"], unique=True)
