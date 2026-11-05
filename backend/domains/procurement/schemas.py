@@ -541,6 +541,7 @@ class PurchaseOrderPriceReviewResponse(BaseModel):
 class ProcurementBudgetCreate(BaseModel):
     budget_number: str = Field(min_length=3, max_length=50)
     requesting_department_id: int
+    parent_budget_id: Optional[int] = None
     period_type: str = Field(pattern="^(ANNUAL|QUARTERLY)$")
     period_start: date
     period_end: date
@@ -552,6 +553,12 @@ class ProcurementBudgetCreate(BaseModel):
     def validate_period(self):
         if self.period_end < self.period_start:
             raise ValueError("Budget period_end cannot be earlier than period_start.")
+        if self.period_type == "ANNUAL" and self.parent_budget_id is not None:
+            raise ValueError("Annual budgets cannot be children of another budget.")
+        if self.period_type == "QUARTERLY" and self.period_start.month not in (1, 4, 7, 10):
+            raise ValueError("Quarterly budgets must begin in January, April, July or October.")
+        if self.period_type == "ANNUAL" and self.period_start.month not in (1, 4):
+            raise ValueError("Annual budgets must begin in January or April.")
         if self.period_start.day != 1:
             raise ValueError("Budget periods must start on the first day of a calendar month.")
         import calendar
@@ -592,6 +599,7 @@ class ProcurementBudgetResponse(BaseModel):
     id: int
     budget_number: str
     requesting_department_id: int
+    parent_budget_id: Optional[int]
     period_type: str
     period_start: date
     period_end: date
