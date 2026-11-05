@@ -614,3 +614,7 @@ class ProcurementBudgetResponse(BaseModel):
     warning_threshold_pct: int
     status: str
     model_config = ConfigDict(from_attributes=True)
+
+
+class PurchaseOrderCancelRequest(BaseModel):
+    reason: str = Field(min_length=10, max_length=2000)
