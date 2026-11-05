@@ -845,3 +845,20 @@ class SupplierContractRevision(Base):
     contract: Mapped["SupplierContract"] = relationship()
     requested_by: Mapped["User"] = relationship(foreign_keys=[requested_by_id])
     reviewed_by: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewed_by_id])
+
+
+class SupplierContractDocumentDownloadAudit(Base):
+    """Audit trail for access to confidential signed supplier agreements."""
+    __tablename__ = "procurement_contract_document_download_audits"
+    __table_args__ = (
+        Index("ix_proc_contract_doc_audit_contract_time", "contract_id", "requested_at"),
+        Index("ix_proc_contract_doc_audit_actor_time", "actor_user_id", "requested_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    contract_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("procurement_supplier_contracts.id", ondelete="SET NULL"), nullable=True
+    )
+    contract_number: Mapped[str] = mapped_column(String(80), nullable=False)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
