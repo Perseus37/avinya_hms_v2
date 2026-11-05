@@ -10,26 +10,20 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "procurement_budgets",
-        sa.Column("parent_budget_id", sa.Integer(), nullable=True),
-    )
-    op.create_foreign_key(
-        "fk_procurement_budgets_parent_budget_id",
-        "procurement_budgets",
-        "procurement_budgets",
-        ["parent_budget_id"],
-        ["id"],
-        ondelete="RESTRICT",
-    )
-    op.create_index(
-        "ix_procurement_budgets_parent_budget_id",
-        "procurement_budgets",
-        ["parent_budget_id"],
-    )
+    with op.batch_alter_table("procurement_budgets") as batch_op:
+        batch_op.add_column(sa.Column("parent_budget_id", sa.Integer(), nullable=True))
+        batch_op.create_foreign_key(
+            "fk_procurement_budgets_parent_budget_id",
+            "procurement_budgets",
+            ["parent_budget_id"],
+            ["id"],
+            ondelete="RESTRICT",
+        )
+        batch_op.create_index("ix_procurement_budgets_parent_budget_id", ["parent_budget_id"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_procurement_budgets_parent_budget_id", table_name="procurement_budgets")
-    op.drop_constraint("fk_procurement_budgets_parent_budget_id", "procurement_budgets", type_="foreignkey")
-    op.drop_column("procurement_budgets", "parent_budget_id")
+    with op.batch_alter_table("procurement_budgets") as batch_op:
+        batch_op.drop_index("ix_procurement_budgets_parent_budget_id")
+        batch_op.drop_constraint("fk_procurement_budgets_parent_budget_id", type_="foreignkey")
+        batch_op.drop_column("parent_budget_id")
