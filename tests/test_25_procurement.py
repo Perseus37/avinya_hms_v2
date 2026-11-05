@@ -2216,3 +2216,55 @@ def test_supplier_compliance_policy_blocks_purchase_order_for_missing_required_d
     )
     assert po_response.status_code == 409, po_response.text
     assert "DRUG_LICENSE" in str(po_response.json())
+
+
+
+def test_supplier_compliance_analytics_reports_policy_block_and_category_filter(
+    client, pharmacist_headers, superuser_headers
+):
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-COMP-ANALYTICS-01",
+            "name": "Analytics Compliance Supplier",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Compliance Contact",
+            "phone": "9876543212",
+            "email": "analytics-compliance@example.test",
+            "address": "Supplier registered address",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    policy = client.put(
+        "/v1/api/procurement/supplier-compliance/policies/PHARMACEUTICALS/DRUG_LICENSE",
+        headers=superuser_headers,
+        json={"is_required": True},
+    )
+    assert policy.status_code == 200, policy.text
+
+    dashboard = client.get(
+        "/v1/api/procurement/analytics/supplier-compliance"
+        "?vendor_category=PHARMACEUTICALS&search=VND-COMP-ANALYTICS-01",
+        headers=superuser_headers,
+    )
+    assert dashboard.status_code == 200, dashboard.text
+    body = dashboard.json()
+    assert body["pagination"]["total"] == 1
+    assert body["supplier_summary"]["blocked"] == 1
+    assert body["supplier_summary"]["compliant"] == 0
+    assert body["required_obligations"] == {
+        "total": 1, "satisfied": 0, "missing_or_invalid": 1,
+    }
+    assert body["suppliers"][0]["vendor_id"] == vendor_id
+    assert body["suppliers"][0]["compliance_state"] == "BLOCKED"
+    assert body["suppliers"][0]["missing_or_invalid_document_types"] == ["DRUG_LICENSE"]
+    assert body["compliance_score_pct"] == 0.0
+
+    invalid_category = client.get(
+        "/v1/api/procurement/analytics/supplier-compliance?vendor_category=UNKNOWN",
+        headers=superuser_headers,
+    )
+    assert invalid_category.status_code == 422
