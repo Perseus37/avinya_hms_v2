@@ -3621,8 +3621,9 @@ def get_procurement_budget_utilization(
     totals = _budget_ledger_totals(db, budget.id)
     committed_and_consumed = totals["reserved_open_paise"] + totals["received_consumption_paise"]
     available, earmarked_for_active_quarters = _budget_available_paise(db, budget)
+    budget_engaged_paise = committed_and_consumed + earmarked_for_active_quarters
     utilization_pct = (
-        round((committed_and_consumed * 100) / budget.total_amount_paise, 2)
+        round((budget_engaged_paise * 100) / budget.total_amount_paise, 2)
         if budget.total_amount_paise > 0 else None
     )
     if available < 0:
@@ -3643,6 +3644,7 @@ def get_procurement_budget_utilization(
         "reserved_open_commitment_paise": totals["reserved_open_paise"],
         "received_consumption_paise": totals["received_consumption_paise"],
         "committed_and_consumed_paise": committed_and_consumed,
+        "budget_engaged_paise": budget_engaged_paise,
         "available_paise": available,
         "allocated_to_active_quarters_paise": earmarked_for_active_quarters,
         "utilization_pct": utilization_pct,
