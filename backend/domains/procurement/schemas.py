@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
@@ -552,6 +552,15 @@ class ProcurementBudgetCreate(BaseModel):
     def validate_period(self):
         if self.period_end < self.period_start:
             raise ValueError("Budget period_end cannot be earlier than period_start.")
+        if self.period_start.day != 1:
+            raise ValueError("Budget periods must start on the first day of a calendar month.")
+        import calendar
+        if self.period_end.day != calendar.monthrange(self.period_end.year, self.period_end.month)[1]:
+            raise ValueError("Budget periods must end on the last day of a calendar month.")
+        month_span = (self.period_end.year - self.period_start.year) * 12 + self.period_end.month - self.period_start.month + 1
+        expected_months = 12 if self.period_type == "ANNUAL" else 3
+        if month_span != expected_months:
+            raise ValueError(f"{self.period_type} budgets must cover exactly {expected_months} calendar months.")
         return self
 
 
