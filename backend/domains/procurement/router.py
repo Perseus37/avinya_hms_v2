@@ -4444,8 +4444,14 @@ def request_supplier_contract_revision(
     ).first()
     if pending:
         raise HTTPException(status_code=409, detail="A pending contract revision already exists.")
+    current_rates = db.query(SupplierContractRate).filter(
+        SupplierContractRate.contract_id == contract.id
+    ).order_by(SupplierContractRate.id.asc()).all()
     prior = {"valid_from": contract.valid_from.isoformat(), "valid_to": contract.valid_to.isoformat(),
-             "payment_terms": contract.payment_terms, "summary": contract.summary, "version_number": contract.version_number}
+             "payment_terms": contract.payment_terms, "summary": contract.summary, "version_number": contract.version_number,
+             "rates": [{"scope_type": r.scope_type, "medication_id": r.medication_id, "category": r.category,
+                        "uom_code": r.uom_code, "unit_price_paise": r.unit_price_paise,
+                        "tax_percentage": r.tax_percentage, "notes": r.notes} for r in current_rates]}
     proposed = dict(prior)
     if payload.proposed_valid_to is not None:
         proposed["valid_to"] = payload.proposed_valid_to.isoformat()
@@ -4453,6 +4459,11 @@ def request_supplier_contract_revision(
         proposed["payment_terms"] = payload.proposed_payment_terms
     if payload.proposed_summary is not None:
         proposed["summary"] = payload.proposed_summary
+    if payload.proposed_rates is not None:
+        for rate in payload.proposed_rates:
+            if rate.medication_id is not None and db.get(MedicationMaster, rate.medication_id) is None:
+                raise HTTPException(status_code=404, detail=f"Medication {rate.medication_id} not found.")
+        proposed["rates"] = [rate.model_dump() for rate in payload.proposed_rates]
     revision = SupplierContractRevision(
         contract_id=contract.id, revision_number=contract.version_number + 1,
         prior_snapshot=prior, proposed_snapshot=proposed, reason=payload.reason.strip(),
@@ -4487,11 +4498,20 @@ def review_supplier_contract_revision(
     revision.reviewed_by_id = current_user.id
     revision.reviewed_at = datetime.now(timezone.utc)
     revision.review_notes = payload.review_notes.strip()
-    revision.updated_by_id = current_user.id
     if payload.approved:
         contract.valid_to = date.fromisoformat(revision.proposed_snapshot["valid_to"])
         contract.payment_terms = revision.proposed_snapshot["payment_terms"]
         contract.summary = revision.proposed_snapshot["summary"]
+        if "rates" in revision.proposed_snapshot and revision.proposed_snapshot["rates"] != revision.prior_snapshot.get("rates"):
+            db.query(SupplierContractRate).filter(
+                SupplierContractRate.contract_id == contract.id
+            ).delete(synchronize_session=False)
+            for rate_data in revision.proposed_snapshot["rates"]:
+                db.add(SupplierContractRate(
+                    contract_id=contract.id,
+                    created_by_id=current_user.id,
+                    **rate_data,
+                ))
         contract.version_number = revision.revision_number
         contract.approved_by_id = current_user.id
         contract.approved_at = datetime.now(timezone.utc)
