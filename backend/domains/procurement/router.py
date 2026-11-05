@@ -193,6 +193,15 @@ def _resolve_active_procurement_budget(
             raise HTTPException(status_code=409, detail="The quarterly budget's annual parent is not active.")
         return chosen
     if roots:
+        closed_quarter = db.query(ProcurementBudget.id).filter(
+            ProcurementBudget.parent_budget_id == roots[0].id,
+            ProcurementBudget.period_type == "QUARTERLY",
+            ProcurementBudget.status == "CLOSED",
+            ProcurementBudget.period_start <= order_date,
+            ProcurementBudget.period_end >= order_date,
+        ).first()
+        if closed_quarter:
+            raise HTTPException(status_code=409, detail="A quarterly budget covering this period has been closed; the annual allocation cannot be used to bypass that control.")
         return roots[0]
     raise HTTPException(status_code=409, detail="No valid root annual or quarterly budget covers this purchase.")
 
@@ -1148,6 +1157,8 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
     tax_total = 0
     for item in payload.items:
         budget_department_id = item.budget_department_id or inferred_department_id
+        if budget_department_id is None and not current_user.is_superuser:
+            raise HTTPException(status_code=422, detail="Select the requesting department for each direct purchase-order line.")
         if budget_department_id is not None and not user_has_department_access(db, current_user, budget_department_id):
             raise HTTPException(status_code=403, detail="You are not assigned to the PO line budget department.")
         budget_category = item.budget_category or ("PHARMACY" if item.medication_id is not None else "GENERAL_SUPPLIES")
