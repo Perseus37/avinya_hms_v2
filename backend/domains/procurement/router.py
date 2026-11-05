@@ -1826,9 +1826,25 @@ def request_purchase_order_amendment(
             seen_requisition_lines.add(item.requisition_item_id)
         elif item.requisition_item_id is not None:
             raise HTTPException(status_code=422, detail="A standalone purchase order cannot reference a requisition line.")
+        effective_medication_id = (
+            req_line.medication_id
+            if po.requisition_id is not None
+            else (item.medication_id if item.medication_id is not None else (prior_line.medication_id if prior_line else None))
+        )
+        effective_budget_department_id = (
+            po.requisition.requesting_department_id
+            if po.requisition_id is not None
+            else (item.budget_department_id or (prior_line.budget_department_id if prior_line else None))
+        )
+        if effective_medication_id is not None and item.budget_category not in (None, "PHARMACY"):
+            raise HTTPException(status_code=422, detail="Medication PO lines must use the PHARMACY budget category.")
+        if effective_budget_department_id is None:
+            raise HTTPException(status_code=422, detail="Amended PO lines must identify their requesting department.")
+        if not user_has_department_access(db, current_user, effective_budget_department_id):
+            raise HTTPException(status_code=403, detail="You are not assigned to the amended PO line budget department.")
         unit_snapshot = _resolve_medication_unit_snapshot(
             db,
-            medication_id=req_line.medication_id if po.requisition_id is not None else item.medication_id,
+            medication_id=effective_medication_id,
             purchase_uom_id=item.purchase_uom_id,
             quantity=item.quantity_ordered,
             unit_price_paise=item.unit_price_paise,
@@ -1852,11 +1868,7 @@ def request_purchase_order_amendment(
             "tax_percentage": item.tax_percentage,
             "tax_amount_paise": line_tax,
             "gross_total_paise": line_gross,
-            "budget_department_id": (
-                po.requisition.requesting_department_id
-                if po.requisition_id is not None
-                else (item.budget_department_id or (prior_line.budget_department_id if prior_line else None))
-            ),
+            "budget_department_id": effective_budget_department_id,
             "budget_category": item.budget_category or (prior_line.budget_category if prior_line else None) or (
                 "PHARMACY" if (req_line.medication_id if po.requisition_id is not None else item.medication_id) is not None
                 else "GENERAL_SUPPLIES"
