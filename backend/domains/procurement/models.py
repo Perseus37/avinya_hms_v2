@@ -667,3 +667,57 @@ class MedicationPackConfiguration(AuditMixin, Base):
     medication: Mapped["MedicationMaster"] = relationship()
     purchase_uom: Mapped["ProcurementUnitOfMeasure"] = relationship(foreign_keys=[purchase_uom_id])
     base_uom: Mapped["ProcurementUnitOfMeasure"] = relationship(foreign_keys=[base_uom_id])
+
+
+class ProcurementBudget(AuditMixin, Base):
+    """Department/category allocation for a defined annual or quarterly period."""
+    __tablename__ = "procurement_budgets"
+    __table_args__ = (
+        CheckConstraint("period_type IN ('ANNUAL', 'QUARTERLY')", name="ck_proc_budget_period_type"),
+        CheckConstraint("category IN ('PHARMACY', 'LABORATORY', 'GENERAL_SUPPLIES', 'EQUIPMENT', 'SERVICES', 'OTHER')", name="ck_proc_budget_category"),
+        CheckConstraint("status IN ('DRAFT', 'ACTIVE', 'CLOSED')", name="ck_proc_budget_status"),
+        CheckConstraint("period_end >= period_start", name="ck_proc_budget_period_valid"),
+        CheckConstraint("total_amount_paise >= 0", name="ck_proc_budget_amount_non_neg"),
+        CheckConstraint("warning_threshold_pct >= 1 AND warning_threshold_pct <= 100", name="ck_proc_budget_warning_range"),
+        UniqueConstraint("requesting_department_id", "category", "period_start", "period_end", name="uq_proc_budget_department_category_period"),
+        Index("ix_proc_budget_period_status", "period_start", "period_end", "status"),
+        Index("ix_proc_budget_department_category", "requesting_department_id", "category"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    budget_number: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    requesting_department_id: Mapped[int] = mapped_column(ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False)
+    period_type: Mapped[str] = mapped_column(String(12), nullable=False)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=False), nullable=False)
+    category: Mapped[str] = mapped_column(String(24), nullable=False)
+    total_amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    warning_threshold_pct: Mapped[int] = mapped_column(Integer, default=80, nullable=False)
+    status: Mapped[str] = mapped_column(String(12), default="DRAFT", nullable=False)
+
+    department: Mapped["Department"] = relationship()
+
+
+class ProcurementBudgetRevision(AuditMixin, Base):
+    """Maker-checker request to change an active budget's approved allocation."""
+    __tablename__ = "procurement_budget_revisions"
+    __table_args__ = (
+        UniqueConstraint("budget_id", "revision_number", name="uq_proc_budget_revision_number"),
+        Index("ix_proc_budget_revision_status", "budget_id", "status"),
+        CheckConstraint("proposed_amount_paise >= 0", name="ck_proc_budget_revision_amount_non_neg"),
+        CheckConstraint("status IN ('PENDING', 'APPROVED', 'REJECTED')", name="ck_proc_budget_revision_status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    budget_id: Mapped[int] = mapped_column(ForeignKey("procurement_budgets.id", ondelete="RESTRICT"), nullable=False)
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    prior_amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    proposed_amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(12), default="PENDING", nullable=False)
+    reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    budget: Mapped["ProcurementBudget"] = relationship()
+    reviewed_by: Mapped[Optional["User"]] = relationship(foreign_keys=[reviewed_by_id])
