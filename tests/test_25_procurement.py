@@ -2014,7 +2014,15 @@ def test_supplier_contract_approval_rate_enforcement_and_revision(
         headers=pharmacist_headers,
         json={
             "proposed_valid_to": (today + timedelta(days=240)).isoformat(),
-            "reason": "Extend the negotiated agreement for the next procurement cycle.",
+            "proposed_rates": [{
+                "scope_type": "MEDICATION",
+                "medication_id": medication_id,
+                "uom_code": "TAB",
+                "unit_price_paise": 110,
+                "tax_percentage": 0,
+                "notes": "Revised annual negotiated rate.",
+            }],
+            "reason": "Extend the agreement and revise the negotiated tablet rate for the next procurement cycle.",
         },
     )
     assert revision.status_code == 201, revision.text
@@ -2032,6 +2040,23 @@ def test_supplier_contract_approval_rate_enforcement_and_revision(
     assert contract_detail.status_code == 200, contract_detail.text
     assert contract_detail.json()["version_number"] == 2
     assert contract_detail.json()["valid_to"] == (today + timedelta(days=240)).isoformat()
+    assert contract_detail.json()["rates"][0]["unit_price_paise"] == 110
+
+    stale_rate_po = create_contract_po(1000)
+    assert stale_rate_po.status_code == 201, stale_rate_po.text
+    stale_rate_approval = client.patch(
+        f"/v1/api/procurement/purchase-orders/{stale_rate_po.json()['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert stale_rate_approval.status_code == 409
+
+    revised_rate_po = create_contract_po(1100)
+    assert revised_rate_po.status_code == 201, revised_rate_po.text
+    revised_rate_approval = client.patch(
+        f"/v1/api/procurement/purchase-orders/{revised_rate_po.json()['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert revised_rate_approval.status_code == 200, revised_rate_approval.text
 
     renewal_queue = client.get(
         "/v1/api/procurement/supplier-contract-renewals/due?within_days=365",
