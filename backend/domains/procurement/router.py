@@ -2994,3 +2994,227 @@ def get_vendor_metrics(
             "exposure_definition": "Only MATCHED_APPROVED invoices are included; pending, flagged, rejected and PAID invoices are excluded. Payment execution/partial settlement is not represented by this metric.",
         },
     }
+
+
+# --- Procurement budget allocation and controlled revisions ---
+@router.post("/budgets", response_model=ProcurementBudgetResponse, status_code=status.HTTP_201_CREATED)
+def create_procurement_budget(
+    payload: ProcurementBudgetCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    department = db.get(Department, payload.requesting_department_id)
+    if department is None:
+        raise HTTPException(status_code=404, detail="Budget department not found.")
+    duplicate = db.query(ProcurementBudget.id).filter(
+        ProcurementBudget.budget_number == payload.budget_number.strip()
+    ).first()
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Budget number already exists.")
+    budget = ProcurementBudget(
+        budget_number=payload.budget_number.strip(),
+        requesting_department_id=payload.requesting_department_id,
+        period_type=payload.period_type,
+        period_start=payload.period_start,
+        period_end=payload.period_end,
+        category=payload.category,
+        total_amount_paise=payload.total_amount_paise,
+        warning_threshold_pct=payload.warning_threshold_pct,
+        status="DRAFT",
+        created_by_id=current_user.id,
+    )
+    db.add(budget)
+    db.commit()
+    db.refresh(budget)
+    return budget
+
+
+@router.get("/budgets", response_model=list[ProcurementBudgetResponse])
+def list_procurement_budgets(
+    requesting_department_id: Optional[int] = None,
+    category: Optional[str] = Query(default=None, pattern="^(PHARMACY|LABORATORY|GENERAL_SUPPLIES|EQUIPMENT|SERVICES|OTHER)$"),
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    budget_status: Optional[str] = Query(default=None, alias="status", pattern="^(DRAFT|ACTIVE|CLOSED)$"),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    query = db.query(ProcurementBudget)
+    if requesting_department_id is not None:
+        query = query.filter(ProcurementBudget.requesting_department_id == requesting_department_id)
+    if category is not None:
+        query = query.filter(ProcurementBudget.category == category)
+    if period_start is not None:
+        query = query.filter(ProcurementBudget.period_end >= period_start)
+    if period_end is not None:
+        query = query.filter(ProcurementBudget.period_start <= period_end)
+    if budget_status is not None:
+        query = query.filter(ProcurementBudget.status == budget_status)
+    return query.order_by(ProcurementBudget.period_start.desc(), ProcurementBudget.requesting_department_id, ProcurementBudget.category).all()
+
+
+@router.get("/budgets/{budget_id}", response_model=ProcurementBudgetResponse)
+def get_procurement_budget(
+    budget_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    budget = db.get(ProcurementBudget, budget_id)
+    if budget is None:
+        raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    return budget
+
+
+@router.post("/budgets/{budget_id}/activate", response_model=ProcurementBudgetResponse)
+def activate_procurement_budget(
+    budget_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    budget = db.query(ProcurementBudget).filter(
+        ProcurementBudget.id == budget_id
+    ).with_for_update().one_or_none()
+    if budget is None:
+        raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    if budget.status != "DRAFT":
+        raise HTTPException(status_code=409, detail="Only draft budgets can be activated.")
+    if budget.created_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The budget creator cannot activate their own budget.")
+    overlapping = db.query(ProcurementBudget.id).filter(
+        ProcurementBudget.id != budget.id,
+        ProcurementBudget.requesting_department_id == budget.requesting_department_id,
+        ProcurementBudget.category == budget.category,
+        ProcurementBudget.status == "ACTIVE",
+        ProcurementBudget.period_start <= budget.period_end,
+        ProcurementBudget.period_end >= budget.period_start,
+    ).with_for_update().first()
+    if overlapping:
+        raise HTTPException(status_code=409, detail="An active budget already overlaps this department, category and period.")
+    budget.status = "ACTIVE"
+    budget.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(budget)
+    return budget
+
+
+@router.post(
+    "/budgets/{budget_id}/revisions",
+    response_model=ProcurementBudgetRevisionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def request_procurement_budget_revision(
+    budget_id: int,
+    payload: ProcurementBudgetRevisionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    budget = db.query(ProcurementBudget).filter(
+        ProcurementBudget.id == budget_id
+    ).with_for_update().one_or_none()
+    if budget is None:
+        raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    if budget.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail="Only active budgets can be revised.")
+    pending = db.query(ProcurementBudgetRevision.id).filter(
+        ProcurementBudgetRevision.budget_id == budget.id,
+        ProcurementBudgetRevision.status == "PENDING",
+    ).first()
+    if pending:
+        raise HTTPException(status_code=409, detail="A budget revision is already awaiting review.")
+    latest_number = db.query(func.max(ProcurementBudgetRevision.revision_number)).filter(
+        ProcurementBudgetRevision.budget_id == budget.id
+    ).scalar() or 0
+    revision = ProcurementBudgetRevision(
+        budget_id=budget.id,
+        revision_number=latest_number + 1,
+        prior_amount_paise=budget.total_amount_paise,
+        proposed_amount_paise=payload.proposed_amount_paise,
+        reason=payload.reason.strip(),
+        status="PENDING",
+        created_by_id=current_user.id,
+    )
+    db.add(revision)
+    db.commit()
+    db.refresh(revision)
+    return revision
+
+
+@router.get(
+    "/budgets/{budget_id}/revisions",
+    response_model=list[ProcurementBudgetRevisionResponse],
+)
+def list_procurement_budget_revisions(
+    budget_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    if db.get(ProcurementBudget, budget_id) is None:
+        raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    return db.query(ProcurementBudgetRevision).filter(
+        ProcurementBudgetRevision.budget_id == budget_id
+    ).order_by(ProcurementBudgetRevision.revision_number.asc()).all()
+
+
+@router.patch(
+    "/budgets/{budget_id}/revisions/{revision_id}/review",
+    response_model=ProcurementBudgetRevisionResponse,
+)
+def review_procurement_budget_revision(
+    budget_id: int,
+    revision_id: int,
+    payload: ProcurementBudgetRevisionReview,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    budget = db.query(ProcurementBudget).filter(
+        ProcurementBudget.id == budget_id
+    ).with_for_update().one_or_none()
+    if budget is None:
+        raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    revision = db.query(ProcurementBudgetRevision).filter(
+        ProcurementBudgetRevision.id == revision_id,
+        ProcurementBudgetRevision.budget_id == budget_id,
+    ).with_for_update().one_or_none()
+    if revision is None or revision.status != "PENDING":
+        raise HTTPException(status_code=409, detail="Pending budget revision not found.")
+    if revision.created_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The revision requester cannot review their own budget change.")
+    if budget.status != "ACTIVE" or revision.prior_amount_paise != budget.total_amount_paise:
+        raise HTTPException(status_code=409, detail="The budget changed after this revision was requested.")
+    revision.reviewed_by_id = current_user.id
+    revision.reviewed_at = datetime.now(timezone.utc)
+    revision.review_notes = payload.review_notes.strip()
+    revision.updated_by_id = current_user.id
+    revision.status = "APPROVED" if payload.approved else "REJECTED"
+    if payload.approved:
+        budget.total_amount_paise = revision.proposed_amount_paise
+        budget.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(revision)
+    return revision
+
+
+@router.post("/budgets/{budget_id}/close", response_model=ProcurementBudgetResponse)
+def close_procurement_budget(
+    budget_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    budget = db.query(ProcurementBudget).filter(
+        ProcurementBudget.id == budget_id
+    ).with_for_update().one_or_none()
+    if budget is None:
+        raise HTTPException(status_code=404, detail="Procurement budget not found.")
+    if budget.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail="Only active budgets can be closed.")
+    pending = db.query(ProcurementBudgetRevision.id).filter(
+        ProcurementBudgetRevision.budget_id == budget.id,
+        ProcurementBudgetRevision.status == "PENDING",
+    ).first()
+    if pending:
+        raise HTTPException(status_code=409, detail="Resolve pending budget revisions before closing the budget.")
+    budget.status = "CLOSED"
+    budget.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(budget)
+    return budget
