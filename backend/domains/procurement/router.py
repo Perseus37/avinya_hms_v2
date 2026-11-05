@@ -1,7 +1,7 @@
 import secrets
 from decimal import Decimal
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, BackgroundTasks, Response, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -25,7 +25,8 @@ from backend.domains.procurement.models import (
     SupplierQuotation, SupplierQuotationItem, SupplierQuotationStatusEnum,
     PurchaseOrderApprovalAuthority, PurchaseOrderAmendment, POAmendmentStatusEnum,
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
-    ProcurementUnitOfMeasure, MedicationPackConfiguration
+    ProcurementUnitOfMeasure, MedicationPackConfiguration,
+    MedicationPriceControl, PurchaseOrderPriceReview
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -37,7 +38,9 @@ from backend.domains.procurement.schemas import (
     PurchaseOrderAmendmentCreate, PurchaseOrderAmendmentReview, PurchaseOrderAmendmentResponse,
     PurchaseOrderShipmentCreate, PurchaseOrderShipmentUpdate, PurchaseOrderShipmentResponse,
     OverduePurchaseOrderResponse, ProcurementUnitOfMeasureResponse,
-    MedicationPackConfigurationCreate, MedicationPackConfigurationResponse
+    MedicationPackConfigurationCreate, MedicationPackConfigurationResponse,
+    MedicationPriceControlUpdate, MedicationPriceControlResponse,
+    PurchaseOrderApprovalRequest, PurchaseOrderPriceReviewResponse
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
@@ -71,6 +74,45 @@ def _load_vendor_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found.")
     return invoice
+
+
+def _normalized_price_benchmark(
+    db: Session,
+    medication_id: int,
+    base_uom_code: str,
+    *,
+    lookback_days: int,
+    before: Optional[datetime] = None,
+    exclude_po_id: Optional[int] = None,
+):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    query = db.query(PurchaseOrderItem.base_unit_price_paise).join(
+        PurchaseOrder, PurchaseOrderItem.po_id == PurchaseOrder.id
+    ).filter(
+        PurchaseOrderItem.medication_id == medication_id,
+        PurchaseOrderItem.base_uom_code == base_uom_code,
+        PurchaseOrderItem.base_unit_price_paise.is_not(None),
+        PurchaseOrder.status.in_([
+            POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED, POStatusEnum.COMPLETED
+        ]),
+        PurchaseOrder.created_at >= cutoff,
+    )
+    if before is not None:
+        query = query.filter(PurchaseOrder.created_at < before)
+    if exclude_po_id is not None:
+        query = query.filter(PurchaseOrder.id != exclude_po_id)
+    values = sorted(Decimal(str(row[0])) for row in query.all() if row[0] is not None)
+    if not values:
+        return {"observations": 0, "median": None, "minimum": None, "maximum": None}
+    middle = len(values) // 2
+    median_value = values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / Decimal("2")
+    return {
+        "observations": len(values),
+        "median": median_value,
+        "minimum": values[0],
+        "maximum": values[-1],
+    }
+
 
 def _generate_reference(prefix: str) -> str:
     date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -1860,6 +1902,7 @@ def set_po_approval_authority(
 @router.patch("/purchase-orders/{po_id}/approve", response_model=POResponse)
 def approve_purchase_order(
     po_id: int,
+    payload: Optional[PurchaseOrderApprovalRequest] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("procurement:approve")),
 ):
@@ -1884,6 +1927,72 @@ def approve_purchase_order(
                 detail="Your configured purchase-order approval authority is missing or insufficient for this amount.",
             )
 
+    variance_flags = []
+    for line in po.items:
+        if line.medication_id is None or line.base_unit_price_paise is None or not line.base_uom_code:
+            continue
+        policy = db.query(MedicationPriceControl).filter(
+            MedicationPriceControl.medication_id == line.medication_id,
+            MedicationPriceControl.is_active.is_(True),
+        ).one_or_none()
+        if policy is None:
+            continue
+        benchmark = _normalized_price_benchmark(
+            db, line.medication_id, line.base_uom_code,
+            lookback_days=policy.lookback_days,
+            before=po.created_at,
+            exclude_po_id=po.id,
+        )
+        if benchmark["observations"] < policy.minimum_observations or benchmark["median"] is None or benchmark["median"] <= 0:
+            continue
+        variance_pct = (
+            (Decimal(str(line.base_unit_price_paise)) - benchmark["median"])
+            / benchmark["median"] * Decimal("100")
+        )
+        if variance_pct > Decimal(policy.max_variance_pct):
+            variance_flags.append({
+                "line": line,
+                "policy": policy,
+                "benchmark": benchmark,
+                "variance_pct": variance_pct,
+            })
+    override_reason = payload.override_reason.strip() if payload and payload.override_reason else None
+    if variance_flags and not override_reason:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "One or more PO lines exceed configured normalized price-variance thresholds. Supply an override_reason of at least 10 characters to approve with an immutable review record.",
+                "price_variances": [{
+                    "po_item_id": flag["line"].id,
+                    "medication_id": flag["line"].medication_id,
+                    "base_uom_code": flag["line"].base_uom_code,
+                    "proposed_base_unit_price_paise": float(flag["line"].base_unit_price_paise),
+                    "benchmark_median_paise": float(flag["benchmark"]["median"]),
+                    "benchmark_observations": flag["benchmark"]["observations"],
+                    "threshold_pct": flag["policy"].max_variance_pct,
+                    "variance_pct": float(flag["variance_pct"]),
+                } for flag in variance_flags],
+            },
+        )
+    if variance_flags:
+        for flag in variance_flags:
+            db.add(PurchaseOrderPriceReview(
+                po_id=po.id,
+                po_item_id=flag["line"].id,
+                medication_id=flag["line"].medication_id,
+                base_uom_code=flag["line"].base_uom_code,
+                proposed_base_unit_price_paise=flag["line"].base_unit_price_paise,
+                benchmark_median_paise=flag["benchmark"]["median"],
+                benchmark_min_paise=flag["benchmark"]["minimum"],
+                benchmark_max_paise=flag["benchmark"]["maximum"],
+                benchmark_observations=flag["benchmark"]["observations"],
+                threshold_pct=flag["policy"].max_variance_pct,
+                variance_pct=flag["variance_pct"],
+                override_reason=override_reason,
+                reviewed_by_id=current_user.id,
+                reviewed_at=datetime.now(timezone.utc),
+                created_by_id=current_user.id,
+            ))
     po.status = POStatusEnum.APPROVED
     po.approved_by_id = current_user.id
     po.approved_at = datetime.now(timezone.utc)
@@ -1891,6 +2000,20 @@ def approve_purchase_order(
     db.commit()
     db.refresh(po)
     return po
+
+
+@router.get("/purchase-orders/{po_id}/price-reviews", response_model=list[PurchaseOrderPriceReviewResponse])
+def list_purchase_order_price_reviews(
+    po_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    if db.get(PurchaseOrder, po_id) is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found.")
+    return db.query(PurchaseOrderPriceReview).filter(
+        PurchaseOrderPriceReview.po_id == po_id
+    ).order_by(PurchaseOrderPriceReview.id.asc()).all()
+
 
 @router.get("/purchase-orders/{po_id}/print")
 def print_purchase_order(
@@ -2042,6 +2165,129 @@ def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(
     process_purchase_return(db, payload.vendor_id, payload.grn_id, payload.items, current_user.id)
     db.commit()
     return {"status": "success", "message": "Purchase return processed and Debit Note generated."}
+
+
+@router.get("/medications/{medication_id}/price-control", response_model=MedicationPriceControlResponse)
+def get_medication_price_control(
+    medication_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    if db.get(MedicationMaster, medication_id) is None:
+        raise HTTPException(status_code=404, detail="Medication not found.")
+    return db.query(MedicationPriceControl).filter(
+        MedicationPriceControl.medication_id == medication_id
+    ).one_or_none()
+
+
+@router.put("/medications/{medication_id}/price-control", response_model=MedicationPriceControlResponse)
+def set_medication_price_control(
+    medication_id: int,
+    payload: MedicationPriceControlUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    if db.get(MedicationMaster, medication_id) is None:
+        raise HTTPException(status_code=404, detail="Medication not found.")
+    policy = db.query(MedicationPriceControl).filter(
+        MedicationPriceControl.medication_id == medication_id
+    ).with_for_update().one_or_none()
+    if policy is None:
+        policy = MedicationPriceControl(
+            medication_id=medication_id,
+            **payload.model_dump(),
+            created_by_id=current_user.id,
+        )
+        db.add(policy)
+    else:
+        for key, value in payload.model_dump().items():
+            setattr(policy, key, value)
+        policy.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(policy)
+    return policy
+
+
+@router.get("/analytics/price-benchmarks")
+def get_procurement_price_benchmarks(
+    lookback_days: int = Query(default=180, ge=1, le=1825),
+    minimum_observations: int = Query(default=2, ge=2, le=100),
+    medication_id: Optional[int] = Query(default=None, gt=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    query = db.query(
+        PurchaseOrderItem, PurchaseOrder, VendorMaster, MedicationMaster
+    ).join(
+        PurchaseOrder, PurchaseOrderItem.po_id == PurchaseOrder.id
+    ).join(
+        VendorMaster, PurchaseOrder.vendor_id == VendorMaster.id
+    ).join(
+        MedicationMaster, PurchaseOrderItem.medication_id == MedicationMaster.id
+    ).filter(
+        PurchaseOrder.status.in_([
+            POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED, POStatusEnum.COMPLETED
+        ]),
+        PurchaseOrder.created_at >= cutoff,
+        PurchaseOrderItem.base_unit_price_paise.is_not(None),
+        PurchaseOrderItem.base_uom_code.is_not(None),
+    )
+    if medication_id is not None:
+        if db.get(MedicationMaster, medication_id) is None:
+            raise HTTPException(status_code=404, detail="Medication not found.")
+        query = query.filter(PurchaseOrderItem.medication_id == medication_id)
+    groups = {}
+    for line, po, vendor, medication in query.order_by(PurchaseOrder.created_at.asc()).all():
+        key = (medication.id, line.base_uom_code)
+        group = groups.setdefault(key, {
+            "medication_id": medication.id,
+            "medication_code": medication.code,
+            "brand_name": medication.brand_name,
+            "generic_name": medication.generic_name,
+            "base_uom_code": line.base_uom_code,
+            "prices": [],
+            "suppliers": {},
+            "latest_purchase_at": po.created_at,
+        })
+        price = Decimal(str(line.base_unit_price_paise))
+        group["prices"].append(price)
+        group["latest_purchase_at"] = max(group["latest_purchase_at"], po.created_at)
+        supplier = group["suppliers"].setdefault(vendor.id, {
+            "vendor_id": vendor.id, "vendor_name": vendor.name, "observations": 0, "prices": []
+        })
+        supplier["observations"] += 1
+        supplier["prices"].append(price)
+    results = []
+    for group in groups.values():
+        prices = sorted(group["prices"])
+        if len(prices) < minimum_observations:
+            continue
+        mid = len(prices) // 2
+        median_price = prices[mid] if len(prices) % 2 else (prices[mid - 1] + prices[mid]) / Decimal("2")
+        suppliers = []
+        for supplier in group["suppliers"].values():
+            vals = sorted(supplier.pop("prices"))
+            smid = len(vals) // 2
+            supplier["median_base_unit_price_paise"] = float(vals[smid] if len(vals) % 2 else (vals[smid - 1] + vals[smid]) / Decimal("2"))
+            suppliers.append(supplier)
+        results.append({
+            "medication_id": group["medication_id"],
+            "medication_code": group["medication_code"],
+            "brand_name": group["brand_name"],
+            "generic_name": group["generic_name"],
+            "base_uom_code": group["base_uom_code"],
+            "observation_count": len(prices),
+            "median_base_unit_price_paise": float(median_price),
+            "average_base_unit_price_paise": float(sum(prices) / len(prices)),
+            "minimum_base_unit_price_paise": float(prices[0]),
+            "maximum_base_unit_price_paise": float(prices[-1]),
+            "latest_purchase_at": group["latest_purchase_at"].isoformat(),
+            "suppliers": sorted(suppliers, key=lambda row: row["median_base_unit_price_paise"]),
+            "comparison_basis": "Pre-tax normalized prices; same medication and base UOM; approved, partially received or completed POs only.",
+        })
+    return {"lookback_days": lookback_days, "minimum_observations": minimum_observations, "items": results}
+
 
 @router.get("/analytics/cost-intelligence")
 def get_procurement_cost_intelligence(
