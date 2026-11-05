@@ -772,6 +772,7 @@ class SupplierComplianceDocument(Base):
         CheckConstraint("expiry_date IS NULL OR issue_date IS NULL OR expiry_date >= issue_date", name="ck_supplier_compliance_dates"),
         Index("ix_supplier_compliance_vendor_type", "vendor_id", "document_type"),
         Index("ix_supplier_compliance_expiry_status", "status", "expiry_date"),
+        UniqueConstraint("storage_key", name="uq_supplier_compliance_storage_key"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
@@ -780,7 +781,7 @@ class SupplierComplianceDocument(Base):
     issuer: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     issue_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     expiry_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    storage_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    storage_key: Mapped[str] = mapped_column(String(255), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="PENDING_VERIFICATION", nullable=False)
     uploaded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
