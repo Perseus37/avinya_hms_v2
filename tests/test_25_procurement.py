@@ -681,6 +681,27 @@ def test_supplier_quotation_comparison_and_independent_selection(
     assert statuses[vendors[1]["id"]] == "SELECTED"
     assert statuses[vendors[0]["id"]] == "NOT_SELECTED"
 
+    approved_po = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po_data['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert approved_po.status_code == 200, approved_po.text
+
+    outcomes = client.get(
+        "/v1/api/procurement/analytics/quotation-outcomes",
+        headers=superuser_headers,
+    )
+    assert outcomes.status_code == 200, outcomes.text
+    outcome = next(
+        item for item in outcomes.json()["items"]
+        if item["purchase_order_id"] == po_data["id"]
+    )
+    assert outcome["comparison_status"] == "COMPARABLE"
+    assert outcome["selected_gross_paise"] == 52500
+    assert outcome["best_comparable_alternative"]["gross_paise"] == 63000
+    assert outcome["competitive_saving_paise"] == 10500
+    assert outcomes.json()["summary"]["competitive_savings_paise"] == 10500
+
 
 def test_purchase_order_amendment_requires_independent_review_and_reapproval(
     client, pharmacist_headers, superuser_headers
