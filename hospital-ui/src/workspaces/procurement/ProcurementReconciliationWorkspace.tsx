@@ -20,9 +20,11 @@ import {
   ReconciliationQueue,
   ReconciliationSeverity,
   ReconciliationStatus,
+  ReconciliationExceptionEvent,
 } from "../../api/reconciliationApi";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { usePermissions } from "../../core/context/PermissionsContext";
 
 const severityOptions: ReconciliationSeverity[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 const statusOptions: ReconciliationStatus[] = ["OPEN", "IN_REVIEW", "RESOLVED", "DISMISSED"];
@@ -97,6 +99,7 @@ const Section: React.FC<{ title: string; description?: string; action?: React.Re
 );
 
 export const ProcurementReconciliationWorkspace: React.FC = () => {
+  const { hasPermission } = usePermissions();
   const today = useMemo(() => new Date(), []);
   const thirtyDaysAgo = useMemo(() => {
     const value = new Date();
@@ -118,6 +121,17 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
+  const [selectedException, setSelectedException] = useState<ReconciliationException | null>(null);
+  const [history, setHistory] = useState<ReconciliationExceptionEvent[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [detailMessage, setDetailMessage] = useState("");
+  const [actionLoading, setActionLoading] = useState(false);
+  const [assigneeInput, setAssigneeInput] = useState("");
+  const [assignmentNote, setAssignmentNote] = useState("");
+  const [investigationNote, setInvestigationNote] = useState("");
+  const [statusChoice, setStatusChoice] = useState<ReconciliationStatus>("IN_REVIEW");
+  const [statusNote, setStatusNote] = useState("");
 
   const filters = useMemo<ReconciliationFilters>(() => ({
     from_date: fromDate || undefined,
@@ -163,6 +177,57 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   }, [filters, queueFilters]);
 
   useEffect(() => { void load(); }, [load]);
+
+
+  const openException = async (item: ReconciliationException) => {
+    setSelectedException(item); setHistory([]); setDetailError(""); setDetailMessage("");
+    setAssigneeInput(item.assigned_to_id === null ? "" : String(item.assigned_to_id));
+    setAssignmentNote(""); setInvestigationNote(""); setStatusChoice("IN_REVIEW"); setStatusNote("");
+    setHistoryLoading(true);
+    try { const result = await reconciliationApi.getExceptionHistory(item.id); setHistory(result.events || []); }
+    catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to load investigation history."); }
+    finally { setHistoryLoading(false); }
+  };
+  const refreshSelectedHistory = async (id: number) => {
+    const result = await reconciliationApi.getExceptionHistory(id);
+    setHistory(result.events || []);
+  };
+  const saveAssignment = async () => {
+    if (!selectedException) return;
+    const parsed = assigneeInput.trim() ? Number(assigneeInput) : null;
+    if (parsed !== null && (!Number.isInteger(parsed) || parsed < 1)) { setDetailError("Enter a positive branch user ID or leave blank to unassign."); return; }
+    setActionLoading(true); setDetailError(""); setDetailMessage("");
+    try {
+      const result = await reconciliationApi.assignException(selectedException.id, { assigned_to_id: parsed, note: assignmentNote.trim() || undefined });
+      const updated = { ...selectedException, assigned_to_id: result.assigned_to_id };
+      setSelectedException(updated);
+      setQueue((current) => current ? { ...current, exceptions: current.exceptions.map((row) => row.id === updated.id ? updated : row) } : current);
+      setDetailMessage("Assignment saved."); setAssignmentNote(""); await refreshSelectedHistory(updated.id); void load();
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to save assignment."); }
+    finally { setActionLoading(false); }
+  };
+  const saveExceptionStatus = async () => {
+    if (!selectedException) return;
+    if ((statusChoice === "RESOLVED" || statusChoice === "DISMISSED") && statusNote.trim().length < 10) { setDetailError("Resolution and dismissal notes must contain at least 10 characters."); return; }
+    setActionLoading(true); setDetailError(""); setDetailMessage("");
+    try {
+      const result = await reconciliationApi.updateExceptionStatus(selectedException.id, { status: statusChoice, note: statusNote.trim() || undefined });
+      const updated = { ...selectedException, status: result.status, resolved_at: result.resolved_at, resolution_note: result.resolution_note };
+      setSelectedException(updated);
+      setQueue((current) => current ? { ...current, exceptions: current.exceptions.map((row) => row.id === updated.id ? updated : row) } : current);
+      setDetailMessage("Investigation status updated."); setStatusNote(""); await refreshSelectedHistory(updated.id); void load();
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to update status."); }
+    finally { setActionLoading(false); }
+  };
+  const saveInvestigationNote = async () => {
+    if (!selectedException || !investigationNote.trim()) return;
+    setActionLoading(true); setDetailError(""); setDetailMessage("");
+    try {
+      await reconciliationApi.addExceptionNote(selectedException.id, { note: investigationNote.trim() });
+      setDetailMessage("Investigation note added to the audit history."); setInvestigationNote(""); await refreshSelectedHistory(selectedException.id);
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to add note."); }
+    finally { setActionLoading(false); }
+  };
 
   const exceptionTypes = useMemo(() => Object.keys(dashboard?.by_exception_type || {}).sort(), [dashboard]);
   const maxAging = Math.max(1, ...Object.values(dashboard?.open_aging || {}).map((value) => Number(value)));
@@ -427,7 +492,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                 </tr></thead>
                 <tbody className="divide-y divide-slate-50">
                   {queue.exceptions.map((item) => (
-                    <tr key={item.id} className="align-top hover:bg-slate-50/70">
+                    <tr key={item.id} onClick={() => void openException(item)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openException(item); } }} tabIndex={0} role="button" aria-label={"Open investigation " + item.id} className="align-top cursor-pointer hover:bg-blue-50/60 focus:bg-blue-50 focus:outline-none">
                       <td className="py-3 pr-3"><div className="font-semibold text-slate-800">{titleCase(item.exception_type)}</div><div className="mt-0.5 max-w-xs text-[10px] leading-relaxed text-slate-500">{item.summary}</div><div className="mt-1 text-[10px] text-slate-400">#{item.id}</div></td>
                       <td className="py-3 pr-3"><Badge variant={severityVariant(item.severity)} size="sm">{item.severity}</Badge></td>
                       <td className="py-3 pr-3"><Badge variant={statusVariant(item.status)} size="sm">{titleCase(item.status)}</Badge></td>
@@ -443,6 +508,69 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
             </div>
           ) : <div className="py-8 text-center"><CheckCircle2 size={22} className="mx-auto text-emerald-500" /><p className="mt-2 text-xs font-semibold text-slate-700">No exceptions match these filters</p><p className="mt-1 text-[11px] text-slate-400">Try clearing one or more worklist filters.</p></div>}
         </Section>
+
+
+        {selectedException && (
+          <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/40" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !actionLoading) setSelectedException(null); }}>
+            <aside role="dialog" aria-modal="true" aria-labelledby="exception-drawer-title" className="flex h-full w-full max-w-2xl flex-col overflow-hidden bg-white shadow-2xl">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+                <div><div className="flex flex-wrap items-center gap-2"><Badge variant={severityVariant(selectedException.severity)} size="sm">{selectedException.severity}</Badge><Badge variant={statusVariant(selectedException.status)} size="sm">{titleCase(selectedException.status)}</Badge></div>
+                  <h2 id="exception-drawer-title" className="mt-2 text-base font-bold text-slate-900">{titleCase(selectedException.exception_type)} <span className="text-slate-400">#{selectedException.id}</span></h2>
+                  <p className="mt-1 text-xs text-slate-500">{selectedException.reference_type} #{selectedException.reference_id}</p></div>
+                <button type="button" onClick={() => setSelectedException(null)} disabled={actionLoading} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Close</button>
+              </div>
+              <div className="flex-1 space-y-4 overflow-y-auto p-5">
+                {detailError && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">{detailError}</div>}
+                {detailMessage && <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">{detailMessage}</div>}
+                <section className="rounded-xl border border-slate-200 p-3">
+                  <h3 className="text-xs font-bold text-slate-800">Detection summary</h3><p className="mt-2 text-xs leading-relaxed text-slate-600">{selectedException.summary}</p>
+                  <div className="mt-3 grid grid-cols-2 gap-3 text-[11px]">
+                    <div><span className="text-slate-400">Investigation amount</span><div className="font-semibold">{money(selectedException.amount_paise)}</div></div>
+                    <div><span className="text-slate-400">Unmatched amount</span><div className="font-semibold">{money(selectedException.unmatched_amount_paise)}</div></div>
+                    <div><span className="text-slate-400">Age / SLA</span><div className="font-semibold">{hours(selectedException.age_hours)} / {hours(selectedException.sla_hours)}</div></div>
+                    <div><span className="text-slate-400">Latest source check</span><div className="font-semibold">{selectedException.source_present ? "Present" : "Missing (" + selectedException.missed_refresh_count + " scans)"}</div></div>
+                    <div><span className="text-slate-400">First detected</span><div>{new Date(selectedException.first_detected_at).toLocaleString()}</div></div>
+                    <div><span className="text-slate-400">Last detected</span><div>{new Date(selectedException.last_detected_at).toLocaleString()}</div></div>
+                  </div>
+                  <p className="mt-3 rounded-lg bg-amber-50 p-2 text-[10px] text-amber-800">Investigation values are not confirmed losses. Bank-side and supplier-payment exposures must not be added together.</p>
+                </section>
+                <section className="rounded-xl border border-slate-200 p-3"><h3 className="text-xs font-bold">Detection evidence snapshot</h3><pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-[10px]">{JSON.stringify(selectedException.detection_snapshot || {}, null, 2)}</pre></section>
+                <section className="rounded-xl border border-slate-200 p-3">
+                  <h3 className="text-xs font-bold">Assignment</h3><p className="mt-1 text-[10px] text-slate-500">Enter an active user ID from this branch. Leave blank to unassign.</p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_1.5fr_auto]">
+                    <input aria-label="Assignee user ID" type="number" min="1" value={assigneeInput} onChange={(event) => setAssigneeInput(event.target.value)} placeholder="User ID" disabled={!hasPermission("finance.view_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                    <input aria-label="Assignment note" value={assignmentNote} onChange={(event) => setAssignmentNote(event.target.value)} placeholder="Optional assignment note" disabled={!hasPermission("finance.view_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                    <Button size="sm" onClick={() => void saveAssignment()} disabled={!hasPermission("finance.view_reconciliation") || actionLoading}>Save</Button>
+                  </div>
+                </section>
+                {selectedException.status !== "RESOLVED" && selectedException.status !== "DISMISSED" && <section className="rounded-xl border border-slate-200 p-3">
+                  <h3 className="text-xs font-bold">Reviewer action</h3><p className="mt-1 text-[10px] text-slate-500">Resolution and dismissal require a reason of at least 10 characters. Finance approval is enforced by the server.</p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_2fr]">
+                    <select aria-label="New exception status" value={statusChoice} onChange={(event) => setStatusChoice(event.target.value as ReconciliationStatus)} disabled={!hasPermission("finance.view_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs">
+                      {(["OPEN", "IN_REVIEW", "RESOLVED", "DISMISSED"] as ReconciliationStatus[]).filter((value) => value !== selectedException.status).map((value) => <option key={value} value={value}>{titleCase(value)}</option>)}
+                    </select>
+                    <input aria-label="Reviewer note" value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder="Reviewer / resolution reason" disabled={!hasPermission("finance.view_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                  </div>
+                  <div className="mt-2 flex justify-end"><Button size="sm" onClick={() => void saveExceptionStatus()} disabled={!hasPermission("finance.view_reconciliation") || actionLoading}>Apply status</Button></div>
+                </section>}
+                <section className="rounded-xl border border-slate-200 p-3">
+                  <h3 className="text-xs font-bold">Add investigation note</h3><textarea value={investigationNote} onChange={(event) => setInvestigationNote(event.target.value)} rows={3} maxLength={4000} placeholder="Record findings, evidence references or follow-up..." disabled={!hasPermission("finance.view_reconciliation") || actionLoading} className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                  <div className="mt-2 flex justify-end"><Button size="sm" onClick={() => void saveInvestigationNote()} disabled={!hasPermission("finance.view_reconciliation") || actionLoading || !investigationNote.trim()}>Add note</Button></div>
+                </section>
+                <section className="rounded-xl border border-slate-200 p-3">
+                  <div className="flex items-center justify-between"><h3 className="text-xs font-bold">Audit timeline</h3><button type="button" onClick={() => void refreshSelectedHistory(selectedException.id).catch((err) => setDetailError(err instanceof Error ? err.message : "Unable to refresh history."))} disabled={historyLoading || actionLoading} className="text-[10px] font-semibold text-blue-700">Refresh history</button></div>
+                  {historyLoading ? <p className="py-4 text-xs text-slate-400">Loading history…</p> : history.length ? <ol className="mt-3 space-y-3">{history.map((event) => <li key={event.id} className="border-l-2 border-slate-200 pl-3">
+                    <div className="flex flex-wrap justify-between gap-2"><span className="text-[11px] font-semibold">{titleCase(event.event_type)}</span><time className="text-[10px] text-slate-400">{new Date(event.occurred_at).toLocaleString()}</time></div>
+                    <p className="mt-0.5 text-[10px] text-slate-500">Actor user #{event.actor_user_id ?? "unknown"}{event.old_status || event.new_status ? " · " + (event.old_status || "—") + " → " + (event.new_status || "—") : ""}{event.old_assignee_id !== null || event.new_assignee_id !== null ? " · assignee " + (event.old_assignee_id ?? "none") + " → " + (event.new_assignee_id ?? "none") : ""}</p>
+                    {event.note && <p className="mt-1 whitespace-pre-wrap break-words text-xs">{event.note}</p>}
+                    {event.event_metadata && Object.keys(event.event_metadata).length > 0 && <pre className="mt-1 whitespace-pre-wrap break-words text-[10px] text-slate-400">{JSON.stringify(event.event_metadata, null, 2)}</pre>}
+                  </li>)}</ol> : <p className="py-4 text-xs text-slate-400">No history events have been recorded.</p>}
+                </section>
+              </div>
+              <div className="border-t border-slate-200 px-5 py-3 text-[10px] text-slate-400">All changes are recorded in the append-only investigation history. Server-side permission and lifecycle rules apply.</div>
+            </aside>
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center justify-between gap-2 pb-2 text-[10px] text-slate-400">
           <span className="flex items-center gap-1.5"><CalendarDays size={12} /> Date basis: UTC first-detected date</span>
