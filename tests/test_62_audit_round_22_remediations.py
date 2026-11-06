@@ -511,6 +511,8 @@ def test_third_party_image_digests_pinned_in_docker_compose():
     for svc_name in third_party_services:
         svc = compose["services"][svc_name]
         image = svc.get("image", "")
+        if svc_name == "clamav" and svc.get("build"):
+            continue
         assert "@sha256:" in image, f"Service '{svc_name}' image '{image}' must be pinned with @sha256 digest"
 
 
@@ -621,5 +623,4 @@ def test_bootstrap_apply_roles_cli_and_sql_script(monkeypatch):
     
     assert main(["--apply-roles"]) == 0
     assert calls == [True]
-
 

@@ -5,7 +5,7 @@ on:
   # Add the "ci:full" label to a PR when it is ready for the expensive gate.
   pull_request:
     branches: [main, dev, "release/**"]
-    types: [labeled]
+    types: [labeled, synchronize]
   # Run automatically after code reaches protected integration/release branches.
   push:
     branches: [main, "release/**"]
@@ -31,7 +31,7 @@ jobs:
   python-tests:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'ci:full')
+      ((github.event.action == 'labeled' && github.event.label.name == 'ci:full') || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ci:full')))
     name: Python tests and PostgreSQL 17 migrations
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -89,7 +89,7 @@ jobs:
   onboarding-ui:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'ci:full')
+      ((github.event.action == 'labeled' && github.event.label.name == 'ci:full') || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ci:full')))
     name: Build onboarding UI
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -123,7 +123,7 @@ jobs:
   hospital-ui:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'ci:full')
+      ((github.event.action == 'labeled' && github.event.label.name == 'ci:full') || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ci:full')))
     name: Build hospital UI
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -149,7 +149,7 @@ jobs:
   compose-config:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'ci:full')
+      ((github.event.action == 'labeled' && github.event.label.name == 'ci:full') || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ci:full')))
     name: Validate Compose configurations
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -169,9 +169,11 @@ jobs:
 
       - name: Validate Prometheus and Alertmanager configurations
         run: |
-          docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check config /deployments/prometheus.yml
-          docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check rules /deployments/prometheus-alerts.yml
-          docker run --rm --entrypoint /bin/amtool -v "$(pwd)/deployments:/deployments" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /deployments/alertmanager.yml
+          mkdir -p .ci/prometheus-secrets
+          printf 'ci-validation-token' > .ci/prometheus-secrets/metrics_scrape_token.txt
+          docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments:ro" -v "$(pwd)/.ci/prometheus-secrets:/etc/prometheus:ro" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check config /deployments/prometheus.yml
+          docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments:ro" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check rules /deployments/prometheus-alerts.yml
+          docker run --rm --entrypoint /bin/amtool -v "$(pwd)/deployments:/deployments:ro" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /deployments/alertmanager.yml
 
   production-image:
     name: Build production API image
@@ -181,7 +183,7 @@ jobs:
     # keeping dev pull requests fast and lightweight.
     if: >-
       (github.event_name != 'pull_request' ||
-       (github.event.action == 'labeled' && github.event.label.name == 'ci:full')) &&
+       ((github.event.action == 'labeled' && github.event.label.name == 'ci:full') || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ci:full')))) &&
       (github.event_name == 'workflow_dispatch' ||
        github.event_name == 'schedule' ||
        github.ref == 'refs/heads/main' ||
@@ -206,10 +208,13 @@ jobs:
           severity: HIGH,CRITICAL
           trivyignores: .trivyignore
 
+      - name: Build patched ClamAV image
+        run: docker build --file Dockerfile.clamav --tag avinya-clamav:1.4.6-patched .
+
       - name: Scan ClamAV image for fixable high and critical vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: clamav/clamav:1.4.6-debian13-slim@sha256:c7df83a4c9794aeb43b7cff296fc9f42a0f47cbf0e96704510e7e5b57b2f4913
+          image-ref: avinya-clamav:1.4.6-patched
           format: table
           exit-code: "1"
           ignore-unfixed: true
