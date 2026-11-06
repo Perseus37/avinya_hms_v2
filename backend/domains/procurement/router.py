@@ -4763,9 +4763,9 @@ def get_supplier_risk_register(
         if not include_no_open_orders and not has_open_exposure:
             continue
 
-        if compliance_state == "BLOCKED" and has_open_exposure:
+        if (vendor.is_suspended and has_open_exposure) or (compliance_state == "BLOCKED" and has_open_exposure):
             level = "CRITICAL"
-        elif compliance_state == "BLOCKED" or expired_contracts or overdue_pos:
+        elif vendor.is_suspended or compliance_state == "BLOCKED" or expired_contracts or overdue_pos:
             level = "HIGH"
         elif (
             (nearest_doc_expiry is not None and nearest_doc_expiry <= today + timedelta(days=30))
@@ -4780,8 +4780,9 @@ def get_supplier_risk_register(
         rows.append({
             "vendor_id": vendor.id, "vendor_code": vendor.code,
             "vendor_name": vendor.name, "vendor_category": vendor_category_code,
-            "is_active": vendor.is_active, "risk_level": level,
-            "compliance_state": compliance_state,
+            "is_active": vendor.is_active, "is_suspended": vendor.is_suspended,
+            "suspension_reason": vendor.suspension_reason, "suspended_at": vendor.suspended_at,
+            "risk_level": level, "compliance_state": compliance_state,
             "missing_or_invalid_document_types": missing_types,
             "nearest_verified_document_expiry": nearest_doc_expiry,
             "active_contract_count": len(vendor_contracts),
@@ -4793,6 +4794,7 @@ def get_supplier_risk_register(
             "open_purchase_order_value_paise": open_value,
             "currency": "INR",
             "risk_reasons": [
+                * (["Supplier is suspended: " + vendor.suspension_reason] if vendor.is_suspended and vendor.suspension_reason else (["Supplier is suspended."] if vendor.is_suspended else [])),
                 * (["Mandatory supplier compliance documents are missing or invalid."] if missing_types else []),
                 * (["Open purchase orders exist while mandatory compliance is blocked."] if missing_types and has_open_exposure else []),
                 * ([f"{len(expired_contracts)} active contract(s) have passed their validity end date."] if expired_contracts else []),
@@ -4840,8 +4842,8 @@ def get_supplier_risk_register(
         },
         "suppliers": rows,
         "definitions": {
-            "critical": "Mandatory compliance is blocked and at least one open purchase order exists.",
-            "high": "Mandatory compliance is blocked, an active contract is past its validity end date, or an open PO is overdue.",
+            "critical": "Supplier is suspended with open PO exposure, or mandatory compliance is blocked with at least one open purchase order.",
+            "high": "Supplier is suspended, mandatory compliance is blocked, an active contract is past its validity end date, or an open PO is overdue.",
             "medium": "A verified document expires within 30 days or an active contract expires within the selected contract window.",
             "low": "Configured compliance obligations are satisfied and no higher-severity condition was found.",
             "not_evaluated": "No mandatory policy exists for the supplier category; this is not a compliant rating.",
