@@ -301,6 +301,63 @@ class SupplierPaymentCreate(BaseModel):
         return self
 
 
+class SupplierPaymentRequestCreate(BaseModel):
+    vendor_id: int = Field(gt=0)
+    payment_reference: str = Field(min_length=2, max_length=100)
+    payment_method: SupplierPaymentMethodEnum
+    scheduled_date: date
+    payment_run_reference: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    amount_paise: int = Field(gt=0)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    allocations: List[SupplierPaymentAllocationCreate] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_allocations(self):
+        invoice_ids = [row.invoice_id for row in self.allocations]
+        if len(invoice_ids) != len(set(invoice_ids)):
+            raise ValueError("Each invoice may appear only once in a payment request.")
+        if sum(row.amount_paise for row in self.allocations) != self.amount_paise:
+            raise ValueError("Requested payment amount must equal the sum of invoice allocations.")
+        return self
+
+
+class SupplierPaymentRequestReview(BaseModel):
+    approved: bool
+    review_notes: str = Field(min_length=3, max_length=2000)
+
+
+class SupplierPaymentRequestExecute(BaseModel):
+    payment_date: datetime
+
+
+class SupplierPaymentRequestAllocationResponse(BaseModel):
+    id: int
+    invoice_id: int
+    amount_paise: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupplierPaymentRequestResponse(BaseModel):
+    id: int
+    vendor_id: int
+    payment_reference: str
+    payment_method: SupplierPaymentMethodEnum
+    scheduled_date: date
+    payment_run_reference: Optional[str]
+    amount_paise: int
+    notes: Optional[str]
+    status: str
+    requested_by_id: int
+    requested_at: datetime
+    reviewed_by_id: Optional[int]
+    reviewed_at: Optional[datetime]
+    review_notes: Optional[str]
+    executed_payment_id: Optional[int]
+    executed_at: Optional[datetime]
+    allocations: List[SupplierPaymentRequestAllocationResponse]
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SupplierPaymentAllocationResponse(BaseModel):
     id: int
     invoice_id: int
