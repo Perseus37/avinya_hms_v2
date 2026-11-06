@@ -4154,3 +4154,130 @@ def test_reconciliation_sla_policy_writes_require_dedicated_permission(
     )
     assert response.status_code == 403, response.text
 
+
+
+def test_reconciliation_sla_clock_pause_resume_and_breach_tracking(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    now = datetime.now(timezone.utc)
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        paused_case = ProcurementReconciliationException(
+            fingerprint="SLA-CLOCK:PAUSE-RESUME:930101",
+            exception_type="UNMATCHED_BANK_DEBIT",
+            severity="HIGH",
+            status="OPEN",
+            reference_type="BANK_STATEMENT_LINE",
+            reference_id=930101,
+            summary="Pause-aware SLA clock regression case.",
+            detection_snapshot={},
+            first_detected_at=now - timedelta(minutes=30),
+            last_detected_at=now,
+            sla_target_hours=1,
+            sla_paused_seconds=0,
+        )
+        breached_case = ProcurementReconciliationException(
+            fingerprint="SLA-CLOCK:BREACHED:930102",
+            exception_type="UNMATCHED_BANK_DEBIT",
+            severity="HIGH",
+            status="OPEN",
+            reference_type="BANK_STATEMENT_LINE",
+            reference_id=930102,
+            summary="Breach timestamp regression case.",
+            detection_snapshot={},
+            first_detected_at=now - timedelta(hours=3),
+            last_detected_at=now,
+            sla_target_hours=1,
+            sla_paused_seconds=0,
+        )
+        db.add_all([paused_case, breached_case])
+        db.commit()
+        paused_id, breached_id = paused_case.id, breached_case.id
+
+    paused = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{paused_id}/sla/pause",
+        headers=superuser_headers,
+        json={"reason": "Waiting for external bank confirmation."},
+    )
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["paused"] is True
+
+    # Simulate a long pause deterministically without sleeping in the test.
+    with session_factory() as db:
+        row = db.query(ProcurementReconciliationException).filter_by(id=paused_id).one()
+        row.sla_paused_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        db.commit()
+
+    queue = client.get(
+        "/v1/api/procurement/reconciliation/exceptions/queue",
+        headers=superuser_headers,
+        params={"open_only": "true"},
+    )
+    assert queue.status_code == 200, queue.text
+    paused_item = next(item for item in queue.json()["exceptions"] if item["id"] == paused_id)
+    breached_item = next(item for item in queue.json()["exceptions"] if item["id"] == breached_id)
+    assert paused_item["sla_paused"] is True
+    assert paused_item["sla_overdue"] is False
+    assert 0.45 <= paused_item["sla_elapsed_hours"] <= 0.6
+    assert breached_item["sla_overdue"] is True
+    assert breached_item["sla_breached_at"] is not None
+    expected_breach = now - timedelta(hours=2)
+    actual_breach = datetime.fromisoformat(breached_item["sla_breached_at"].replace("Z", "+00:00"))
+    assert abs((actual_breach - expected_breach).total_seconds()) < 10
+
+    resumed = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{paused_id}/sla/resume",
+        headers=superuser_headers,
+        json={"reason": "Bank confirmation received; investigation can continue."},
+    )
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["paused"] is False
+    assert resumed.json()["sla_paused_seconds"] >= 7199
+    assert resumed.json()["sla_overdue"] is False
+
+    history = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{paused_id}/history",
+        headers=superuser_headers,
+    )
+    assert history.status_code == 200, history.text
+    event_types = [event["event_type"] for event in history.json()["events"]]
+    assert "SLA_PAUSED" in event_types
+    assert "SLA_RESUMED" in event_types
+
+
+def test_reconciliation_sla_pause_requires_finance_approval_permission(
+    client, pharmacist_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        row = ProcurementReconciliationException(
+            fingerprint="SLA-CLOCK:UNAUTHORIZED:930103",
+            exception_type="UNMATCHED_BANK_DEBIT",
+            severity="LOW",
+            status="OPEN",
+            reference_type="BANK_STATEMENT_LINE",
+            reference_id=930103,
+            summary="Unauthorized pause regression case.",
+            detection_snapshot={},
+            first_detected_at=datetime.now(timezone.utc),
+            last_detected_at=datetime.now(timezone.utc),
+            sla_target_hours=168,
+            sla_paused_seconds=0,
+        )
+        db.add(row)
+        db.commit()
+        exception_id = row.id
+
+    response = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/sla/pause",
+        headers=pharmacist_headers,
+        json={"reason": "Unauthorized pause attempt for testing."},
+    )
+    assert response.status_code == 403, response.text
+
