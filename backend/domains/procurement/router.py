@@ -4189,6 +4189,21 @@ def get_procurement_cash_flow_forecast(
                 return row
         return None
 
+    approved_requests = db.query(SupplierPaymentRequest).options(
+        selectinload(SupplierPaymentRequest.allocations)
+    ).filter(SupplierPaymentRequest.status == "APPROVED").all()
+    pending_requests = db.query(SupplierPaymentRequest).filter(
+        SupplierPaymentRequest.status == "PENDING"
+    ).all()
+    approved_reservations_by_invoice = {}
+    for request_row in approved_requests:
+        if request_row.scheduled_date <= horizon_end:
+            for allocation in request_row.allocations:
+                approved_reservations_by_invoice[allocation.invoice_id] = (
+                    approved_reservations_by_invoice.get(allocation.invoice_id, 0)
+                    + int(allocation.amount_paise)
+                )
+
     invoices = db.query(VendorInvoice).filter(
         VendorInvoice.status.in_([
             VendorInvoiceStatusEnum.MATCHED_APPROVED,
@@ -4223,20 +4238,6 @@ def get_procurement_cash_flow_forecast(
             "cash_paid_paise": int(_effective_invoice_paid_amount(invoice, paid_by_invoice)),
         })
 
-    approved_requests = db.query(SupplierPaymentRequest).options(
-        selectinload(SupplierPaymentRequest.allocations)
-    ).filter(SupplierPaymentRequest.status == "APPROVED").all()
-    pending_requests = db.query(SupplierPaymentRequest).filter(
-        SupplierPaymentRequest.status == "PENDING"
-    ).all()
-    approved_reservations_by_invoice = {}
-    for request_row in approved_requests:
-        if request_row.scheduled_date <= horizon_end:
-            for allocation in request_row.allocations:
-                approved_reservations_by_invoice[allocation.invoice_id] = (
-                    approved_reservations_by_invoice.get(allocation.invoice_id, 0)
-                    + int(allocation.amount_paise)
-                )
     approved_schedule_total = 0
     approved_schedule_in_horizon = 0
     approved_schedule_rows = []
