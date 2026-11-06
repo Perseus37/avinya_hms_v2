@@ -505,6 +505,71 @@ class SupplierAdvanceAllocation(Base):
     amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+
+
+class BankStatementDirectionEnum(str, PyEnum):
+    DEBIT = "DEBIT"
+    CREDIT = "CREDIT"
+
+
+class BankStatementBatch(AuditMixin, Base):
+    """Imported bank statement header; original statement totals are retained for audit."""
+    __tablename__ = "procurement_bank_statement_batches"
+    __table_args__ = (
+        UniqueConstraint("bank_account_ref", "statement_reference", name="uq_bank_statement_account_reference"),
+        CheckConstraint("period_end >= period_start", name="ck_bank_statement_period"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    bank_account_ref: Mapped[str] = mapped_column(String(100), nullable=False)
+    statement_reference: Mapped[str] = mapped_column(String(120), nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    opening_balance_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    closing_balance_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    imported_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+
+
+class BankStatementLine(Base):
+    """Immutable imported bank transaction line; amounts are always positive with direction separate."""
+    __tablename__ = "procurement_bank_statement_lines"
+    __table_args__ = (
+        UniqueConstraint("bank_account_ref", "bank_transaction_id", name="uq_bank_statement_transaction"),
+        CheckConstraint("amount_paise > 0", name="ck_bank_statement_line_amount_positive"),
+        Index("ix_bank_statement_line_batch_date", "batch_id", "transaction_date"),
+        Index("ix_bank_statement_line_reference", "bank_reference"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("procurement_bank_statement_batches.id", ondelete="RESTRICT"), nullable=False)
+    bank_account_ref: Mapped[str] = mapped_column(String(100), nullable=False)
+    bank_transaction_id: Mapped[str] = mapped_column(String(150), nullable=False)
+    transaction_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    value_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    direction: Mapped[BankStatementDirectionEnum] = mapped_column(Enum(BankStatementDirectionEnum), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    bank_reference: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class SupplierPaymentBankMatch(Base):
+    """Append-only match between a bank debit line and a recorded supplier payment."""
+    __tablename__ = "procurement_supplier_payment_bank_matches"
+    __table_args__ = (
+        UniqueConstraint("statement_line_id", "payment_id", name="uq_supplier_payment_bank_match"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_bank_match_positive"),
+        Index("ix_supplier_payment_bank_match_payment", "payment_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    statement_line_id: Mapped[int] = mapped_column(ForeignKey("procurement_bank_statement_lines.id", ondelete="RESTRICT"), nullable=False)
+    payment_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    matched_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    matched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    match_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
 class SupplierPayment(AuditMixin, Base):
     """Immutable recorded outflow to a supplier; allocations identify invoices settled."""
     __tablename__ = "procurement_supplier_payments"
