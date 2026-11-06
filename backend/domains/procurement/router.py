@@ -7171,6 +7171,27 @@ def export_reconciliation_exception_audit(
             "description": evidence.description,
         })
 
+    download_audits = db.query(ProcurementReconciliationEvidenceDownloadAudit).filter(
+        ProcurementReconciliationEvidenceDownloadAudit.exception_id == exception_id
+    ).order_by(
+        ProcurementReconciliationEvidenceDownloadAudit.requested_at.asc(),
+        ProcurementReconciliationEvidenceDownloadAudit.id.asc(),
+    ).all()
+    download_audit_payload = {
+        "exception_id": exception_id,
+        "downloads": [{
+            "evidence_id": item.evidence_id,
+            "evidence_type": item.evidence_type,
+            "original_filename": item.original_filename,
+            "actor_user_id": item.actor_user_id,
+            "actor_email": item.actor_email,
+            "requested_at": item.requested_at,
+        } for item in download_audits],
+    }
+    payload_files["evidence-download-audit.json"] = json.dumps(
+        download_audit_payload, default=str, ensure_ascii=False, sort_keys=True, indent=2
+    ).encode("utf-8")
+
     investigation = {
         "export_schema_version": "1.0",
         "exception": {
@@ -7220,7 +7241,7 @@ def export_reconciliation_exception_audit(
             {"path": name, "size_bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
             for name, content in sorted(payload_files.items())
         ],
-        "manifest_scope_note": "Hashes cover investigation.json and each included evidence file. history.json contains this export-generation event and is intentionally excluded to avoid a circular hash.",
+        "manifest_scope_note": "Hashes cover investigation.json, evidence-download-audit.json, and each included evidence file. history.json contains this export-generation event and is intentionally excluded to avoid a circular hash.",
     }
     manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
