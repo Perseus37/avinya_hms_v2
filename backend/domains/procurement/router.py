@@ -7924,21 +7924,85 @@ def update_reconciliation_exception_status(
         row.resolution_checklist = {code: True for code in required}
 
     old_status = row.status
-    row.status = new_status
-    if new_status in {"RESOLVED", "DISMISSED"}:
-        row.resolved_at = datetime.now(timezone.utc)
-        row.resolved_by_id = current_user.id
+    if new_status == "RESOLVED" and row.severity in {"CRITICAL", "HIGH"}:
+        row.resolution_review_status = "PENDING"
+        row.resolution_submitted_by_id = current_user.id
+        row.resolution_reviewed_by_id = None
+        row.resolution_reviewed_at = None
         row.resolution_note = note
-    _record_reconciliation_event(db, row, "STATUS_CHANGED", current_user.id,
-        old_status=old_status, new_status=new_status, note=note or None,
-        event_metadata={
-            "root_cause_code": row.root_cause_code if new_status == "RESOLVED" else None,
-            "resolution_checklist": row.resolution_checklist if new_status == "RESOLVED" else {},
-        })
+        _record_reconciliation_event(db, row, "RESOLUTION_SUBMITTED", current_user.id,
+            old_status=old_status, new_status=old_status, note=note,
+            event_metadata={"root_cause_code": row.root_cause_code, "resolution_checklist": row.resolution_checklist})
+    else:
+        row.status = new_status
+        if new_status in {"RESOLVED", "DISMISSED"}:
+            row.resolved_at = datetime.now(timezone.utc)
+            row.resolved_by_id = current_user.id
+            row.resolution_note = note
+            row.resolution_review_status = "NOT_REQUIRED" if new_status == "RESOLVED" else "NOT_REQUIRED"
+        _record_reconciliation_event(db, row, "STATUS_CHANGED", current_user.id,
+            old_status=old_status, new_status=new_status, note=note or None,
+            event_metadata={
+                "root_cause_code": row.root_cause_code if new_status == "RESOLVED" else None,
+                "resolution_checklist": row.resolution_checklist if new_status == "RESOLVED" else {},
+            })
     db.commit()
     return {"id": row.id, "status": row.status, "resolved_at": row.resolved_at,
             "resolution_note": row.resolution_note, "root_cause_code": row.root_cause_code,
-            "resolution_checklist": row.resolution_checklist}
+            "resolution_checklist": row.resolution_checklist,
+            "resolution_review_status": row.resolution_review_status}
+
+
+@router.patch("/reconciliation/exceptions/{exception_id}/resolution-review")
+def review_reconciliation_resolution(
+    exception_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    row = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).with_for_update().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    if row.severity not in {"CRITICAL", "HIGH"} or row.resolution_review_status != "PENDING":
+        raise HTTPException(status_code=409, detail="This investigation has no pending independent resolution review.")
+    if row.resolution_submitted_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The investigator cannot approve or reject their own resolution.")
+    decision = str(payload.get("decision") or "").upper().strip()
+    note = str(payload.get("note") or "").strip()
+    if decision not in {"APPROVE", "REJECT"}:
+        raise HTTPException(status_code=422, detail="Review decision must be APPROVE or REJECT.")
+    if len(note) < 10 or len(note) > 2000:
+        raise HTTPException(status_code=422, detail="A review note between 10 and 2000 characters is required.")
+    now = datetime.now(timezone.utc)
+    row.resolution_reviewed_by_id = current_user.id
+    row.resolution_reviewed_at = now
+    row.resolution_review_status = "APPROVED" if decision == "APPROVE" else "REJECTED"
+    old_status = row.status
+    if decision == "APPROVE":
+        row.status = "RESOLVED"
+        row.resolved_at = now
+        row.resolved_by_id = row.resolution_submitted_by_id
+    else:
+        row.status = "IN_REVIEW"
+        row.resolved_at = None
+        row.resolved_by_id = None
+    _record_reconciliation_event(
+        db, row, "RESOLUTION_REVIEWED", current_user.id,
+        old_status=old_status, new_status=row.status, note=note,
+        event_metadata={
+            "decision": decision,
+            "submitted_by_id": row.resolution_submitted_by_id,
+            "review_status": row.resolution_review_status,
+        },
+    )
+    db.commit()
+    return {
+        "id": row.id, "status": row.status,
+        "resolution_review_status": row.resolution_review_status,
+        "resolved_at": row.resolved_at, "resolved_by_id": row.resolved_by_id,
+    }
 
 
 @router.post("/reconciliation/exceptions/{exception_id}/reopen")
@@ -7975,6 +8039,10 @@ def reopen_reconciliation_exception(
     row.resolution_note = None
     row.root_cause_code = None
     row.resolution_checklist = {}
+    row.resolution_review_status = "NOT_REQUIRED"
+    row.resolution_submitted_by_id = None
+    row.resolution_reviewed_by_id = None
+    row.resolution_reviewed_at = None
     _record_reconciliation_event(
         db, row, "REOPENED", current_user.id,
         old_status=old_status, new_status="OPEN", note=reason,
