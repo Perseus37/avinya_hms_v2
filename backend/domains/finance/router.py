@@ -21,6 +21,7 @@ from backend.domains.finance.schemas import (
     ExpenseDraft,
     RecurringTemplateCreate,
 )
+from backend.domains.procurement.models import VendorInvoice
 
 router = APIRouter(prefix="/api/finance/ap", tags=["Accounts Payable & Expenses"])
 
@@ -86,7 +87,12 @@ def mark_expense_paid(
     expense = db.get(ExpenseRecord, expense_id)
     if not expense or expense.status != ExpenseStatusEnum.APPROVED:
         raise HTTPException(status_code=400, detail="Only APPROVED expenses can be paid.")
-    
+    if db.query(VendorInvoice.id).filter(VendorInvoice.linked_expense_id == expense.id).first():
+        raise HTTPException(
+            status_code=409,
+            detail="Supplier invoice expenses must be settled through the procurement supplier-payment allocation workflow.",
+        )
+
     expense.status = ExpenseStatusEnum.PAID
     expense.receipt_reference = receipt_reference
     expense.updated_by_id = current_user.id
