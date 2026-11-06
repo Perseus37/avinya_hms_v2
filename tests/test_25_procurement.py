@@ -4248,7 +4248,7 @@ def test_reconciliation_sla_clock_pause_resume_and_breach_tracking(
     assert "SLA_RESUMED" in event_types
 
 
-def test_reconciliation_sla_pause_requires_finance_approval_permission(
+def test_reconciliation_sla_pause_requires_sla_governance_permission(
     client, pharmacist_headers, multi_tenant_env
 ):
     from sqlalchemy.orm import sessionmaker
