@@ -4209,14 +4209,14 @@ def get_procurement_cash_flow_forecast(
         if outstanding <= 0:
             continue
         due = invoice.due_date.date() if isinstance(invoice.due_date, datetime) else invoice.due_date
-        reserved = _reserved_supplier_payment_amount(db, invoice.id)
+        reserved = min(approved_reservations_by_invoice.get(invoice.id, 0), outstanding)
         ap_rows.append({
             "invoice_id": invoice.id,
             "vendor_id": invoice.vendor_id,
             "invoice_number": invoice.invoice_number,
             "due_date": due,
             "outstanding_paise": outstanding,
-            "reserved_paise": min(reserved, outstanding),
+            "reserved_paise": reserved,
             "unplanned_paise": max(outstanding - reserved, 0),
             "credit_adjustments_paise": int(credit_amount),
             "advances_applied_paise": int(advance_amount),
@@ -4229,6 +4229,14 @@ def get_procurement_cash_flow_forecast(
     pending_requests = db.query(SupplierPaymentRequest).filter(
         SupplierPaymentRequest.status == "PENDING"
     ).all()
+    approved_reservations_by_invoice = {}
+    for request_row in approved_requests:
+        if request_row.scheduled_date <= horizon_end:
+            for allocation in request_row.allocations:
+                approved_reservations_by_invoice[allocation.invoice_id] = (
+                    approved_reservations_by_invoice.get(allocation.invoice_id, 0)
+                    + int(allocation.amount_paise)
+                )
     approved_schedule_total = 0
     approved_schedule_in_horizon = 0
     approved_schedule_rows = []
@@ -4372,7 +4380,7 @@ def get_procurement_cash_flow_forecast(
         },
         "methodology": {
             "approved_scheduled_payments": "Approved, unexecuted payment requests are placed on their scheduled dates.",
-            "unplanned_ap": "Net invoice outstanding after cash payments, approved credit/debit adjustments and applied supplier advances, less pending or approved request reservations; placed on contractual invoice due dates.",
+            "unplanned_ap": "Net invoice outstanding after cash payments, approved credit/debit adjustments and applied supplier advances, less approved payment allocations scheduled within the forecast horizon; placed on contractual invoice due dates.",
             "no_double_counting": "Reserved amounts are excluded from unplanned AP before approved scheduled amounts are added.",
             "limitations": [
                 "This is a procurement cash-requirement forecast, not a bank-balance or whole-hospital cash forecast.",
