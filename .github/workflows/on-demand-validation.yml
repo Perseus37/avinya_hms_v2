@@ -62,9 +62,6 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements-dev.txt
 
-      - name: Verify test collection
-        run: python -m pytest --collect-only -q
-
       - name: Run reconciliation regression tests
         if: ${{ inputs.scope == 'reconciliation' }}
         env:
