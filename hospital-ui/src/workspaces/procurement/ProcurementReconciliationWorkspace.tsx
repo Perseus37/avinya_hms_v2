@@ -689,10 +689,9 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
           </div>
         ) : dashboard ? (
           <>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <StatCard label="Open investigations" value={number(dashboard.overview.open_count + dashboard.overview.in_review_count)} detail="Click to inspect open and in-review cases" icon={Search} selected={openOnly && !slaOverdueOnly && !unassignedOnly && !sourceMissingOnly} onClick={() => { setStatus(""); setOpenOnly(true); clearQueueDrilldowns(); }} />
               <StatCard label="SLA breached" value={number(dashboard.overview.sla_breached_open_count)} detail="Click to inspect overdue open cases" icon={Clock3} tone={dashboard.overview.sla_breached_open_count ? "danger" : "success"} selected={slaOverdueOnly} onClick={() => { setStatus(""); setOpenOnly(true); setSlaOverdueOnly(true); setUnassignedOnly(false); setSourceMissingOnly(false); }} />
-              <StatCard label="SLA paused" value={number(dashboard.overview.sla_paused_open_count)} detail="Active investigations with an authorized pause" icon={Clock3} tone={dashboard.overview.sla_paused_open_count ? "warning" : "normal"} />
               <StatCard label="Unassigned" value={number(dashboard.overview.unassigned_open_count)} detail="Click to inspect cases without an owner" icon={Users} tone={dashboard.overview.unassigned_open_count ? "warning" : "normal"} selected={unassignedOnly} onClick={() => { setStatus(""); setOpenOnly(true); setUnassignedOnly(true); setSlaOverdueOnly(false); setSourceMissingOnly(false); }} />
               <StatCard label="Source missing" value={number(dashboard.overview.source_missing_open_count)} detail="Click to inspect cases absent in latest detection" icon={AlertTriangle} tone={dashboard.overview.source_missing_open_count ? "warning" : "normal"} selected={sourceMissingOnly} onClick={() => { setStatus(""); setOpenOnly(true); setSourceMissingOnly(true); setSlaOverdueOnly(false); setUnassignedOnly(false); }} />
             </div>
