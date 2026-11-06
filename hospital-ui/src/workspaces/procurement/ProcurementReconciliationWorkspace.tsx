@@ -21,6 +21,7 @@ import {
   ReconciliationSeverity,
   ReconciliationStatus,
   ReconciliationExceptionEvent,
+  ReconciliationAssignee,
 } from "../../api/reconciliationApi";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -128,10 +129,37 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [detailMessage, setDetailMessage] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
   const [assigneeInput, setAssigneeInput] = useState("");
+  const [assigneeSearch, setAssigneeSearch] = useState("");
+  const [assigneeOptions, setAssigneeOptions] = useState<ReconciliationAssignee[]>([]);
+  const [assigneeLoading, setAssigneeLoading] = useState(false);
   const [assignmentNote, setAssignmentNote] = useState("");
   const [investigationNote, setInvestigationNote] = useState("");
   const [statusChoice, setStatusChoice] = useState<ReconciliationStatus>("IN_REVIEW");
   const [statusNote, setStatusNote] = useState("");
+
+  useEffect(() => {
+    if (!selectedException || !hasPermission("finance.manage_reconciliation")) {
+      setAssigneeOptions([]);
+      setAssigneeLoading(false);
+      return;
+    }
+    let active = true;
+    setAssigneeLoading(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await reconciliationApi.getAssignableUsers(assigneeSearch, 50);
+        if (active) setAssigneeOptions(result.items || []);
+      } catch (err) {
+        if (active) setDetailError(err instanceof Error ? err.message : "Unable to load branch staff.");
+      } finally {
+        if (active) setAssigneeLoading(false);
+      }
+    }, 250);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [selectedException?.id, assigneeSearch, hasPermission]);
 
   const filters = useMemo<ReconciliationFilters>(() => ({
     from_date: fromDate || undefined,
@@ -182,6 +210,8 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const openException = async (item: ReconciliationException) => {
     setSelectedException(item); setHistory([]); setDetailError(""); setDetailMessage("");
     setAssigneeInput(item.assigned_to_id === null ? "" : String(item.assigned_to_id));
+    setAssigneeSearch("");
+    setAssigneeOptions([]);
     setAssignmentNote(""); setInvestigationNote(""); setStatusChoice(item.status === "IN_REVIEW" ? "OPEN" : "IN_REVIEW"); setStatusNote("");
     setHistoryLoading(true);
     try { const result = await reconciliationApi.getExceptionHistory(item.id); setHistory(result.events || []); }
@@ -536,11 +566,29 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                 </section>
                 <section className="rounded-xl border border-slate-200 p-3"><h3 className="text-xs font-bold">Detection evidence snapshot</h3><pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-[10px]">{JSON.stringify(selectedException.detection_snapshot || {}, null, 2)}</pre></section>
                 <section className="rounded-xl border border-slate-200 p-3">
-                  <h3 className="text-xs font-bold">Assignment</h3><p className="mt-1 text-[10px] text-slate-500">Enter an active user ID from this branch. Leave blank to unassign.</p>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_1.5fr_auto]">
-                    <input aria-label="Assignee user ID" type="number" min="1" value={assigneeInput} onChange={(event) => setAssigneeInput(event.target.value)} placeholder="User ID" disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                  <h3 className="text-xs font-bold">Assignment</h3>
+                  <p className="mt-1 text-[10px] text-slate-500">Search active staff in this hospital branch. Results include their branch roles.</p>
+                  <div className="mt-2">
+                    <label htmlFor="reconciliation-assignee-search" className="mb-1 block text-[10px] font-semibold text-slate-600">Find branch staff</label>
+                    <input id="reconciliation-assignee-search" role="combobox" aria-autocomplete="list" aria-expanded={assigneeOptions.length > 0} value={assigneeSearch} onChange={(event) => setAssigneeSearch(event.target.value)} placeholder="Search by staff name or login ID…" disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                    {assigneeLoading && <p className="mt-2 text-[10px] text-slate-400">Searching branch directory…</p>}
+                    {!assigneeLoading && assigneeSearch.trim() && assigneeOptions.length === 0 && <p className="mt-2 text-[10px] text-slate-400">No active staff matched this search.</p>}
+                    {assigneeOptions.length > 0 && <ul role="listbox" aria-label="Active branch staff" className="mt-2 max-h-44 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+                      {assigneeOptions.map((person) => <li key={person.id}>
+                        <button type="button" role="option" aria-selected={assigneeInput === String(person.id)} onClick={() => { setAssigneeInput(String(person.id)); setAssigneeSearch(person.full_name); setAssigneeOptions([]); }} disabled={actionLoading} className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-blue-50 disabled:opacity-50">
+                          <span className="min-w-0"><span className="block truncate text-xs font-semibold text-slate-800">{person.full_name}</span><span className="block text-[10px] text-slate-400">{person.login_id} · User #{person.id}</span><span className="mt-1 flex flex-wrap gap-1">{person.roles.length ? person.roles.map((role) => <span key={role.code} className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] text-slate-600">{role.name}</span>) : <span className="text-[9px] text-slate-400">No assigned role</span>}</span></span>
+                          {assigneeInput === String(person.id) && <CheckCircle2 size={15} className="mt-1 shrink-0 text-blue-600" />}
+                        </button>
+                      </li>)}
+                    </ul>}
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2">
+                    <div><span className="block text-[9px] uppercase tracking-wide text-slate-400">Selected assignee</span><span className="text-xs font-semibold text-slate-700">{assigneeInput ? (assigneeOptions.find((person) => String(person.id) === assigneeInput)?.full_name || (assigneeSearch.trim() && !assigneeOptions.length ? assigneeSearch : "User #" + assigneeInput)) : "Unassigned"}</span></div>
+                    <button type="button" onClick={() => { setAssigneeInput(""); setAssigneeSearch(""); setAssigneeOptions([]); }} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading || !assigneeInput} className="text-[10px] font-semibold text-rose-700 disabled:text-slate-300">Clear assignment</button>
+                  </div>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
                     <input aria-label="Assignment note" value={assignmentNote} onChange={(event) => setAssignmentNote(event.target.value)} placeholder="Optional assignment note" disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
-                    <Button size="sm" onClick={() => void saveAssignment()} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading}>Save</Button>
+                    <Button size="sm" onClick={() => void saveAssignment()} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading}>Save assignment</Button>
                   </div>
                 </section>
                 {selectedException.status !== "RESOLVED" && selectedException.status !== "DISMISSED" && <section className="rounded-xl border border-slate-200 p-3">
