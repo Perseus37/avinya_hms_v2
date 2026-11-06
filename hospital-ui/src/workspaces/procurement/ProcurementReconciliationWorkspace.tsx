@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CalendarDays,
@@ -124,6 +124,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [error, setError] = useState("");
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [selectedException, setSelectedException] = useState<ReconciliationException | null>(null);
+  const selectedExceptionIdRef = useRef<number | null>(null);
   const [history, setHistory] = useState<ReconciliationExceptionEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
@@ -221,6 +222,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
 
 
   const openException = async (item: ReconciliationException) => {
+    selectedExceptionIdRef.current = item.id;
     setSelectedException(item); setHistory([]); setDetailError(""); setDetailMessage("");
     setAssigneeInput(item.assigned_to_id === null ? "" : String(item.assigned_to_id));
     setAssigneeSearch("");
@@ -246,7 +248,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     setDetailError("");
     try {
       const result = await reconciliationApi.getAssignmentRecommendations(targetId, 5);
-      if (selectedException?.id === targetId) {
+      if (selectedExceptionIdRef.current === targetId) {
         setAssignmentRecommendations(result.recommendations || []);
         setRecommendationsLoaded(true);
       }
@@ -255,7 +257,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
         setDetailError(err instanceof Error ? err.message : "Unable to calculate assignment recommendations.");
       }
     } finally {
-      if (selectedException?.id === targetId) setRecommendationsLoading(false);
+      if (selectedExceptionIdRef.current === targetId) setRecommendationsLoading(false);
     }
   };
 
@@ -594,13 +596,13 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
 
 
         {selectedException && (
-          <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/40" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !actionLoading) setSelectedException(null); }}>
+          <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/40" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !actionLoading) { selectedExceptionIdRef.current = null; setSelectedException(null); } }}>
             <aside role="dialog" aria-modal="true" aria-labelledby="exception-drawer-title" className="flex h-full w-full max-w-2xl flex-col overflow-hidden bg-white shadow-2xl">
               <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
                 <div><div className="flex flex-wrap items-center gap-2"><Badge variant={severityVariant(selectedException.severity)} size="sm">{selectedException.severity}</Badge><Badge variant={statusVariant(selectedException.status)} size="sm">{titleCase(selectedException.status)}</Badge></div>
                   <h2 id="exception-drawer-title" className="mt-2 text-base font-bold text-slate-900">{titleCase(selectedException.exception_type)} <span className="text-slate-400">#{selectedException.id}</span></h2>
                   <p className="mt-1 text-xs text-slate-500">{selectedException.reference_type} #{selectedException.reference_id}</p></div>
-                <button type="button" onClick={() => setSelectedException(null)} disabled={actionLoading} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Close</button>
+                <button type="button" onClick={() => { selectedExceptionIdRef.current = null; setSelectedException(null); }} disabled={actionLoading} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Close</button>
               </div>
               <div className="flex-1 space-y-4 overflow-y-auto p-5">
                 {detailError && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">{detailError}</div>}
