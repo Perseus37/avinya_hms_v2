@@ -3159,6 +3159,14 @@ def test_procurement_reconciliation_dashboard_aggregates_without_double_counting
             detection_snapshot={"bank_account_ref": "TEST-ACCOUNT"},
             first_detected_at=now - timedelta(days=2), last_detected_at=now - timedelta(days=1),
         )
+        supplier_payment = ProcurementReconciliationException(
+            fingerprint="DASHBOARD:UNRECONCILED_SUPPLIER_PAYMENT:10005",
+            exception_type="UNRECONCILED_SUPPLIER_PAYMENT", severity="HIGH", status="OPEN",
+            reference_type="SUPPLIER_PAYMENT", reference_id=10005,
+            amount_paise=12000, matched_amount_paise=2000, unmatched_amount_paise=10000,
+            summary="Unreconciled supplier payment dashboard test.",
+            detection_snapshot={"vendor_id": 501, "vendor_name": "Dashboard Test Supplier"},
+        )
         duplicate_candidate = ProcurementReconciliationException(
             fingerprint="DASHBOARD:POSSIBLE_DUPLICATE_SUPPLIER_PAYMENT:10002",
             exception_type="POSSIBLE_DUPLICATE_SUPPLIER_PAYMENT", severity="HIGH", status="OPEN",
@@ -3177,7 +3185,7 @@ def test_procurement_reconciliation_dashboard_aggregates_without_double_counting
             first_detected_at=now - timedelta(days=3), last_detected_at=now - timedelta(days=2),
             resolved_at=now - timedelta(days=1), resolved_by_id=actor_id,
         )
-        db.add_all([open_debit, duplicate_candidate, resolved])
+        db.add_all([open_debit, supplier_payment, duplicate_candidate, resolved])
         db.commit()
 
     response = client.get(
@@ -3193,6 +3201,10 @@ def test_procurement_reconciliation_dashboard_aggregates_without_double_counting
     debit = payload["investigation_amounts_by_exception_type"]["UNMATCHED_BANK_DEBIT"]
     assert debit["investigation_amount_paise"] == 9000
     assert debit["unmatched_amount_paise"] == 7000
+    assert payload["investigation_amounts_by_bank_account"][0]["bank_account_ref"] == "TEST-ACCOUNT"
+    supplier = payload["investigation_amounts_by_supplier"][0]
+    assert supplier["vendor_id"] == 501
+    assert supplier["unmatched_amount_paise"] == 10000
     assert "POSSIBLE_DUPLICATE_SUPPLIER_PAYMENT" not in payload["investigation_amounts_by_exception_type"]
     assert payload["resolution_performance"]["median_resolution_hours"] is not None
     assert any(row["opened_count"] >= 1 for row in payload["daily_trend"])
