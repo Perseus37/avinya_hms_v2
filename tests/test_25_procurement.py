@@ -3393,6 +3393,12 @@ def test_reconciliation_audit_export_contains_history_evidence_manifest_and_expo
     )
     assert uploaded.status_code == 201, uploaded.text
 
+    evidence_download = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/evidence/{uploaded.json()['id']}/download",
+        headers=superuser_headers,
+    )
+    assert evidence_download.status_code == 200, evidence_download.text
+
     response = client.get(
         f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/audit-export",
         headers=superuser_headers,
@@ -3404,16 +3410,20 @@ def test_reconciliation_audit_export_contains_history_evidence_manifest_and_expo
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as package:
         names = set(package.namelist())
-        assert {"investigation.json", "history.json", "manifest.json"} <= names
+        assert {"investigation.json", "history.json", "manifest.json", "evidence-download-audit.json"} <= names
         evidence_name = next(name for name in names if name.startswith("evidence/"))
         assert package.read(evidence_name) == evidence_bytes
         investigation = json.loads(package.read("investigation.json"))
         assert investigation["exception"]["id"] == exception_id
         assert investigation["exception"]["status"] == "IN_REVIEW"
         assert investigation["evidence"][0]["sha256"] == uploaded.json()["sha256_hex"]
+        download_audit = json.loads(package.read("evidence-download-audit.json"))
+        assert len(download_audit["downloads"]) == 1
+        assert download_audit["downloads"][0]["actor_email"]
         manifest = json.loads(package.read("manifest.json"))
         assert manifest["exception_id"] == exception_id
         assert any(item["path"] == evidence_name for item in manifest["files"])
+        assert any(item["path"] == "evidence-download-audit.json" for item in manifest["files"])
         history = json.loads(package.read("history.json"))
         assert any(event["event_type"] == "AUDIT_EXPORT_GENERATED" for event in history["events"])
 
