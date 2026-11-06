@@ -4065,3 +4065,77 @@ def test_reconciliation_sla_policy_publish_is_not_repeatable(
     )
     assert second.status_code == 409, second.text
 
+
+
+def test_reconciliation_sla_targets_are_snapshotted_per_investigation(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    first = client.post(
+        "/v1/api/procurement/reconciliation/sla-policies",
+        headers=superuser_headers,
+        json={
+            "severity_targets_hours": {"CRITICAL": 2, "HIGH": 24, "MEDIUM": 72, "LOW": 168},
+            "change_reason": "Capture target values for a pre-existing investigation.",
+        },
+    )
+    assert first.status_code == 201, first.text
+    first_policy_id = first.json()["id"]
+    published = client.post(
+        f"/v1/api/procurement/reconciliation/sla-policies/{first_policy_id}/publish",
+        headers=superuser_headers,
+        json={},
+    )
+    assert published.status_code == 200, published.text
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        row = ProcurementReconciliationException(
+            fingerprint="SLA-SNAPSHOT:UNMATCHED_BANK_DEBIT:930001",
+            exception_type="UNMATCHED_BANK_DEBIT",
+            severity="HIGH",
+            status="OPEN",
+            reference_type="BANK_STATEMENT_LINE",
+            reference_id=930001,
+            amount_paise=1000,
+            matched_amount_paise=0,
+            unmatched_amount_paise=1000,
+            summary="SLA target snapshot regression test.",
+            detection_snapshot={},
+            sla_policy_id=first_policy_id,
+            sla_target_hours=24,
+            first_detected_at=datetime.now(timezone.utc) - timedelta(hours=12),
+        )
+        db.add(row)
+        db.commit()
+
+    second = client.post(
+        "/v1/api/procurement/reconciliation/sla-policies",
+        headers=superuser_headers,
+        json={
+            "severity_targets_hours": {"CRITICAL": 1, "HIGH": 1, "MEDIUM": 2, "LOW": 4},
+            "change_reason": "Publish a tighter policy without changing open-case targets.",
+        },
+    )
+    assert second.status_code == 201, second.text
+    second_publish = client.post(
+        f"/v1/api/procurement/reconciliation/sla-policies/{second.json()['id']}/publish",
+        headers=superuser_headers,
+        json={},
+    )
+    assert second_publish.status_code == 200, second_publish.text
+
+    queue = client.get(
+        "/v1/api/procurement/reconciliation/exceptions/queue",
+        headers=superuser_headers,
+        params={"open_only": "true"},
+    )
+    assert queue.status_code == 200, queue.text
+    saved = next(item for item in queue.json()["exceptions"] if item["reference_id"] == 930001)
+    assert saved["sla_policy_id"] == first_policy_id
+    assert saved["sla_hours"] == 24
+    assert saved["sla_overdue"] is False
+
+
