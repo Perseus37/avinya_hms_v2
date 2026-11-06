@@ -306,7 +306,7 @@ export interface ReconciliationAssignmentEscalation {
   response_target_hours: number;
   escalation_due: boolean;
   escalation_levels_notified?: number;
-  notification_jobs?: Array<{ job_id: string; queue_status: string; completed_at: string | null }>;
+  notification_jobs?: Array<{ job_id: string; queue_status: string; completed_at: string | null; delivery_result: { sent?: boolean; error?: string } | null; queue_error: string | null }>;
   delivery_semantics?: "QUEUE_STATUS_ONLY_NOT_MAILBOX_DELIVERY";
 }
 
