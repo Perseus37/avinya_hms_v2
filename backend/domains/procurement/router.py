@@ -7188,7 +7188,10 @@ def list_persisted_reconciliation_exceptions(
             "unmatched_amount_paise": row.unmatched_amount_paise, "summary": row.summary,
             "assigned_to_id": row.assigned_to_id, "first_detected_at": row.first_detected_at,
             "last_detected_at": row.last_detected_at, "resolved_at": row.resolved_at,
-            "resolution_note": row.resolution_note, "detection_snapshot": row.detection_snapshot,
+            "resolution_note": row.resolution_note, "root_cause_code": row.root_cause_code,
+            "resolution_checklist": row.resolution_checklist, "reopen_count": row.reopen_count,
+            "resolution_review_status": row.resolution_review_status,
+            "detection_snapshot": row.detection_snapshot,
         } for row in rows],
     }
 
