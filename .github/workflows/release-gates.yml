@@ -5,7 +5,7 @@ on:
   # Add the "ci:full" label to a PR when it is ready for the expensive gate.
   pull_request:
     branches: [main, dev, "release/**"]
-    types: [labeled]
+    types: [labeled, synchronize]
   # Run automatically after code reaches protected integration/release branches.
   push:
     branches: [main, "release/**"]
@@ -31,7 +31,7 @@ jobs:
   python-tests:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'ci:full')
+      ((github.event.action == 'labeled' && github.event.label.name == 'ci:full') || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ci:full')))
     name: Python tests and PostgreSQL 17 migrations
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -89,7 +89,7 @@ jobs:
   onboarding-ui:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'ci:full')
+      ((github.event.action == 'labeled' && github.event.label.name == 'ci:full') || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ci:full')))
     name: Build onboarding UI
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -123,7 +123,7 @@ jobs:
   hospital-ui:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'ci:full')
+      ((github.event.action == 'labeled' && github.event.label.name == 'ci:full') || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ci:full')))
     name: Build hospital UI
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -149,7 +149,7 @@ jobs:
   compose-config:
     if: >-
       github.event_name != 'pull_request' ||
-      (github.event.action == 'labeled' && github.event.label.name == 'ci:full')
+      ((github.event.action == 'labeled' && github.event.label.name == 'ci:full') || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ci:full')))
     name: Validate Compose configurations
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -183,7 +183,7 @@ jobs:
     # keeping dev pull requests fast and lightweight.
     if: >-
       (github.event_name != 'pull_request' ||
-       (github.event.action == 'labeled' && github.event.label.name == 'ci:full')) &&
+       ((github.event.action == 'labeled' && github.event.label.name == 'ci:full') || (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ci:full')))) &&
       (github.event_name == 'workflow_dispatch' ||
        github.event_name == 'schedule' ||
        github.ref == 'refs/heads/main' ||
