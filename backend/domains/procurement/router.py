@@ -1,5 +1,9 @@
 import secrets
 import re
+import hashlib
+import io
+import json
+import zipfile
 from pathlib import PurePath
 from decimal import Decimal
 
@@ -7094,6 +7098,189 @@ def list_reconciliation_evidence(
         "uploaded_at": row.uploaded_at,
         "download_url": f"/api/procurement/reconciliation/exceptions/{exception_id}/evidence/{row.id}/download",
     } for row in rows]
+
+
+
+@router.get("/reconciliation/exceptions/{exception_id}/audit-export")
+def export_reconciliation_exception_audit(
+    exception_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:read")),
+):
+    """Build a tenant-scoped audit ZIP; export generation is itself journaled."""
+    exception_row = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).with_for_update().one_or_none()
+    if exception_row is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+
+    tenant = resolve_tenant_context(request)
+    evidence_rows = db.query(ProcurementReconciliationEvidence).filter(
+        ProcurementReconciliationEvidence.exception_id == exception_id
+    ).order_by(
+        ProcurementReconciliationEvidence.uploaded_at.asc(),
+        ProcurementReconciliationEvidence.id.asc(),
+    ).all()
+    if len(evidence_rows) > 100:
+        raise HTTPException(status_code=413, detail="Investigation has too many evidence files for a single export.")
+
+    payload_files: dict[str, bytes] = {}
+    evidence_manifest = []
+    total_evidence_bytes = 0
+    for evidence in evidence_rows:
+        path = resolve_reconciliation_evidence(tenant.subdomain_slug, evidence.storage_key)
+        try:
+            actual_digest = reconciliation_evidence_sha256(path)
+            file_size = path.stat().st_size
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="Evidence storage is unavailable; audit export was not generated.") from exc
+        if actual_digest != evidence.sha256_hex or file_size != evidence.size_bytes:
+            _record_reconciliation_event(
+                db, exception_row, "EVIDENCE_HASH_MISMATCH", current_user.id,
+                note="Evidence integrity verification failed during audit export.",
+                event_metadata={
+                    "evidence_id": evidence.id,
+                    "expected_sha256": evidence.sha256_hex,
+                    "actual_sha256": actual_digest,
+                    "expected_size_bytes": evidence.size_bytes,
+                    "actual_size_bytes": file_size,
+                },
+            )
+            db.commit()
+            raise HTTPException(status_code=409, detail="Evidence integrity verification failed; audit export was not generated.")
+        total_evidence_bytes += file_size
+        if total_evidence_bytes > 50 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Investigation evidence exceeds the 50 MB audit export limit.")
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", evidence.original_filename).strip("._") or f"evidence-{evidence.id}"
+        archive_name = f"evidence/{evidence.id:06d}-{safe_name}"
+        try:
+            payload_files[archive_name] = path.read_bytes()
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="Evidence storage could not be read; audit export was not generated.") from exc
+        evidence_manifest.append({
+            "evidence_id": evidence.id,
+            "evidence_type": evidence.evidence_type,
+            "original_filename": evidence.original_filename,
+            "archive_path": archive_name,
+            "media_type": evidence.media_type,
+            "size_bytes": file_size,
+            "sha256": actual_digest,
+            "uploaded_by_id": evidence.uploaded_by_id,
+            "uploaded_at": evidence.uploaded_at,
+            "description": evidence.description,
+        })
+
+    investigation = {
+        "export_schema_version": "1.0",
+        "exception": {
+            "id": exception_row.id,
+            "fingerprint": exception_row.fingerprint,
+            "exception_type": exception_row.exception_type,
+            "severity": exception_row.severity,
+            "status": exception_row.status,
+            "reference_type": exception_row.reference_type,
+            "reference_id": exception_row.reference_id,
+            "amount_paise": exception_row.amount_paise,
+            "matched_amount_paise": exception_row.matched_amount_paise,
+            "unmatched_amount_paise": exception_row.unmatched_amount_paise,
+            "summary": exception_row.summary,
+            "detection_snapshot": exception_row.detection_snapshot,
+            "source_present": exception_row.source_present,
+            "missed_refresh_count": exception_row.missed_refresh_count,
+            "first_detected_at": exception_row.first_detected_at,
+            "last_detected_at": exception_row.last_detected_at,
+            "assigned_to_id": exception_row.assigned_to_id,
+            "resolved_by_id": exception_row.resolved_by_id,
+            "resolved_at": exception_row.resolved_at,
+            "resolution_note": exception_row.resolution_note,
+            "root_cause_code": exception_row.root_cause_code,
+            "resolution_checklist": exception_row.resolution_checklist,
+            "reopen_count": exception_row.reopen_count,
+            "resolution_review_status": exception_row.resolution_review_status,
+            "resolution_submitted_status": exception_row.resolution_submitted_status,
+            "resolution_submitted_by_id": exception_row.resolution_submitted_by_id,
+            "resolution_reviewed_by_id": exception_row.resolution_reviewed_by_id,
+            "resolution_reviewed_at": exception_row.resolution_reviewed_at,
+        },
+        "evidence": evidence_manifest,
+    }
+    investigation_bytes = json.dumps(
+        investigation, default=str, ensure_ascii=False, sort_keys=True, indent=2
+    ).encode("utf-8")
+    payload_files["investigation.json"] = investigation_bytes
+    manifest = {
+        "manifest_version": "1.0",
+        "package_type": "AVINYA_HMS_RECONCILIATION_AUDIT",
+        "tenant_slug": tenant.subdomain_slug,
+        "exception_id": exception_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_by_user_id": current_user.id,
+        "files": [
+            {"path": name, "size_bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+            for name, content in sorted(payload_files.items())
+        ],
+        "manifest_scope_note": "Hashes cover investigation.json and each included evidence file. history.json contains this export-generation event and is intentionally excluded to avoid a circular hash.",
+    }
+    manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+
+    _record_reconciliation_event(
+        db, exception_row, "AUDIT_EXPORT_GENERATED", current_user.id,
+        note="Investigation audit package generated.",
+        event_metadata={
+            "manifest_sha256": manifest_sha256,
+            "evidence_count": len(evidence_rows),
+            "evidence_total_bytes": total_evidence_bytes,
+            "package_type": "AVINYA_HMS_RECONCILIATION_AUDIT",
+        },
+    )
+    db.commit()
+
+    events = db.query(ProcurementReconciliationExceptionEvent).filter(
+        ProcurementReconciliationExceptionEvent.exception_id == exception_id
+    ).order_by(
+        ProcurementReconciliationExceptionEvent.occurred_at.asc(),
+        ProcurementReconciliationExceptionEvent.id.asc(),
+    ).all()
+    history = {
+        "exception_id": exception_id,
+        "events": [{
+            "id": event.id,
+            "event_type": event.event_type,
+            "actor_user_id": event.actor_user_id,
+            "old_status": event.old_status,
+            "new_status": event.new_status,
+            "old_assignee_id": event.old_assignee_id,
+            "new_assignee_id": event.new_assignee_id,
+            "note": event.note,
+            "event_metadata": event.event_metadata,
+            "occurred_at": event.occurred_at,
+        } for event in events],
+    }
+    payload_files["history.json"] = json.dumps(
+        history, default=str, ensure_ascii=False, sort_keys=True, indent=2
+    ).encode("utf-8")
+    payload_files["manifest.json"] = manifest_bytes
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as package:
+        for name, content in sorted(payload_files.items()):
+            package.writestr(name, content)
+    archive_bytes = archive.getvalue()
+    safe_tenant = re.sub(r"[^A-Za-z0-9_-]", "_", tenant.subdomain_slug)
+    return Response(
+        content=archive_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="reconciliation-{safe_tenant}-{exception_id}-audit.zip"',
+            "Content-Length": str(len(archive_bytes)),
+            "Cache-Control": "private, no-store",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+            "X-Audit-Manifest-SHA256": manifest_sha256,
+        },
+    )
 
 
 @router.get("/reconciliation/exceptions/{exception_id}/evidence/{evidence_id}/download")
