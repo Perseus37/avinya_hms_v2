@@ -15,6 +15,7 @@ from backend.domains.procurement.models import (
     SupplierQuotationStatusEnum,
     POAmendmentStatusEnum,
     POShipmentStatusEnum,
+    BankStatementDirectionEnum,
 )
 
 # --- Vendor Master ---
@@ -393,6 +394,57 @@ class SupplierAdvanceResponse(BaseModel):
     amount_paise: int
     notes: Optional[str]
     recorded_by_id: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+
+
+class BankStatementLineCreate(BaseModel):
+    bank_transaction_id: str = Field(min_length=1, max_length=150)
+    transaction_date: datetime
+    value_date: Optional[date] = None
+    direction: BankStatementDirectionEnum
+    amount_paise: int = Field(gt=0)
+    bank_reference: Optional[str] = Field(default=None, max_length=150)
+    description: Optional[str] = Field(default=None, max_length=2000)
+
+
+class BankStatementImportCreate(BaseModel):
+    bank_account_ref: str = Field(min_length=2, max_length=100)
+    statement_reference: str = Field(min_length=2, max_length=120)
+    period_start: date
+    period_end: date
+    opening_balance_paise: int
+    closing_balance_paise: int
+    lines: List[BankStatementLineCreate] = Field(min_length=1, max_length=5000)
+
+    @model_validator(mode="after")
+    def validate_statement(self):
+        if self.period_end < self.period_start:
+            raise ValueError("Statement period end must be on or after period start.")
+        transaction_ids = [line.bank_transaction_id.strip() for line in self.lines]
+        if len(transaction_ids) != len(set(transaction_ids)):
+            raise ValueError("Bank transaction IDs must be unique within a statement.")
+        if any(not line.bank_transaction_id.strip() for line in self.lines):
+            raise ValueError("Bank transaction IDs cannot be blank.")
+        return self
+
+
+class SupplierPaymentBankMatchCreate(BaseModel):
+    payment_id: int = Field(gt=0)
+    amount_paise: int = Field(gt=0)
+    match_reason: Optional[str] = Field(default=None, max_length=1000)
+
+
+class BankStatementBatchResponse(BaseModel):
+    id: int
+    bank_account_ref: str
+    statement_reference: str
+    period_start: date
+    period_end: date
+    opening_balance_paise: int
+    closing_balance_paise: int
+    imported_by_id: int
     model_config = ConfigDict(from_attributes=True)
 
 
