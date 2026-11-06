@@ -435,6 +435,7 @@ class SupplierPayment(AuditMixin, Base):
     amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     recorded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    allocations: Mapped[List["SupplierPaymentAllocation"]] = relationship(back_populates="payment", cascade="all, delete-orphan")
 
 
 class SupplierPaymentAllocation(Base):
@@ -450,6 +451,7 @@ class SupplierPaymentAllocation(Base):
     payment_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=False)
     invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
     amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    payment: Mapped["SupplierPayment"] = relationship(back_populates="allocations")
 
 
 class ProcurementDocumentDownloadAudit(Base):
