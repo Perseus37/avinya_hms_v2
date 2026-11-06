@@ -19,7 +19,7 @@ from backend.domains.pharmacy.models import MedicationMaster, InventoryMovement,
 from backend.domains.procurement.models import (
     VendorMaster, VendorCategoryEnum, PurchaseOrder, PurchaseOrderItem, POStatusEnum,
     GoodsReceiptNote, GoodsReceiptItem, GRNStatusEnum,
-    VendorInvoice, VendorInvoiceItem, VendorInvoiceStatusEnum,
+    VendorInvoice, VendorInvoiceItem, VendorInvoiceStatusEnum, SupplierPaymentMethodEnum,
     ProcurementDocumentDownloadAudit,
     StoreIndent, StoreIndentItem, IndentStatusEnum,
     PurchaseRequisition, PurchaseRequisitionItem, PurchaseRequisitionStatusEnum,
@@ -28,10 +28,11 @@ from backend.domains.procurement.models import (
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
     MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement,
+    SupplierPayment, SupplierPaymentAllocation,
     SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest
 )
 from backend.domains.procurement.schemas import (
-    VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
+    VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, SupplierPaymentCreate, SupplierPaymentResponse, SupplierInvoiceSettlementResponse, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
     IndentIssueRequest, PurchaseReturnCreate,
     PurchaseRequisitionCreate, PurchaseRequisitionResponse, PurchaseRequisitionReview,
     PurchaseOrderFromRequisitionCreate, SupplierQuotationCreate,
@@ -2010,6 +2011,133 @@ def approve_vendor_invoice(invoice_id: int, db: Session = Depends(get_db), curre
     post_invoice_to_accounts_payable(db, invoice, current_user.id)
     db.commit()
     return {"status": "success", "message": "Invoice approved and posted to Accounts Payable."}
+
+
+def _supplier_invoice_paid_amount(db: Session, invoice_id: int) -> int:
+    return int(db.query(func.coalesce(func.sum(SupplierPaymentAllocation.amount_paise), 0)).filter(
+        SupplierPaymentAllocation.invoice_id == invoice_id
+    ).scalar() or 0)
+
+
+@router.post("/supplier-payments", response_model=SupplierPaymentResponse, status_code=status.HTTP_201_CREATED)
+def record_supplier_payment(
+    payload: SupplierPaymentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:pay")),
+):
+    vendor = db.query(VendorMaster).filter(VendorMaster.id == payload.vendor_id).with_for_update().one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    duplicate = db.query(SupplierPayment.id).filter(
+        SupplierPayment.vendor_id == vendor.id,
+        SupplierPayment.payment_reference == payload.payment_reference.strip(),
+    ).first()
+    if duplicate:
+        raise HTTPException(status_code=409, detail="This supplier payment reference has already been recorded.")
+
+    invoice_ids = sorted(row.invoice_id for row in payload.allocations)
+    invoices = db.query(VendorInvoice).filter(
+        VendorInvoice.id.in_(invoice_ids)
+    ).order_by(VendorInvoice.id).with_for_update().all()
+    invoice_by_id = {row.id: row for row in invoices}
+    if set(invoice_by_id) != set(invoice_ids):
+        raise HTTPException(status_code=404, detail="One or more supplier invoices were not found.")
+
+    for allocation in payload.allocations:
+        invoice = invoice_by_id[allocation.invoice_id]
+        if invoice.vendor_id != vendor.id:
+            raise HTTPException(status_code=422, detail="A payment can only be allocated to invoices belonging to the selected supplier.")
+        if invoice.status not in {VendorInvoiceStatusEnum.MATCHED_APPROVED, VendorInvoiceStatusEnum.PAID}:
+            raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoice_number} is not approved for settlement.")
+        if invoice.linked_expense_id is None:
+            raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoice_number} has no Accounts Payable posting.")
+        expense = db.get(ExpenseRecord, invoice.linked_expense_id)
+        if expense is None or expense.status not in {ExpenseStatusEnum.APPROVED, ExpenseStatusEnum.PAID}:
+            raise HTTPException(status_code=409, detail=f"Accounts Payable entry for invoice {invoice.invoice_number} is not payable.")
+        already_paid = _supplier_invoice_paid_amount(db, invoice.id)
+        outstanding = int(invoice.total_amount_paise) - already_paid
+        if allocation.amount_paise > outstanding:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": f"Allocation exceeds the outstanding balance for invoice {invoice.invoice_number}.",
+                    "invoice_id": invoice.id,
+                    "outstanding_paise": max(outstanding, 0),
+                },
+            )
+        if outstanding <= 0:
+            raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoice_number} is already fully settled.")
+
+    payment = SupplierPayment(
+        vendor_id=vendor.id,
+        payment_reference=payload.payment_reference.strip(),
+        payment_method=payload.payment_method,
+        payment_date=payload.payment_date,
+        amount_paise=payload.amount_paise,
+        notes=payload.notes.strip() if payload.notes else None,
+        recorded_by_id=current_user.id,
+        created_by_id=current_user.id,
+    )
+    for allocation in payload.allocations:
+        payment.allocations.append(SupplierPaymentAllocation(
+            invoice_id=allocation.invoice_id,
+            amount_paise=allocation.amount_paise,
+        ))
+    db.add(payment)
+    db.flush()
+
+    for invoice in invoices:
+        paid_amount = _supplier_invoice_paid_amount(db, invoice.id)
+        if paid_amount >= int(invoice.total_amount_paise):
+            invoice.status = VendorInvoiceStatusEnum.PAID
+            expense = db.get(ExpenseRecord, invoice.linked_expense_id)
+            expense.status = ExpenseStatusEnum.PAID
+            expense.receipt_reference = payment.payment_reference
+            expense.updated_by_id = current_user.id
+        else:
+            invoice.status = VendorInvoiceStatusEnum.MATCHED_APPROVED
+
+    db.commit()
+    return db.query(SupplierPayment).options(
+        selectinload(SupplierPayment.allocations)
+    ).filter(SupplierPayment.id == payment.id).one()
+
+
+@router.get("/vendors/{vendor_id}/payments", response_model=list[SupplierPaymentResponse])
+def list_supplier_payments(
+    vendor_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    if db.get(VendorMaster, vendor_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    return db.query(SupplierPayment).options(
+        selectinload(SupplierPayment.allocations)
+    ).filter(
+        SupplierPayment.vendor_id == vendor_id
+    ).order_by(SupplierPayment.payment_date.desc(), SupplierPayment.id.desc()).all()
+
+
+@router.get("/invoices/{invoice_id}/settlement", response_model=SupplierInvoiceSettlementResponse)
+def get_supplier_invoice_settlement(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    invoice = db.get(VendorInvoice, invoice_id)
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found.")
+    paid = _supplier_invoice_paid_amount(db, invoice.id)
+    return {
+        "invoice_id": invoice.id,
+        "vendor_id": invoice.vendor_id,
+        "invoice_number": invoice.invoice_number,
+        "invoice_total_paise": invoice.total_amount_paise,
+        "amount_paid_paise": paid,
+        "outstanding_paise": max(int(invoice.total_amount_paise) - paid, 0),
+        "status": invoice.status,
+    }
+
 
 # --- Purchase Order Approval & PDF ---
 
