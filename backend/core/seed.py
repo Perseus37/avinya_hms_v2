@@ -101,6 +101,7 @@ GRANULAR_PERMISSIONS = [
     ("emr:read", "View electronic medical records", "ClinicalMDM"),
     ("emr:write", "Update electronic medical records", "ClinicalMDM"),
     ("executive_bi:read", "View executive business intelligence and reports", "Billing"),
+    ("finance:read", "View financial reconciliation investigations and governance dashboards", "Billing"),
     ("finance:approve", "Approve accounts payable, vendor bills, and expenses", "Billing"),
     ("finance:pay", "Execute financial payments and disburse funds", "Billing"),
     ("finance:write", "Create accounts payable entries and expenses", "Billing"),
@@ -265,7 +266,7 @@ def seed_universal_hospital_data(
     ])
     role_billing.permissions.extend([
         perm_map["patients:read"], perm_map["billing:read"], perm_map["billing:write"],
-        perm_map["procurement:approve"],
+        perm_map["procurement:approve"], perm_map["finance:read"],
     ])
     role_auditor.permissions.extend([
         perm for code, perm in perm_map.items()
