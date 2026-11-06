@@ -1373,3 +1373,65 @@ class ProcurementReconciliationSlaPolicyEvent(Base):
     actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     event_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProcurementReconciliationEscalationPolicy(Base):
+    """Versioned acknowledgement/escalation schedule and notification preferences."""
+    __tablename__ = "procurement_reconciliation_escalation_policies"
+    __table_args__ = (
+        UniqueConstraint("policy_key", "version", name="uq_proc_recon_escalation_policy_version"),
+        CheckConstraint("version > 0", name="ck_proc_recon_escalation_policy_version"),
+        CheckConstraint("status IN ('DRAFT','PUBLISHED','RETIRED')", name="ck_proc_recon_escalation_policy_status"),
+        Index("uq_proc_recon_escalation_policy_active", "policy_key", unique=True,
+              postgresql_where=text("status = 'PUBLISHED' AND effective_to IS NULL"),
+              sqlite_where=text("status = 'PUBLISHED' AND effective_to IS NULL")),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    policy_key: Mapped[str] = mapped_column(String(48), default="DEFAULT", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(12), default="DRAFT", nullable=False)
+    response_targets_hours: Mapped[dict] = mapped_column(JSON, nullable=False)
+    escalation_levels: Mapped[list] = mapped_column(JSON, nullable=False)
+    notification_preferences: Mapped[dict] = mapped_column(JSON, nullable=False)
+    change_reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    effective_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    published_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProcurementReconciliationGovernanceReport(Base):
+    """Immutable point-in-time monthly governance report."""
+    __tablename__ = "procurement_reconciliation_governance_reports"
+    __table_args__ = (
+        UniqueConstraint("period_start", "period_end", name="uq_proc_recon_governance_period"),
+        Index("ix_proc_recon_governance_report_created", "created_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    report_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    generated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProcurementReconciliationAuditExport(Base):
+    """Accountability register for generated/downloaded reconciliation exports."""
+    __tablename__ = "procurement_reconciliation_audit_exports"
+    __table_args__ = (
+        CheckConstraint("status IN ('GENERATED','FAILED','EXPIRED')", name="ck_proc_recon_audit_export_status"),
+        Index("ix_proc_recon_audit_export_time", "requested_at"),
+        Index("ix_proc_recon_audit_export_actor", "actor_user_id", "requested_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    exception_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_reconciliation_exceptions.id", ondelete="SET NULL"), nullable=True)
+    export_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(12), default="GENERATED", nullable=False)
+    file_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    file_size_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    filter_snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    actor_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
