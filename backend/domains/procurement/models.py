@@ -1264,6 +1264,8 @@ class ProcurementReconciliationException(Base):
     resolution_submitted_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     resolution_reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     resolution_reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_policy_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_reconciliation_sla_policies.id", ondelete="SET NULL"), nullable=True)
+    sla_target_hours: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     assigned_to: Mapped[Optional["User"]] = relationship(foreign_keys=[assigned_to_id])
     resolved_by: Mapped[Optional["User"]] = relationship(foreign_keys=[resolved_by_id])
 
@@ -1322,5 +1324,43 @@ class ProcurementReconciliationExceptionEvent(Base):
     old_assignee_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     new_assignee_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    event_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProcurementReconciliationSlaPolicy(Base):
+    """Versioned tenant-wide SLA targets for reconciliation investigations."""
+    __tablename__ = "procurement_reconciliation_sla_policies"
+    __table_args__ = (
+        UniqueConstraint("policy_key", "version", name="uq_proc_recon_sla_policy_version"),
+        CheckConstraint("version > 0", name="ck_proc_recon_sla_policy_version_positive"),
+        CheckConstraint("status IN ('DRAFT','PUBLISHED','RETIRED')", name="ck_proc_recon_sla_policy_status"),
+        CheckConstraint("effective_to IS NULL OR effective_to > effective_from", name="ck_proc_recon_sla_policy_effective_window"),
+        Index("ix_proc_recon_sla_policy_effective", "status", "effective_from", "effective_to"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    policy_key: Mapped[str] = mapped_column(String(48), default="DEFAULT", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(12), default="DRAFT", nullable=False)
+    severity_targets_hours: Mapped[dict] = mapped_column(JSON, nullable=False)
+    change_reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    effective_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    published_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProcurementReconciliationSlaPolicyEvent(Base):
+    """Append-only audit trail for SLA policy lifecycle changes."""
+    __tablename__ = "procurement_reconciliation_sla_policy_events"
+    __table_args__ = (
+        Index("ix_proc_recon_sla_policy_event_time", "policy_id", "occurred_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    policy_id: Mapped[int] = mapped_column(ForeignKey("procurement_reconciliation_sla_policies.id", ondelete="RESTRICT"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     event_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
