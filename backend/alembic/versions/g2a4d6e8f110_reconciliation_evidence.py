@@ -62,6 +62,19 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
         op.execute("""
+            CREATE FUNCTION prevent_proc_recon_evidence_mutation()
+            RETURNS trigger AS $
+            BEGIN
+                RAISE EXCEPTION 'Reconciliation evidence metadata is append-only';
+            END;
+            $ LANGUAGE plpgsql;
+        """)
+        op.execute("""
+            CREATE TRIGGER trg_proc_recon_evidence_append_only
+            BEFORE UPDATE OR DELETE ON procurement_reconciliation_evidence
+            FOR EACH ROW EXECUTE FUNCTION prevent_proc_recon_evidence_mutation();
+        """)
+        op.execute("""
             CREATE FUNCTION prevent_proc_recon_evidence_download_audit_mutation()
             RETURNS trigger AS $$
             BEGIN
@@ -81,6 +94,8 @@ def downgrade() -> None:
     if bind.dialect.name == "postgresql":
         op.execute("DROP TRIGGER IF EXISTS trg_proc_recon_evidence_download_audit_append_only ON procurement_reconciliation_evidence_download_audits")
         op.execute("DROP FUNCTION IF EXISTS prevent_proc_recon_evidence_download_audit_mutation()")
+        op.execute("DROP TRIGGER IF EXISTS trg_proc_recon_evidence_append_only ON procurement_reconciliation_evidence")
+        op.execute("DROP FUNCTION IF EXISTS prevent_proc_recon_evidence_mutation()")
     op.drop_index("ix_proc_recon_evidence_download_actor", table_name="procurement_reconciliation_evidence_download_audits")
     op.drop_index("ix_proc_recon_evidence_download_time", table_name="procurement_reconciliation_evidence_download_audits")
     op.drop_table("procurement_reconciliation_evidence_download_audits")
