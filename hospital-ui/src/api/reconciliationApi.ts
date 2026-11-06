@@ -136,6 +136,15 @@ export const reconciliationApi = {
     apiClient<ReconciliationAssignmentRecommendations>("/api/procurement/reconciliation/exceptions/" + id + "/assignment-recommendations", {
       params: { limit },
     }),
+  getAssignmentEscalations: (limit = 100) =>
+    apiClient<ReconciliationAssignmentEscalationQueue>("/api/procurement/reconciliation/exceptions/escalations", {
+      params: { limit },
+    }),
+  respondToAssignment: (id: number, payload: { decision: "ACCEPT" | "REJECT"; reason?: string }) =>
+    apiClient<{ exception_id: number; decision: "ACCEPT" | "REJECT"; recorded: boolean }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment-response", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   getExceptionHistory: (id: number) =>
     apiClient<ReconciliationExceptionHistory>("/api/procurement/reconciliation/exceptions/" + id + "/history"),
   assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
@@ -205,6 +214,23 @@ export interface ReconciliationAssignmentRecommendations {
     score_weights: Record<string, number>;
     automatic_assignment: boolean;
   };
+}
+
+export interface ReconciliationAssignmentEscalation {
+  exception_id: number;
+  severity: ReconciliationSeverity;
+  status: ReconciliationStatus;
+  assigned_to_id: number;
+  assigned_at: string;
+  unacknowledged_hours: number;
+  response_target_hours: number;
+  escalation_due: boolean;
+}
+
+export interface ReconciliationAssignmentEscalationQueue {
+  total: number;
+  items: ReconciliationAssignmentEscalation[];
+  automatic_escalation: boolean;
 }
 
 export interface ReconciliationExceptionHistory {
