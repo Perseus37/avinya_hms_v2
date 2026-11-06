@@ -9071,6 +9071,8 @@ def publish_reconciliation_escalation_policy(
     effective_from = effective_from or datetime.now(timezone.utc)
     if effective_from.tzinfo is None:
         effective_from = effective_from.replace(tzinfo=timezone.utc)
+    if effective_from < datetime.now(timezone.utc):
+        raise HTTPException(status_code=422, detail="Escalation policy effective_from cannot be in the past.")
     active = db.query(ProcurementReconciliationEscalationPolicy).filter(
         ProcurementReconciliationEscalationPolicy.status == "PUBLISHED",
         ProcurementReconciliationEscalationPolicy.effective_to.is_(None),
@@ -9192,14 +9194,30 @@ def create_reconciliation_monthly_governance_report(
         ProcurementReconciliationException.first_detected_at < end_dt,
     ).all()
     resolved = [r for r in cases if r.status == "RESOLVED"]
+    resolution_hours = []
+    for case in resolved:
+        first = case.first_detected_at.replace(tzinfo=timezone.utc) if case.first_detected_at.tzinfo is None else case.first_detected_at
+        closed = case.resolved_at.replace(tzinfo=timezone.utc) if case.resolved_at.tzinfo is None else case.resolved_at
+        resolution_hours.append(max((closed - first).total_seconds() / 3600, 0))
+    ordered_resolution_hours = sorted(resolution_hours)
+    median_resolution_hours = None
+    if ordered_resolution_hours:
+        middle = len(ordered_resolution_hours) // 2
+        median_resolution_hours = (
+            round((ordered_resolution_hours[middle - 1] + ordered_resolution_hours[middle]) / 2, 2)
+            if len(ordered_resolution_hours) % 2 == 0 else round(ordered_resolution_hours[middle], 2)
+        )
     snapshot = {
         "period_start": start.isoformat(), "period_end": end.isoformat(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "snapshot_basis": "CURRENT_STATE_OF_CASES_FIRST_DETECTED_IN_PERIOD",
         "case_count": len(cases),
         "by_status": {key: sum(1 for r in cases if r.status == key) for key in ("OPEN", "IN_REVIEW", "RESOLVED", "DISMISSED")},
         "by_severity": {key: sum(1 for r in cases if r.severity == key) for key in ("CRITICAL", "HIGH", "MEDIUM", "LOW")},
         "sla_breached_open": sum(1 for r in cases if r.status in {"OPEN", "IN_REVIEW"} and _reconciliation_sla_clock(r)["breached"]),
         "resolved_count": len(resolved),
+        "average_resolution_hours": round(sum(resolution_hours) / len(resolution_hours), 2) if resolution_hours else None,
+        "median_resolution_hours": median_resolution_hours,
         "reopened_case_count": sum(int(r.reopen_count or 0) for r in cases),
         "root_causes": {},
     }
