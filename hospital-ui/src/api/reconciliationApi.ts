@@ -125,6 +125,10 @@ export const reconciliationApi = {
     apiClient<ReconciliationQueue>("/api/procurement/reconciliation/exceptions/queue", {
       params: { ...filters },
     }),
+  getAssignableUsers: (q = "", limit = 50) =>
+    apiClient<ReconciliationAssigneeDirectory>("/api/procurement/reconciliation/assignees", {
+      params: { q: q.trim() || undefined, limit },
+    }),
   getExceptionHistory: (id: number) =>
     apiClient<ReconciliationExceptionHistory>("/api/procurement/reconciliation/exceptions/" + id + "/history"),
   assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
@@ -147,6 +151,19 @@ export interface ReconciliationExceptionEvent {
   note: string | null;
   event_metadata: Record<string, unknown> | null;
   occurred_at: string;
+}
+
+export interface ReconciliationAssignee {
+  id: number;
+  full_name: string;
+  login_id: string;
+  roles: Array<{ code: string; name: string }>;
+}
+
+export interface ReconciliationAssigneeDirectory {
+  items: ReconciliationAssignee[];
+  count: number;
+  limit: number;
 }
 
 export interface ReconciliationExceptionHistory {
