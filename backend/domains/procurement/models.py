@@ -1233,6 +1233,7 @@ class ProcurementReconciliationException(Base):
         CheckConstraint("resolution_submitted_status IS NULL OR resolution_submitted_status IN ('RESOLVED','DISMISSED')", name="ck_proc_recon_resolution_submitted_status"),
         CheckConstraint("reopen_count >= 0", name="ck_proc_recon_exception_reopen_count_nonneg"),
         CheckConstraint("sla_target_hours IS NULL OR sla_target_hours BETWEEN 1 AND 8760", name="ck_proc_recon_exception_sla_target_positive"),
+        CheckConstraint("sla_paused_seconds >= 0", name="ck_proc_recon_exception_sla_paused_seconds_nonneg"),
         Index("ix_proc_recon_exception_queue", "status", "severity", "last_detected_at"),
         Index("ix_proc_recon_exception_assignee", "assigned_to_id", "status"),
         Index("ix_proc_recon_exception_reference", "reference_type", "reference_id"),
@@ -1267,6 +1268,9 @@ class ProcurementReconciliationException(Base):
     resolution_reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     sla_policy_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_reconciliation_sla_policies.id", ondelete="SET NULL"), nullable=True)
     sla_target_hours: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sla_paused_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_paused_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sla_breached_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     assigned_to: Mapped[Optional["User"]] = relationship(foreign_keys=[assigned_to_id])
     resolved_by: Mapped[Optional["User"]] = relationship(foreign_keys=[resolved_by_id])
 
