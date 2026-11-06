@@ -132,6 +132,10 @@ export const reconciliationApi = {
     apiClient<ReconciliationAssigneeDirectory>("/api/procurement/reconciliation/assignees", {
       params: { q: q.trim() || undefined, limit },
     }),
+  getAssignmentRecommendations: (id: number, limit = 5) =>
+    apiClient<ReconciliationAssignmentRecommendations>("/api/procurement/reconciliation/exceptions/" + id + "/assignment-recommendations", {
+      params: { limit },
+    }),
   getExceptionHistory: (id: number) =>
     apiClient<ReconciliationExceptionHistory>("/api/procurement/reconciliation/exceptions/" + id + "/history"),
   assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
@@ -167,6 +171,38 @@ export interface ReconciliationAssigneeDirectory {
   items: ReconciliationAssignee[];
   count: number;
   limit: number;
+}
+
+export interface ReconciliationAssignmentRecommendation {
+  user_id: number;
+  user_name: string;
+  login_id: string;
+  roles: Array<{ code: string; name: string }>;
+  finance_suitable: boolean;
+  finance_permissions: string[];
+  current_assignee: boolean;
+  open_count: number;
+  overdue_count: number;
+  open_by_severity: Record<ReconciliationSeverity, number>;
+  resolved_count: number;
+  median_resolution_hours: number | null;
+  score: number;
+  reasons: string[];
+}
+
+export interface ReconciliationAssignmentRecommendations {
+  exception_id: number;
+  target_severity: ReconciliationSeverity;
+  current_assignee_id: number | null;
+  recommendations: ReconciliationAssignmentRecommendation[];
+  methodology: {
+    manual_confirmation_required: boolean;
+    workload_scope: string;
+    historical_resolution_scope: string;
+    role_suitability: string;
+    score_weights: Record<string, number>;
+    automatic_assignment: boolean;
+  };
 }
 
 export interface ReconciliationExceptionHistory {
