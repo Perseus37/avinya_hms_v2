@@ -401,7 +401,15 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     }
     setActionLoading(true); setDetailError(""); setDetailMessage("");
     try {
-      await reconciliationApi.pauseSla(selectedException.id, { reason: slaPauseReason.trim() });
+      const result = await reconciliationApi.pauseSla(selectedException.id, { reason: slaPauseReason.trim() });
+      const updated = {
+        ...selectedException, sla_paused: true, sla_paused_at: result.sla_paused_at,
+        sla_paused_seconds: result.sla_paused_seconds, sla_elapsed_hours: result.sla_elapsed_hours,
+        sla_remaining_hours: result.sla_remaining_hours, sla_overdue: result.sla_overdue,
+        sla_breached_at: result.sla_breached_at,
+      };
+      setSelectedException(updated);
+      setQueue((current) => current ? { ...current, exceptions: current.exceptions.map((row) => row.id === updated.id ? updated : row) } : current);
       setSlaPauseReason("");
       await refreshSelectedHistory(selectedException.id);
       await load();
@@ -418,7 +426,15 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     }
     setActionLoading(true); setDetailError(""); setDetailMessage("");
     try {
-      await reconciliationApi.resumeSla(selectedException.id, { reason: slaResumeReason.trim() });
+      const result = await reconciliationApi.resumeSla(selectedException.id, { reason: slaResumeReason.trim() });
+      const updated = {
+        ...selectedException, sla_paused: false, sla_paused_at: null,
+        sla_paused_seconds: result.sla_paused_seconds, sla_elapsed_hours: result.sla_elapsed_hours,
+        sla_remaining_hours: result.sla_remaining_hours, sla_overdue: result.sla_overdue,
+        sla_breached_at: result.sla_breached_at,
+      };
+      setSelectedException(updated);
+      setQueue((current) => current ? { ...current, exceptions: current.exceptions.map((row) => row.id === updated.id ? updated : row) } : current);
       setSlaResumeReason("");
       await refreshSelectedHistory(selectedException.id);
       await load();
