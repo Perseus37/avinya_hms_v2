@@ -2654,6 +2654,90 @@ def list_supplier_payments(
     ).order_by(SupplierPayment.payment_date.desc(), SupplierPayment.id.desc()).all()
 
 
+@router.get("/analytics/payment-priorities")
+def get_supplier_payment_priorities(
+    due_within_days: int = Query(default=30, ge=0, le=365),
+    vendor_id: Optional[int] = Query(default=None, gt=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    """Prioritized AP queue based on net invoice balances and contractual due dates."""
+    today = datetime.now(timezone.utc).date()
+    query = db.query(VendorInvoice, VendorMaster.name).join(
+        VendorMaster, VendorMaster.id == VendorInvoice.vendor_id
+    ).filter(
+        VendorInvoice.status.in_([
+            VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            VendorInvoiceStatusEnum.PAID,
+        ])
+    )
+    if vendor_id is not None:
+        query = query.filter(VendorInvoice.vendor_id == vendor_id)
+    records = query.order_by(VendorInvoice.due_date.asc(), VendorInvoice.id.asc()).all()
+
+    rows = []
+    for invoice, vendor_name in records:
+        outstanding, credits, advances = _supplier_invoice_outstanding(db, invoice)
+        outstanding = max(int(outstanding), 0)
+        if outstanding <= 0:
+            continue
+        due_date = invoice.due_date.date() if isinstance(invoice.due_date, datetime) else invoice.due_date
+        days_until_due = (due_date - today).days
+        if days_until_due > due_within_days:
+            continue
+        priority = "OVERDUE" if days_until_due < 0 else (
+            "DUE_TODAY" if days_until_due == 0 else (
+                "DUE_SOON" if days_until_due <= 7 else "UPCOMING"
+            )
+        )
+        recorded_paid = _supplier_invoice_paid_amount(db, invoice.id)
+        paid = _effective_invoice_paid_amount(
+            invoice, {invoice.id: recorded_paid} if recorded_paid else {}
+        )
+        rows.append({
+            "invoice_id": invoice.id,
+            "vendor_id": invoice.vendor_id,
+            "vendor_name": vendor_name,
+            "invoice_number": invoice.invoice_number,
+            "invoice_date": invoice.invoice_date,
+            "due_date": invoice.due_date,
+            "days_until_due": days_until_due,
+            "priority": priority,
+            "invoice_total_paise": int(invoice.total_amount_paise),
+            "amount_paid_paise": int(paid),
+            "credit_adjustments_paise": int(credits),
+            "advances_applied_paise": int(advances),
+            "outstanding_paise": outstanding,
+        })
+
+    priority_order = {"OVERDUE": 0, "DUE_TODAY": 1, "DUE_SOON": 2, "UPCOMING": 3}
+    rows.sort(key=lambda row: (
+        priority_order[row["priority"]],
+        row["days_until_due"],
+        row["due_date"],
+        row["invoice_id"],
+    ))
+    totals = {
+        "invoice_count": len(rows),
+        "outstanding_paise": sum(row["outstanding_paise"] for row in rows),
+        "overdue_count": sum(row["priority"] == "OVERDUE" for row in rows),
+        "overdue_paise": sum(row["outstanding_paise"] for row in rows if row["priority"] == "OVERDUE"),
+        "due_today_count": sum(row["priority"] == "DUE_TODAY" for row in rows),
+        "due_today_paise": sum(row["outstanding_paise"] for row in rows if row["priority"] == "DUE_TODAY"),
+        "due_soon_count": sum(row["priority"] == "DUE_SOON" for row in rows),
+        "due_soon_paise": sum(row["outstanding_paise"] for row in rows if row["priority"] == "DUE_SOON"),
+        "upcoming_count": sum(row["priority"] == "UPCOMING" for row in rows),
+        "upcoming_paise": sum(row["outstanding_paise"] for row in rows if row["priority"] == "UPCOMING"),
+    }
+    return {
+        "as_of_date": today,
+        "due_within_days": due_within_days,
+        "vendor_id": vendor_id,
+        "totals": totals,
+        "invoices": rows,
+    }
+
+
 @router.get("/invoices/{invoice_id}/settlement", response_model=SupplierInvoiceSettlementResponse)
 def get_supplier_invoice_settlement(
     invoice_id: int,
