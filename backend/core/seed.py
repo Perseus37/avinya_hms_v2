@@ -205,7 +205,7 @@ def seed_universal_hospital_data(
             existing_finance_manager = Role(
                 code="ROLE_FINANCE_MANAGER",
                 name="Finance Manager",
-                description="Govern reconciliation investigations, SLA policies, and finance approvals.",
+                description="Govern reconciliation oversight and versioned SLA policy controls.",
                 is_system_role=True,
             )
             existing_finance_manager.permissions.extend([
@@ -265,7 +265,7 @@ def seed_universal_hospital_data(
     role_finance_manager = Role(
         code="ROLE_FINANCE_MANAGER",
         name="Finance Manager",
-        description="Govern reconciliation investigations, SLA policies, and finance approvals.",
+        description="Govern reconciliation oversight and versioned SLA policy controls.",
         is_system_role=True,
     )
 
