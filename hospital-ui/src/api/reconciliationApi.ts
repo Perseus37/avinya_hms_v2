@@ -119,10 +119,10 @@ export interface ReconciliationFilters {
 export const reconciliationApi = {
   getDashboard: (filters: ReconciliationFilters = {}) =>
     apiClient<ReconciliationDashboard>("/api/procurement/analytics/reconciliation-dashboard", {
-      params: filters,
+      params: { ...filters },
     }),
   getQueue: (filters: Pick<ReconciliationFilters, "severity" | "status" | "assigned_to_id" | "exception_type"> & { source_present?: boolean; sla_overdue?: boolean; unassigned_only?: boolean } = {}) =>
     apiClient<ReconciliationQueue>("/api/procurement/reconciliation/exceptions/queue", {
-      params: filters,
+      params: { ...filters },
     }),
 };
