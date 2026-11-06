@@ -146,10 +146,15 @@ def get_task_status(task_id: str) -> Optional[dict[str, Any]]:
         data = r.hgetall(f"{KEY_TASK_PREFIX}{task_id}")
         if not data:
             return None
+        try:
+            task_result = json.loads(data.get("result", "null"))
+        except (TypeError, json.JSONDecodeError):
+            task_result = None
         return {
             "id": data.get("id", task_id),
             "task_name": data.get("task_name"),
             "status": data.get("status"),
+            "result": task_result,
             "retries": int(data.get("retries", 0)),
             "max_retries": int(data.get("max_retries", MAX_TASK_RETRIES)),
             "created_at": data.get("created_at"),
