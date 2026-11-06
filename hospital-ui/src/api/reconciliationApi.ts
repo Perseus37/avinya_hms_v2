@@ -304,3 +304,38 @@ export interface ReconciliationExceptionHistory {
   exception_id: number;
   events: ReconciliationExceptionEvent[];
 }
+
+
+export interface ReconciliationSlaPolicy {
+  id: number;
+  policy_key: string;
+  version: number;
+  status: "DRAFT" | "PUBLISHED" | "RETIRED";
+  severity_targets_hours: Record<ReconciliationSeverity, number>;
+  change_reason: string;
+  effective_from: string;
+  effective_to: string | null;
+  created_by_id: number;
+  created_at: string;
+  published_by_id: number | null;
+  published_at: string | null;
+}
+
+export interface ReconciliationSlaPolicyDirectory {
+  active_policy_id: number | null;
+  active_policy_version: number | null;
+  baseline_fallback: Record<ReconciliationSeverity, number>;
+  items: ReconciliationSlaPolicy[];
+}
+
+export const reconciliationSlaPolicyApi = {
+  list: () => apiClient<ReconciliationSlaPolicyDirectory>("/api/procurement/reconciliation/sla-policies"),
+  createDraft: (payload: { severity_targets_hours: Record<ReconciliationSeverity, number>; change_reason: string }) =>
+    apiClient<ReconciliationSlaPolicy>("/api/procurement/reconciliation/sla-policies", {
+      method: "POST", body: JSON.stringify(payload),
+    }),
+  publish: (id: number) =>
+    apiClient<ReconciliationSlaPolicy>(`/api/procurement/reconciliation/sla-policies/${id}/publish`, {
+      method: "POST", body: JSON.stringify({}),
+    }),
+};
