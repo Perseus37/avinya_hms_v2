@@ -4221,6 +4221,7 @@ def test_reconciliation_sla_clock_pause_resume_and_breach_tracking(
     breached_item = next(item for item in queue.json()["exceptions"] if item["id"] == breached_id)
     assert paused_item["sla_paused"] is True
     assert paused_item["sla_overdue"] is False
+    assert queue.json()["sla_summary"]["sla_paused"] >= 1
     assert 0.45 <= paused_item["sla_elapsed_hours"] <= 0.6
     assert breached_item["sla_overdue"] is True
     assert breached_item["sla_breached_at"] is not None
