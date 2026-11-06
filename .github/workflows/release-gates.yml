@@ -251,10 +251,11 @@ jobs:
       - name: Tag and publish scanned images
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) }}
         env:
-          IMAGE_NAMESPACE: ghcr.io/${{ github.repository_owner }}
+          IMAGE_OWNER: ${{ github.repository_owner }}
           IMAGE_REVISION: ${{ github.sha }}
         run: |
           set -euo pipefail
+          IMAGE_NAMESPACE="ghcr.io/$(printf '%s' "$IMAGE_OWNER" | tr '[:upper:]' '[:lower:]')"
           if [ "$GITHUB_REF" = "refs/heads/main" ]; then
             CHANNEL_TAG="main"
           else
