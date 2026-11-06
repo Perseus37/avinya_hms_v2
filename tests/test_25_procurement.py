@@ -3338,6 +3338,20 @@ def test_reconciliation_evidence_upload_download_and_audit(
         assert len(audits) == 1
         assert audits[0].actor_email
         assert event.event_metadata["evidence_id"] == evidence_id
+        stored_path = procurement_documents.resolve_reconciliation_evidence("default", evidence.storage_key)
+        stored_path.write_bytes(b"%PDF-1.7 tampered evidence")
+
+    tampered_download = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/evidence/{evidence_id}/download",
+        headers=superuser_headers,
+    )
+    assert tampered_download.status_code == 409, tampered_download.text
+    with session_factory() as db:
+        mismatch_event = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == exception_id,
+            ProcurementReconciliationExceptionEvent.event_type == "EVIDENCE_HASH_MISMATCH",
+        ).one()
+        assert mismatch_event.event_metadata["evidence_id"] == evidence_id
 
 
 def test_reconciliation_evidence_rejects_invalid_signature_and_closed_case(
