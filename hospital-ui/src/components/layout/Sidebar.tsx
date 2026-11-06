@@ -1,5 +1,5 @@
 import React from "react";
-import { LucideIcon, UserPlus, User, Clock3, DoorOpen, Stethoscope, BedDouble, Siren, Pill, Microscope, CreditCard, ShieldCheck, Scissors, Droplet, ShieldAlert, Wrench, LayoutDashboard, Settings, Wallet } from "lucide-react";
+import { LucideIcon, UserPlus, User, Clock3, DoorOpen, Stethoscope, BedDouble, Siren, Pill, Microscope, CreditCard, ShieldCheck, Scissors, Droplet, ShieldAlert, Wrench, LayoutDashboard, Settings, Wallet, ClipboardList } from "lucide-react";
 import { WorkspaceId } from "../../types";
 import { usePermissions } from "../../core/context/PermissionsContext";
 
@@ -42,6 +42,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeWorkspace, onSelectWorks
       items: [
         { id: "billing", label: "Billing & Cashier", icon: CreditCard },
         { id: "procurement-reconciliation", label: "Procurement Finance", icon: Wallet },
+        { id: "my-assigned-investigations", label: "My Investigations", icon: ClipboardList },
         { id: "infection-control", label: "Quality & Infection", icon: ShieldAlert },
         { id: "biomedical", label: "Biomedical", icon: Wrench },
       ],
