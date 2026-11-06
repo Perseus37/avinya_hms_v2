@@ -2815,7 +2815,7 @@ def test_supplier_payment_priorities_use_net_outstanding_and_due_dates(
     with session_factory() as db:
         actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
         expense = ExpenseRecord(
-            category=ExpenseCategoryEnum.GENERAL,
+            category=ExpenseCategoryEnum.OTHER,
             title="Overdue supplier AP priority test",
             amount_paise=10000,
             status=ExpenseStatusEnum.APPROVED,
