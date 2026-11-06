@@ -40,6 +40,7 @@ export type PermissionCode =
   | "billing.collect_fee"
   | "billing.tpa_approve"
   | "billing.override_discount"
+  | "finance.view_reconciliation"
   | "config.facility_manage"
   | "config.roster_manage"
   | "config.policies_manage"
@@ -76,6 +77,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
       "pharmacy",
       "diagnostics",
       "billing",
+      "procurement-reconciliation",
       "infection-control",
       "biomedical",
       "admin",
@@ -109,6 +111,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
       "billing.collect_fee",
       "billing.tpa_approve",
       "billing.override_discount",
+      "finance.view_reconciliation",
       "config.facility_manage",
       "config.roster_manage",
       "config.policies_manage",
@@ -166,8 +169,8 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "Cashier Billing",
     description: "TPA insurance pre-authorization settlement, itemized folio charges, co-pay split, and tax invoice generation.",
     defaultWorkspace: "billing",
-    allowedWorkspaces: ["billing", "patient-record", "registration", "adt"],
-    permissions: ["billing.view_counter", "billing.collect_fee", "billing.tpa_approve", "billing.override_discount", "patient.view_mpi", "bed.view_matrix"],
+    allowedWorkspaces: ["billing", "procurement-reconciliation", "patient-record", "registration", "adt"],
+    permissions: ["billing.view_counter", "billing.collect_fee", "billing.tpa_approve", "billing.override_discount", "finance.view_reconciliation", "patient.view_mpi", "bed.view_matrix"],
   },
 };
 
