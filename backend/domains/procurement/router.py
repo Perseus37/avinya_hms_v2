@@ -7846,6 +7846,46 @@ def list_reconciliation_assignment_escalations(
     return {"total": len(candidates), "items": candidates[:limit], "automatic_escalation": False}
 
 
+_RECONCILIATION_RESOLUTION_CHECKLISTS = {
+    "UNMATCHED_BANK_DEBIT": ("bank_statement_verified", "bank_account_and_period_confirmed", "payment_or_expense_traced", "supporting_evidence_reviewed"),
+    "PARTIAL_BANK_DEBIT_MATCH": ("statement_line_balance_verified", "remaining_amount_explained", "matching_allocations_reviewed"),
+    "UNCLASSIFIED_BANK_CREDIT": ("credit_source_identified", "bank_reference_verified", "ledger_treatment_documented"),
+    "UNRECONCILED_SUPPLIER_PAYMENT": ("supplier_payment_verified", "bank_statement_match_or_reason_documented", "invoice_allocations_reviewed"),
+    "PARTIALLY_RECONCILED_SUPPLIER_PAYMENT": ("partial_match_balance_verified", "remaining_amount_explained", "payment_allocations_reviewed"),
+    "POSSIBLE_DUPLICATE_SUPPLIER_PAYMENT": ("candidate_transactions_compared", "bank_debits_independently_verified", "duplicate_or_false_positive_conclusion_documented"),
+    "OVERDUE_APPROVED_PAYMENT_REQUEST": ("request_status_verified", "execution_or_cancellation_confirmed", "supplier_balance_rechecked"),
+}
+
+_RECONCILIATION_ROOT_CAUSES = {
+    "DATA_ENTRY_ERROR", "BANK_FEED_DELAY", "DUPLICATE_PAYMENT",
+    "REFERENCE_MISMATCH", "SUPPLIER_DISPUTE", "BANK_CHARGES",
+    "TIMING_DIFFERENCE", "PROCESS_GAP", "SYSTEM_INTEGRATION",
+    "FALSE_POSITIVE", "OTHER",
+}
+
+
+@router.get("/reconciliation/exceptions/{exception_id}/resolution-guidance")
+def get_reconciliation_resolution_guidance(
+    exception_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    row = db.get(ProcurementReconciliationException, exception_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    required = _RECONCILIATION_RESOLUTION_CHECKLISTS.get(
+        row.exception_type, ("investigation_evidence_reviewed", "financial_impact_rechecked", "conclusion_documented")
+    )
+    return {
+        "exception_id": row.id,
+        "exception_type": row.exception_type,
+        "root_cause_codes": sorted(_RECONCILIATION_ROOT_CAUSES),
+        "required_checklist": [{"code": code, "required": True} for code in required],
+        "independent_review_required": row.severity in {"CRITICAL", "HIGH"},
+        "resolution_policy": "All checklist items must be true; this records investigation completion, not a substitute for correcting the source ledger.",
+    }
+
+
 @router.patch("/reconciliation/exceptions/{exception_id}/status")
 def update_reconciliation_exception_status(
     exception_id: int, payload: dict,
@@ -7863,9 +7903,26 @@ def update_reconciliation_exception_status(
     if new_status in {"RESOLVED", "DISMISSED"} and len(note) < 10:
         raise HTTPException(status_code=422, detail="A resolution or dismissal note of at least 10 characters is required.")
     if row.status in {"RESOLVED", "DISMISSED"}:
-        raise HTTPException(status_code=409, detail="Terminal exceptions cannot be reopened or changed. A materially new detection must be recorded separately.")
+        raise HTTPException(status_code=409, detail="Terminal exceptions require the explicit reopen workflow.")
     if new_status == row.status:
         raise HTTPException(status_code=409, detail="Exception is already in the requested status.")
+
+    root_cause_code = str(payload.get("root_cause_code") or "").upper().strip() or None
+    checklist = payload.get("resolution_checklist") or {}
+    if new_status == "RESOLVED":
+        if root_cause_code not in _RECONCILIATION_ROOT_CAUSES:
+            raise HTTPException(status_code=422, detail="A valid root_cause_code is required to resolve an investigation.")
+        if not isinstance(checklist, dict):
+            raise HTTPException(status_code=422, detail="resolution_checklist must be an object of checklist codes and boolean values.")
+        required = _RECONCILIATION_RESOLUTION_CHECKLISTS.get(
+            row.exception_type, ("investigation_evidence_reviewed", "financial_impact_rechecked", "conclusion_documented")
+        )
+        incomplete = [code for code in required if checklist.get(code) is not True]
+        if incomplete:
+            raise HTTPException(status_code=422, detail={"message": "Complete every required resolution checklist item.", "incomplete_items": incomplete})
+        row.root_cause_code = root_cause_code
+        row.resolution_checklist = {code: True for code in required}
+
     old_status = row.status
     row.status = new_status
     if new_status in {"RESOLVED", "DISMISSED"}:
@@ -7873,9 +7930,58 @@ def update_reconciliation_exception_status(
         row.resolved_by_id = current_user.id
         row.resolution_note = note
     _record_reconciliation_event(db, row, "STATUS_CHANGED", current_user.id,
-        old_status=old_status, new_status=new_status, note=note or None)
+        old_status=old_status, new_status=new_status, note=note or None,
+        event_metadata={
+            "root_cause_code": row.root_cause_code if new_status == "RESOLVED" else None,
+            "resolution_checklist": row.resolution_checklist if new_status == "RESOLVED" else {},
+        })
     db.commit()
-    return {"id": row.id, "status": row.status, "resolved_at": row.resolved_at, "resolution_note": row.resolution_note}
+    return {"id": row.id, "status": row.status, "resolved_at": row.resolved_at,
+            "resolution_note": row.resolution_note, "root_cause_code": row.root_cause_code,
+            "resolution_checklist": row.resolution_checklist}
+
+
+@router.post("/reconciliation/exceptions/{exception_id}/reopen")
+def reopen_reconciliation_exception(
+    exception_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    row = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).with_for_update().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    reason = str(payload.get("reason") or "").strip()
+    if len(reason) < 10 or len(reason) > 2000:
+        raise HTTPException(status_code=422, detail="A reopen reason between 10 and 2000 characters is required.")
+    if row.status not in {"RESOLVED", "DISMISSED"}:
+        raise HTTPException(status_code=409, detail="Only resolved or dismissed investigations can be reopened.")
+    old_status = row.status
+    prior_resolution = {
+        "root_cause_code": row.root_cause_code,
+        "resolution_note": row.resolution_note,
+        "resolution_checklist": row.resolution_checklist,
+        "resolved_by_id": row.resolved_by_id,
+        "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+    }
+    row.status = "OPEN"
+    row.source_present = True
+    row.missed_refresh_count = 0
+    row.reopen_count = (row.reopen_count or 0) + 1
+    row.resolved_at = None
+    row.resolved_by_id = None
+    row.resolution_note = None
+    row.root_cause_code = None
+    row.resolution_checklist = {}
+    _record_reconciliation_event(
+        db, row, "REOPENED", current_user.id,
+        old_status=old_status, new_status="OPEN", note=reason,
+        event_metadata={"prior_resolution": prior_resolution, "reopen_count": row.reopen_count},
+    )
+    db.commit()
+    return {"id": row.id, "status": row.status, "reopen_count": row.reopen_count}
 
 
 @router.post("/reconciliation/exceptions/{exception_id}/notes", status_code=status.HTTP_201_CREATED)
