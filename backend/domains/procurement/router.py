@@ -3729,11 +3729,17 @@ def get_vendor_metrics(
         1 for invoice in invoices
         if invoice.status == VendorInvoiceStatusEnum.PRICE_VARIANCE_FLAGGED
     )
-    matched_unpaid = [
-        invoice for invoice in invoices
-        if invoice.status == VendorInvoiceStatusEnum.MATCHED_APPROVED
-    ]
-    matched_unpaid_exposure_paise = sum(int(invoice.total_amount_paise or 0) for invoice in matched_unpaid)
+    paid_by_invoice = _supplier_paid_amounts_by_invoice(db, {invoice.id for invoice in invoices})
+    matched_unpaid = []
+    matched_unpaid_exposure_paise = 0
+    for invoice in invoices:
+        if invoice.status != VendorInvoiceStatusEnum.MATCHED_APPROVED:
+            continue
+        paid_amount = _effective_invoice_paid_amount(invoice, paid_by_invoice)
+        outstanding_amount = max(int(invoice.total_amount_paise or 0) - paid_amount, 0)
+        if outstanding_amount > 0:
+            matched_unpaid.append(invoice)
+            matched_unpaid_exposure_paise += outstanding_amount
 
     return {
         "vendor_id": vendor.id,
@@ -3786,7 +3792,7 @@ def get_vendor_metrics(
             ) if invoice_count else None,
             "matched_approved_unpaid_count": len(matched_unpaid),
             "matched_approved_unpaid_exposure_paise": matched_unpaid_exposure_paise,
-            "exposure_definition": "Only MATCHED_APPROVED invoices are included; pending, flagged, rejected and PAID invoices are excluded. Payment execution/partial settlement is not represented by this metric.",
+            "exposure_definition": "MATCHED_APPROVED invoices with positive remaining balance are included; partial payment allocations reduce exposure. Pending, flagged, rejected and fully PAID invoices are excluded.",
         },
     }
 
