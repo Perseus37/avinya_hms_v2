@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { apiClient, getAuthToken, getTenantSlug } from "./client";
 
 export type ReconciliationStatus = "OPEN" | "IN_REVIEW" | "RESOLVED" | "DISMISSED";
 export type ReconciliationSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
@@ -184,8 +184,8 @@ export const reconciliationApi = {
       body: payload,
     }),
   downloadEvidence: async (id: number, evidenceId: number) => {
-    const token = localStorage.getItem("avinya_access_token");
-    const tenant = typeof window === "undefined" ? "default" : window.location.hostname.split(".")[0] || "default";
+    const token = getAuthToken();
+    const tenant = getTenantSlug();
     const response = await fetch("/api/procurement/reconciliation/exceptions/" + id + "/evidence/" + evidenceId + "/download", {
       headers: {
         ...(token ? { Authorization: "Bearer " + token } : {}),
