@@ -7434,6 +7434,7 @@ def refresh_procurement_reconciliation_exceptions(
             key: (value.isoformat() if isinstance(value, (date, datetime)) else value)
             for key, value in item.items()
         }
+        sla_policy_id, sla_target_hours = _reconciliation_sla_snapshot(db, item["severity"], now)
         if row is None:
             row = ProcurementReconciliationException(
                 fingerprint=fingerprint, exception_type=item["exception_type"],
@@ -7445,8 +7446,8 @@ def refresh_procurement_reconciliation_exceptions(
                 summary=item["description"], detection_snapshot=snapshot,
                 first_detected_at=now, last_detected_at=now,
                 source_present=True, missed_refresh_count=0,
-                sla_policy_id=_reconciliation_sla_snapshot(db, item["severity"], now)[0],
-                sla_target_hours=_reconciliation_sla_snapshot(db, item["severity"], now)[1],
+                sla_policy_id=sla_policy_id,
+                sla_target_hours=sla_target_hours,
             )
             db.add(row)
             db.flush()
