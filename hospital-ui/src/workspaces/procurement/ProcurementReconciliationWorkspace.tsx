@@ -60,7 +60,9 @@ const StatCard: React.FC<{
   detail: string;
   icon: React.ElementType;
   tone?: "normal" | "danger" | "warning" | "success";
-}> = ({ label, value, detail, icon: Icon, tone = "normal" }) => {
+  onClick: () => void;
+  selected?: boolean;
+}> = ({ label, value, detail, icon: Icon, tone = "normal", onClick, selected = false }) => {
   const tones = {
     normal: "border-slate-200 bg-white text-slate-800",
     danger: "border-rose-200 bg-rose-50 text-rose-800",
@@ -68,14 +70,14 @@ const StatCard: React.FC<{
     success: "border-emerald-200 bg-emerald-50 text-emerald-800",
   };
   return (
-    <div className={`rounded-xl border p-4 shadow-sm ${tones[tone]}`}>
+    <button type="button" onClick={onClick} aria-pressed={selected} className={`w-full rounded-xl border p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-400 ${tones[tone]} ${selected ? "ring-2 ring-blue-500" : ""}`}>
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-semibold uppercase tracking-wide opacity-70">{label}</span>
         <Icon size={17} className="opacity-70" />
       </div>
       <div className="mt-3 text-2xl font-bold tabular-nums">{value}</div>
       <div className="mt-1 text-[11px] opacity-70">{detail}</div>
-    </div>
+    </button>
   );
 };
 
@@ -107,6 +109,9 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [status, setStatus] = useState<ReconciliationStatus | "">("");
   const [assignedToId, setAssignedToId] = useState("");
   const [exceptionType, setExceptionType] = useState("");
+  const [slaOverdueOnly, setSlaOverdueOnly] = useState(false);
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
+  const [sourceMissingOnly, setSourceMissingOnly] = useState(false);
   const [dashboard, setDashboard] = useState<ReconciliationDashboard | null>(null);
   const [queue, setQueue] = useState<ReconciliationQueue | null>(null);
   const [loading, setLoading] = useState(true);
@@ -121,18 +126,29 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     assigned_to_id: assignedToId ? Number(assignedToId) : undefined,
   }), [fromDate, toDate, severity, status, assignedToId]);
 
+  const queueFilters = useMemo(() => ({
+    severity: severity || undefined,
+    status: status || undefined,
+    assigned_to_id: assignedToId ? Number(assignedToId) : undefined,
+    exception_type: exceptionType || undefined,
+    sla_overdue: slaOverdueOnly ? true : undefined,
+    unassigned_only: unassignedOnly ? true : undefined,
+    source_present: sourceMissingOnly ? false : undefined,
+  }), [severity, status, assignedToId, exceptionType, slaOverdueOnly, unassignedOnly, sourceMissingOnly]);
+
+  const clearQueueDrilldowns = () => {
+    setSlaOverdueOnly(false);
+    setUnassignedOnly(false);
+    setSourceMissingOnly(false);
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       const [summary, worklist] = await Promise.all([
         reconciliationApi.getDashboard(filters),
-        reconciliationApi.getQueue({
-          severity: severity || undefined,
-          status: status || undefined,
-          assigned_to_id: assignedToId ? Number(assignedToId) : undefined,
-          exception_type: exceptionType || undefined,
-        }),
+        reconciliationApi.getQueue(queueFilters),
       ]);
       setDashboard(summary);
       setQueue(worklist);
@@ -142,7 +158,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [filters, severity, status, assignedToId, exceptionType]);
+  }, [filters, queueFilters]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -168,6 +184,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const selectExceptionType = (value: string) => {
     setExceptionType((current) => current === value ? "" : value);
     setStatus("OPEN");
+    clearQueueDrilldowns();
   };
 
   return (
@@ -242,7 +259,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
           </div>
           <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
             <span className="flex items-center gap-1.5 text-[10px] text-slate-400"><Filter size={12} /> Filters load automatically</span>
-            <button type="button" onClick={() => { setFromDate(localDate(thirtyDaysAgo)); setToDate(localDate(today)); setSeverity(""); setStatus(""); setAssignedToId(""); setExceptionType(""); }} className="text-[11px] font-semibold text-blue-700 hover:text-blue-900">Reset filters</button>
+            <button type="button" onClick={() => { setFromDate(localDate(thirtyDaysAgo)); setToDate(localDate(today)); setSeverity(""); setStatus(""); setAssignedToId(""); setExceptionType(""); clearQueueDrilldowns(); }} className="text-[11px] font-semibold text-blue-700 hover:text-blue-900">Reset filters</button>
           </div>
         </Section>
 
@@ -260,10 +277,10 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
         ) : dashboard ? (
           <>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <StatCard label="Open investigations" value={number(dashboard.overview.open_count + dashboard.overview.in_review_count)} detail={`${number(dashboard.overview.in_review_count)} currently in review`} icon={Search} />
-              <StatCard label="SLA breached" value={number(dashboard.overview.sla_breached_open_count)} detail="Open cases beyond severity SLA" icon={Clock3} tone={dashboard.overview.sla_breached_open_count ? "danger" : "success"} />
-              <StatCard label="Unassigned" value={number(dashboard.overview.unassigned_open_count)} detail="Open investigations without an owner" icon={Users} tone={dashboard.overview.unassigned_open_count ? "warning" : "normal"} />
-              <StatCard label="Source missing" value={number(dashboard.overview.source_missing_open_count)} detail="Still open; absent in latest detection" icon={AlertTriangle} tone={dashboard.overview.source_missing_open_count ? "warning" : "normal"} />
+              <StatCard label="Open investigations" value={number(dashboard.overview.open_count + dashboard.overview.in_review_count)} detail="Click to inspect open and in-review cases" icon={Search} selected={status === "OPEN" && !slaOverdueOnly && !unassignedOnly && !sourceMissingOnly} onClick={() => { setStatus("OPEN"); clearQueueDrilldowns(); }} />
+              <StatCard label="SLA breached" value={number(dashboard.overview.sla_breached_open_count)} detail="Click to inspect overdue open cases" icon={Clock3} tone={dashboard.overview.sla_breached_open_count ? "danger" : "success"} selected={slaOverdueOnly} onClick={() => { setStatus("OPEN"); setSlaOverdueOnly(true); setUnassignedOnly(false); setSourceMissingOnly(false); }} />
+              <StatCard label="Unassigned" value={number(dashboard.overview.unassigned_open_count)} detail="Click to inspect cases without an owner" icon={Users} tone={dashboard.overview.unassigned_open_count ? "warning" : "normal"} selected={unassignedOnly} onClick={() => { setStatus("OPEN"); setUnassignedOnly(true); setSlaOverdueOnly(false); setSourceMissingOnly(false); }} />
+              <StatCard label="Source missing" value={number(dashboard.overview.source_missing_open_count)} detail="Click to inspect cases absent in latest detection" icon={AlertTriangle} tone={dashboard.overview.source_missing_open_count ? "warning" : "normal"} selected={sourceMissingOnly} onClick={() => { setStatus("OPEN"); setSourceMissingOnly(true); setSlaOverdueOnly(false); setUnassignedOnly(false); }} />
             </div>
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -287,7 +304,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
               <Section title="SLA breaches by severity" description="Open cases that exceed their configured SLA">
                 <div className="space-y-2">
                   {severityOptions.map((item) => (
-                    <button key={item} type="button" onClick={() => { setSeverity(item); setStatus("OPEN"); }} className="flex w-full items-center justify-between rounded-lg border border-slate-100 px-3 py-2 text-left hover:border-slate-300 hover:bg-slate-50">
+                    <button key={item} type="button" onClick={() => { setSeverity(item); setStatus("OPEN"); clearQueueDrilldowns(); }} className="flex w-full items-center justify-between rounded-lg border border-slate-100 px-3 py-2 text-left hover:border-slate-300 hover:bg-slate-50">
                       <Badge variant={severityVariant(item)}>{item}</Badge>
                       <span className="text-sm font-bold tabular-nums text-slate-800">{number(dashboard.sla_breaches_by_severity[item] || 0)}</span>
                     </button>
