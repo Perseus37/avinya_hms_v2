@@ -8578,7 +8578,10 @@ def list_reconciliation_assignment_escalations(
                     "job_id": job_id,
                     "queue_status": task.get("status") if task else "UNKNOWN_OR_EXPIRED",
                     "completed_at": task.get("completed_at") if task else None,
-                    "delivery_result": task.get("result") if task else None,
+                    "delivery_result": (
+                        {"sent": task["result"].get("sent"), "error": task["result"].get("error")}
+                        if task and isinstance(task.get("result"), dict) else None
+                    ),
                     "queue_error": task.get("error") if task else None,
                 })
         candidates.append({
