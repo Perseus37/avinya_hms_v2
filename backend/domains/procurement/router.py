@@ -7057,25 +7057,60 @@ def list_persisted_reconciliation_exceptions(
     severity: Optional[str] = Query(default=None, pattern="^(CRITICAL|HIGH|MEDIUM|LOW)$"),
     assigned_to_id: Optional[int] = Query(default=None, ge=1),
     exception_type: Optional[str] = Query(default=None, max_length=64),
+    source_present: Optional[bool] = Query(default=None),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
     query = db.query(ProcurementReconciliationException)
-    if status_filter: query = query.filter(ProcurementReconciliationException.status == status_filter)
-    if severity: query = query.filter(ProcurementReconciliationException.severity == severity)
-    if assigned_to_id: query = query.filter(ProcurementReconciliationException.assigned_to_id == assigned_to_id)
-    if exception_type: query = query.filter(ProcurementReconciliationException.exception_type == exception_type)
-    rows = query.order_by(ProcurementReconciliationException.last_detected_at.desc(), ProcurementReconciliationException.id.desc()).limit(1000).all()
-    return {"total": len(rows), "exceptions": [{
-        "id": row.id, "exception_type": row.exception_type, "severity": row.severity,
-        "status": row.status, "reference_type": row.reference_type, "reference_id": row.reference_id,
-        "amount_paise": row.amount_paise, "matched_amount_paise": row.matched_amount_paise,
-        "unmatched_amount_paise": row.unmatched_amount_paise, "summary": row.summary,
-        "assigned_to_id": row.assigned_to_id, "first_detected_at": row.first_detected_at,
-        "last_detected_at": row.last_detected_at, "resolved_at": row.resolved_at,
-        "resolution_note": row.resolution_note, "detection_snapshot": row.detection_snapshot,
-    } for row in rows]}
+    if status_filter:
+        query = query.filter(ProcurementReconciliationException.status == status_filter)
+    if severity:
+        query = query.filter(ProcurementReconciliationException.severity == severity)
+    if assigned_to_id:
+        query = query.filter(ProcurementReconciliationException.assigned_to_id == assigned_to_id)
+    if exception_type:
+        query = query.filter(ProcurementReconciliationException.exception_type == exception_type)
+    if source_present is not None:
+        query = query.filter(ProcurementReconciliationException.source_present == source_present)
+    rows = query.order_by(
+        ProcurementReconciliationException.last_detected_at.desc(),
+        ProcurementReconciliationException.id.desc(),
+    ).limit(1000).all()
+    now = datetime.now(timezone.utc)
+    sla_hours = {"CRITICAL": 4, "HIGH": 24, "MEDIUM": 72, "LOW": 168}
 
+    def age_hours(row):
+        detected = row.first_detected_at
+        if detected.tzinfo is None:
+            detected = detected.replace(tzinfo=timezone.utc)
+        return max(int((now - detected).total_seconds() // 3600), 0)
+
+    open_rows = [row for row in rows if row.status in ("OPEN", "IN_REVIEW")]
+    overdue_rows = [
+        row for row in open_rows
+        if age_hours(row) > sla_hours.get(row.severity, 168)
+    ]
+    return {
+        "total": len(rows),
+        "sla_summary": {
+            "open_or_in_review": len(open_rows),
+            "sla_overdue": len(overdue_rows),
+            "unassigned_open": sum(1 for row in open_rows if row.assigned_to_id is None),
+            "missing_from_latest_detection": sum(1 for row in rows if not row.source_present),
+        },
+        "exceptions": [{
+            "id": row.id, "exception_type": row.exception_type, "severity": row.severity,
+            "status": row.status, "reference_type": row.reference_type, "reference_id": row.reference_id,
+            "source_present": row.source_present, "missed_refresh_count": row.missed_refresh_count,
+            "age_hours": age_hours(row), "sla_hours": sla_hours.get(row.severity, 168),
+            "sla_overdue": row.status in ("OPEN", "IN_REVIEW") and age_hours(row) > sla_hours.get(row.severity, 168),
+            "amount_paise": row.amount_paise, "matched_amount_paise": row.matched_amount_paise,
+            "unmatched_amount_paise": row.unmatched_amount_paise, "summary": row.summary,
+            "assigned_to_id": row.assigned_to_id, "first_detected_at": row.first_detected_at,
+            "last_detected_at": row.last_detected_at, "resolved_at": row.resolved_at,
+            "resolution_note": row.resolution_note, "detection_snapshot": row.detection_snapshot,
+        } for row in rows],
+    }
 
 @router.patch("/reconciliation/exceptions/{exception_id}/assignment")
 def assign_reconciliation_exception(
