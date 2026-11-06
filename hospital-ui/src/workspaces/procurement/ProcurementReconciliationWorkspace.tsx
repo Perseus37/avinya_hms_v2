@@ -872,7 +872,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                     </div>
                   </section>
                 )}
-                {selectedException.status !== "RESOLVED" && selectedException.status !== "DISMISSED" && <section className="rounded-xl border border-slate-200 p-3">
+                {selectedException.status !== "RESOLVED" && selectedException.status !== "DISMISSED" && selectedException.resolution_review_status !== "PENDING" && <section className="rounded-xl border border-slate-200 p-3">
                   <h3 className="text-xs font-bold">Reviewer action</h3><p className="mt-1 text-[10px] text-slate-500">Resolution and dismissal require a reason of at least 10 characters. Finance approval is enforced by the server.</p>
                   <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_2fr]">
                     <select aria-label="New exception status" value={statusChoice} onChange={(event) => setStatusChoice(event.target.value as ReconciliationStatus)} disabled={!hasPermission("finance.approve_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs">
