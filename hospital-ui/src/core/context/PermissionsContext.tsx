@@ -4,6 +4,7 @@ import { useAuth } from "./AuthContext";
 
 export type RoleCode =
   | "HOSPITAL_ADMIN"
+  | "FINANCE_MANAGER"
   | "ATTENDING_PHYSICIAN"
   | "FRONT_DESK"
   | "ADT_OFFICER"
@@ -60,6 +61,15 @@ export interface RoleDefinition {
 }
 
 export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
+  FINANCE_MANAGER: {
+    code: "FINANCE_MANAGER",
+    label: "Finance Manager",
+    badge: "Finance Governance",
+    description: "Owns reconciliation governance, severity SLA policy versions, and financial control review.",
+    defaultWorkspace: "procurement-reconciliation",
+    allowedWorkspaces: ["procurement-reconciliation", "my-assigned-investigations"],
+    permissions: ["finance.view_reconciliation", "finance.manage_sla_policies"],
+  },
   HOSPITAL_ADMIN: {
     code: "HOSPITAL_ADMIN",
     label: "Hospital Administrator",
@@ -186,6 +196,7 @@ export function resolveRoleFromUser(user: UserProfile | null): RoleCode {
   if (user.is_superuser) return "HOSPITAL_ADMIN";
   const roleCodes = (user.roles || []).map((r) => (r.code || "").toUpperCase());
   if (roleCodes.some((c) => c.includes("ADMIN") || c.includes("DIRECTOR"))) return "HOSPITAL_ADMIN";
+  if (roleCodes.some((c) => c.includes("FINANCE_MANAGER"))) return "FINANCE_MANAGER";
   if (roleCodes.some((c) => c.includes("DOCTOR") || c.includes("PHYSICIAN") || c.includes("CLINICIAN"))) return "ATTENDING_PHYSICIAN";
   if (roleCodes.some((c) => c.includes("TRIAGE") || c.includes("EMERGENCY"))) return "TRIAGE_NURSE";
   if (roleCodes.some((c) => c.includes("NURSE") || c.includes("SISTER"))) return "WARD_NURSE";
