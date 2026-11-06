@@ -3070,7 +3070,7 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
         actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
         row = ProcurementReconciliationException(
             fingerprint="TEST_EXCEPTION:BANK_STATEMENT_LINE:987654",
-            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="OPEN",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="MEDIUM", status="OPEN",
             reference_type="BANK_STATEMENT_LINE", reference_id=987654,
             amount_paise=5000, matched_amount_paise=0, unmatched_amount_paise=5000,
             summary="Test unmatched bank debit.",
@@ -3152,12 +3152,68 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
 
     queue = client.get(
         "/v1/api/procurement/reconciliation/exceptions/queue",
-        headers=superuser_headers, params={"status": "RESOLVED", "severity": "HIGH", "source_present": "false"},
+        headers=superuser_headers, params={"status": "RESOLVED", "severity": "MEDIUM", "source_present": "false"},
     )
     assert queue.status_code == 200, queue.text
     assert any(item["id"] == exception_id and item["source_present"] is False for item in queue.json()["exceptions"])
     assert "sla_overdue" in queue.json()["sla_summary"]
 
+
+
+def test_high_risk_reconciliation_resolution_requires_independent_review(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        row = ProcurementReconciliationException(
+            fingerprint="TEST_EXCEPTION:HIGH_RISK_REVIEW:987699",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="IN_REVIEW",
+            reference_type="BANK_STATEMENT_LINE", reference_id=987699,
+            amount_paise=5000, matched_amount_paise=0, unmatched_amount_paise=5000,
+            summary="High-risk resolution review test.",
+            detection_snapshot={},
+        )
+        db.add(row)
+        db.commit()
+        exception_id = row.id
+
+    guidance = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/resolution-guidance",
+        headers=superuser_headers,
+    )
+    assert guidance.status_code == 200, guidance.text
+    assert guidance.json()["independent_review_required"] is True
+
+    submitted = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/status",
+        headers=superuser_headers,
+        json={
+            "status": "RESOLVED",
+            "note": "Supporting bank evidence has been checked and documented.",
+            "root_cause_code": "REFERENCE_MISMATCH",
+            "resolution_checklist": {
+                "bank_statement_verified": True,
+                "bank_account_and_period_confirmed": True,
+                "payment_or_expense_traced": True,
+                "supporting_evidence_reviewed": True,
+            },
+        },
+    )
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["status"] == "IN_REVIEW"
+    assert submitted.json()["resolution_review_status"] == "PENDING"
+
+    self_review = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/resolution-review",
+        headers=superuser_headers,
+        json={"decision": "APPROVE", "note": "Reviewed and approved independently."},
+    )
+    assert self_review.status_code == 409, self_review.text
 
 def test_reconciliation_assignee_directory_is_branch_scoped_and_active_only(
     client, superuser_headers, multi_tenant_env
