@@ -27,6 +27,7 @@ import {
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { usePermissions } from "../../core/context/PermissionsContext";
+import { useAuth } from "../../core/context/AuthContext";
 
 const severityOptions: ReconciliationSeverity[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 const statusOptions: ReconciliationStatus[] = ["OPEN", "IN_REVIEW", "RESOLVED", "DISMISSED"];
@@ -102,6 +103,7 @@ const Section: React.FC<{ title: string; description?: string; action?: React.Re
 
 export const ProcurementReconciliationWorkspace: React.FC = () => {
   const { hasPermission } = usePermissions();
+  const { user } = useAuth();
   const today = useMemo(() => new Date(), []);
   const thirtyDaysAgo = useMemo(() => {
     const value = new Date();
@@ -120,6 +122,8 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [openOnly, setOpenOnly] = useState(false);
   const [dashboard, setDashboard] = useState<ReconciliationDashboard | null>(null);
   const [queue, setQueue] = useState<ReconciliationQueue | null>(null);
+  const [escalations, setEscalations] = useState<Awaited<ReturnType<typeof reconciliationApi.getAssignmentEscalations>> | null>(null);
+  const [assignmentResponseReason, setAssignmentResponseReason] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
@@ -210,6 +214,12 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
       ]);
       setDashboard(summary);
       setQueue(worklist);
+      try {
+        const escalationQueue = await reconciliationApi.getAssignmentEscalations(100);
+        setEscalations(escalationQueue);
+      } catch {
+        setEscalations(null);
+      }
       setLastLoadedAt(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load procurement reconciliation data.");
@@ -231,7 +241,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     setAssignmentRecommendations([]);
     setRecommendationsLoaded(false);
     setRecommendationsLoading(false);
-    setAssignmentNote(""); setInvestigationNote(""); setStatusChoice(item.status === "IN_REVIEW" ? "OPEN" : "IN_REVIEW"); setStatusNote("");
+    setAssignmentNote(""); setAssignmentResponseReason(""); setInvestigationNote(""); setStatusChoice(item.status === "IN_REVIEW" ? "OPEN" : "IN_REVIEW"); setStatusNote("");
     setHistoryLoading(true);
     try { const result = await reconciliationApi.getExceptionHistory(item.id); setHistory(result.events || []); }
     catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to load investigation history."); }
@@ -283,6 +293,45 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to save assignment."); }
     finally { setActionLoading(false); }
   };
+  const respondToSelectedAssignment = async (decision: "ACCEPT" | "REJECT") => {
+    if (!selectedException) return;
+    if (decision === "REJECT" && assignmentResponseReason.trim().length < 10) {
+      setDetailError("Please provide a rejection reason of at least 10 characters.");
+      return;
+    }
+    setActionLoading(true); setDetailError(""); setDetailMessage("");
+    try {
+      await reconciliationApi.respondToAssignment(selectedException.id, {
+        decision,
+        reason: assignmentResponseReason.trim() || undefined,
+      });
+      setDetailMessage(decision === "ACCEPT" ? "Assignment accepted." : "Assignment rejected and recorded for manager review.");
+      setAssignmentResponseReason("");
+      await refreshSelectedHistory(selectedException.id);
+      void load();
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : "Unable to record assignment response.");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+  const openEscalation = async (exceptionId: number) => {
+    const existing = queue?.exceptions.find((item) => item.id === exceptionId);
+    if (existing) {
+      await openException(existing);
+      return;
+    }
+    try {
+      const result = await reconciliationApi.getQueue({ open_only: true });
+      setQueue(result);
+      const match = result.exceptions.find((item) => item.id === exceptionId);
+      if (match) await openException(match);
+      else setError("This escalation candidate is no longer in the active worklist. Reload the queue.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to open escalation candidate.");
+    }
+  };
+
   const saveExceptionStatus = async () => {
     if (!selectedException) return;
     if ((statusChoice === "RESOLVED" || statusChoice === "DISMISSED") && statusNote.trim().length < 10) { setDetailError("Resolution and dismissal notes must contain at least 10 characters."); return; }
@@ -365,6 +414,24 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
             Possible duplicate-payment candidates are investigation signals only and are excluded from monetary totals.
           </p>
         </div>
+
+        {escalations && escalations.total > 0 && (
+          <section className="rounded-xl border border-rose-200 bg-rose-50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div><div className="flex items-center gap-2 text-sm font-bold text-rose-900"><AlertTriangle size={16} /> Unacknowledged assignments requiring escalation</div>
+                <p className="mt-1 text-[11px] text-rose-800">{escalations.total} assignment{escalations.total === 1 ? "" : "s"} exceeded the acknowledgement target. These are escalation candidates, not automatically reassigned cases.</p></div>
+              <Badge variant="danger">{escalations.total} overdue</Badge>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              {escalations.items.slice(0, 6).map((item) => (
+                <button key={item.exception_id} type="button" onClick={() => void openEscalation(item.exception_id)} className="flex items-center justify-between gap-3 rounded-lg border border-rose-200 bg-white px-3 py-2 text-left hover:bg-rose-100">
+                  <span><span className="block text-xs font-semibold text-slate-800">#{item.exception_id} · {item.severity}</span><span className="block text-[10px] text-slate-500">Assigned to user #{item.assigned_to_id} · {hours(item.unacknowledged_hours)} unacknowledged</span></span>
+                  <span className="shrink-0 text-[10px] font-semibold text-rose-700">Review <span aria-hidden="true">→</span></span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
 
         <Section title="Dashboard filters" description="Date filters apply to first detection in UTC. Worklist filters apply to the current exception queue.">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
@@ -643,6 +710,22 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                   ) : <p className="mt-3 text-[10px] text-slate-400">No active branch staff were available for recommendation.</p>)}
                   <p className="mt-3 text-[9px] leading-relaxed text-slate-400">Suggestions are not assignments. Workload uses all persisted investigations in this branch, independent of dashboard date filters. Historical resolution statistics use resolved records still attributed to each assignee. Authorized staff must confirm every assignment.</p>
                 </section>
+                {user && selectedException.assigned_to_id === user.id && selectedException.status !== "RESOLVED" && selectedException.status !== "DISMISSED" && (() => {
+                  const latestAssignment = [...history].reverse().find((event) => event.event_type === "ASSIGNED" && event.new_assignee_id === user.id);
+                  const alreadyResponded = latestAssignment ? history.some((event) => event.id > latestAssignment.id && (event.event_type === "ASSIGNMENT_ACCEPTED" || event.event_type === "ASSIGNMENT_REJECTED")) : false;
+                  const acknowledgement = latestAssignment ? (latestAssignment.event_metadata?.acknowledgement_status as string | undefined) || "PENDING" : "PENDING";
+                  return latestAssignment && !alreadyResponded && acknowledgement === "PENDING" ? (
+                    <section className="rounded-xl border border-blue-200 bg-blue-50 p-3">
+                      <h3 className="text-xs font-bold text-blue-900">Your assignment requires acknowledgement</h3>
+                      <p className="mt-1 text-[10px] text-blue-800">Accept responsibility for this investigation, or reject it with a reason so a manager can reassign it.</p>
+                      <textarea value={assignmentResponseReason} onChange={(event) => setAssignmentResponseReason(event.target.value)} rows={2} maxLength={1000} placeholder="Reason (required when rejecting)" disabled={actionLoading} className="mt-2 w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs" />
+                      <div className="mt-2 flex justify-end gap-2">
+                        <Button size="sm" variant="outline" onClick={() => void respondToSelectedAssignment("REJECT")} disabled={actionLoading || assignmentResponseReason.trim().length < 10}>Reject assignment</Button>
+                        <Button size="sm" onClick={() => void respondToSelectedAssignment("ACCEPT")} disabled={actionLoading}>Accept assignment</Button>
+                      </div>
+                    </section>
+                  ) : null;
+                })()}
                 <section className="rounded-xl border border-slate-200 p-3">
                   <h3 className="text-xs font-bold">Assignment</h3>
                   <p className="mt-1 text-[10px] text-slate-500">Search active staff in this hospital branch. Results include their branch roles.</p>
