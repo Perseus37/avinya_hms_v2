@@ -363,3 +363,51 @@ export interface ReconciliationSlaPolicyEvent {
   occurred_at: string;
 }
 
+
+
+export interface ReconciliationEscalationPolicy {
+  id: number;
+  version: number;
+  status: "DRAFT" | "PUBLISHED" | "RETIRED";
+  response_targets_hours: Record<ReconciliationSeverity, number>;
+  escalation_levels: Array<{ level: number; after_hours: number; notify_assignee: boolean; notify_assigning_manager: boolean; notify_finance_managers: boolean }>;
+  notification_preferences: { email_enabled: boolean; assignee: boolean; assigning_manager: boolean; finance_managers: boolean };
+  change_reason: string;
+  effective_from: string;
+  effective_to: string | null;
+  created_at: string;
+  published_at: string | null;
+}
+export interface ReconciliationGovernanceReport {
+  id: number;
+  period_start: string;
+  period_end: string;
+  snapshot: Record<string, unknown>;
+  generated_by_id: number;
+  created_at: string;
+}
+export interface ReconciliationAuditExport {
+  id: number;
+  exception_id: number | null;
+  export_type: string;
+  status: "GENERATED" | "FAILED" | "EXPIRED";
+  file_sha256: string | null;
+  file_size_bytes: number | null;
+  filter_snapshot: Record<string, unknown>;
+  actor_user_id: number;
+  actor_email: string;
+  requested_at: string;
+}
+export const reconciliationGovernanceApi = {
+  escalationPolicies: () => apiClient<{ active_policy_id: number | null; active_policy_version: number | null; baseline_response_targets_hours: Record<ReconciliationSeverity, number>; items: ReconciliationEscalationPolicy[] }>("/api/procurement/reconciliation/escalation-policies"),
+  createEscalationPolicy: (payload: { response_targets_hours: Record<ReconciliationSeverity, number>; escalation_levels: Array<{ after_hours: number; notify_assignee: boolean; notify_assigning_manager: boolean; notify_finance_managers: boolean }>; notification_preferences: { email_enabled: boolean; assignee: boolean; assigning_manager: boolean; finance_managers: boolean }; change_reason: string }) =>
+    apiClient<{ id: number; version: number; status: string }>("/api/procurement/reconciliation/escalation-policies", { method: "POST", body: JSON.stringify(payload) }),
+  publishEscalationPolicy: (id: number) =>
+    apiClient<{ id: number; version: number; status: string }>("/api/procurement/reconciliation/escalation-policies/" + id + "/publish", { method: "POST", body: JSON.stringify({}) }),
+  closureQuality: () => apiClient<Record<string, unknown>>("/api/procurement/reconciliation/governance/closure-quality"),
+  dashboard: () => apiClient<Record<string, unknown>>("/api/procurement/reconciliation/governance/dashboard"),
+  createMonthlyReport: (period_start: string, period_end: string) =>
+    apiClient<ReconciliationGovernanceReport>("/api/procurement/reconciliation/governance/monthly-reports", { method: "POST", body: JSON.stringify({ period_start, period_end }) }),
+  monthlyReports: () => apiClient<{ items: ReconciliationGovernanceReport[] }>("/api/procurement/reconciliation/governance/monthly-reports"),
+  auditExports: () => apiClient<{ items: ReconciliationAuditExport[] }>("/api/procurement/reconciliation/audit-exports"),
+};
