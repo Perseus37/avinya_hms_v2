@@ -1229,6 +1229,8 @@ class ProcurementReconciliationException(Base):
         UniqueConstraint("fingerprint", name="uq_proc_recon_exception_fingerprint"),
         CheckConstraint("status IN ('OPEN','IN_REVIEW','RESOLVED','DISMISSED')", name="ck_proc_recon_exception_status"),
         CheckConstraint("severity IN ('CRITICAL','HIGH','MEDIUM','LOW')", name="ck_proc_recon_exception_severity"),
+        CheckConstraint("resolution_review_status IN ('NOT_REQUIRED','PENDING','APPROVED','REJECTED')", name="ck_proc_recon_resolution_review_status"),
+        CheckConstraint("reopen_count >= 0", name="ck_proc_recon_exception_reopen_count_nonneg"),
         Index("ix_proc_recon_exception_queue", "status", "severity", "last_detected_at"),
         Index("ix_proc_recon_exception_assignee", "assigned_to_id", "status"),
         Index("ix_proc_recon_exception_reference", "reference_type", "reference_id"),
