@@ -8592,7 +8592,7 @@ def pause_reconciliation_exception_sla(
     exception_id: int,
     payload: dict,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RequirePermission("finance:approve")),
+    current_user: User = Depends(RequirePermission("finance:sla:manage")),
 ):
     row = db.query(ProcurementReconciliationException).filter(
         ProcurementReconciliationException.id == exception_id
@@ -8638,7 +8638,7 @@ def resume_reconciliation_exception_sla(
     exception_id: int,
     payload: dict,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RequirePermission("finance:approve")),
+    current_user: User = Depends(RequirePermission("finance:sla:manage")),
 ):
     row = db.query(ProcurementReconciliationException).filter(
         ProcurementReconciliationException.id == exception_id
