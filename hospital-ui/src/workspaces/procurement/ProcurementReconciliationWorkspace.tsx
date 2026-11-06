@@ -112,6 +112,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [slaOverdueOnly, setSlaOverdueOnly] = useState(false);
   const [unassignedOnly, setUnassignedOnly] = useState(false);
   const [sourceMissingOnly, setSourceMissingOnly] = useState(false);
+  const [openOnly, setOpenOnly] = useState(false);
   const [dashboard, setDashboard] = useState<ReconciliationDashboard | null>(null);
   const [queue, setQueue] = useState<ReconciliationQueue | null>(null);
   const [loading, setLoading] = useState(true);
@@ -134,12 +135,14 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     sla_overdue: slaOverdueOnly ? true : undefined,
     unassigned_only: unassignedOnly ? true : undefined,
     source_present: sourceMissingOnly ? false : undefined,
-  }), [severity, status, assignedToId, exceptionType, slaOverdueOnly, unassignedOnly, sourceMissingOnly]);
+    open_only: openOnly ? true : undefined,
+  }), [severity, status, assignedToId, exceptionType, slaOverdueOnly, unassignedOnly, sourceMissingOnly, openOnly]);
 
   const clearQueueDrilldowns = () => {
     setSlaOverdueOnly(false);
     setUnassignedOnly(false);
     setSourceMissingOnly(false);
+    setOpenOnly(false);
   };
 
   const load = useCallback(async () => {
@@ -183,7 +186,8 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
 
   const selectExceptionType = (value: string) => {
     setExceptionType((current) => current === value ? "" : value);
-    setStatus("OPEN");
+    setStatus("");
+    setOpenOnly(true);
     clearQueueDrilldowns();
   };
 
@@ -240,7 +244,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
             </label>
             <label className="text-[11px] font-semibold text-slate-600">
               Status
-              <select value={status} onChange={(event) => setStatus(event.target.value as ReconciliationStatus | "")} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-800">
+              <select value={status} onChange={(event) => { setStatus(event.target.value as ReconciliationStatus | ""); setOpenOnly(false); clearQueueDrilldowns(); }} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-800">
                 <option value="">All statuses</option>
                 {statusOptions.map((item) => <option key={item} value={item}>{titleCase(item)}</option>)}
               </select>
@@ -277,10 +281,10 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
         ) : dashboard ? (
           <>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <StatCard label="Open investigations" value={number(dashboard.overview.open_count + dashboard.overview.in_review_count)} detail="Click to inspect open and in-review cases" icon={Search} selected={status === "OPEN" && !slaOverdueOnly && !unassignedOnly && !sourceMissingOnly} onClick={() => { setStatus("OPEN"); clearQueueDrilldowns(); }} />
-              <StatCard label="SLA breached" value={number(dashboard.overview.sla_breached_open_count)} detail="Click to inspect overdue open cases" icon={Clock3} tone={dashboard.overview.sla_breached_open_count ? "danger" : "success"} selected={slaOverdueOnly} onClick={() => { setStatus("OPEN"); setSlaOverdueOnly(true); setUnassignedOnly(false); setSourceMissingOnly(false); }} />
-              <StatCard label="Unassigned" value={number(dashboard.overview.unassigned_open_count)} detail="Click to inspect cases without an owner" icon={Users} tone={dashboard.overview.unassigned_open_count ? "warning" : "normal"} selected={unassignedOnly} onClick={() => { setStatus("OPEN"); setUnassignedOnly(true); setSlaOverdueOnly(false); setSourceMissingOnly(false); }} />
-              <StatCard label="Source missing" value={number(dashboard.overview.source_missing_open_count)} detail="Click to inspect cases absent in latest detection" icon={AlertTriangle} tone={dashboard.overview.source_missing_open_count ? "warning" : "normal"} selected={sourceMissingOnly} onClick={() => { setStatus("OPEN"); setSourceMissingOnly(true); setSlaOverdueOnly(false); setUnassignedOnly(false); }} />
+              <StatCard label="Open investigations" value={number(dashboard.overview.open_count + dashboard.overview.in_review_count)} detail="Click to inspect open and in-review cases" icon={Search} selected={openOnly && !slaOverdueOnly && !unassignedOnly && !sourceMissingOnly} onClick={() => { setStatus(""); setOpenOnly(true); clearQueueDrilldowns(); }} />
+              <StatCard label="SLA breached" value={number(dashboard.overview.sla_breached_open_count)} detail="Click to inspect overdue open cases" icon={Clock3} tone={dashboard.overview.sla_breached_open_count ? "danger" : "success"} selected={slaOverdueOnly} onClick={() => { setStatus(""); setOpenOnly(true); setSlaOverdueOnly(true); setUnassignedOnly(false); setSourceMissingOnly(false); }} />
+              <StatCard label="Unassigned" value={number(dashboard.overview.unassigned_open_count)} detail="Click to inspect cases without an owner" icon={Users} tone={dashboard.overview.unassigned_open_count ? "warning" : "normal"} selected={unassignedOnly} onClick={() => { setStatus(""); setOpenOnly(true); setUnassignedOnly(true); setSlaOverdueOnly(false); setSourceMissingOnly(false); }} />
+              <StatCard label="Source missing" value={number(dashboard.overview.source_missing_open_count)} detail="Click to inspect cases absent in latest detection" icon={AlertTriangle} tone={dashboard.overview.source_missing_open_count ? "warning" : "normal"} selected={sourceMissingOnly} onClick={() => { setStatus(""); setOpenOnly(true); setSourceMissingOnly(true); setSlaOverdueOnly(false); setUnassignedOnly(false); }} />
             </div>
 
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -304,7 +308,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
               <Section title="SLA breaches by severity" description="Open cases that exceed their configured SLA">
                 <div className="space-y-2">
                   {severityOptions.map((item) => (
-                    <button key={item} type="button" onClick={() => { setSeverity(item); setStatus("OPEN"); clearQueueDrilldowns(); }} className="flex w-full items-center justify-between rounded-lg border border-slate-100 px-3 py-2 text-left hover:border-slate-300 hover:bg-slate-50">
+                    <button key={item} type="button" onClick={() => { setSeverity(item); setStatus(""); setOpenOnly(true); clearQueueDrilldowns(); }} className="flex w-full items-center justify-between rounded-lg border border-slate-100 px-3 py-2 text-left hover:border-slate-300 hover:bg-slate-50">
                       <Badge variant={severityVariant(item)}>{item}</Badge>
                       <span className="text-sm font-bold tabular-nums text-slate-800">{number(dashboard.sla_breaches_by_severity[item] || 0)}</span>
                     </button>
