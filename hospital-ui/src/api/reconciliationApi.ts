@@ -1,4 +1,4 @@
-import { apiClient, getAuthToken, getTenantSlug } from "./client";
+import { apiClient, apiClientBlob } from "./client";
 
 export type ReconciliationStatus = "OPEN" | "IN_REVIEW" | "RESOLVED" | "DISMISSED";
 export type ReconciliationSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
@@ -183,21 +183,8 @@ export const reconciliationApi = {
       method: "POST",
       body: payload,
     }),
-  downloadEvidence: async (id: number, evidenceId: number) => {
-    const token = getAuthToken();
-    const tenant = getTenantSlug();
-    const response = await fetch("/api/procurement/reconciliation/exceptions/" + id + "/evidence/" + evidenceId + "/download", {
-      headers: {
-        ...(token ? { Authorization: "Bearer " + token } : {}),
-        "X-Hospital-Subdomain": tenant,
-      },
-    });
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({ detail: response.statusText }));
-      throw new Error(body.detail || "Unable to download evidence.");
-    }
-    return response.blob();
-  },
+  downloadEvidence: (id: number, evidenceId: number) =>
+    apiClientBlob("/api/procurement/reconciliation/exceptions/" + id + "/evidence/" + evidenceId + "/download"),
   assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
     apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus; acknowledgement_status: string; notification_status?: "QUEUED" | "QUEUE_UNAVAILABLE" | "EMAIL_UNAVAILABLE" | "NOT_REQUIRED" }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: JSON.stringify(payload) }),
   getResolutionGuidance: (id: number) =>
