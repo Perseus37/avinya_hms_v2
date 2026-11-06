@@ -80,6 +80,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
       "diagnostics",
       "billing",
       "procurement-reconciliation",
+      "my-assigned-investigations",
       "infection-control",
       "biomedical",
       "admin",
@@ -128,7 +129,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "Registration",
     description: "Registers patients, looks up MPI, books OPD appointments, issues clinic queue tokens, and collects consultation fees.",
     defaultWorkspace: "registration",
-    allowedWorkspaces: ["registration", "patient-record", "opd-queue", "billing"],
+    allowedWorkspaces: ["registration", "patient-record", "opd-queue", "billing", "my-assigned-investigations"],
     permissions: ["patient.register", "patient.view_mpi", "patient.edit_demographics", "appointment.book", "token.issue", "token.call_queue", "billing.view_counter", "billing.collect_fee"],
   },
   ATTENDING_PHYSICIAN: {
@@ -137,7 +138,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "Doctor Cockpit",
     description: "Access to Doctor Cockpit, longitudinal EMR, CPOE electronic prescription, CDS safety alerts, and clinical discharge signing.",
     defaultWorkspace: "doctor",
-    allowedWorkspaces: ["doctor", "surgery", "blood-bank", "infection-control", "patient-record", "opd-queue", "diagnostics", "adt", "registration"],
+    allowedWorkspaces: ["doctor", "surgery", "blood-bank", "infection-control", "patient-record", "opd-queue", "diagnostics", "adt", "registration", "my-assigned-investigations"],
     permissions: ["doctor.cockpit_view", "order.cpoe_prescribe", "order.order_lab", "clinical.sign_notes", "discharge.clinical_sign", "patient.view_mpi", "bed.view_matrix"],
   },
   ADT_OFFICER: {
@@ -146,7 +147,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "Bed Allocation",
     description: "Manages 500+ campus bed hierarchy, allocates admissions, executes bed transfers, and manages housekeeping status.",
     defaultWorkspace: "adt",
-    allowedWorkspaces: ["adt", "patient-record", "registration", "billing"],
+    allowedWorkspaces: ["adt", "patient-record", "registration", "billing", "my-assigned-investigations"],
     permissions: ["bed.view_matrix", "bed.allocate", "bed.transfer", "adt.confirm_admission", "patient.view_mpi", "billing.view_counter", "billing.tpa_approve"],
   },
   WARD_NURSE: {
@@ -155,7 +156,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "eMAR & Vitals",
     description: "Bed census matrix, eMAR medication administration schedule, BCMA barcode validation, and NEWS2 vitals monitoring.",
     defaultWorkspace: "nursing",
-    allowedWorkspaces: ["nursing", "patient-record", "adt", "doctor"],
+    allowedWorkspaces: ["nursing", "patient-record", "adt", "doctor", "my-assigned-investigations"],
     permissions: ["nurse.view_station", "nurse.administer_emar", "nurse.record_vitals", "nurse.bcma_scan", "patient.view_mpi", "bed.view_matrix", "bed.transfer"],
   },
   TRIAGE_NURSE: {
@@ -164,7 +165,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "ED Triage",
     description: "Emergency Department intake, ESI 1-5 acuity triage, GCS calculator, Code Red resuscitation alert, and MLC intimation.",
     defaultWorkspace: "triage",
-    allowedWorkspaces: ["triage", "patient-record", "nursing", "registration"],
+    allowedWorkspaces: ["triage", "patient-record", "nursing", "registration", "my-assigned-investigations"],
     permissions: ["triage.view_board", "triage.assign_esi", "triage.code_red", "patient.register", "patient.view_mpi", "nurse.record_vitals"],
   },
   BILLING_CLERK: {
@@ -173,7 +174,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     badge: "Cashier Billing",
     description: "TPA insurance pre-authorization settlement, itemized folio charges, co-pay split, and tax invoice generation.",
     defaultWorkspace: "billing",
-    allowedWorkspaces: ["billing", "procurement-reconciliation", "patient-record", "registration", "adt"],
+    allowedWorkspaces: ["billing", "procurement-reconciliation", "patient-record", "registration", "adt", "my-assigned-investigations"],
     permissions: ["billing.view_counter", "billing.collect_fee", "billing.tpa_approve", "billing.override_discount", "finance.view_reconciliation", "finance.manage_reconciliation", "patient.view_mpi", "bed.view_matrix"],
   },
 };
