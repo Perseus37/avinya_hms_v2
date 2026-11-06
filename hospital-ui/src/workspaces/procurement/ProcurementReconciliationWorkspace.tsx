@@ -301,11 +301,16 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     }
     setActionLoading(true); setDetailError(""); setDetailMessage("");
     try {
-      await reconciliationApi.respondToAssignment(selectedException.id, {
+      const result = await reconciliationApi.respondToAssignment(selectedException.id, {
         decision,
         reason: assignmentResponseReason.trim() || undefined,
       });
-      setDetailMessage(decision === "ACCEPT" ? "Assignment accepted." : "Assignment rejected and recorded for manager review.");
+      if (decision === "REJECT") {
+        const updated = { ...selectedException, assigned_to_id: result.assigned_to_id };
+        setSelectedException(updated);
+        setQueue((current) => current ? { ...current, exceptions: current.exceptions.map((row) => row.id === updated.id ? updated : row) } : current);
+      }
+      setDetailMessage(decision === "ACCEPT" ? "Assignment accepted." : "Assignment rejected and returned to the manager's unassigned queue.");
       setAssignmentResponseReason("");
       await refreshSelectedHistory(selectedException.id);
       void load();
