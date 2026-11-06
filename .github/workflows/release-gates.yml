@@ -169,9 +169,9 @@ jobs:
 
       - name: Validate Prometheus and Alertmanager configurations
         run: |
-          docker run --rm -v "$(pwd)/deployments:/deployments" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 promtool check config /deployments/prometheus.yml
-          docker run --rm -v "$(pwd)/deployments:/deployments" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 promtool check rules /deployments/prometheus-alerts.yml
-          docker run --rm -v "$(pwd)/deployments:/deployments" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 amtool check-config /deployments/alertmanager.yml
+          docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check config /deployments/prometheus.yml
+          docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check rules /deployments/prometheus-alerts.yml
+          docker run --rm --entrypoint /bin/amtool -v "$(pwd)/deployments:/deployments" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /deployments/alertmanager.yml
 
   production-image:
     name: Build production API image
