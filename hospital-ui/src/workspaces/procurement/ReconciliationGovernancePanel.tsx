@@ -7,6 +7,7 @@ const button = "rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-whi
 
 export const ReconciliationGovernancePanel: React.FC = () => {
   const { hasPermission } = usePermissions();
+  const canRead = hasPermission("finance.view_reconciliation");
   const canManage = hasPermission("finance.manage_sla_policies");
   const [policy, setPolicy] = useState<ReconciliationEscalationPolicy | null>(null);
   const [draftId, setDraftId] = useState<number | null>(null);
@@ -26,6 +27,7 @@ export const ReconciliationGovernancePanel: React.FC = () => {
   const [message, setMessage] = useState("");
 
   const load = useCallback(async () => {
+    if (!canRead) return;
     setError("");
     try {
       const [policies, reportRows, exportRows, dash, closure] = await Promise.all([
@@ -44,9 +46,10 @@ export const ReconciliationGovernancePanel: React.FC = () => {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load reconciliation governance.");
     }
-  }, []);
+  }, [canRead]);
 
   useEffect(() => { void load(); }, [load]);
+  if (!canRead) return null;
 
   const savePolicy = async () => {
     setBusy(true); setError(""); setMessage("");
