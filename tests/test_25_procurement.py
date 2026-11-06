@@ -3137,3 +3137,79 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
     assert queue.status_code == 200, queue.text
     assert any(item["id"] == exception_id and item["source_present"] is False for item in queue.json()["exceptions"])
     assert "sla_overdue" in queue.json()["sla_summary"]
+
+
+def test_procurement_reconciliation_dashboard_aggregates_without_double_counting(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    now = datetime.now(timezone.utc)
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        open_debit = ProcurementReconciliationException(
+            fingerprint="DASHBOARD:UNMATCHED_BANK_DEBIT:10001",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="OPEN",
+            reference_type="BANK_STATEMENT_LINE", reference_id=10001,
+            amount_paise=9000, matched_amount_paise=2000, unmatched_amount_paise=7000,
+            summary="Unmatched debit dashboard test.",
+            detection_snapshot={"bank_account_ref": "TEST-ACCOUNT"},
+            first_detected_at=now - timedelta(days=2), last_detected_at=now - timedelta(days=1),
+        )
+        duplicate_candidate = ProcurementReconciliationException(
+            fingerprint="DASHBOARD:POSSIBLE_DUPLICATE_SUPPLIER_PAYMENT:10002",
+            exception_type="POSSIBLE_DUPLICATE_SUPPLIER_PAYMENT", severity="HIGH", status="OPEN",
+            reference_type="SUPPLIER_PAYMENT", reference_id=10002,
+            amount_paise=9000, matched_amount_paise=9000, unmatched_amount_paise=0,
+            summary="Possible duplicate is not a confirmed loss.",
+            detection_snapshot={"candidate_payment_ids": [10002, 10003]},
+        )
+        resolved = ProcurementReconciliationException(
+            fingerprint="DASHBOARD:UNCLASSIFIED_BANK_CREDIT:10004",
+            exception_type="UNCLASSIFIED_BANK_CREDIT", severity="LOW", status="RESOLVED",
+            reference_type="BANK_STATEMENT_LINE", reference_id=10004,
+            amount_paise=5000, matched_amount_paise=0, unmatched_amount_paise=5000,
+            summary="Resolved credit classification dashboard test.",
+            detection_snapshot={},
+            first_detected_at=now - timedelta(days=3), last_detected_at=now - timedelta(days=2),
+            resolved_at=now - timedelta(days=1), resolved_by_id=actor_id,
+        )
+        db.add_all([open_debit, duplicate_candidate, resolved])
+        db.commit()
+
+    response = client.get(
+        "/v1/api/procurement/analytics/reconciliation-dashboard",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["controls"]["read_only"] is True
+    assert payload["overview"]["open_count"] >= 2
+    assert payload["overview"]["resolved_count"] >= 1
+    assert payload["sla_breaches_by_severity"]["HIGH"] >= 1
+    debit = payload["investigation_amounts_by_exception_type"]["UNMATCHED_BANK_DEBIT"]
+    assert debit["investigation_amount_paise"] == 9000
+    assert debit["unmatched_amount_paise"] == 7000
+    assert "POSSIBLE_DUPLICATE_SUPPLIER_PAYMENT" not in payload["investigation_amounts_by_exception_type"]
+    assert payload["resolution_performance"]["median_resolution_hours"] is not None
+    assert any(row["opened_count"] >= 1 for row in payload["daily_trend"])
+
+    filtered = client.get(
+        "/v1/api/procurement/analytics/reconciliation-dashboard",
+        headers=superuser_headers,
+        params={"severity": "HIGH", "status": "OPEN"},
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["filters"]["severity"] == "HIGH"
+    assert filtered.json()["filters"]["status"] == "OPEN"
+
+    invalid = client.get(
+        "/v1/api/procurement/analytics/reconciliation-dashboard",
+        headers=superuser_headers,
+        params={"from_date": "2026-11-07", "to_date": "2026-11-01"},
+    )
+    assert invalid.status_code == 422, invalid.text
+
