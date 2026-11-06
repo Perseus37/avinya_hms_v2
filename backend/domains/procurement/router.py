@@ -6981,12 +6981,14 @@ def refresh_procurement_reconciliation_exceptions(
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("finance:write")),
 ):
-    """Snapshot current detections. Existing resolved/dismissed items are never silently reopened."""
+    """Snapshot current detections and mark absent source items without auto-resolving them."""
     live = get_procurement_reconciliation_exceptions(None, None, 0, db, current_user)
     now = datetime.now(timezone.utc)
-    created = updated = unchanged_terminal = 0
+    created = updated = unchanged_terminal = missing_marked = 0
+    seen_fingerprints = set()
     for item in live["exceptions"]:
         fingerprint = f'{item["exception_type"]}:{item["reference_type"]}:{item["reference_id"]}'
+        seen_fingerprints.add(fingerprint)
         row = db.query(ProcurementReconciliationException).filter(
             ProcurementReconciliationException.fingerprint == fingerprint
         ).with_for_update().one_or_none()
@@ -7004,14 +7006,19 @@ def refresh_procurement_reconciliation_exceptions(
                 unmatched_amount_paise=int(item.get("unmatched_amount_paise", 0)),
                 summary=item["description"], detection_snapshot=snapshot,
                 first_detected_at=now, last_detected_at=now,
+                source_present=True, missed_refresh_count=0,
             )
             db.add(row)
             db.flush()
-            _record_reconciliation_event(db, row, "DETECTED", current_user.id, event_metadata={"severity": item["severity"]})
+            _record_reconciliation_event(db, row, "DETECTED", current_user.id,
+                event_metadata={"severity": item["severity"]})
             created += 1
         elif row.status in ("RESOLVED", "DISMISSED"):
             unchanged_terminal += 1
         else:
+            was_missing = not row.source_present
+            row.source_present = True
+            row.missed_refresh_count = 0
             row.severity = item["severity"]
             row.amount_paise = int(item.get("amount_paise", 0))
             row.matched_amount_paise = int(item.get("matched_amount_paise", 0))
@@ -7019,15 +7026,30 @@ def refresh_procurement_reconciliation_exceptions(
             row.summary = item["description"]
             row.detection_snapshot = snapshot
             row.last_detected_at = now
-            _record_reconciliation_event(db, row, "UPDATED", current_user.id, event_metadata={"severity": item["severity"]})
+            _record_reconciliation_event(db, row,
+                "SOURCE_REAPPEARED" if was_missing else "UPDATED", current_user.id,
+                event_metadata={"severity": item["severity"]})
             updated += 1
+
+    # Only a completed full scan reaches this point. Absence is evidence of disappearance,
+    # not proof of resolution, so the reviewer still owns the terminal decision.
+    active_rows = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.source_present.is_(True)
+    ).with_for_update().all()
+    for row in active_rows:
+        if row.fingerprint not in seen_fingerprints:
+            row.source_present = False
+            row.missed_refresh_count = int(row.missed_refresh_count or 0) + 1
+            _record_reconciliation_event(db, row, "SOURCE_NOT_DETECTED", current_user.id,
+                event_metadata={"missed_refresh_count": row.missed_refresh_count})
+            missing_marked += 1
     db.commit()
     return {
         "detected": len(live["exceptions"]), "created": created, "updated": updated,
-        "terminal_items_not_reopened": unchanged_terminal, "refreshed_at": now,
-        "note": "Detection refresh is a snapshot operation; it does not resolve items that disappear from the live detector.",
+        "terminal_items_not_reopened": unchanged_terminal, "marked_missing": missing_marked,
+        "refreshed_at": now,
+        "note": "Missing source items remain open until a reviewer resolves or dismisses them.",
     }
-
 
 @router.get("/reconciliation/exceptions/queue")
 def list_persisted_reconciliation_exceptions(
