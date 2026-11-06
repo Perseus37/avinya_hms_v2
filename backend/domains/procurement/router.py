@@ -28,10 +28,10 @@ from backend.domains.procurement.models import (
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
     MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement,
-    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit
+    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest
 )
 from backend.domains.procurement.schemas import (
-    VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
+    VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
     IndentIssueRequest, PurchaseReturnCreate,
     PurchaseRequisitionCreate, PurchaseRequisitionResponse, PurchaseRequisitionReview,
     PurchaseOrderFromRequisitionCreate, SupplierQuotationCreate,
@@ -711,6 +711,71 @@ def update_vendor_status(
     return vendor
 
 
+
+@router.post("/vendors/{vendor_id}/lifecycle-requests", response_model=SupplierLifecycleRequestResponse, status_code=status.HTTP_201_CREATED)
+def create_supplier_lifecycle_request(vendor_id: int, payload: SupplierLifecycleRequestCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
+    vendor = db.query(VendorMaster).filter(VendorMaster.id == vendor_id).with_for_update().one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Vendor not found.")
+    pending = db.query(SupplierLifecycleRequest.id).filter(SupplierLifecycleRequest.vendor_id == vendor.id, SupplierLifecycleRequest.status == "PENDING").first()
+    if pending:
+        raise HTTPException(status_code=409, detail="A supplier lifecycle request is already pending.")
+    if payload.action == "SUSPEND" and vendor.is_suspended:
+        raise HTTPException(status_code=409, detail="Supplier is already suspended.")
+    if payload.action == "REINSTATE" and not vendor.is_suspended:
+        raise HTTPException(status_code=409, detail="Only a suspended supplier can be reinstated.")
+    row = SupplierLifecycleRequest(vendor_id=vendor.id, action=payload.action, reason=payload.reason.strip(), status="PENDING", requested_by_id=current_user.id)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.get("/vendors/{vendor_id}/lifecycle-requests", response_model=list[SupplierLifecycleRequestResponse])
+def list_supplier_lifecycle_requests(vendor_id: int, db: Session = Depends(get_db), _: User = Depends(RequirePermission("procurement:read"))):
+    if db.get(VendorMaster, vendor_id) is None:
+        raise HTTPException(status_code=404, detail="Vendor not found.")
+    return db.query(SupplierLifecycleRequest).filter(SupplierLifecycleRequest.vendor_id == vendor_id).order_by(SupplierLifecycleRequest.requested_at.desc(), SupplierLifecycleRequest.id.desc()).all()
+
+
+@router.patch("/vendors/{vendor_id}/lifecycle-requests/{request_id}/review", response_model=SupplierLifecycleRequestResponse)
+def review_supplier_lifecycle_request(vendor_id: int, request_id: int, payload: SupplierLifecycleRequestReview, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:approve"))):
+    vendor = db.query(VendorMaster).filter(VendorMaster.id == vendor_id).with_for_update().one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Vendor not found.")
+    row = db.query(SupplierLifecycleRequest).filter(SupplierLifecycleRequest.id == request_id, SupplierLifecycleRequest.vendor_id == vendor.id).with_for_update().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Supplier lifecycle request not found.")
+    if row.status != "PENDING":
+        raise HTTPException(status_code=409, detail="Only pending supplier lifecycle requests can be reviewed.")
+    if row.requested_by_id == current_user.id:
+        raise HTTPException(status_code=409, detail="The requester cannot review their own supplier lifecycle request.")
+    if payload.approved:
+        if row.action == "SUSPEND":
+            if vendor.is_suspended:
+                raise HTTPException(status_code=409, detail="Supplier is already suspended.")
+            vendor.is_suspended = True
+            vendor.suspension_reason = row.reason
+            vendor.suspended_at = datetime.now(timezone.utc)
+            vendor.suspended_by_id = current_user.id
+        else:
+            if not vendor.is_suspended:
+                raise HTTPException(status_code=409, detail="Supplier is no longer suspended.")
+            vendor.is_suspended = False
+            vendor.suspension_reason = None
+            vendor.suspended_at = None
+            vendor.suspended_by_id = None
+        vendor.updated_by_id = current_user.id
+        row.status = "APPROVED"
+    else:
+        row.status = "REJECTED"
+    row.reviewed_by_id = current_user.id
+    row.reviewed_at = datetime.now(timezone.utc)
+    row.review_notes = payload.review_notes.strip()
+    db.commit()
+    db.refresh(row)
+    return row
+
 @router.get("/vendors", response_model=list[VendorDirectoryResponse])
 def list_vendors(
     active_only: bool = True,
@@ -996,8 +1061,9 @@ def create_purchase_order_from_requisition(
     }:
         raise HTTPException(status_code=409, detail="Only approved requisitions with remaining approved quantities can create purchase orders.")
     vendor = db.get(VendorMaster, payload.vendor_id)
-    if vendor is None or not vendor.is_active:
+    if vendor is None:
         raise HTTPException(status_code=409, detail="An active registered vendor is required.")
+    _assert_supplier_procurement_eligible(vendor)
     _assert_supplier_compliance_ready(db, vendor)
     if payload.contract_id is not None:
         linked_contract = db.get(SupplierContract, payload.contract_id)
@@ -2420,8 +2486,9 @@ def approve_purchase_order(
     if po.created_by_id == current_user.id:
         raise HTTPException(status_code=409, detail="The purchase order creator cannot approve the same purchase order.")
     vendor = db.get(VendorMaster, po.vendor_id)
-    if vendor is None or not vendor.is_active:
+    if vendor is None:
         raise HTTPException(status_code=409, detail="The purchase-order supplier is no longer active.")
+    _assert_supplier_procurement_eligible(vendor)
     _assert_supplier_compliance_ready(db, vendor)
 
     if po.contract_id is not None:
@@ -4302,6 +4369,18 @@ def list_procurement_budget_movements(
 # --- Supplier contract lifecycle and negotiated rates ---
 
 # --- Supplier regulatory compliance documents ---
+
+def _assert_supplier_procurement_eligible(vendor: VendorMaster) -> None:
+    if not vendor.is_active:
+        raise HTTPException(status_code=409, detail="Supplier is deactivated and cannot be used for new procurement.")
+    if vendor.is_suspended:
+        raise HTTPException(status_code=409, detail={
+            "message": "Supplier is suspended and cannot be used for new procurement.",
+            "vendor_id": vendor.id,
+            "suspension_reason": vendor.suspension_reason,
+            "suspended_at": vendor.suspended_at,
+        })
+
 
 def _assert_supplier_compliance_ready(db: Session, vendor: VendorMaster) -> None:
     category = vendor.category.value if hasattr(vendor.category, "value") else str(vendor.category)
