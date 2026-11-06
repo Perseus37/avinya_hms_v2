@@ -107,7 +107,7 @@ def upgrade() -> None:
                 IF OLD.status = ''PUBLISHED'' AND (
                     NEW.policy_key IS DISTINCT FROM OLD.policy_key OR
                     NEW.version IS DISTINCT FROM OLD.version OR
-                    NEW.severity_targets_hours IS DISTINCT FROM OLD.severity_targets_hours OR
+                    NEW.severity_targets_hours::text IS DISTINCT FROM OLD.severity_targets_hours::text OR
                     NEW.change_reason IS DISTINCT FROM OLD.change_reason OR
                     NEW.effective_from IS DISTINCT FROM OLD.effective_from OR
                     NEW.created_by_id IS DISTINCT FROM OLD.created_by_id OR
