@@ -570,6 +570,7 @@ def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict
                     Role, Role.id == UserRole.role_id
                 ).filter(
                     Role.code == "ROLE_FINANCE_MANAGER",
+                    User.status == "ACTIVE",
                     User.email.is_not(None),
                 ).all()
                 recipient_ids = {user.id for user in recipients}
