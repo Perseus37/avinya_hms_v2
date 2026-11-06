@@ -1232,6 +1232,7 @@ class ProcurementReconciliationException(Base):
         CheckConstraint("resolution_review_status IN ('NOT_REQUIRED','PENDING','APPROVED','REJECTED')", name="ck_proc_recon_resolution_review_status"),
         CheckConstraint("resolution_submitted_status IS NULL OR resolution_submitted_status IN ('RESOLVED','DISMISSED')", name="ck_proc_recon_resolution_submitted_status"),
         CheckConstraint("reopen_count >= 0", name="ck_proc_recon_exception_reopen_count_nonneg"),
+        CheckConstraint("sla_target_hours IS NULL OR sla_target_hours BETWEEN 1 AND 8760", name="ck_proc_recon_exception_sla_target_positive"),
         Index("ix_proc_recon_exception_queue", "status", "severity", "last_detected_at"),
         Index("ix_proc_recon_exception_assignee", "assigned_to_id", "status"),
         Index("ix_proc_recon_exception_reference", "reference_type", "reference_id"),
@@ -1337,6 +1338,9 @@ class ProcurementReconciliationSlaPolicy(Base):
         CheckConstraint("status IN ('DRAFT','PUBLISHED','RETIRED')", name="ck_proc_recon_sla_policy_status"),
         CheckConstraint("effective_to IS NULL OR effective_to > effective_from", name="ck_proc_recon_sla_policy_effective_window"),
         Index("ix_proc_recon_sla_policy_effective", "status", "effective_from", "effective_to"),
+        Index("uq_proc_recon_sla_policy_single_open", "policy_key", unique=True,
+              postgresql_where=text("status = 'PUBLISHED' AND effective_to IS NULL"),
+              sqlite_where=text("status = 'PUBLISHED' AND effective_to IS NULL")),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     policy_key: Mapped[str] = mapped_column(String(48), default="DEFAULT", nullable=False)
