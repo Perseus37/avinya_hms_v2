@@ -7109,9 +7109,7 @@ def export_reconciliation_exception_audit(
     current_user: User = Depends(RequirePermission("finance:read")),
 ):
     """Build a tenant-scoped audit ZIP; export generation is itself journaled."""
-    exception_row = db.query(ProcurementReconciliationException).filter(
-        ProcurementReconciliationException.id == exception_id
-    ).with_for_update().one_or_none()
+    exception_row = db.get(ProcurementReconciliationException, exception_id)
     if exception_row is None:
         raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
 
