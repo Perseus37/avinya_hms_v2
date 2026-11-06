@@ -87,6 +87,13 @@ export interface ReconciliationException {
   age_hours: number;
   sla_hours: number;
   sla_overdue: boolean;
+  sla_elapsed_hours: number;
+  sla_remaining_hours: number;
+  sla_paused: boolean;
+  sla_paused_at: string | null;
+  sla_paused_seconds: number;
+  sla_due_at: string | null;
+  sla_breached_at: string | null;
   amount_paise: number;
   matched_amount_paise: number;
   unmatched_amount_paise: number;
@@ -197,6 +204,10 @@ export const reconciliationApi = {
     apiClient<{ id: number; status: ReconciliationStatus; resolution_review_status: "APPROVED" | "REJECTED"; resolved_at: string | null; resolved_by_id: number | null }>("/api/procurement/reconciliation/exceptions/" + id + "/resolution-review", { method: "PATCH", body: JSON.stringify(payload) }),
   reopenException: (id: number, payload: { reason: string }) =>
     apiClient<{ id: number; status: ReconciliationStatus; reopen_count: number }>("/api/procurement/reconciliation/exceptions/" + id + "/reopen", { method: "POST", body: JSON.stringify(payload) }),
+  pauseSla: (id: number, payload: { reason: string }) =>
+    apiClient<{ id: number; paused: boolean; sla_paused_at: string; sla_paused_seconds: number; sla_elapsed_hours: number; sla_remaining_hours: number; sla_overdue: boolean; sla_breached_at: string | null }>("/api/procurement/reconciliation/exceptions/" + id + "/sla/pause", { method: "POST", body: JSON.stringify(payload) }),
+  resumeSla: (id: number, payload: { reason: string }) =>
+    apiClient<{ id: number; paused: boolean; sla_paused_at: null; sla_paused_seconds: number; sla_elapsed_hours: number; sla_remaining_hours: number; sla_overdue: boolean; sla_breached_at: string | null }>("/api/procurement/reconciliation/exceptions/" + id + "/sla/resume", { method: "POST", body: JSON.stringify(payload) }),
   addExceptionNote: (id: number, payload: { note: string }) =>
     apiClient<{ exception_id: number; note_recorded: boolean }>("/api/procurement/reconciliation/exceptions/" + id + "/notes", { method: "POST", body: JSON.stringify(payload) }),
 };
