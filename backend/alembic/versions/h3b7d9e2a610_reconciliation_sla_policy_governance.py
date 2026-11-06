@@ -93,6 +93,31 @@ def upgrade() -> None:
             END;';
         """)
         op.execute("""
+            CREATE FUNCTION guard_published_proc_recon_sla_policy()
+            RETURNS trigger LANGUAGE plpgsql AS '
+            BEGIN
+                IF OLD.status = ''PUBLISHED'' AND (
+                    NEW.policy_key IS DISTINCT FROM OLD.policy_key OR
+                    NEW.version IS DISTINCT FROM OLD.version OR
+                    NEW.severity_targets_hours IS DISTINCT FROM OLD.severity_targets_hours OR
+                    NEW.change_reason IS DISTINCT FROM OLD.change_reason OR
+                    NEW.effective_from IS DISTINCT FROM OLD.effective_from OR
+                    NEW.created_by_id IS DISTINCT FROM OLD.created_by_id OR
+                    NEW.created_at IS DISTINCT FROM OLD.created_at OR
+                    NEW.published_by_id IS DISTINCT FROM OLD.published_by_id OR
+                    NEW.published_at IS DISTINCT FROM OLD.published_at
+                ) THEN
+                    RAISE EXCEPTION ''Published reconciliation SLA policy versions are immutable'';
+                END IF;
+                RETURN NEW;
+            END;';
+        """)
+        op.execute("""
+            CREATE TRIGGER trg_proc_recon_sla_policy_immutable
+            BEFORE UPDATE ON procurement_reconciliation_sla_policies
+            FOR EACH ROW EXECUTE FUNCTION guard_published_proc_recon_sla_policy();
+        """)
+        op.execute("""
             CREATE TRIGGER trg_proc_recon_sla_policy_event_append_only
             BEFORE UPDATE OR DELETE ON procurement_reconciliation_sla_policy_events
             FOR EACH ROW EXECUTE FUNCTION prevent_proc_recon_sla_policy_event_mutation();
@@ -102,6 +127,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
+        op.execute("DROP TRIGGER IF EXISTS trg_proc_recon_sla_policy_immutable ON procurement_reconciliation_sla_policies")
+        op.execute("DROP FUNCTION IF EXISTS guard_published_proc_recon_sla_policy()")
         op.execute("DROP TRIGGER IF EXISTS trg_proc_recon_sla_policy_event_append_only ON procurement_reconciliation_sla_policy_events")
         op.execute("DROP FUNCTION IF EXISTS prevent_proc_recon_sla_policy_event_mutation()")
     op.drop_constraint("ck_proc_recon_exception_sla_target_positive", "procurement_reconciliation_exceptions", type_="check")
