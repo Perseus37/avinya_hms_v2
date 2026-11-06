@@ -3355,6 +3355,79 @@ def test_reconciliation_evidence_upload_download_and_audit(
 
 
 
+
+def test_reconciliation_audit_export_contains_history_evidence_manifest_and_export_event(
+    client, superuser_headers, multi_tenant_env, monkeypatch
+):
+    import io
+    import json
+    import zipfile
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.procurement import documents as procurement_documents
+    from backend.domains.procurement.models import (
+        ProcurementReconciliationException,
+        ProcurementReconciliationExceptionEvent,
+    )
+
+    monkeypatch.setattr(procurement_documents, "scan_file_with_clamav", lambda _path: None)
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        row = ProcurementReconciliationException(
+            fingerprint="TEST_EXCEPTION:AUDIT_EXPORT:987685",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="IN_REVIEW",
+            reference_type="BANK_STATEMENT_LINE", reference_id=987685,
+            amount_paise=18000, matched_amount_paise=4000, unmatched_amount_paise=14000,
+            summary="Audit export package regression test.",
+            detection_snapshot={"bank_reference": "UTR-EXPORT-001"},
+        )
+        db.add(row)
+        db.commit()
+        exception_id = row.id
+
+    evidence_bytes = b"%PDF-1.7 audit export evidence"
+    uploaded = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/evidence",
+        headers=superuser_headers,
+        data={"evidence_type": "BANK_STATEMENT", "description": "Source bank entry."},
+        files={"file": ("bank-entry.pdf", evidence_bytes, "application/pdf")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+
+    response = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/audit-export",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/zip")
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-audit-manifest-sha256"]
+
+    with zipfile.ZipFile(io.BytesIO(response.content)) as package:
+        names = set(package.namelist())
+        assert {"investigation.json", "history.json", "manifest.json"} <= names
+        evidence_name = next(name for name in names if name.startswith("evidence/"))
+        assert package.read(evidence_name) == evidence_bytes
+        investigation = json.loads(package.read("investigation.json"))
+        assert investigation["exception"]["id"] == exception_id
+        assert investigation["exception"]["status"] == "IN_REVIEW"
+        assert investigation["evidence"][0]["sha256"] == uploaded.json()["sha256_hex"]
+        manifest = json.loads(package.read("manifest.json"))
+        assert manifest["exception_id"] == exception_id
+        assert any(item["path"] == evidence_name for item in manifest["files"])
+        history = json.loads(package.read("history.json"))
+        assert any(event["event_type"] == "AUDIT_EXPORT_GENERATED" for event in history["events"])
+
+    with session_factory() as db:
+        row = db.get(ProcurementReconciliationException, exception_id)
+        event = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == exception_id,
+            ProcurementReconciliationExceptionEvent.event_type == "AUDIT_EXPORT_GENERATED",
+        ).one()
+        assert row.status == "IN_REVIEW"
+        assert event.event_metadata["manifest_sha256"] == response.headers["x-audit-manifest-sha256"]
+        assert event.event_metadata["evidence_count"] == 1
+
+
 def test_reconciliation_evidence_fails_closed_when_malware_scanner_is_unavailable(
     client, superuser_headers, multi_tenant_env, monkeypatch
 ):
