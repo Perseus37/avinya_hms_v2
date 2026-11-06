@@ -40,7 +40,8 @@ from backend.domains.procurement.models import (
     SupplierAdvance, SupplierAdvanceAllocation,
     BankStatementBatch, BankStatementLine, BankStatementDirectionEnum, SupplierPaymentBankMatch,
     SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest, ProcurementReconciliationException, ProcurementReconciliationExceptionEvent,
-    ProcurementReconciliationEvidence, ProcurementReconciliationEvidenceDownloadAudit
+    ProcurementReconciliationEvidence, ProcurementReconciliationEvidenceDownloadAudit,
+    ProcurementReconciliationSlaPolicy, ProcurementReconciliationSlaPolicyEvent
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, SupplierPaymentCreate, SupplierPaymentResponse, SupplierInvoiceSettlementResponse, SupplierPaymentRequestCreate, SupplierPaymentRequestReview, SupplierPaymentRequestExecute, SupplierPaymentRequestResponse,
@@ -62,7 +63,8 @@ from backend.domains.procurement.schemas import (
     ProcurementBudgetRevisionCreate, ProcurementBudgetRevisionReview,
     ProcurementBudgetRevisionResponse, PurchaseOrderCancelRequest,
     SupplierContractCreate, SupplierContractResponse, SupplierContractRevisionCreate,
-    SupplierContractRevisionReview, SupplierContractRevisionResponse, SupplierComplianceDocumentResponse, SupplierComplianceDocumentReview, SupplierCompliancePolicyUpdate, SupplierCompliancePolicyResponse
+    SupplierContractRevisionReview, SupplierContractRevisionResponse, SupplierComplianceDocumentResponse, SupplierComplianceDocumentReview, SupplierCompliancePolicyUpdate, SupplierCompliancePolicyResponse,
+    ReconciliationSlaPolicyCreate, ReconciliationSlaPolicyPublish, ReconciliationSlaPolicyResponse
 )
 from backend.domains.procurement.services import (
     process_grn_acceptance, trigger_donut_invoice_extraction,
@@ -7443,6 +7445,8 @@ def refresh_procurement_reconciliation_exceptions(
                 summary=item["description"], detection_snapshot=snapshot,
                 first_detected_at=now, last_detected_at=now,
                 source_present=True, missed_refresh_count=0,
+                sla_policy_id=_reconciliation_sla_snapshot(db, item["severity"], now)[0],
+                sla_target_hours=_reconciliation_sla_snapshot(db, item["severity"], now)[1],
             )
             db.add(row)
             db.flush()
@@ -7492,6 +7496,141 @@ def refresh_procurement_reconciliation_exceptions(
         "refreshed_at": now,
         "note": "Missing source items remain open until a reviewer resolves or dismisses them.",
     }
+
+
+RECONCILIATION_DEFAULT_SLA_HOURS = {"CRITICAL": 4, "HIGH": 24, "MEDIUM": 72, "LOW": 168}
+
+
+def _effective_reconciliation_sla_policy(db: Session, at: Optional[datetime] = None):
+    moment = at or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return db.query(ProcurementReconciliationSlaPolicy).filter(
+        ProcurementReconciliationSlaPolicy.status == "PUBLISHED",
+        ProcurementReconciliationSlaPolicy.effective_from <= moment,
+        or_(
+            ProcurementReconciliationSlaPolicy.effective_to.is_(None),
+            ProcurementReconciliationSlaPolicy.effective_to > moment,
+        ),
+    ).order_by(ProcurementReconciliationSlaPolicy.effective_from.desc()).first()
+
+
+def _reconciliation_sla_snapshot(db: Session, severity: str, at: Optional[datetime] = None):
+    policy = _effective_reconciliation_sla_policy(db, at)
+    target = (policy.severity_targets_hours if policy else RECONCILIATION_DEFAULT_SLA_HOURS).get(
+        severity, RECONCILIATION_DEFAULT_SLA_HOURS.get(severity, 168)
+    )
+    return policy.id if policy else None, int(target)
+
+
+def _reconciliation_sla_hours(row) -> int:
+    return int(row.sla_target_hours or RECONCILIATION_DEFAULT_SLA_HOURS.get(row.severity, 168))
+
+
+@router.get("/reconciliation/sla-policies")
+def list_reconciliation_sla_policies(
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    rows = db.query(ProcurementReconciliationSlaPolicy).order_by(
+        ProcurementReconciliationSlaPolicy.version.desc()
+    ).limit(50).all()
+    active = _effective_reconciliation_sla_policy(db)
+    return {
+        "active_policy_id": active.id if active else None,
+        "active_policy_version": active.version if active else None,
+        "baseline_fallback": RECONCILIATION_DEFAULT_SLA_HOURS,
+        "items": [ReconciliationSlaPolicyResponse.model_validate(row).model_dump(mode="json") for row in rows],
+    }
+
+
+@router.post("/reconciliation/sla-policies", status_code=201)
+def create_reconciliation_sla_policy(
+    payload: ReconciliationSlaPolicyCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:sla:manage")),
+):
+    latest_version = db.query(func.max(ProcurementReconciliationSlaPolicy.version)).filter(
+        ProcurementReconciliationSlaPolicy.policy_key == "DEFAULT"
+    ).scalar() or 0
+    policy = ProcurementReconciliationSlaPolicy(
+        policy_key="DEFAULT",
+        version=int(latest_version) + 1,
+        status="DRAFT",
+        severity_targets_hours=payload.severity_targets_hours,
+        change_reason=payload.change_reason.strip(),
+        effective_from=datetime.now(timezone.utc),
+        created_by_id=current_user.id,
+    )
+    db.add(policy)
+    db.flush()
+    db.add(ProcurementReconciliationSlaPolicyEvent(
+        policy_id=policy.id,
+        event_type="DRAFT_CREATED",
+        actor_user_id=current_user.id,
+        event_metadata={"version": policy.version, "severity_targets_hours": policy.severity_targets_hours,
+                        "change_reason": policy.change_reason},
+    ))
+    db.commit()
+    db.refresh(policy)
+    return ReconciliationSlaPolicyResponse.model_validate(policy).model_dump(mode="json")
+
+
+@router.post("/reconciliation/sla-policies/{policy_id}/publish")
+def publish_reconciliation_sla_policy(
+    policy_id: int,
+    payload: ReconciliationSlaPolicyPublish,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:sla:manage")),
+):
+    policy = db.query(ProcurementReconciliationSlaPolicy).filter(
+        ProcurementReconciliationSlaPolicy.id == policy_id
+    ).with_for_update().one_or_none()
+    if policy is None:
+        raise HTTPException(status_code=404, detail="SLA policy version not found.")
+    if policy.status != "DRAFT":
+        raise HTTPException(status_code=409, detail="Only draft SLA policy versions can be published.")
+    effective_from = payload.effective_from or datetime.now(timezone.utc)
+    if effective_from.tzinfo is None:
+        effective_from = effective_from.replace(tzinfo=timezone.utc)
+    else:
+        effective_from = effective_from.astimezone(timezone.utc)
+    if effective_from < datetime.now(timezone.utc) - timedelta(minutes=1):
+        raise HTTPException(status_code=422, detail="SLA policy effective_from cannot be in the past.")
+
+    published = db.query(ProcurementReconciliationSlaPolicy).filter(
+        ProcurementReconciliationSlaPolicy.status == "PUBLISHED",
+        or_(
+            ProcurementReconciliationSlaPolicy.effective_to.is_(None),
+            ProcurementReconciliationSlaPolicy.effective_to > effective_from,
+        ),
+    ).with_for_update().all()
+    for previous in published:
+        if previous.effective_from >= effective_from:
+            raise HTTPException(status_code=409, detail="A published policy already starts at or after this effective date.")
+        previous.effective_to = effective_from
+        db.add(ProcurementReconciliationSlaPolicyEvent(
+            policy_id=previous.id,
+            event_type="SUPERSEDED",
+            actor_user_id=current_user.id,
+            event_metadata={"superseded_by_policy_id": policy.id, "effective_to": effective_from.isoformat()},
+        ))
+
+    policy.status = "PUBLISHED"
+    policy.effective_from = effective_from
+    policy.published_by_id = current_user.id
+    policy.published_at = datetime.now(timezone.utc)
+    db.add(ProcurementReconciliationSlaPolicyEvent(
+        policy_id=policy.id,
+        event_type="PUBLISHED",
+        actor_user_id=current_user.id,
+        event_metadata={"effective_from": effective_from.isoformat(),
+                        "severity_targets_hours": policy.severity_targets_hours},
+    ))
+    db.commit()
+    db.refresh(policy)
+    return ReconciliationSlaPolicyResponse.model_validate(policy).model_dump(mode="json")
+
 
 @router.get("/reconciliation/my-assignments")
 def list_my_reconciliation_assignments(
@@ -7579,7 +7718,7 @@ def list_persisted_reconciliation_exceptions(
         ProcurementReconciliationException.id.desc(),
     ).limit(1000).all()
     now = datetime.now(timezone.utc)
-    sla_hours = {"CRITICAL": 4, "HIGH": 24, "MEDIUM": 72, "LOW": 168}
+    sla_hours_for = _reconciliation_sla_hours
 
     def age_hours(row):
         detected = row.first_detected_at
@@ -7594,7 +7733,7 @@ def list_persisted_reconciliation_exceptions(
     if sla_overdue is not None:
         rows = [
             row for row in rows
-            if (row.status in ("OPEN", "IN_REVIEW") and age_hours(row) > sla_hours.get(row.severity, 168)) == sla_overdue
+            if (row.status in ("OPEN", "IN_REVIEW") and age_hours(row) > sla_hours_for(row)) == sla_overdue
         ]
 
     open_rows = [row for row in rows if row.status in ("OPEN", "IN_REVIEW")]
@@ -7614,7 +7753,7 @@ def list_persisted_reconciliation_exceptions(
             "id": row.id, "exception_type": row.exception_type, "severity": row.severity,
             "status": row.status, "reference_type": row.reference_type, "reference_id": row.reference_id,
             "source_present": row.source_present, "missed_refresh_count": row.missed_refresh_count,
-            "age_hours": age_hours(row), "sla_hours": sla_hours.get(row.severity, 168),
+            "age_hours": age_hours(row), "sla_hours": sla_hours_for(row),
             "sla_overdue": row.status in ("OPEN", "IN_REVIEW") and age_hours(row) > sla_hours.get(row.severity, 168),
             "amount_paise": row.amount_paise, "matched_amount_paise": row.matched_amount_paise,
             "unmatched_amount_paise": row.unmatched_amount_paise, "summary": row.summary,
@@ -7664,7 +7803,7 @@ def get_reconciliation_dashboard(
 
     rows = query.order_by(ProcurementReconciliationException.first_detected_at, ProcurementReconciliationException.id).all()
     now = datetime.now(timezone.utc)
-    sla_hours = {"CRITICAL": 4, "HIGH": 24, "MEDIUM": 72, "LOW": 168}
+    sla_hours_for = _reconciliation_sla_hours
 
     def as_utc(value):
         if value is None:
@@ -7716,7 +7855,7 @@ def get_reconciliation_dashboard(
         elapsed = age_hours(row)
         breached = (
             row.status in open_statuses or row.status == "RESOLVED"
-        ) and elapsed > sla_hours.get(row.severity, 168)
+        ) and elapsed > sla_hours_for(row)
         if breached:
             sla_breaches_by_day[opened_day] = sla_breaches_by_day.get(opened_day, 0) + 1
         if row.status in open_statuses:
