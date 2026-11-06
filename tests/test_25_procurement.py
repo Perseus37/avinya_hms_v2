@@ -3265,6 +3265,7 @@ def test_reconciliation_evidence_upload_download_and_audit(
         ProcurementReconciliationException,
         ProcurementReconciliationEvidence,
         ProcurementReconciliationEvidenceDownloadAudit,
+        ProcurementReconciliationExceptionEvent,
     )
 
     monkeypatch.setattr(procurement_documents, "scan_file_with_clamav", lambda _path: None)
