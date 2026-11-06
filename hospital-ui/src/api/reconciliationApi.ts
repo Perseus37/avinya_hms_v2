@@ -179,7 +179,9 @@ export interface ReconciliationAssignmentRecommendation {
   login_id: string;
   roles: Array<{ code: string; name: string }>;
   finance_suitable: boolean;
+  procurement_suitable: boolean;
   finance_permissions: string[];
+  procurement_permissions: string[];
   current_assignee: boolean;
   open_count: number;
   overdue_count: number;
