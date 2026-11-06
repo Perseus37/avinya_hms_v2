@@ -2655,3 +2655,122 @@ def test_supplier_adjustments_and_advances_are_approved_allocated_and_bounded(
         json={"invoice_id": invoice_id, "amount_paise": 1},
     )
     assert too_much.status_code == 404
+
+
+def test_supplier_bank_statement_import_suggestions_and_partial_reconciliation(
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.finance.models import ExpenseCategoryEnum, ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import VendorInvoice, VendorInvoiceStatusEnum
+
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-BANK-REC-01", "name": "Bank Reconciliation Supplier",
+            "category": "GENERAL_SUPPLIES", "contact_person": "Accounts Contact",
+            "phone": "9876543217", "email": "bank-recon@example.test",
+            "address": "Supplier registered address",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        expense = ExpenseRecord(
+            category=ExpenseCategoryEnum.PHARMACY_STOCK, title="Bank reconciliation AP",
+            amount_paise=10000, status=ExpenseStatusEnum.APPROVED,
+            approved_by_id=actor_id, approved_at=datetime.now(timezone.utc),
+            due_date=datetime.now(timezone.utc) + timedelta(days=15),
+            vendor_name="Bank Reconciliation Supplier", created_by_id=actor_id,
+        )
+        db.add(expense)
+        db.flush()
+        invoice = VendorInvoice(
+            vendor_id=vendor_id, invoice_number="BANK-REC-INV-001",
+            invoice_date=datetime.now(timezone.utc), due_date=datetime.now(timezone.utc) + timedelta(days=15),
+            subtotal_paise=10000, tax_amount_paise=0, discount_paise=0, total_amount_paise=10000,
+            status=VendorInvoiceStatusEnum.MATCHED_APPROVED, verified_by_id=actor_id,
+            verified_at=datetime.now(timezone.utc), linked_expense_id=expense.id, created_by_id=actor_id,
+        )
+        db.add(invoice)
+        db.commit()
+        invoice_id = invoice.id
+
+    payment_reference = "UTR-BANK-RECON-001"
+    payment_date = datetime.now(timezone.utc)
+    payment = client.post("/v1/api/procurement/supplier-payments", headers=superuser_headers, json={
+        "vendor_id": vendor_id, "payment_reference": payment_reference,
+        "payment_method": "NEFT", "payment_date": payment_date.isoformat(),
+        "amount_paise": 6000, "allocations": [{"invoice_id": invoice_id, "amount_paise": 6000}],
+    })
+    assert payment.status_code == 201, payment.text
+    payment_id = payment.json()["id"]
+
+    statement_payload = {
+        "bank_account_ref": "OPERATING-ACCOUNT-01",
+        "statement_reference": "STMT-BANK-REC-001",
+        "period_start": payment_date.date().isoformat(),
+        "period_end": payment_date.date().isoformat(),
+        "opening_balance_paise": 100000,
+        "closing_balance_paise": 94000,
+        "lines": [{
+            "bank_transaction_id": "BANK-TXN-0001",
+            "transaction_date": payment_date.isoformat(),
+            "direction": "DEBIT", "amount_paise": 6000,
+            "bank_reference": payment_reference, "description": "Supplier NEFT transfer",
+        }],
+    }
+    imported = client.post(
+        "/v1/api/procurement/bank-statements/import",
+        headers=superuser_headers, json=statement_payload,
+    )
+    assert imported.status_code == 201, imported.text
+    batch_id = imported.json()["id"]
+
+    duplicate_statement = client.post(
+        "/v1/api/procurement/bank-statements/import",
+        headers=superuser_headers, json=statement_payload,
+    )
+    assert duplicate_statement.status_code == 409
+
+    suggestions = client.get(
+        f"/v1/api/procurement/bank-statements/{batch_id}/suggestions",
+        headers=superuser_headers,
+    )
+    assert suggestions.status_code == 200, suggestions.text
+    candidate = suggestions.json()[0]["candidates"][0]
+    assert candidate["payment_id"] == payment_id
+    assert candidate["reference_match"] is True
+
+    matched = client.post(
+        "/v1/api/procurement/bank-statements/lines/{}/matches".format(
+            client.get(f"/v1/api/procurement/bank-statements/{batch_id}/lines", headers=superuser_headers).json()[0]["id"]
+        ),
+        headers=superuser_headers,
+        json={"payment_id": payment_id, "amount_paise": 4000},
+    )
+    assert matched.status_code == 201, matched.text
+    assert matched.json()["statement_line_status"] == "PARTIALLY_MATCHED"
+
+    reconciliation = client.get(
+        "/v1/api/procurement/supplier-payments/reconciliation",
+        headers=superuser_headers,
+    )
+    assert reconciliation.status_code == 200, reconciliation.text
+    payment_row = next(row for row in reconciliation.json()["supplier_payments"] if row["payment_id"] == payment_id)
+    assert payment_row["matched_amount_paise"] == 4000
+    assert payment_row["unreconciled_amount_paise"] == 2000
+
+    overmatch = client.post(
+        "/v1/api/procurement/bank-statements/lines/{}/matches".format(
+            client.get(f"/v1/api/procurement/bank-statements/{batch_id}/lines", headers=superuser_headers).json()[0]["id"]
+        ),
+        headers=superuser_headers,
+        json={"payment_id": payment_id, "amount_paise": 2001},
+    )
+    assert overmatch.status_code == 409
