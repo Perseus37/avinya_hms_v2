@@ -7287,11 +7287,17 @@ def get_reconciliation_dashboard(
         assignee_key = str(row.assigned_to_id) if row.assigned_to_id is not None else "UNASSIGNED"
         assignee = workload.setdefault(assignee_key, {
             "user_id": row.assigned_to_id, "assigned_total": 0, "assigned_open": 0,
-            "assigned_resolved_count": 0,
+            "assigned_resolved_count": 0, "assigned_sla_overdue": 0,
+            "oldest_open_age_hours": 0,
+            "open_by_severity": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0},
         })
         assignee["assigned_total"] += 1
         if row.status in open_statuses:
             assignee["assigned_open"] += 1
+            assignee["open_by_severity"][row.severity] = assignee["open_by_severity"].get(row.severity, 0) + 1
+            assignee["oldest_open_age_hours"] = max(assignee["oldest_open_age_hours"], elapsed)
+            if breached:
+                assignee["assigned_sla_overdue"] += 1
         if row.status == "RESOLVED":
             assignee["assigned_resolved_count"] += 1
 
