@@ -483,13 +483,21 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                 </div>
               </Section>
 
-              <Section title="Finance team workload" description="Current assignment load and resolved investigations">
+              <Section title="Finance team workload" description="Open case load, SLA breaches and severity mix. Metrics follow the dashboard date and severity filters.">
                 {dashboard.finance_workload.length ? (
                   <div className="space-y-2">
                     {dashboard.finance_workload.slice(0, 8).map((item) => (
-                      <div key={item.user_id ?? "unassigned"} className="flex items-center justify-between gap-3 rounded-lg border border-slate-100 px-3 py-2">
-                        <div><div className="text-xs font-semibold text-slate-800">{item.user_name || (item.user_id ? `User #${item.user_id}` : "Unassigned")}</div><div className="mt-0.5 text-[10px] text-slate-400">{number(item.assigned_total)} assigned · {number(item.assigned_resolved_count)} resolved</div></div>
-                        <div className="text-right"><div className="text-sm font-bold tabular-nums text-slate-900">{number(item.assigned_open)}</div><div className="text-[10px] text-slate-400">open</div></div>
+                      <div key={item.user_id ?? "unassigned"} className="rounded-lg border border-slate-100 px-3 py-2.5">
+                        <div className="flex items-start justify-between gap-3">
+                          <div><div className="text-xs font-semibold text-slate-800">{item.user_name || (item.user_id ? `User #${item.user_id}` : "Unassigned")}</div><div className="mt-0.5 text-[10px] text-slate-400">{number(item.assigned_total)} assigned · {number(item.assigned_resolved_count)} resolved</div></div>
+                          <div className="text-right"><div className="text-sm font-bold tabular-nums text-slate-900">{number(item.assigned_open)} open</div><div className={`text-[10px] font-semibold ${item.assigned_sla_overdue ? "text-rose-700" : "text-emerald-700"}`}>{number(item.assigned_sla_overdue)} SLA overdue</div></div>
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap gap-1">
+                            {severityOptions.map((level) => <span key={level} className={`rounded px-1.5 py-0.5 text-[9px] ${item.open_by_severity[level] ? "bg-slate-100 text-slate-700" : "bg-slate-50 text-slate-300"}`}>{level[0]} {number(item.open_by_severity[level])}</span>)}
+                          </div>
+                          <span className="text-[9px] text-slate-400">Oldest open: {hours(item.oldest_open_age_hours)}</span>
+                        </div>
                       </div>
                     ))}
                     {dashboard.resolved_by_user.length > 0 && (
@@ -576,12 +584,16 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                     {assigneeLoading && <p className="mt-2 text-[10px] text-slate-400">Searching branch directory…</p>}
                     {!assigneeLoading && assigneeSearch.trim() && assigneeOptions.length === 0 && <p className="mt-2 text-[10px] text-slate-400">No active staff matched this search.</p>}
                     {assigneePickerOpen && assigneeOptions.length > 0 && <ul role="listbox" aria-label="Active branch staff" className="mt-2 max-h-44 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
-                      {assigneeOptions.map((person) => <li key={person.id}>
-                        <button type="button" role="option" aria-selected={assigneeInput === String(person.id)} onClick={() => { setAssigneeInput(String(person.id)); setAssigneeSearch(person.full_name); setAssigneeOptions([]); setAssigneePickerOpen(false); }} disabled={actionLoading} className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-blue-50 disabled:opacity-50">
-                          <span className="min-w-0"><span className="block truncate text-xs font-semibold text-slate-800">{person.full_name}</span><span className="block text-[10px] text-slate-400">{person.login_id} · User #{person.id}</span><span className="mt-1 flex flex-wrap gap-1">{person.roles.length ? person.roles.map((role) => <span key={role.code} className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] text-slate-600">{role.name}</span>) : <span className="text-[9px] text-slate-400">No assigned role</span>}</span></span>
-                          {assigneeInput === String(person.id) && <CheckCircle2 size={15} className="mt-1 shrink-0 text-blue-600" />}
-                        </button>
-                      </li>)}
+                      {assigneeOptions.map((person) => {
+                        const workload = dashboard?.finance_workload.find((item) => item.user_id === person.id);
+                        return <li key={person.id}>
+                          <button type="button" role="option" aria-selected={assigneeInput === String(person.id)} onClick={() => { setAssigneeInput(String(person.id)); setAssigneeSearch(person.full_name); setAssigneeOptions([]); setAssigneePickerOpen(false); }} disabled={actionLoading} className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-blue-50 disabled:opacity-50">
+                            <span className="min-w-0"><span className="block truncate text-xs font-semibold text-slate-800">{person.full_name}</span><span className="block text-[10px] text-slate-400">{person.login_id} · User #{person.id}</span><span className="mt-1 flex flex-wrap gap-1">{person.roles.length ? person.roles.map((role) => <span key={role.code} className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] text-slate-600">{role.name}</span>) : <span className="text-[9px] text-slate-400">No assigned role</span>}</span>
+                              <span className="mt-1 block text-[10px] text-slate-500">{workload ? `${number(workload.assigned_open)} open · ${number(workload.assigned_sla_overdue)} overdue · oldest ${hours(workload.oldest_open_age_hours)}` : "No cases in current dashboard scope"}</span></span>
+                            {assigneeInput === String(person.id) && <CheckCircle2 size={15} className="mt-1 shrink-0 text-blue-600" />}
+                          </button>
+                        </li>;
+                      })}
                     </ul>}
                   </div>
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2">
