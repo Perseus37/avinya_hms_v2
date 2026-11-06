@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import socket
@@ -307,3 +308,99 @@ def resolve_supplier_compliance_document(tenant_slug: str, document_key: str) ->
     return path
 
 
+
+
+_RECONCILIATION_EVIDENCE_NAMESPACE = "procurement-reconciliation-evidence"
+
+
+def _reconciliation_evidence_storage_directory(tenant_slug: str, *, create: bool) -> Path:
+    if not _TENANT_SLUG.fullmatch(tenant_slug):
+        raise RuntimeError("Tenant slug is not a safe storage path component.")
+    try:
+        return tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_slug,
+            _RECONCILIATION_EVIDENCE_NAMESPACE,
+            create=create,
+        )
+    except StoragePathError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Reconciliation evidence storage is unavailable.",
+        ) from exc
+
+
+def store_reconciliation_evidence(
+    tenant_slug: str, filename: str | None, source: BinaryIO
+) -> tuple[str, Path, int, str, str]:
+    """Publish a scanned PDF/JPEG/PNG evidence file under an opaque tenant key."""
+    if not _TENANT_SLUG.fullmatch(tenant_slug):
+        raise RuntimeError("Tenant slug is not a safe storage path component.")
+    suffix = Path((filename or "").replace("\\\\", "/")).suffix.lower()
+    signature = _ALLOWED_SIGNATURES.get(suffix)
+    if signature is None:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Evidence files must be PDF, PNG, or JPEG.",
+        )
+    tenant_dir = _reconciliation_evidence_storage_directory(tenant_slug, create=True)
+    evidence_id = uuid.uuid4().hex
+    destination_name = f"{evidence_id}{suffix}"
+    try:
+        size_bytes = stage_and_publish_upload(
+            tenant_dir,
+            destination_name,
+            f".{evidence_id}.part",
+            source,
+            max_bytes=settings.MAX_ATTACHMENT_UPLOAD_BYTES,
+            signature=signature,
+            scanner=scan_file_with_clamav,
+        )
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail="Evidence file exceeds the configured upload limit.") from exc
+    except UploadEmptyError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Evidence file cannot be empty.") from exc
+    except UploadContentError as exc:
+        raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                            detail="Evidence content does not match its file type.") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Evidence storage is unavailable.") from exc
+
+    destination = tenant_dir / destination_name
+    digest = hashlib.sha256()
+    with destination.open("rb") as published:
+        for chunk in iter(lambda: published.read(1024 * 1024), b""):
+            digest.update(chunk)
+    media_type = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+    }[suffix]
+    key = PurePosixPath(tenant_slug, _RECONCILIATION_EVIDENCE_NAMESPACE, destination_name).as_posix()
+    return key, destination, size_bytes, digest.hexdigest(), media_type
+
+
+def resolve_reconciliation_evidence(tenant_slug: str, document_key: str) -> Path:
+    if not _TENANT_SLUG.fullmatch(tenant_slug):
+        raise RuntimeError("Tenant slug is not a safe storage path component.")
+    key = PurePosixPath(document_key)
+    expected_prefix = PurePosixPath(tenant_slug, _RECONCILIATION_EVIDENCE_NAMESPACE)
+    if (
+        key.is_absolute()
+        or key.parts[:2] != expected_prefix.parts
+        or len(key.parts) != 3
+        or not re.fullmatch(r"[0-9a-f]{32}\\.(?:pdf|png|jpg|jpeg)", key.name)
+    ):
+        raise HTTPException(status_code=404, detail="Reconciliation evidence not found.")
+    tenant_dir = _reconciliation_evidence_storage_directory(tenant_slug, create=False)
+    try:
+        path = resolve_tenant_storage_file(tenant_dir, key.name)
+    except StoragePathError as exc:
+        raise HTTPException(status_code=404, detail="Reconciliation evidence not found.") from exc
+    if path.suffix.lower() not in _ALLOWED_SIGNATURES or not path.is_file():
+        raise HTTPException(status_code=404, detail="Reconciliation evidence not found.")
+    return path
