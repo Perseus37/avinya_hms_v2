@@ -63,11 +63,11 @@ def upgrade() -> None:
     if bind.dialect.name == "postgresql":
         op.execute("""
             CREATE FUNCTION prevent_proc_recon_evidence_mutation()
-            RETURNS trigger AS $
-            BEGIN
-                RAISE EXCEPTION 'Reconciliation evidence metadata is append-only';
-            END;
-            $ LANGUAGE plpgsql;
+            RETURNS trigger
+            LANGUAGE plpgsql
+            AS 'BEGIN
+                RAISE EXCEPTION ''Reconciliation evidence metadata is append-only'';
+            END;';
         """)
         op.execute("""
             CREATE TRIGGER trg_proc_recon_evidence_append_only
@@ -76,11 +76,11 @@ def upgrade() -> None:
         """)
         op.execute("""
             CREATE FUNCTION prevent_proc_recon_evidence_download_audit_mutation()
-            RETURNS trigger AS $
-            BEGIN
-                RAISE EXCEPTION 'Reconciliation evidence download audit is append-only';
-            END;
-            $ LANGUAGE plpgsql;
+            RETURNS trigger
+            LANGUAGE plpgsql
+            AS 'BEGIN
+                RAISE EXCEPTION ''Reconciliation evidence download audit is append-only'';
+            END;';
         """)
         op.execute("""
             CREATE TRIGGER trg_proc_recon_evidence_download_audit_append_only
