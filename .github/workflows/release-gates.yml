@@ -176,9 +176,13 @@ jobs:
           docker run --rm --entrypoint /bin/amtool -v "$(pwd)/deployments:/deployments:ro" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /deployments/alertmanager.yml
 
   production-image:
-    name: Build production API image
+    name: Build, scan, and publish production images
+    needs: [python-tests, onboarding-ui, hospital-ui, compose-config]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
     # Heavy image build and Trivy CVE scans run for main/release branches and dispatches,
     # keeping dev pull requests fast and lightweight.
     if: >-
@@ -208,6 +212,20 @@ jobs:
           severity: HIGH,CRITICAL
           trivyignores: .trivyignore
 
+      - name: Build production Hospital UI image
+        run: docker build --file hospital-ui/Dockerfile --target production --tag avinya-hospital-ui:ci hospital-ui
+
+      - name: Scan Hospital UI image for fixable high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: avinya-hospital-ui:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          trivyignores: .trivyignore
+
       - name: Build patched ClamAV image
         run: docker build --file Dockerfile.clamav --tag avinya-clamav:1.4.6-patched .
 
@@ -221,3 +239,51 @@ jobs:
           vuln-type: os,library
           severity: HIGH,CRITICAL
           trivyignores: .trivyignore
+      # Publish only after every required release gate and image scan succeeds.
+      # Pull requests, scheduled scans, and manual validation never publish images.
+      - name: Log in to GitHub Container Registry
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) }}
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Tag and publish scanned images
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) }}
+        env:
+          IMAGE_NAMESPACE: ghcr.io/${{ github.repository_owner }}
+          IMAGE_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            CHANNEL_TAG="main"
+          else
+            CHANNEL_TAG="$(printf '%s' "${GITHUB_REF#refs/heads/}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
+          fi
+
+          declare -A IMAGES=(
+            [avinya-hms-api]="avinya-hms-api:ci"
+            [avinya-hospital-ui]="avinya-hospital-ui:ci"
+            [avinya-clamav]="avinya-clamav:1.4.6-patched"
+          )
+
+          : > image-digests.txt
+          for name in "${!IMAGES[@]}"; do
+            target="$IMAGE_NAMESPACE/$name"
+            docker tag "${IMAGES[$name]}" "$target:$IMAGE_REVISION"
+            docker tag "${IMAGES[$name]}" "$target:$CHANNEL_TAG"
+            docker push "$target:$IMAGE_REVISION"
+            docker push "$target:$CHANNEL_TAG"
+            digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$target:$IMAGE_REVISION")"
+            printf '%s\n' "$digest" | tee -a image-digests.txt
+          done
+
+          {
+            echo "### GHCR image digests"
+            echo
+            echo "Source commit: $IMAGE_REVISION"
+            echo
+            echo '```text'
+            cat image-digests.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
