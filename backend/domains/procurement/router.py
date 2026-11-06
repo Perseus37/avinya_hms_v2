@@ -9070,16 +9070,17 @@ def publish_reconciliation_escalation_policy(
         raise HTTPException(status_code=404, detail="Escalation policy not found.")
     if row.status != "DRAFT":
         raise HTTPException(status_code=409, detail="Only draft escalation policies can be published.")
+    publish_now = datetime.now(timezone.utc)
     effective_from = payload.get("effective_from")
     if isinstance(effective_from, str):
         try:
             effective_from = datetime.fromisoformat(effective_from.replace("Z", "+00:00"))
         except ValueError:
             raise HTTPException(status_code=422, detail="effective_from must be an ISO-8601 timestamp.")
-    effective_from = effective_from or datetime.now(timezone.utc)
+    effective_from = effective_from or publish_now
     if effective_from.tzinfo is None:
         effective_from = effective_from.replace(tzinfo=timezone.utc)
-    if effective_from < datetime.now(timezone.utc):
+    if effective_from < publish_now:
         raise HTTPException(status_code=422, detail="Escalation policy effective_from cannot be in the past.")
     active = db.query(ProcurementReconciliationEscalationPolicy).filter(
         ProcurementReconciliationEscalationPolicy.status == "PUBLISHED",
@@ -9094,7 +9095,7 @@ def publish_reconciliation_escalation_policy(
     row.status = "PUBLISHED"
     row.effective_from = effective_from
     row.published_by_id = current_user.id
-    row.published_at = datetime.now(timezone.utc)
+    row.published_at = publish_now
     db.commit()
     return {"id": row.id, "version": row.version, "status": row.status, "effective_from": row.effective_from}
 
