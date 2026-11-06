@@ -2859,3 +2859,129 @@ def test_supplier_payment_priorities_use_net_outstanding_and_due_dates(
     assert payload["invoices"][0]["invoice_id"] == invoice_id
     assert payload["invoices"][0]["priority"] == "OVERDUE"
     assert payload["invoices"][0]["outstanding_paise"] == 10000
+
+
+def test_supplier_payment_request_reserves_invoice_and_requires_independent_approval(
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.finance.models import ExpenseCategoryEnum, ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import VendorInvoice, VendorInvoiceStatusEnum
+
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-PAY-REQUEST-01",
+            "name": "Payment Request Supplier",
+            "category": "GENERAL_SUPPLIES",
+            "contact_person": "Accounts Contact",
+            "phone": "9876543217",
+            "email": "payment-request@example.test",
+            "address": "Supplier registered address",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    now = datetime.now(timezone.utc)
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        expense = ExpenseRecord(
+            category=ExpenseCategoryEnum.PHARMACY_STOCK,
+            title="Supplier payment request AP",
+            amount_paise=10000,
+            status=ExpenseStatusEnum.APPROVED,
+            approved_by_id=actor_id,
+            approved_at=now,
+            due_date=now + timedelta(days=5),
+            vendor_name="Payment Request Supplier",
+            created_by_id=actor_id,
+        )
+        db.add(expense)
+        db.flush()
+        invoice = VendorInvoice(
+            vendor_id=vendor_id,
+            invoice_number="PAY-REQUEST-INV-001",
+            invoice_date=now,
+            due_date=now + timedelta(days=5),
+            subtotal_paise=10000,
+            tax_amount_paise=0,
+            discount_paise=0,
+            total_amount_paise=10000,
+            status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            verified_by_id=actor_id,
+            verified_at=now,
+            linked_expense_id=expense.id,
+            created_by_id=actor_id,
+        )
+        db.add(invoice)
+        db.commit()
+        invoice_id = invoice.id
+
+    request_payload = {
+        "vendor_id": vendor_id,
+        "payment_reference": "PAY-REQUEST-UTR-001",
+        "payment_method": "NEFT",
+        "scheduled_date": now.date().isoformat(),
+        "payment_run_reference": "NOV-2026-RUN-01",
+        "amount_paise": 7000,
+        "allocations": [{"invoice_id": invoice_id, "amount_paise": 7000}],
+    }
+    created = client.post(
+        "/v1/api/procurement/supplier-payment-requests",
+        headers=superuser_headers,
+        json=request_payload,
+    )
+    assert created.status_code == 201, created.text
+    request_id = created.json()["id"]
+    assert created.json()["status"] == "PENDING"
+
+    over_reserved = client.post(
+        "/v1/api/procurement/supplier-payment-requests",
+        headers=superuser_headers,
+        json={
+            **request_payload,
+            "payment_reference": "PAY-REQUEST-UTR-002",
+            "amount_paise": 4000,
+            "allocations": [{"invoice_id": invoice_id, "amount_paise": 4000}],
+        },
+    )
+    assert over_reserved.status_code == 409, over_reserved.text
+
+    self_approval = client.patch(
+        f"/v1/api/procurement/supplier-payment-requests/{request_id}/review",
+        headers=superuser_headers,
+        json={"approved": True, "review_notes": "Attempted self approval"},
+    )
+    assert self_approval.status_code == 403, self_approval.text
+
+    cancelled = client.post(
+        f"/v1/api/procurement/supplier-payment-requests/{request_id}/cancel",
+        headers=superuser_headers,
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "CANCELLED"
+
+    replacement = client.post(
+        "/v1/api/procurement/supplier-payment-requests",
+        headers=superuser_headers,
+        json={
+            **request_payload,
+            "payment_reference": "PAY-REQUEST-UTR-003",
+            "amount_paise": 10000,
+            "allocations": [{"invoice_id": invoice_id, "amount_paise": 10000}],
+        },
+    )
+    assert replacement.status_code == 201, replacement.text
+
+    listed = client.get(
+        "/v1/api/procurement/supplier-payment-requests",
+        headers=superuser_headers,
+        params={"status": "PENDING", "payment_run_reference": "NOV-2026-RUN-01"},
+    )
+    assert listed.status_code == 200, listed.text
+    assert len(listed.json()) == 1
+    assert listed.json()[0]["id"] == replacement.json()["id"]
