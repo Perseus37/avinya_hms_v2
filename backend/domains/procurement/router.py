@@ -7545,6 +7545,35 @@ def list_reconciliation_sla_policies(
     }
 
 
+@router.get("/reconciliation/sla-policies/{policy_id}/events")
+def list_reconciliation_sla_policy_events(
+    policy_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    policy_exists = db.query(ProcurementReconciliationSlaPolicy.id).filter(
+        ProcurementReconciliationSlaPolicy.id == policy_id
+    ).scalar()
+    if policy_exists is None:
+        raise HTTPException(status_code=404, detail="SLA policy version not found.")
+    events = db.query(ProcurementReconciliationSlaPolicyEvent).filter(
+        ProcurementReconciliationSlaPolicyEvent.policy_id == policy_id
+    ).order_by(
+        ProcurementReconciliationSlaPolicyEvent.occurred_at.asc(),
+        ProcurementReconciliationSlaPolicyEvent.id.asc(),
+    ).all()
+    return {
+        "policy_id": policy_id,
+        "events": [{
+            "id": event.id,
+            "event_type": event.event_type,
+            "actor_user_id": event.actor_user_id,
+            "event_metadata": event.event_metadata,
+            "occurred_at": event.occurred_at,
+        } for event in events],
+    }
+
+
 @router.post("/reconciliation/sla-policies", status_code=201)
 def create_reconciliation_sla_policy(
     payload: ReconciliationSlaPolicyCreate,
