@@ -7002,7 +7002,7 @@ def upload_reconciliation_evidence(
     clean_description = description.strip() if description else None
     if clean_description == "":
         clean_description = None
-    original_filename = PurePath((file.filename or "evidence").replace("\\\\", "/")).name
+    original_filename = PurePath((file.filename or "evidence").replace(chr(92), "/")).name
     original_filename = re.sub(r"[^A-Za-z0-9._ -]", "_", original_filename).strip(" .")[:255] or "evidence"
     tenant = resolve_tenant_context(request)
     try:
