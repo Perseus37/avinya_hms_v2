@@ -44,7 +44,7 @@ Reconciliation evidence is stored in the private `procurement-reconciliation-evi
 - Accepted formats: PDF, PNG, and JPEG, validated by extension and leading file signature; the submitted MIME header is not trusted.
 - Uploads use the configured `MAX_ATTACHMENT_UPLOAD_BYTES` limit, restrictive temporary-file permissions, ClamAV scanning, and atomic publication.
 - The API records the original display filename only after stripping path components and unsafe characters. Storage keys are opaque server-generated UUIDs.
-- SHA-256 and byte size are recorded with the metadata and copied into the append-only investigation event when evidence is attached.
+- SHA-256 and byte size are recorded with the metadata and copied into the append-only investigation event when evidence is attached. The digest is recomputed before every download; a mismatch prevents serving and creates an integrity-failure event.
 - Closed investigations must be explicitly reopened before additional evidence can be attached.
 - Downloads require finance-read authorization, resolve the key inside the current tenant namespace, and use private no-store, nosniff, and same-origin response headers.
 - Every successful download creates a separate audit row containing the investigation, evidence identity/type, actor identity, and request time. PostgreSQL protects this audit table with an append-only trigger.
