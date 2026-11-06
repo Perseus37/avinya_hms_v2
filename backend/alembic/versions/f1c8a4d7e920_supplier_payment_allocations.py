@@ -25,7 +25,7 @@ def upgrade() -> None:
         sa.Column("notes", sa.Text(), nullable=True),
         sa.Column("recorded_by_id", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("created_by_id", sa.Integer(), nullable=True),
         sa.Column("updated_by_id", sa.Integer(), nullable=True),
         sa.CheckConstraint("amount_paise > 0", name="ck_supplier_payment_amount_positive"),
