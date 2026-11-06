@@ -427,6 +427,11 @@ class BankStatementImportCreate(BaseModel):
             raise ValueError("Bank transaction IDs must be unique within a statement.")
         if any(not line.bank_transaction_id.strip() for line in self.lines):
             raise ValueError("Bank transaction IDs cannot be blank.")
+        debit_total = sum(line.amount_paise for line in self.lines if line.direction == BankStatementDirectionEnum.DEBIT)
+        credit_total = sum(line.amount_paise for line in self.lines if line.direction == BankStatementDirectionEnum.CREDIT)
+        expected_closing = self.opening_balance_paise + credit_total - debit_total
+        if expected_closing != self.closing_balance_paise:
+            raise ValueError("Closing balance must equal opening balance plus credits minus debits.")
         return self
 
 
