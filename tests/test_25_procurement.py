@@ -4139,3 +4139,18 @@ def test_reconciliation_sla_targets_are_snapshotted_per_investigation(
     assert saved["sla_overdue"] is False
 
 
+
+
+def test_reconciliation_sla_policy_writes_require_dedicated_permission(
+    client, pharmacist_headers
+):
+    response = client.post(
+        "/v1/api/procurement/reconciliation/sla-policies",
+        headers=pharmacist_headers,
+        json={
+            "severity_targets_hours": {"CRITICAL": 2, "HIGH": 12, "MEDIUM": 48, "LOW": 120},
+            "change_reason": "Unauthorized policy change must be rejected.",
+        },
+    )
+    assert response.status_code == 403, response.text
+
