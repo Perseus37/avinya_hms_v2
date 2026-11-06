@@ -2416,3 +2416,139 @@ def test_supplier_suspension_requires_independent_approval_and_blocks_new_orders
     assert history.status_code == 200, history.text
     assert [row["action"] for row in history.json()] == ["REINSTATE", "SUSPEND"]
     assert all(row["status"] == "APPROVED" for row in history.json())
+
+
+def test_supplier_payment_allocations_support_partial_and_full_invoice_settlement(
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.finance.models import ExpenseCategoryEnum, ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import VendorInvoice, VendorInvoiceStatusEnum
+
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-SETTLE-01",
+            "name": "Settlement Supplier",
+            "category": "GENERAL_SUPPLIES",
+            "contact_person": "Accounts Contact",
+            "phone": "9876543215",
+            "email": "settlement-supplier@example.test",
+            "address": "Supplier registered address",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        expense = ExpenseRecord(
+            category=ExpenseCategoryEnum.PHARMACY_STOCK,
+            title="Supplier settlement test invoice",
+            amount_paise=10000,
+            status=ExpenseStatusEnum.APPROVED,
+            approved_by_id=actor_id,
+            approved_at=datetime.now(timezone.utc),
+            due_date=datetime.now(timezone.utc) + timedelta(days=15),
+            vendor_name="Settlement Supplier",
+            created_by_id=actor_id,
+        )
+        db.add(expense)
+        db.flush()
+        invoice = VendorInvoice(
+            vendor_id=vendor_id,
+            invoice_number="SETTLEMENT-INV-001",
+            invoice_date=datetime.now(timezone.utc),
+            due_date=datetime.now(timezone.utc) + timedelta(days=15),
+            subtotal_paise=10000,
+            tax_amount_paise=0,
+            discount_paise=0,
+            total_amount_paise=10000,
+            status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            verified_by_id=actor_id,
+            verified_at=datetime.now(timezone.utc),
+            linked_expense_id=expense.id,
+            created_by_id=actor_id,
+        )
+        db.add(invoice)
+        db.commit()
+        invoice_id, expense_id = invoice.id, expense.id
+
+    bypass = client.post(
+        f"/v1/api/finance/ap/expenses/{expense_id}/mark-paid",
+        headers=superuser_headers,
+        params={"receipt_reference": "BYPASS-ATTEMPT"},
+    )
+    assert bypass.status_code == 409, bypass.text
+
+    first_payment = client.post(
+        "/v1/api/procurement/supplier-payments",
+        headers=superuser_headers,
+        json={
+            "vendor_id": vendor_id,
+            "payment_reference": "BANK-UTR-SETTLE-001",
+            "payment_method": "BANK_TRANSFER",
+            "payment_date": datetime.now(timezone.utc).isoformat(),
+            "amount_paise": 4000,
+            "allocations": [{"invoice_id": invoice_id, "amount_paise": 4000}],
+        },
+    )
+    assert first_payment.status_code == 201, first_payment.text
+    assert first_payment.json()["amount_paise"] == 4000
+
+    settlement = client.get(
+        f"/v1/api/procurement/invoices/{invoice_id}/settlement",
+        headers=superuser_headers,
+    )
+    assert settlement.status_code == 200, settlement.text
+    assert settlement.json()["amount_paid_paise"] == 4000
+    assert settlement.json()["outstanding_paise"] == 6000
+    assert settlement.json()["status"] == "MATCHED_APPROVED"
+
+    with session_factory() as db:
+        expense = db.get(ExpenseRecord, expense_id)
+        assert expense.status == ExpenseStatusEnum.APPROVED
+
+    second_payment = client.post(
+        "/v1/api/procurement/supplier-payments",
+        headers=superuser_headers,
+        json={
+            "vendor_id": vendor_id,
+            "payment_reference": "BANK-UTR-SETTLE-002",
+            "payment_method": "NEFT",
+            "payment_date": datetime.now(timezone.utc).isoformat(),
+            "amount_paise": 6000,
+            "allocations": [{"invoice_id": invoice_id, "amount_paise": 6000}],
+        },
+    )
+    assert second_payment.status_code == 201, second_payment.text
+
+    final_settlement = client.get(
+        f"/v1/api/procurement/invoices/{invoice_id}/settlement",
+        headers=superuser_headers,
+    )
+    assert final_settlement.status_code == 200
+    assert final_settlement.json()["amount_paid_paise"] == 10000
+    assert final_settlement.json()["outstanding_paise"] == 0
+    assert final_settlement.json()["status"] == "PAID"
+
+    with session_factory() as db:
+        expense = db.get(ExpenseRecord, expense_id)
+        assert expense.status == ExpenseStatusEnum.PAID
+
+    overpayment = client.post(
+        "/v1/api/procurement/supplier-payments",
+        headers=superuser_headers,
+        json={
+            "vendor_id": vendor_id,
+            "payment_reference": "BANK-UTR-SETTLE-003",
+            "payment_method": "UPI",
+            "payment_date": datetime.now(timezone.utc).isoformat(),
+            "amount_paise": 1,
+            "allocations": [{"invoice_id": invoice_id, "amount_paise": 1}],
+        },
+    )
+    assert overpayment.status_code == 409
