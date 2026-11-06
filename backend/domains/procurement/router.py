@@ -7060,6 +7060,62 @@ def refresh_procurement_reconciliation_exceptions(
         "note": "Missing source items remain open until a reviewer resolves or dismisses them.",
     }
 
+@router.get("/reconciliation/my-assignments")
+def list_my_reconciliation_assignments(
+    limit: int = Query(default=100, ge=1, le=250),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return only active reconciliation investigations assigned to the authenticated branch user.
+
+    This intentionally does not require finance:read and does not expose financial
+    dashboard data, supplier names, invoice details, or other users' assignments.
+    """
+    rows = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.assigned_to_id == current_user.id,
+        ProcurementReconciliationException.status.in_(["OPEN", "IN_REVIEW"]),
+    ).order_by(
+        ProcurementReconciliationException.severity.asc(),
+        ProcurementReconciliationException.first_detected_at.asc(),
+        ProcurementReconciliationException.id.asc(),
+    ).limit(limit).all()
+    items = []
+    for row in rows:
+        assignment = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == row.id,
+            ProcurementReconciliationExceptionEvent.event_type == "ASSIGNED",
+            ProcurementReconciliationExceptionEvent.new_assignee_id == current_user.id,
+        ).order_by(
+            ProcurementReconciliationExceptionEvent.occurred_at.desc(),
+            ProcurementReconciliationExceptionEvent.id.desc(),
+        ).first()
+        if assignment is None:
+            continue
+        answered = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == row.id,
+            ProcurementReconciliationExceptionEvent.id > assignment.id,
+            ProcurementReconciliationExceptionEvent.event_type.in_(["ASSIGNMENT_ACCEPTED", "ASSIGNMENT_REJECTED"]),
+        ).order_by(ProcurementReconciliationExceptionEvent.id.desc()).first()
+        acknowledgement = "PENDING" if answered is None else (
+            "ACCEPTED" if answered.event_type == "ASSIGNMENT_ACCEPTED" else "REJECTED"
+        )
+        items.append({
+            "id": row.id,
+            "exception_type": row.exception_type,
+            "severity": row.severity,
+            "status": row.status,
+            "reference_type": row.reference_type,
+            "summary": row.summary,
+            "source_present": row.source_present,
+            "first_detected_at": row.first_detected_at,
+            "assigned_at": assignment.occurred_at,
+            "acknowledgement_status": acknowledgement,
+            "acknowledged_at": answered.occurred_at if answered else None,
+            "response_target_hours": {"CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24}.get(row.severity, 24),
+        })
+    return {"total": len(items), "items": items, "scope": "CURRENT_USER_ACTIVE_ASSIGNMENTS"}
+
+
 @router.get("/reconciliation/exceptions/queue")
 def list_persisted_reconciliation_exceptions(
     status_filter: Optional[str] = Query(default=None, alias="status", pattern="^(OPEN|IN_REVIEW|RESOLVED|DISMISSED)$"),
