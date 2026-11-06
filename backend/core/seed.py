@@ -104,6 +104,7 @@ GRANULAR_PERMISSIONS = [
     ("finance:approve", "Approve accounts payable, vendor bills, and expenses", "Billing"),
     ("finance:pay", "Execute financial payments and disburse funds", "Billing"),
     ("finance:write", "Create accounts payable entries and expenses", "Billing"),
+    ("finance:sla:manage", "Create and publish reconciliation SLA policy versions", "Billing"),
     ("insurance:read", "View insurance policies, TPAs, and claims", "Billing"),
     ("insurance:write", "Manage insurance policies, TPAs, pre-auths, and claims", "Billing"),
     ("integrations:read", "View biomedical equipment and integration devices", "Diagnostics"),
