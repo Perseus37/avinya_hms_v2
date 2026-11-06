@@ -114,6 +114,20 @@ export interface ReconciliationQueue {
   exceptions: ReconciliationException[];
 }
 
+export interface ReconciliationEvidence {
+  id: number;
+  exception_id: number;
+  evidence_type: "BANK_STATEMENT" | "PAYMENT_PROOF" | "INVOICE" | "SUPPLIER_CORRESPONDENCE" | "APPROVAL_RECORD" | "OTHER";
+  description: string | null;
+  original_filename: string;
+  media_type: string;
+  size_bytes: number;
+  sha256_hex: string;
+  uploaded_by_id: number;
+  uploaded_at: string;
+  download_url: string;
+}
+
 export interface ReconciliationResolutionGuidance {
   exception_id: number;
   exception_type: string;
@@ -162,6 +176,28 @@ export const reconciliationApi = {
     }),
   getExceptionHistory: (id: number) =>
     apiClient<ReconciliationExceptionHistory>("/api/procurement/reconciliation/exceptions/" + id + "/history"),
+  getEvidence: (id: number) =>
+    apiClient<ReconciliationEvidence[]>("/api/procurement/reconciliation/exceptions/" + id + "/evidence"),
+  uploadEvidence: (id: number, payload: FormData) =>
+    apiClient<ReconciliationEvidence>("/api/procurement/reconciliation/exceptions/" + id + "/evidence", {
+      method: "POST",
+      body: payload,
+    }),
+  downloadEvidence: async (id: number, evidenceId: number) => {
+    const token = localStorage.getItem("avinya_access_token");
+    const tenant = typeof window === "undefined" ? "default" : window.location.hostname.split(".")[0] || "default";
+    const response = await fetch("/api/procurement/reconciliation/exceptions/" + id + "/evidence/" + evidenceId + "/download", {
+      headers: {
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+        "X-Hospital-Subdomain": tenant,
+      },
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(body.detail || "Unable to download evidence.");
+    }
+    return response.blob();
+  },
   assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
     apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus; acknowledgement_status: string; notification_status?: "QUEUED" | "QUEUE_UNAVAILABLE" | "EMAIL_UNAVAILABLE" | "NOT_REQUIRED" }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: JSON.stringify(payload) }),
   getResolutionGuidance: (id: number) =>
