@@ -1409,7 +1409,14 @@ def test_procurement_financial_intelligence_empty_period_and_date_validation(
     assert payload["receipts"]["accepted_goods_value_paise"] == 0
     assert payload["invoices"]["invoiced_value_paise"] == 0
     assert payload["accounts_payable"]["approved_unpaid_value_paise"] == 0
+    assert payload["accounts_payable"]["cash_paid_value_paise"] == 0
     assert payload["supplier_concentration"]["suppliers"] == []
+    assert payload["supplier_concentration"]["herfindahl_hirschman_index"] is None
+    assert payload["supplier_concentration"]["top_three_supplier_share_pct"] is None
+    assert payload["quotation_savings"]["competitive_savings_paise"] == 0
+    assert payload["quotation_savings"]["realized_cash_savings_reported"] is False
+    assert isinstance(payload["budget_intelligence"]["by_period_type"], dict)
+    assert "unbudgeted_procurement" in payload["budget_intelligence"]
 
     quotation_outcomes = client.get(
         "/v1/api/procurement/analytics/quotation-outcomes",
