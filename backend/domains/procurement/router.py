@@ -8564,6 +8564,130 @@ def get_reconciliation_resolution_guidance(
     }
 
 
+def _resume_reconciliation_sla_on_close(db: Session, row, actor_user_id: int, at: datetime):
+    if row.sla_paused_at is None:
+        return
+    paused_at = row.sla_paused_at
+    if paused_at.tzinfo is None:
+        paused_at = paused_at.replace(tzinfo=timezone.utc)
+    row.sla_paused_seconds = max(int(row.sla_paused_seconds or 0), 0) + max(
+        int((at - paused_at).total_seconds()), 0
+    )
+    row.sla_paused_at = None
+    clock = _reconciliation_sla_clock(row, at)
+    if clock["breached"] and row.sla_breached_at is None:
+        row.sla_breached_at = clock["breached_at"]
+    _record_reconciliation_event(
+        db, row, "SLA_AUTO_RESUMED", actor_user_id,
+        note="SLA pause closed automatically when the investigation reached a terminal state.",
+        event_metadata={
+            "pause_started_at": paused_at.isoformat(),
+            "pause_ended_at": at.isoformat(),
+            "pause_duration_seconds": max(int((at - paused_at).total_seconds()), 0),
+            "reason": "INVESTIGATION_CLOSED",
+        },
+    )
+
+
+@router.post("/reconciliation/exceptions/{exception_id}/sla/pause")
+def pause_reconciliation_exception_sla(
+    exception_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    row = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).with_for_update().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    if row.status not in {"OPEN", "IN_REVIEW"}:
+        raise HTTPException(status_code=409, detail="Only active investigations can have their SLA clock paused.")
+    if row.sla_paused_at is not None:
+        raise HTTPException(status_code=409, detail="The SLA clock is already paused.")
+    reason = str(payload.get("reason") or "").strip()
+    if len(reason) < 10 or len(reason) > 2000:
+        raise HTTPException(status_code=422, detail="A pause reason between 10 and 2000 characters is required.")
+    now = datetime.now(timezone.utc)
+    before = _reconciliation_sla_clock(row, now)
+    if before["breached"] and row.sla_breached_at is None:
+        row.sla_breached_at = before["breached_at"]
+    row.sla_paused_at = now
+    _record_reconciliation_event(
+        db, row, "SLA_PAUSED", current_user.id,
+        note=reason,
+        event_metadata={
+            "paused_at": now.isoformat(),
+            "elapsed_active_seconds": before["elapsed_seconds"],
+            "sla_target_hours": before["target_hours"],
+            "already_breached": before["breached"],
+            "breached_at": before["breached_at"].isoformat() if before["breached_at"] else None,
+        },
+    )
+    db.commit()
+    clock = _reconciliation_sla_clock(row, now)
+    return {
+        "id": row.id, "paused": True, "sla_paused_at": row.sla_paused_at,
+        "sla_paused_seconds": clock["paused_seconds"],
+        "sla_elapsed_hours": clock["elapsed_hours"],
+        "sla_remaining_hours": clock["remaining_hours"],
+        "sla_overdue": clock["breached"], "sla_breached_at": clock["breached_at"],
+    }
+
+
+@router.post("/reconciliation/exceptions/{exception_id}/sla/resume")
+def resume_reconciliation_exception_sla(
+    exception_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    row = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).with_for_update().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    if row.status not in {"OPEN", "IN_REVIEW"}:
+        raise HTTPException(status_code=409, detail="Only active investigations can resume an SLA clock.")
+    if row.sla_paused_at is None:
+        raise HTTPException(status_code=409, detail="The SLA clock is not paused.")
+    reason = str(payload.get("reason") or "").strip()
+    if len(reason) < 10 or len(reason) > 2000:
+        raise HTTPException(status_code=422, detail="A resume reason between 10 and 2000 characters is required.")
+    now = datetime.now(timezone.utc)
+    paused_at = row.sla_paused_at
+    if paused_at.tzinfo is None:
+        paused_at = paused_at.replace(tzinfo=timezone.utc)
+    pause_duration = max(int((now - paused_at).total_seconds()), 0)
+    row.sla_paused_seconds = max(int(row.sla_paused_seconds or 0), 0) + pause_duration
+    row.sla_paused_at = None
+    clock = _reconciliation_sla_clock(row, now)
+    if clock["breached"] and row.sla_breached_at is None:
+        row.sla_breached_at = clock["breached_at"]
+    _record_reconciliation_event(
+        db, row, "SLA_RESUMED", current_user.id,
+        note=reason,
+        event_metadata={
+            "paused_at": paused_at.isoformat(),
+            "resumed_at": now.isoformat(),
+            "pause_duration_seconds": pause_duration,
+            "total_paused_seconds": row.sla_paused_seconds,
+            "elapsed_active_seconds": clock["elapsed_seconds"],
+            "sla_target_hours": clock["target_hours"],
+            "breached": clock["breached"],
+            "breached_at": clock["breached_at"].isoformat() if clock["breached_at"] else None,
+        },
+    )
+    db.commit()
+    return {
+        "id": row.id, "paused": False, "sla_paused_at": None,
+        "sla_paused_seconds": row.sla_paused_seconds,
+        "sla_elapsed_hours": clock["elapsed_hours"],
+        "sla_remaining_hours": clock["remaining_hours"],
+        "sla_overdue": clock["breached"], "sla_breached_at": clock["breached_at"],
+    }
+
+
 @router.patch("/reconciliation/exceptions/{exception_id}/status")
 def update_reconciliation_exception_status(
     exception_id: int, payload: dict,
@@ -8619,6 +8743,7 @@ def update_reconciliation_exception_status(
         row.status = new_status
         if new_status in {"RESOLVED", "DISMISSED"}:
             row.resolved_at = datetime.now(timezone.utc)
+            _resume_reconciliation_sla_on_close(db, row, current_user.id, row.resolved_at)
             row.resolved_by_id = current_user.id
             row.resolution_note = note
             row.resolution_review_status = "NOT_REQUIRED" if new_status == "RESOLVED" else "NOT_REQUIRED"
@@ -8665,6 +8790,7 @@ def review_reconciliation_resolution(
     if decision == "APPROVE":
         row.status = row.resolution_submitted_status or "RESOLVED"
         row.resolved_at = now
+        _resume_reconciliation_sla_on_close(db, row, current_user.id, now)
         row.resolved_by_id = row.resolution_submitted_by_id
     else:
         row.status = "IN_REVIEW"
