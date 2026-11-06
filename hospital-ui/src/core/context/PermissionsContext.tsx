@@ -41,6 +41,8 @@ export type PermissionCode =
   | "billing.tpa_approve"
   | "billing.override_discount"
   | "finance.view_reconciliation"
+  | "finance.manage_reconciliation"
+  | "finance.approve_reconciliation"
   | "config.facility_manage"
   | "config.roster_manage"
   | "config.policies_manage"
@@ -112,6 +114,8 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
       "billing.tpa_approve",
       "billing.override_discount",
       "finance.view_reconciliation",
+      "finance.manage_reconciliation",
+      "finance.approve_reconciliation",
       "config.facility_manage",
       "config.roster_manage",
       "config.policies_manage",
@@ -170,7 +174,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     description: "TPA insurance pre-authorization settlement, itemized folio charges, co-pay split, and tax invoice generation.",
     defaultWorkspace: "billing",
     allowedWorkspaces: ["billing", "procurement-reconciliation", "patient-record", "registration", "adt"],
-    permissions: ["billing.view_counter", "billing.collect_fee", "billing.tpa_approve", "billing.override_discount", "finance.view_reconciliation", "patient.view_mpi", "bed.view_matrix"],
+    permissions: ["billing.view_counter", "billing.collect_fee", "billing.tpa_approve", "billing.override_discount", "finance.view_reconciliation", "finance.manage_reconciliation", "patient.view_mpi", "bed.view_matrix"],
   },
 };
 
