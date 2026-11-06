@@ -3296,3 +3296,63 @@ def test_procurement_reconciliation_dashboard_aggregates_without_double_counting
     )
     assert invalid.status_code == 422, invalid.text
 
+
+
+def test_reconciliation_assignment_recommendations_are_advisory_and_workload_aware(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    now = datetime.now(timezone.utc)
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        target = ProcurementReconciliationException(
+            fingerprint="ASSIGNMENT-RECOMMENDATION:TARGET:81001",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="OPEN",
+            reference_type="BANK_STATEMENT_LINE", reference_id=81001,
+            amount_paise=5000, matched_amount_paise=0, unmatched_amount_paise=5000,
+            summary="Target exception for assignment recommendation test.",
+            detection_snapshot={},
+            first_detected_at=now - timedelta(hours=2), last_detected_at=now,
+        )
+        resolved = ProcurementReconciliationException(
+            fingerprint="ASSIGNMENT-RECOMMENDATION:RESOLVED:81002",
+            exception_type="UNRECONCILED_SUPPLIER_PAYMENT", severity="MEDIUM", status="RESOLVED",
+            reference_type="SUPPLIER_PAYMENT", reference_id=81002,
+            amount_paise=3000, matched_amount_paise=0, unmatched_amount_paise=0,
+            summary="Historical attributed resolution for recommendation test.",
+            detection_snapshot={}, assigned_to_id=actor_id,
+            first_detected_at=now - timedelta(hours=18), last_detected_at=now - timedelta(hours=1),
+            resolved_at=now - timedelta(hours=1), resolved_by_id=actor_id,
+        )
+        db.add_all([target, resolved])
+        db.commit()
+        target_id = target.id
+
+    response = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{target_id}/assignment-recommendations",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["methodology"]["manual_confirmation_required"] is True
+    assert payload["methodology"]["automatic_assignment"] is False
+    assert payload["target_severity"] == "HIGH"
+    candidate = next(item for item in payload["recommendations"] if item["user_id"] == actor_id)
+    assert candidate["finance_suitable"] is True
+    assert candidate["resolved_count"] >= 1
+    assert candidate["median_resolution_hours"] is not None
+    assert candidate["score"] > 0
+    assert candidate["reasons"]
+
+    terminal = client.post(
+        "/v1/api/procurement/reconciliation/exceptions/refresh",
+        headers=superuser_headers,
+    )
+    # The recommendation endpoint must never mutate assignment state.
+    with session_factory() as db:
+        persisted = db.get(ProcurementReconciliationException, target_id)
+        assert persisted.assigned_to_id is None
