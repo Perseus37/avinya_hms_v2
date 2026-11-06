@@ -4021,6 +4021,8 @@ def test_reconciliation_sla_policy_versions_are_effective_dated_and_audited(
         assert prior.status == "PUBLISHED"
         assert prior.effective_to is not None
         effective_to = prior.effective_to
+        if effective_to.tzinfo is None:
+            effective_to = effective_to.replace(tzinfo=timezone.utc)
         effective_from = datetime.fromisoformat(published_second.json()["effective_from"].replace("Z", "+00:00"))
         assert abs((effective_to - effective_from).total_seconds()) < 2
         events = db.query(ProcurementReconciliationSlaPolicyEvent).filter(
