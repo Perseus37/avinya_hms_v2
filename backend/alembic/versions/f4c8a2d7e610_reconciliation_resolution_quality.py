@@ -27,6 +27,7 @@ def upgrade() -> None:
         "reopen_count >= 0",
     )
     op.add_column("procurement_reconciliation_exceptions", sa.Column("resolution_review_status", sa.String(16), server_default="NOT_REQUIRED", nullable=False))
+    op.add_column("procurement_reconciliation_exceptions", sa.Column("resolution_submitted_status", sa.String(16), nullable=True))
     op.add_column("procurement_reconciliation_exceptions", sa.Column("resolution_submitted_by_id", sa.Integer(), nullable=True))
     op.add_column("procurement_reconciliation_exceptions", sa.Column("resolution_reviewed_by_id", sa.Integer(), nullable=True))
     op.add_column("procurement_reconciliation_exceptions", sa.Column("resolution_reviewed_at", sa.DateTime(timezone=True), nullable=True))
@@ -48,6 +49,7 @@ def downgrade() -> None:
     op.drop_column("procurement_reconciliation_exceptions", "resolution_reviewed_by_id")
     op.drop_column("procurement_reconciliation_exceptions", "resolution_submitted_by_id")
     op.drop_column("procurement_reconciliation_exceptions", "resolution_review_status")
+    op.drop_column("procurement_reconciliation_exceptions", "resolution_submitted_status")
     op.drop_column("procurement_reconciliation_exceptions", "reopen_count")
     op.drop_column("procurement_reconciliation_exceptions", "resolution_checklist")
     op.drop_column("procurement_reconciliation_exceptions", "root_cause_code")
