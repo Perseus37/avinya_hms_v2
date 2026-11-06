@@ -24,6 +24,7 @@ const CashierCounterWorkspace = lazy(() => import("../../workspaces/billing/Cash
 const InfectionControlWorkspace = lazy(() => import("../../workspaces/infection/InfectionControlWorkspace").then((m) => ({ default: m.InfectionControlWorkspace })));
 const BiomedicalWorkspace = lazy(() => import("../../workspaces/biomedical/BiomedicalWorkspace").then((m) => ({ default: m.BiomedicalWorkspace })));
 const AdminWorkspace = lazy(() => import("../../workspaces/admin/AdminWorkspace").then((m) => ({ default: m.AdminWorkspace })));
+const ProcurementReconciliationWorkspace = lazy(() => import("../../workspaces/procurement/ProcurementReconciliationWorkspace").then((m) => ({ default: m.ProcurementReconciliationWorkspace })));
 
 const WorkspaceSkeleton: React.FC<{ activeWorkspace: WorkspaceId }> = ({ activeWorkspace }) => (
   <div className="flex flex-1 flex-col items-center justify-center bg-[#f5f7fa] text-slate-500">
@@ -69,6 +70,7 @@ export const AppShell: React.FC = () => {
       case "pharmacy": return <PharmacyWorkspace />;
       case "diagnostics": return <DiagnosticsWorkspace />;
       case "billing": return <CashierCounterWorkspace />;
+      case "procurement-reconciliation": return <ProcurementReconciliationWorkspace />;
       case "infection-control": return <InfectionControlWorkspace />;
       case "biomedical": return <BiomedicalWorkspace />;
       case "admin": return <AdminWorkspace onSelectWorkspace={setActiveWorkspace} />;
