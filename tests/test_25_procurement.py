@@ -2641,6 +2641,15 @@ def test_supplier_adjustments_and_advances_are_approved_allocated_and_bounded(
     assert settlement.json()["credit_adjustments_paise"] == 2000
     assert settlement.json()["advances_applied_paise"] == 3000
     assert settlement.json()["outstanding_paise"] == 5000
+    cash_overpayment = client.post(
+        "/v1/api/procurement/supplier-payments", headers=superuser_headers,
+        json={
+            "vendor_id": vendor_id, "payment_reference": "PAY-AFTER-CREDIT-001",
+            "payment_method": "NEFT", "payment_date": datetime.now(timezone.utc).isoformat(),
+            "amount_paise": 5001, "allocations": [{"invoice_id": invoice_id, "amount_paise": 5001}],
+        },
+    )
+    assert cash_overpayment.status_code == 409
     too_much = client.post(
         f"/v1/api/procurement/supplier-advances/{advance_id}/applications", headers=superuser_headers,
         json={"invoice_id": invoice_id, "amount_paise": 1},
