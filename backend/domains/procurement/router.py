@@ -7907,6 +7907,8 @@ def update_reconciliation_exception_status(
         raise HTTPException(status_code=422, detail="A resolution or dismissal note of at least 10 characters is required.")
     if row.status in {"RESOLVED", "DISMISSED"}:
         raise HTTPException(status_code=409, detail="Terminal exceptions require the explicit reopen workflow.")
+    if row.resolution_review_status == "PENDING":
+        raise HTTPException(status_code=409, detail="A submitted resolution must be independently reviewed before the investigation can change state.")
     if new_status == row.status:
         raise HTTPException(status_code=409, detail="Exception is already in the requested status.")
 
@@ -7970,7 +7972,7 @@ def review_reconciliation_resolution(
     ).with_for_update().one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
-    if row.severity not in {"CRITICAL", "HIGH"} or row.resolution_review_status != "PENDING":
+    if row.severity not in {"CRITICAL", "HIGH"} or row.resolution_review_status != "PENDING" or row.status != "IN_REVIEW":
         raise HTTPException(status_code=409, detail="This investigation has no pending independent resolution review.")
     if row.resolution_submitted_by_id == current_user.id:
         raise HTTPException(status_code=409, detail="The investigator cannot approve or reject their own resolution.")
