@@ -31,12 +31,14 @@ from backend.domains.procurement.models import (
     SupplierPayment, SupplierPaymentAllocation,
     SupplierAdjustment, SupplierAdjustmentApplication, SupplierAdjustmentTypeEnum, SupplierAdjustmentStatusEnum,
     SupplierAdvance, SupplierAdvanceAllocation,
+    BankStatementBatch, BankStatementLine, BankStatementDirectionEnum, SupplierPaymentBankMatch,
     SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, SupplierPaymentCreate, SupplierPaymentResponse, SupplierInvoiceSettlementResponse,
     SupplierAdjustmentCreate, SupplierAdjustmentReview, SupplierAdjustmentApply, SupplierAdjustmentResponse,
-    SupplierAdvanceCreate, SupplierAdvanceApply, SupplierAdvanceResponse, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
+    SupplierAdvanceCreate, SupplierAdvanceApply, SupplierAdvanceResponse,
+    BankStatementImportCreate, BankStatementBatchResponse, SupplierPaymentBankMatchCreate, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
     IndentIssueRequest, PurchaseReturnCreate,
     PurchaseRequisitionCreate, PurchaseRequisitionResponse, PurchaseRequisitionReview,
     PurchaseOrderFromRequisitionCreate, SupplierQuotationCreate,
@@ -2281,6 +2283,282 @@ def apply_supplier_advance(
     db.add(SupplierAdvanceAllocation(advance_id=advance.id, invoice_id=invoice.id, amount_paise=payload.amount_paise))
     db.commit()
     return {"status":"APPLIED","advance_id":advance.id,"invoice_id":invoice.id,"amount_paise":payload.amount_paise}
+
+
+
+
+def _bank_line_matched_amount(db: Session, line_id: int) -> int:
+    return int(db.query(func.coalesce(func.sum(SupplierPaymentBankMatch.amount_paise), 0)).filter(
+        SupplierPaymentBankMatch.statement_line_id == line_id
+    ).scalar() or 0)
+
+
+def _supplier_payment_bank_matched_amount(db: Session, payment_id: int) -> int:
+    return int(db.query(func.coalesce(func.sum(SupplierPaymentBankMatch.amount_paise), 0)).filter(
+        SupplierPaymentBankMatch.payment_id == payment_id
+    ).scalar() or 0)
+
+
+def _bank_line_reconciliation_status(db: Session, line: BankStatementLine) -> tuple[int, str]:
+    matched = _bank_line_matched_amount(db, line.id)
+    if matched <= 0:
+        return 0, "UNMATCHED"
+    if matched >= int(line.amount_paise):
+        return matched, "MATCHED"
+    return matched, "PARTIALLY_MATCHED"
+
+
+@router.post("/bank-statements/import", response_model=BankStatementBatchResponse, status_code=status.HTTP_201_CREATED)
+def import_supplier_bank_statement(
+    payload: BankStatementImportCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:pay")),
+):
+    account_ref = payload.bank_account_ref.strip()
+    statement_ref = payload.statement_reference.strip()
+    if db.query(BankStatementBatch.id).filter(
+        BankStatementBatch.bank_account_ref == account_ref,
+        BankStatementBatch.statement_reference == statement_ref,
+    ).first():
+        raise HTTPException(status_code=409, detail="This bank statement has already been imported.")
+    batch = BankStatementBatch(
+        bank_account_ref=account_ref, statement_reference=statement_ref,
+        period_start=payload.period_start, period_end=payload.period_end,
+        opening_balance_paise=payload.opening_balance_paise,
+        closing_balance_paise=payload.closing_balance_paise,
+        imported_by_id=current_user.id, created_by_id=current_user.id,
+    )
+    db.add(batch)
+    db.flush()
+    for item in payload.lines:
+        transaction_date = item.transaction_date
+        transaction_day = transaction_date.date()
+        if transaction_day < payload.period_start or transaction_day > payload.period_end:
+            raise HTTPException(status_code=422, detail=f"Transaction {item.bank_transaction_id} falls outside the statement period.")
+        transaction_id = item.bank_transaction_id.strip()
+        if db.query(BankStatementLine.id).filter(
+            BankStatementLine.bank_account_ref == account_ref,
+            BankStatementLine.bank_transaction_id == transaction_id,
+        ).first():
+            raise HTTPException(status_code=409, detail=f"Bank transaction {transaction_id} was already imported.")
+        db.add(BankStatementLine(
+            batch_id=batch.id, bank_account_ref=account_ref,
+            bank_transaction_id=transaction_id, transaction_date=transaction_date,
+            value_date=item.value_date, direction=item.direction, amount_paise=item.amount_paise,
+            bank_reference=item.bank_reference.strip() if item.bank_reference else None,
+            description=item.description.strip() if item.description else None,
+        ))
+    db.commit()
+    db.refresh(batch)
+    return batch
+
+
+@router.get("/bank-statements")
+def list_supplier_bank_statements(
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    batches = db.query(BankStatementBatch).order_by(
+        BankStatementBatch.period_end.desc(), BankStatementBatch.id.desc()
+    ).all()
+    result = []
+    for batch in batches:
+        lines = db.query(BankStatementLine).filter(BankStatementLine.batch_id == batch.id).all()
+        debit_lines = [line for line in lines if line.direction == BankStatementDirectionEnum.DEBIT]
+        credits = sum(int(line.amount_paise) for line in lines if line.direction == BankStatementDirectionEnum.CREDIT)
+        debits = sum(int(line.amount_paise) for line in debit_lines)
+        matched = sum(_bank_line_matched_amount(db, line.id) for line in debit_lines)
+        result.append({
+            "id": batch.id, "bank_account_ref": batch.bank_account_ref,
+            "statement_reference": batch.statement_reference,
+            "period_start": batch.period_start, "period_end": batch.period_end,
+            "opening_balance_paise": batch.opening_balance_paise,
+            "closing_balance_paise": batch.closing_balance_paise,
+            "line_count": len(lines), "debit_total_paise": debits,
+            "credit_total_paise": credits, "matched_debit_paise": matched,
+            "unmatched_debit_paise": max(debits - matched, 0),
+            "reconciliation_status": "RECONCILED" if debits == matched else ("PARTIALLY_RECONCILED" if matched else "UNRECONCILED"),
+        })
+    return result
+
+
+@router.get("/bank-statements/{batch_id}/lines")
+def list_supplier_bank_statement_lines(
+    batch_id: int, db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    batch = db.get(BankStatementBatch, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Bank statement not found.")
+    lines = db.query(BankStatementLine).filter(
+        BankStatementLine.batch_id == batch_id
+    ).order_by(BankStatementLine.transaction_date, BankStatementLine.id).all()
+    result = []
+    for line in lines:
+        matched, state = _bank_line_reconciliation_status(db, line) if line.direction == BankStatementDirectionEnum.DEBIT else (0, "NOT_APPLICABLE")
+        result.append({
+            "id": line.id, "batch_id": line.batch_id,
+            "bank_transaction_id": line.bank_transaction_id,
+            "transaction_date": line.transaction_date, "value_date": line.value_date,
+            "direction": line.direction, "amount_paise": line.amount_paise,
+            "bank_reference": line.bank_reference, "description": line.description,
+            "matched_amount_paise": matched,
+            "unmatched_amount_paise": max(int(line.amount_paise) - matched, 0) if line.direction == BankStatementDirectionEnum.DEBIT else 0,
+            "reconciliation_status": state,
+        })
+    return result
+
+
+@router.get("/bank-statements/{batch_id}/suggestions")
+def suggest_supplier_bank_matches(
+    batch_id: int, db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    batch = db.get(BankStatementBatch, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Bank statement not found.")
+    lines = db.query(BankStatementLine).filter(
+        BankStatementLine.batch_id == batch_id,
+        BankStatementLine.direction == BankStatementDirectionEnum.DEBIT,
+    ).order_by(BankStatementLine.transaction_date, BankStatementLine.id).all()
+    suggestions = []
+    for line in lines:
+        matched_line = _bank_line_matched_amount(db, line.id)
+        line_remaining = int(line.amount_paise) - matched_line
+        if line_remaining <= 0:
+            continue
+        reference = (line.bank_reference or "").strip().lower()
+        candidates = db.query(SupplierPayment).filter(
+            SupplierPayment.payment_date <= line.transaction_date + timedelta(days=7),
+            SupplierPayment.payment_date >= line.transaction_date - timedelta(days=7),
+        ).order_by(SupplierPayment.payment_date.desc()).limit(100).all()
+        candidate_rows = []
+        for payment in candidates:
+            payment_remaining = int(payment.amount_paise) - _supplier_payment_bank_matched_amount(db, payment.id)
+            if payment_remaining <= 0:
+                continue
+            payment_ref = payment.payment_reference.strip().lower()
+            reference_match = bool(reference and (reference in payment_ref or payment_ref in reference))
+            amount_match = payment_remaining == line_remaining
+            if reference_match or amount_match:
+                candidate_rows.append({
+                    "payment_id": payment.id, "vendor_id": payment.vendor_id,
+                    "payment_reference": payment.payment_reference,
+                    "payment_date": payment.payment_date,
+                    "payment_amount_paise": payment.amount_paise,
+                    "remaining_unreconciled_paise": payment_remaining,
+                    "reference_match": reference_match, "amount_match": amount_match,
+                })
+        suggestions.append({
+            "statement_line_id": line.id, "bank_transaction_id": line.bank_transaction_id,
+            "bank_reference": line.bank_reference, "amount_paise": line.amount_paise,
+            "unmatched_amount_paise": line_remaining, "candidates": candidate_rows,
+        })
+    return suggestions
+
+
+@router.post("/bank-statements/lines/{line_id}/matches", status_code=status.HTTP_201_CREATED)
+def match_supplier_bank_statement_line(
+    line_id: int, payload: SupplierPaymentBankMatchCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:pay")),
+):
+    line = db.query(BankStatementLine).filter(
+        BankStatementLine.id == line_id
+    ).with_for_update().one_or_none()
+    if line is None:
+        raise HTTPException(status_code=404, detail="Bank statement line not found.")
+    if line.direction != BankStatementDirectionEnum.DEBIT:
+        raise HTTPException(status_code=422, detail="Only bank debit transactions can be matched to supplier payments.")
+    payment = db.query(SupplierPayment).filter(
+        SupplierPayment.id == payload.payment_id
+    ).with_for_update().one_or_none()
+    if payment is None:
+        raise HTTPException(status_code=404, detail="Supplier payment not found.")
+    if line.transaction_date < payment.payment_date - timedelta(days=7) or line.transaction_date > payment.payment_date + timedelta(days=7):
+        if not (payload.match_reason or "").strip():
+            raise HTTPException(status_code=422, detail="A reason is required when bank and recorded payment dates differ by more than seven days.")
+    if line.bank_reference and line.bank_reference.strip().lower() != payment.payment_reference.strip().lower():
+        if not (payload.match_reason or "").strip():
+            raise HTTPException(status_code=422, detail="A match reason is required when bank reference differs from the recorded payment reference.")
+    existing = db.query(SupplierPaymentBankMatch.id).filter(
+        SupplierPaymentBankMatch.statement_line_id == line.id,
+        SupplierPaymentBankMatch.payment_id == payment.id,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="This payment is already matched to this bank transaction.")
+    line_remaining = int(line.amount_paise) - _bank_line_matched_amount(db, line.id)
+    payment_remaining = int(payment.amount_paise) - _supplier_payment_bank_matched_amount(db, payment.id)
+    if payload.amount_paise > line_remaining:
+        raise HTTPException(status_code=409, detail={"message":"Match exceeds the unmatched bank transaction amount.","unmatched_bank_amount_paise":line_remaining})
+    if payload.amount_paise > payment_remaining:
+        raise HTTPException(status_code=409, detail={"message":"Match exceeds the unreconciled supplier payment amount.","unreconciled_payment_amount_paise":payment_remaining})
+    row = SupplierPaymentBankMatch(
+        statement_line_id=line.id, payment_id=payment.id,
+        amount_paise=payload.amount_paise, matched_by_id=current_user.id,
+        match_reason=payload.match_reason.strip() if payload.match_reason else None,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {
+        "id": row.id, "statement_line_id": row.statement_line_id,
+        "payment_id": row.payment_id, "amount_paise": row.amount_paise,
+        "matched_by_id": row.matched_by_id, "matched_at": row.matched_at,
+        "match_reason": row.match_reason,
+        "statement_line_status": _bank_line_reconciliation_status(db, line)[1],
+    }
+
+
+@router.get("/supplier-payments/reconciliation")
+def get_supplier_payment_reconciliation(
+    from_date: Optional[date] = Query(default=None),
+    to_date: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date must be on or before to_date.")
+    payments = db.query(SupplierPayment).order_by(SupplierPayment.payment_date.desc()).all()
+    bank_lines = db.query(BankStatementLine).filter(
+        BankStatementLine.direction == BankStatementDirectionEnum.DEBIT
+    ).order_by(BankStatementLine.transaction_date.desc()).all()
+    if from_date:
+        payments = [p for p in payments if p.payment_date.date() >= from_date]
+        bank_lines = [line for line in bank_lines if line.transaction_date.date() >= from_date]
+    if to_date:
+        payments = [p for p in payments if p.payment_date.date() <= to_date]
+        bank_lines = [line for line in bank_lines if line.transaction_date.date() <= to_date]
+    payment_rows = []
+    for payment in payments:
+        matched = _supplier_payment_bank_matched_amount(db, payment.id)
+        payment_rows.append({
+            "payment_id": payment.id, "vendor_id": payment.vendor_id,
+            "payment_reference": payment.payment_reference, "payment_date": payment.payment_date,
+            "amount_paise": payment.amount_paise, "matched_amount_paise": matched,
+            "unreconciled_amount_paise": max(int(payment.amount_paise) - matched, 0),
+            "status": "RECONCILED" if matched >= int(payment.amount_paise) else ("PARTIALLY_RECONCILED" if matched else "UNRECONCILED"),
+        })
+    line_rows = []
+    for line in bank_lines:
+        matched, state = _bank_line_reconciliation_status(db, line)
+        if state != "MATCHED":
+            line_rows.append({
+                "statement_line_id": line.id, "bank_transaction_id": line.bank_transaction_id,
+                "transaction_date": line.transaction_date, "bank_reference": line.bank_reference,
+                "amount_paise": line.amount_paise, "matched_amount_paise": matched,
+                "unmatched_amount_paise": max(int(line.amount_paise) - matched, 0),
+                "status": state,
+            })
+    return {
+        "supplier_payments": payment_rows,
+        "unmatched_or_partial_bank_debits": line_rows,
+        "totals": {
+            "supplier_payment_value_paise": sum(int(p.amount_paise) for p in payments),
+            "matched_supplier_payment_value_paise": sum(_supplier_payment_bank_matched_amount(db, p.id) for p in payments),
+            "unreconciled_supplier_payment_value_paise": sum(max(int(p.amount_paise) - _supplier_payment_bank_matched_amount(db, p.id), 0) for p in payments),
+        },
+    }
 
 
 
