@@ -137,6 +137,14 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [investigationNote, setInvestigationNote] = useState("");
   const [statusChoice, setStatusChoice] = useState<ReconciliationStatus>("IN_REVIEW");
   const [statusNote, setStatusNote] = useState("");
+  const rankedAssigneeOptions = useMemo(() => [...assigneeOptions].sort((a, b) => {
+    const loadA = dashboard?.finance_workload.find((item) => item.user_id === a.id);
+    const loadB = dashboard?.finance_workload.find((item) => item.user_id === b.id);
+    const overdueDifference = (loadA?.assigned_sla_overdue || 0) - (loadB?.assigned_sla_overdue || 0);
+    if (overdueDifference !== 0) return overdueDifference;
+    const openDifference = (loadA?.assigned_open || 0) - (loadB?.assigned_open || 0);
+    return openDifference !== 0 ? openDifference : a.full_name.localeCompare(b.full_name);
+  }), [assigneeOptions, dashboard]);
 
   useEffect(() => {
     if (!selectedException || !hasPermission("finance.manage_reconciliation") || !assigneePickerOpen) {
@@ -583,13 +591,13 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                     <input id="reconciliation-assignee-search" role="combobox" aria-autocomplete="list" aria-expanded={assigneeOptions.length > 0} value={assigneeSearch} onChange={(event) => { setAssigneeSearch(event.target.value); setAssigneePickerOpen(true); }} placeholder="Search by staff name or login ID…" disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
                     {assigneeLoading && <p className="mt-2 text-[10px] text-slate-400">Searching branch directory…</p>}
                     {!assigneeLoading && assigneeSearch.trim() && assigneeOptions.length === 0 && <p className="mt-2 text-[10px] text-slate-400">No active staff matched this search.</p>}
-                    {assigneePickerOpen && assigneeOptions.length > 0 && <ul role="listbox" aria-label="Active branch staff" className="mt-2 max-h-44 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
-                      {assigneeOptions.map((person) => {
+                    {assigneePickerOpen && rankedAssigneeOptions.length > 0 && <ul role="listbox" aria-label="Active branch staff" className="mt-2 max-h-44 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+                      {rankedAssigneeOptions.map((person, index) => {
                         const workload = dashboard?.finance_workload.find((item) => item.user_id === person.id);
                         return <li key={person.id}>
                           <button type="button" role="option" aria-selected={assigneeInput === String(person.id)} onClick={() => { setAssigneeInput(String(person.id)); setAssigneeSearch(person.full_name); setAssigneeOptions([]); setAssigneePickerOpen(false); }} disabled={actionLoading} className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-blue-50 disabled:opacity-50">
                             <span className="min-w-0"><span className="block truncate text-xs font-semibold text-slate-800">{person.full_name}</span><span className="block text-[10px] text-slate-400">{person.login_id} · User #{person.id}</span><span className="mt-1 flex flex-wrap gap-1">{person.roles.length ? person.roles.map((role) => <span key={role.code} className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] text-slate-600">{role.name}</span>) : <span className="text-[9px] text-slate-400">No assigned role</span>}</span>
-                              <span className="mt-1 block text-[10px] text-slate-500">{workload ? `${number(workload.assigned_open)} open · ${number(workload.assigned_sla_overdue)} overdue · oldest ${hours(workload.oldest_open_age_hours)}` : "No cases in current dashboard scope"}</span></span>
+                              <span className="mt-1 block text-[10px] text-slate-500">{workload ? `${number(workload.assigned_open)} open · ${number(workload.assigned_sla_overdue)} overdue · oldest ${hours(workload.oldest_open_age_hours)}` : "No cases in current dashboard scope"}</span>{index === 0 && <span className="mt-1 inline-flex rounded bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700">Lowest current load</span>}</span>
                             {assigneeInput === String(person.id) && <CheckCircle2 size={15} className="mt-1 shrink-0 text-blue-600" />}
                           </button>
                         </li>;
