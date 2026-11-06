@@ -7063,6 +7063,7 @@ def upload_reconciliation_evidence(
         "sha256_hex": evidence.sha256_hex,
         "uploaded_by_id": evidence.uploaded_by_id,
         "uploaded_at": evidence.uploaded_at,
+        "download_url": f"/api/procurement/reconciliation/exceptions/{exception_id}/evidence/{evidence.id}/download",
     }
 
 
