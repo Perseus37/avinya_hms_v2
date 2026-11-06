@@ -4174,9 +4174,9 @@ def test_reconciliation_sla_clock_pause_resume_and_breach_tracking(
             reference_id=930101,
             summary="Pause-aware SLA clock regression case.",
             detection_snapshot={},
-            first_detected_at=now - timedelta(minutes=30),
+            first_detected_at=now - timedelta(hours=2, minutes=30),
             last_detected_at=now,
-            sla_target_hours=1,
+            sla_target_hours=3,
             sla_paused_seconds=0,
         )
         breached_case = ProcurementReconciliationException(
