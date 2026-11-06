@@ -7962,9 +7962,7 @@ def get_reconciliation_dashboard(
         if breached:
             sla_breaches_by_day[opened_day] = sla_breaches_by_day.get(opened_day, 0) + 1
         if row.status in open_statuses:
-            if sla_clock["paused"]:
-                aging["under_4_hours"] += 1
-            elif elapsed < 4:
+            if elapsed < 4:
                 aging["under_4_hours"] += 1
             elif elapsed < 24:
                 aging["4_to_24_hours"] += 1
