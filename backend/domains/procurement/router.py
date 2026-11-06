@@ -7181,6 +7181,8 @@ def get_reconciliation_dashboard(
     resolution_hours = []
     opened_by_day = {}
     resolved_by_day = {}
+    sla_breaches_by_day = {}
+    resolved_by_user = {}
 
     open_statuses = {"OPEN", "IN_REVIEW"}
     amount_bearing_types = {
@@ -7204,6 +7206,9 @@ def get_reconciliation_dashboard(
         opened_by_day[opened_day] = opened_by_day.get(opened_day, 0) + 1
 
         elapsed = age_hours(row)
+        breached = elapsed > sla_hours.get(row.severity, 168)
+        if breached:
+            sla_breaches_by_day[opened_day] = sla_breaches_by_day.get(opened_day, 0) + 1
         if row.status in open_statuses:
             if elapsed < 4:
                 aging["under_4_hours"] += 1
@@ -7215,12 +7220,14 @@ def get_reconciliation_dashboard(
                 aging["3_to_7_days"] += 1
             else:
                 aging["over_7_days"] += 1
-            if elapsed > sla_hours.get(row.severity, 168):
+            if breached:
                 sla_breaches[row.severity] += 1
         elif row.resolved_at is not None:
             resolution_hours.append(elapsed)
             resolved_day = as_utc(row.resolved_at).date().isoformat()
             resolved_by_day[resolved_day] = resolved_by_day.get(resolved_day, 0) + 1
+            resolver_key = str(row.resolved_by_id) if row.resolved_by_id is not None else "UNKNOWN"
+            resolved_by_user[resolver_key] = resolved_by_user.get(resolver_key, 0) + 1
 
         # Do not include possible-duplicate candidates in monetary totals.
         # Keep each exception category separate to avoid summing both sides of
@@ -7239,13 +7246,13 @@ def get_reconciliation_dashboard(
         assignee_key = str(row.assigned_to_id) if row.assigned_to_id is not None else "UNASSIGNED"
         assignee = workload.setdefault(assignee_key, {
             "user_id": row.assigned_to_id, "assigned_total": 0, "assigned_open": 0,
-            "resolved_total": 0,
+            "assigned_resolved_count": 0,
         })
         assignee["assigned_total"] += 1
         if row.status in open_statuses:
             assignee["assigned_open"] += 1
         if row.status == "RESOLVED":
-            assignee["resolved_total"] += 1
+            assignee["assigned_resolved_count"] += 1
 
     user_ids = {
         int(key) for key in workload
@@ -7272,7 +7279,19 @@ def get_reconciliation_dashboard(
         median_resolution = ordered[middle] if len(ordered) % 2 else round((ordered[middle - 1] + ordered[middle]) / 2, 2)
         average_resolution = round(sum(ordered) / len(ordered), 2)
 
-    trend_days = sorted(set(opened_by_day) | set(resolved_by_day))
+    resolver_ids = {int(key) for key in resolved_by_user if key != "UNKNOWN"}
+    resolver_names = {
+        user.id: user.full_name
+        for user in db.query(User).filter(User.id.in_(resolver_ids)).all()
+    } if resolver_ids else {}
+    resolver_rows = [{
+        "user_id": int(key) if key != "UNKNOWN" else None,
+        "user_name": resolver_names.get(int(key)) if key != "UNKNOWN" else None,
+        "resolved_count": count,
+    } for key, count in resolved_by_user.items()]
+    resolver_rows.sort(key=lambda item: (-item["resolved_count"], item["user_id"] or 0))
+
+    trend_days = sorted(set(opened_by_day) | set(resolved_by_day) | set(sla_breaches_by_day))
     return {
         "as_of": now,
         "filters": {
@@ -7298,6 +7317,9 @@ def get_reconciliation_dashboard(
         "by_exception_type": type_counts,
         "open_aging": aging,
         "sla_breaches_by_severity": sla_breaches,
+        "sla_breaches_by_detection_day": [{
+            "date": day, "breached_count": sla_breaches_by_day.get(day, 0),
+        } for day in sorted(sla_breaches_by_day)],
         "resolution_performance": {
             "resolved_count": resolved_count,
             "average_resolution_hours": average_resolution,
@@ -7310,6 +7332,7 @@ def get_reconciliation_dashboard(
             "resolved_count": resolved_by_day.get(day, 0),
         } for day in trend_days],
         "finance_workload": workload_rows,
+        "resolved_by_user": resolver_rows,
         "investigation_amounts_by_exception_type": exposure_by_type,
         "amount_methodology": {
             "currency_unit": "INR paise",
