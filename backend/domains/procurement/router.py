@@ -4155,6 +4155,235 @@ def get_procurement_price_benchmarks(
     }
 
 
+@router.get("/analytics/cash-flow-forecast")
+def get_procurement_cash_flow_forecast(
+    horizon_days: int = Query(default=90, ge=7, le=365),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    """Cash forecast separates invoice cash needs, approved schedules, PO commitments and prepaid advances."""
+    today = datetime.now(timezone.utc).date()
+    horizon_end = today + timedelta(days=horizon_days)
+    bucket_edges = (7, 30, 60, 90, 180, 365)
+    edges = [edge for edge in bucket_edges if edge < horizon_days] + [horizon_days]
+    buckets = []
+    lower = 0
+    for upper in edges:
+        buckets.append({
+            "window": f"day_{lower + 1}_to_{upper}",
+            "from_date": (today + timedelta(days=lower + 1)).isoformat(),
+            "to_date": (today + timedelta(days=upper)).isoformat(),
+            "scheduled_approved_paise": 0,
+            "unplanned_ap_due_paise": 0,
+            "projected_ap_cash_need_paise": 0,
+            "invoice_count": 0,
+            "payment_request_count": 0,
+        })
+        lower = upper
+
+    def bucket_for(target_date: date):
+        if target_date <= today:
+            return buckets[0]
+        for row in buckets:
+            if date.fromisoformat(row["from_date"]) <= target_date <= date.fromisoformat(row["to_date"]):
+                return row
+        return None
+
+    invoices = db.query(VendorInvoice).filter(
+        VendorInvoice.status.in_([
+            VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            VendorInvoiceStatusEnum.PAID,
+        ])
+    ).all()
+    ap_rows = []
+    invoice_ids = {row.id for row in invoices}
+    paid_by_invoice = _supplier_paid_amounts_by_invoice(db, invoice_ids)
+    for invoice in invoices:
+        if invoice.linked_expense_id is None:
+            continue
+        expense = db.get(ExpenseRecord, invoice.linked_expense_id)
+        if expense is None or expense.status not in {ExpenseStatusEnum.APPROVED, ExpenseStatusEnum.PAID}:
+            continue
+        outstanding, credit_amount, advance_amount = _supplier_invoice_outstanding(db, invoice)
+        outstanding = max(int(outstanding), 0)
+        if outstanding <= 0:
+            continue
+        due = invoice.due_date.date() if isinstance(invoice.due_date, datetime) else invoice.due_date
+        reserved = _reserved_supplier_payment_amount(db, invoice.id)
+        ap_rows.append({
+            "invoice_id": invoice.id,
+            "vendor_id": invoice.vendor_id,
+            "invoice_number": invoice.invoice_number,
+            "due_date": due,
+            "outstanding_paise": outstanding,
+            "reserved_paise": min(reserved, outstanding),
+            "unplanned_paise": max(outstanding - reserved, 0),
+            "credit_adjustments_paise": int(credit_amount),
+            "advances_applied_paise": int(advance_amount),
+            "cash_paid_paise": int(_effective_invoice_paid_amount(invoice, paid_by_invoice)),
+        })
+
+    approved_requests = db.query(SupplierPaymentRequest).options(
+        selectinload(SupplierPaymentRequest.allocations)
+    ).filter(SupplierPaymentRequest.status == "APPROVED").all()
+    pending_requests = db.query(SupplierPaymentRequest).filter(
+        SupplierPaymentRequest.status == "PENDING"
+    ).all()
+    approved_schedule_total = 0
+    approved_schedule_in_horizon = 0
+    approved_schedule_rows = []
+    for request_row in approved_requests:
+        amount = int(request_row.amount_paise)
+        approved_schedule_total += amount
+        if request_row.scheduled_date <= horizon_end:
+            approved_schedule_in_horizon += amount
+            target = bucket_for(request_row.scheduled_date)
+            if target is not None:
+                target["scheduled_approved_paise"] += amount
+                target["payment_request_count"] += 1
+            approved_schedule_rows.append({
+                "request_id": request_row.id,
+                "vendor_id": request_row.vendor_id,
+                "scheduled_date": request_row.scheduled_date.isoformat(),
+                "payment_run_reference": request_row.payment_run_reference,
+                "amount_paise": amount,
+            })
+
+    ap_due_total = 0
+    unplanned_due_in_horizon = 0
+    overdue_ap = 0
+    for row in ap_rows:
+        due = row["due_date"]
+        ap_due_total += row["outstanding_paise"]
+        if due < today:
+            overdue_ap += row["unplanned_paise"]
+        if due <= horizon_end:
+            unplanned_due_in_horizon += row["unplanned_paise"]
+            target = bucket_for(due)
+            if target is not None:
+                target["unplanned_ap_due_paise"] += row["unplanned_paise"]
+                target["invoice_count"] += 1
+
+    for bucket in buckets:
+        bucket["projected_ap_cash_need_paise"] = (
+            bucket["scheduled_approved_paise"] + bucket["unplanned_ap_due_paise"]
+        )
+
+    # PO commitments are procurement exposure, not dated cash outflows: payment terms
+    # and invoice settlement dates are not reliably inferable from PO delivery dates.
+    open_pos = db.query(PurchaseOrder).filter(
+        PurchaseOrder.status.in_([
+            POStatusEnum.SUBMITTED,
+            POStatusEnum.APPROVED,
+            POStatusEnum.PARTIALLY_RECEIVED,
+        ]),
+        PurchaseOrder.delivery_due_date <= datetime.combine(
+            horizon_end, datetime.max.time(), tzinfo=timezone.utc
+        ),
+    ).all()
+    po_commitment = sum(int(row.total_amount_paise or 0) for row in open_pos)
+    po_by_delivery_window = {}
+    for po in open_pos:
+        delivery_date = po.delivery_due_date.date()
+        target = bucket_for(delivery_date)
+        if target is not None:
+            po_by_delivery_window[target["window"]] = (
+                po_by_delivery_window.get(target["window"], 0) + int(po.total_amount_paise or 0)
+            )
+
+    advances = db.query(SupplierAdvance).all()
+    advance_ids = [row.id for row in advances]
+    applied_by_advance = {}
+    if advance_ids:
+        advance_rows = db.query(
+            SupplierAdvanceAllocation.advance_id,
+            func.coalesce(func.sum(SupplierAdvanceAllocation.amount_paise), 0),
+        ).filter(
+            SupplierAdvanceAllocation.advance_id.in_(advance_ids)
+        ).group_by(SupplierAdvanceAllocation.advance_id).all()
+        applied_by_advance = {int(key): int(value or 0) for key, value in advance_rows}
+    unapplied_advances = sum(
+        max(int(row.amount_paise) - applied_by_advance.get(row.id, 0), 0)
+        for row in advances
+    )
+
+    active_budgets = db.query(ProcurementBudget).filter(
+        ProcurementBudget.status == "ACTIVE",
+        ProcurementBudget.period_start <= horizon_end,
+        ProcurementBudget.period_end >= today,
+    ).all()
+    budget_total = 0
+    budget_available = 0
+    budget_used = 0
+    budget_rows = []
+    for budget in active_budgets:
+        available, earmarked = _budget_available_paise(db, budget)
+        used = int(budget.total_amount_paise) - int(available) - int(earmarked)
+        budget_total += int(budget.total_amount_paise)
+        budget_available += int(available)
+        budget_used += max(used, 0)
+        budget_rows.append({
+            "budget_id": budget.id,
+            "budget_number": budget.budget_number,
+            "department_id": budget.requesting_department_id,
+            "category": budget.category,
+            "period_start": budget.period_start.isoformat(),
+            "period_end": budget.period_end.isoformat(),
+            "allocated_paise": int(budget.total_amount_paise),
+            "used_or_reserved_paise": max(used, 0),
+            "available_paise": int(available),
+        })
+
+    return {
+        "as_of_date": today.isoformat(),
+        "horizon_days": horizon_days,
+        "horizon_end": horizon_end.isoformat(),
+        "currency_unit": "INR paise",
+        "cash_position": {
+            "overdue_unplanned_ap_paise": overdue_ap,
+            "approved_payment_schedule_in_horizon_paise": approved_schedule_in_horizon,
+            "unplanned_ap_due_in_horizon_paise": unplanned_due_in_horizon,
+            "projected_ap_cash_need_in_horizon_paise": approved_schedule_in_horizon + unplanned_due_in_horizon,
+            "all_open_ap_outstanding_paise": ap_due_total,
+            "pending_unapproved_payment_requests_paise": sum(int(row.amount_paise) for row in pending_requests),
+            "approved_payment_requests_all_dates_paise": approved_schedule_total,
+        },
+        "forecast_buckets": buckets,
+        "approved_payment_schedule": approved_schedule_rows,
+        "purchase_order_commitments": {
+            "open_po_count": len(open_pos),
+            "gross_commitment_due_for_delivery_in_horizon_paise": po_commitment,
+            "by_delivery_window_paise": po_by_delivery_window,
+            "cash_forecast_included": False,
+            "explanation": "Open PO value is shown as a separate commitment exposure. It is not added to AP cash need because delivery dates are not payment dates and PO payment terms do not establish a reliable cash date.",
+        },
+        "supplier_advances": {
+            "unapplied_advance_balance_paise": unapplied_advances,
+            "cash_outflow_included_in_forecast": False,
+            "explanation": "Advances are historical cash already paid. Unapplied balances are shown as prepaid supplier exposure, not future outflow.",
+        },
+        "procurement_budgets": {
+            "active_budget_count": len(active_budgets),
+            "allocated_paise": budget_total,
+            "used_or_reserved_paise": budget_used,
+            "available_paise": budget_available,
+            "budgets": budget_rows,
+            "explanation": "Budget availability is a control metric, not a bank cash balance or cash source.",
+        },
+        "methodology": {
+            "approved_scheduled_payments": "Approved, unexecuted payment requests are placed on their scheduled dates.",
+            "unplanned_ap": "Net invoice outstanding after cash payments, approved credit/debit adjustments and applied supplier advances, less pending or approved request reservations; placed on contractual invoice due dates.",
+            "no_double_counting": "Reserved amounts are excluded from unplanned AP before approved scheduled amounts are added.",
+            "limitations": [
+                "This is a procurement cash-requirement forecast, not a bank-balance or whole-hospital cash forecast.",
+                "Pending payment requests are disclosed separately and are not treated as approved cash outflows.",
+                "PO commitments are not assigned cash dates without a matched invoice/payment schedule.",
+                "No revenue, payroll, operating expense, tax remittance or bank-balance forecast is included.",
+            ],
+        },
+    }
+
+
 @router.get("/analytics/cost-intelligence")
 def get_procurement_cost_intelligence(
     from_date: Optional[date] = Query(default=None, description="Inclusive date filter (UTC)."),
