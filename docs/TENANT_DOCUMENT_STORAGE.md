@@ -50,6 +50,20 @@ Reconciliation evidence is stored in the private `procurement-reconciliation-evi
 - Every successful download creates a separate audit row containing the investigation, evidence identity/type, actor identity, and request time. PostgreSQL protects this audit table with an append-only trigger.
 - Evidence metadata has no update/delete API. The database restricts deleting an investigation while evidence exists; evidence retention and legal-hold deletion require a separately approved retention workflow.
 
+## Reconciliation investigation audit export
+
+Finance users with reconciliation read access can export one investigation using `GET /api/procurement/reconciliation/exceptions/{id}/audit-export`. The response is a private ZIP package containing:
+
+- `investigation.json`: the persisted exception snapshot, financial exposure, source-presence state, assignment, root-cause, resolution checklist, reviewer and reopen metadata.
+- `history.json`: the chronological append-only investigation event journal, including the export-generation event itself.
+- `evidence-download-audit.json`: the append-only evidence download access register, including actor identity and request timestamps.
+- `evidence/`: the original uploaded evidence files, re-verified against their stored SHA-256 digest before inclusion.
+- `manifest.json`: package schema/version, tenant and investigation identifiers, generator identity, and SHA-256/size for the investigation record, download audit and every included evidence file.
+
+The manifest intentionally excludes `history.json` because that file contains the export-generation event whose metadata stores the manifest digest; excluding it avoids a circular hash. The manifest digest is also returned in `X-Audit-Manifest-SHA256` and stored in the immutable `AUDIT_EXPORT_GENERATED` event.
+
+Exports are limited to 100 evidence files and 50 MiB of uncompressed evidence. The export is generated from the current tenant database and tenant storage namespace, does not change investigation status, and is not a substitute for a legally approved records-retention process.
+
 ## Required upload lifecycle
 
 1. Resolve the active tenant from the authenticated request context. Never accept a tenant slug from an upload form as the authority for tenant ownership.
