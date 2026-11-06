@@ -336,7 +336,7 @@ def store_reconciliation_evidence(
     """Publish a scanned PDF/JPEG/PNG evidence file under an opaque tenant key."""
     if not _TENANT_SLUG.fullmatch(tenant_slug):
         raise RuntimeError("Tenant slug is not a safe storage path component.")
-    suffix = Path((filename or "").replace("\\\\", "/")).suffix.lower()
+    suffix = Path((filename or "").replace(chr(92), "/")).suffix.lower()
     signature = _ALLOWED_SIGNATURES.get(suffix)
     if signature is None:
         raise HTTPException(
