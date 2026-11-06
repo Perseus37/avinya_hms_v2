@@ -9082,6 +9082,10 @@ def publish_reconciliation_escalation_policy(
         ProcurementReconciliationEscalationPolicy.status == "PUBLISHED",
         ProcurementReconciliationEscalationPolicy.effective_to.is_(None),
     ).with_for_update().all()
+    if active and row.version <= max(prior.version for prior in active):
+        raise HTTPException(status_code=409, detail="A newer escalation policy version is already published.")
+    if active and any(effective_from <= prior.effective_from for prior in active):
+        raise HTTPException(status_code=422, detail="A new escalation policy must take effect after the currently published version.")
     for prior in active:
         prior.effective_to = effective_from
     row.status = "PUBLISHED"
