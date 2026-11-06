@@ -2776,7 +2776,7 @@ def get_supplier_payment_priorities(
 def create_supplier_payment_request(
     payload: SupplierPaymentRequestCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RequirePermission("finance:pay")),
+    current_user: User = Depends(RequirePermission("finance:write")),
 ):
     vendor = db.query(VendorMaster).filter(
         VendorMaster.id == payload.vendor_id
@@ -3037,7 +3037,7 @@ def execute_supplier_payment_request(
 def cancel_supplier_payment_request(
     request_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RequirePermission("finance:pay")),
+    current_user: User = Depends(RequirePermission("finance:write")),
 ):
     request_row = db.query(SupplierPaymentRequest).options(
         selectinload(SupplierPaymentRequest.allocations)
