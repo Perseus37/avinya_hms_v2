@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, BackgroundTasks, Response, Query, Request, Form
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session, joinedload, selectinload
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, text
 from sqlalchemy.exc import IntegrityError
 from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
@@ -2629,7 +2629,7 @@ def get_procurement_reconciliation_exceptions(
                     "reference_type": "SUPPLIER_PAYMENT",
                     "reference_id": payment.id,
                     "vendor_id": vendor_id,
-                    "vendor_name": payment.vendor.name if payment.vendor else None,
+                    "vendor_name": vendor_names.get(vendor_id),
                     "payment_reference": payment.payment_reference,
                     "transaction_date": payment.payment_date,
                     "amount_paise": amount,
@@ -6982,6 +6982,9 @@ def refresh_procurement_reconciliation_exceptions(
     current_user: User = Depends(RequirePermission("finance:write")),
 ):
     """Snapshot current detections and mark absent source items without auto-resolving them."""
+    # Serialize full scans per branch database on PostgreSQL.
+    if db.bind is not None and db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(7342198601)"))
     live = get_procurement_reconciliation_exceptions(None, None, 0, db, current_user)
     now = datetime.now(timezone.utc)
     created = updated = unchanged_terminal = missing_marked = 0
