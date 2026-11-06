@@ -3032,9 +3032,15 @@ def test_procurement_reconciliation_exception_worklist_is_read_only_and_filterab
     assert "exceptions" in payload
     assert payload["controls"]["read_only"] is True
     assert "POSSIBLE_DUPLICATE_SUPPLIER_PAYMENT" in payload["controls"]["duplicate_payment_detection"]
-    assert "UNCLASSIFIED_BANK_CREDIT" in payload["summary"]["by_type"] or isinstance(
-        payload["summary"]["by_type"], dict
+    assert payload["summary"]["total_exceptions"] == len(payload["exceptions"])
+    assert payload["summary"]["total_exceptions"] == sum(
+        payload["summary"]["by_type"].values()
     )
+    for item in payload["exceptions"]:
+        assert item["exception_type"]
+        assert item["severity"] in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+        assert item["reference_type"]
+        assert item["reference_id"] > 0
 
     filtered = client.get(
         "/v1/api/procurement/reconciliation/exceptions",
