@@ -3209,6 +3209,14 @@ def test_procurement_reconciliation_dashboard_aggregates_without_double_counting
     assert payload["resolution_performance"]["median_resolution_hours"] is not None
     assert any(row["opened_count"] >= 1 for row in payload["daily_trend"])
 
+    overdue_unassigned = client.get(
+        "/v1/api/procurement/reconciliation/exceptions/queue",
+        headers=superuser_headers,
+        params={"sla_overdue": "true", "unassigned_only": "true"},
+    )
+    assert overdue_unassigned.status_code == 200, overdue_unassigned.text
+    assert any(item["reference_id"] == 10001 for item in overdue_unassigned.json()["exceptions"])
+
     filtered = client.get(
         "/v1/api/procurement/analytics/reconciliation-dashboard",
         headers=superuser_headers,
