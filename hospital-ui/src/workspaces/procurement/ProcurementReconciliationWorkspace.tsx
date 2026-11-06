@@ -182,7 +182,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const openException = async (item: ReconciliationException) => {
     setSelectedException(item); setHistory([]); setDetailError(""); setDetailMessage("");
     setAssigneeInput(item.assigned_to_id === null ? "" : String(item.assigned_to_id));
-    setAssignmentNote(""); setInvestigationNote(""); setStatusChoice("IN_REVIEW"); setStatusNote("");
+    setAssignmentNote(""); setInvestigationNote(""); setStatusChoice(item.status === "IN_REVIEW" ? "OPEN" : "IN_REVIEW"); setStatusNote("");
     setHistoryLoading(true);
     try { const result = await reconciliationApi.getExceptionHistory(item.id); setHistory(result.events || []); }
     catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to load investigation history."); }
