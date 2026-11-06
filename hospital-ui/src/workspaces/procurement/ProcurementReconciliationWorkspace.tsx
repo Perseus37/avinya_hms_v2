@@ -371,12 +371,15 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
               <Section title="Exception categories" description="Select a category to inspect its open worklist">
                 <div className="space-y-1.5">
-                  {Object.entries(dashboard.by_exception_type).sort((a, b) => b[1].open_count - a[1].open_count).map(([type, counts]) => (
-                    <button key={type} type="button" onClick={() => selectExceptionType(type)} className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left transition-colors ${exceptionType === type ? "border-blue-300 bg-blue-50" : "border-slate-100 hover:bg-slate-50"}`}>
-                      <span className="text-xs font-medium text-slate-700">{titleCase(type)}</span>
-                      <span className="flex items-center gap-3 text-[11px]"><span className="text-slate-400">{number(counts.count)} total</span><strong className="text-slate-800">{number(counts.open_count)} open</strong></span>
-                    </button>
-                  ))}
+                  {Object.entries(dashboard.by_exception_type).sort((a, b) => b[1].open_count - a[1].open_count).map(([type, counts]) => {
+                    const amount = dashboard.investigation_amounts_by_exception_type[type];
+                    return (
+                      <button key={type} type="button" onClick={() => selectExceptionType(type)} className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors ${exceptionType === type ? "border-blue-300 bg-blue-50" : "border-slate-100 hover:bg-slate-50"}`}>
+                        <span className="min-w-0"><span className="block text-xs font-medium text-slate-700">{titleCase(type)}</span>{amount && <span className="mt-0.5 block text-[10px] text-slate-400">Unmatched investigation amount: {money(amount.unmatched_amount_paise)}</span>}</span>
+                        <span className="shrink-0 text-right text-[11px]"><span className="block text-slate-400">{number(counts.count)} total</span><strong className="text-slate-800">{number(counts.open_count)} open</strong></span>
+                      </button>
+                    );
+                  })}
                 </div>
               </Section>
 
@@ -389,6 +392,18 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                         <div className="text-right"><div className="text-sm font-bold tabular-nums text-slate-900">{number(item.assigned_open)}</div><div className="text-[10px] text-slate-400">open</div></div>
                       </div>
                     ))}
+                    {dashboard.resolved_by_user.length > 0 && (
+                      <div className="mt-3 border-t border-slate-100 pt-3">
+                        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Resolved by</div>
+                        <div className="flex flex-wrap gap-2">
+                          {dashboard.resolved_by_user.slice(0, 6).map((item) => (
+                            <span key={item.user_id ?? "unknown"} className="rounded-lg bg-emerald-50 px-2.5 py-1.5 text-[10px] text-emerald-800">
+                              {item.user_name || (item.user_id ? `User #${item.user_id}` : "Unknown user")}: <strong>{number(item.resolved_count)}</strong>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : <p className="text-xs text-slate-400">No workload records in this date range.</p>}
               </Section>
