@@ -42,6 +42,9 @@ export interface ReconciliationDashboard {
     assigned_total: number;
     assigned_open: number;
     assigned_resolved_count: number;
+    assigned_sla_overdue: number;
+    oldest_open_age_hours: number;
+    open_by_severity: Record<ReconciliationSeverity, number>;
   }>;
   resolved_by_user: Array<{ user_id: number | null; user_name: string | null; resolved_count: number }>;
   investigation_amounts_by_exception_type: Record<string, {
