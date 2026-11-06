@@ -7206,7 +7206,9 @@ def get_reconciliation_dashboard(
         opened_by_day[opened_day] = opened_by_day.get(opened_day, 0) + 1
 
         elapsed = age_hours(row)
-        breached = elapsed > sla_hours.get(row.severity, 168)
+        breached = (
+            row.status in open_statuses or row.status == "RESOLVED"
+        ) and elapsed > sla_hours.get(row.severity, 168)
         if breached:
             sla_breaches_by_day[opened_day] = sla_breaches_by_day.get(opened_day, 0) + 1
         if row.status in open_statuses:
@@ -7222,7 +7224,7 @@ def get_reconciliation_dashboard(
                 aging["over_7_days"] += 1
             if breached:
                 sla_breaches[row.severity] += 1
-        elif row.resolved_at is not None:
+        elif row.status == "RESOLVED" and row.resolved_at is not None:
             resolution_hours.append(elapsed)
             resolved_day = as_utc(row.resolved_at).date().isoformat()
             resolved_by_day[resolved_day] = resolved_by_day.get(resolved_day, 0) + 1
