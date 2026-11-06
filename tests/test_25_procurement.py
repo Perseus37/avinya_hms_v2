@@ -3106,6 +3106,18 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
     )
     assert missing_resolution_note.status_code == 422
 
+    incomplete_checklist = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/status",
+        headers=superuser_headers,
+        json={
+            "status": "RESOLVED",
+            "note": "Bank advice checked but the checklist is incomplete.",
+            "root_cause_code": "REFERENCE_MISMATCH",
+            "resolution_checklist": {"bank_statement_verified": True},
+        },
+    )
+    assert incomplete_checklist.status_code == 422, incomplete_checklist.text
+
     resolved = client.patch(
         f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/status",
         headers=superuser_headers,
@@ -3177,6 +3189,7 @@ def test_high_risk_reconciliation_resolution_requires_independent_review(
             hashed_password="not-a-login-credential",
             full_name="Independent Finance Reviewer",
             status=UserStatusEnum.ACTIVE,
+            is_superuser=True,
         )
         db.add(reviewer)
         db.flush()
