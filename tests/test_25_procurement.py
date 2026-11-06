@@ -3202,6 +3202,7 @@ def test_procurement_reconciliation_dashboard_aggregates_without_double_counting
             exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="OPEN",
             reference_type="BANK_STATEMENT_LINE", reference_id=10001,
             amount_paise=9000, matched_amount_paise=2000, unmatched_amount_paise=7000,
+            assigned_to_id=actor_id,
             summary="Unmatched debit dashboard test.",
             detection_snapshot={"bank_account_ref": "TEST-ACCOUNT"},
             first_detected_at=now - timedelta(days=2), last_detected_at=now - timedelta(days=1),
@@ -3211,6 +3212,7 @@ def test_procurement_reconciliation_dashboard_aggregates_without_double_counting
             exception_type="UNRECONCILED_SUPPLIER_PAYMENT", severity="HIGH", status="IN_REVIEW",
             reference_type="SUPPLIER_PAYMENT", reference_id=10005,
             amount_paise=12000, matched_amount_paise=2000, unmatched_amount_paise=10000,
+            assigned_to_id=actor_id,
             summary="Unreconciled supplier payment dashboard test.",
             detection_snapshot={"vendor_id": 501, "vendor_name": "Dashboard Test Supplier"},
         )
@@ -3245,6 +3247,11 @@ def test_procurement_reconciliation_dashboard_aggregates_without_double_counting
     assert payload["overview"]["open_count"] >= 2
     assert payload["overview"]["resolved_count"] >= 1
     assert payload["sla_breaches_by_severity"]["HIGH"] >= 1
+    assigned_workload = next(row for row in payload["finance_workload"] if row["user_id"] == actor_id)
+    assert assigned_workload["assigned_open"] >= 2
+    assert assigned_workload["assigned_sla_overdue"] >= 1
+    assert assigned_workload["oldest_open_age_hours"] >= 48
+    assert assigned_workload["open_by_severity"]["HIGH"] >= 2
     debit = payload["investigation_amounts_by_exception_type"]["UNMATCHED_BANK_DEBIT"]
     assert debit["investigation_amount_paise"] == 9000
     assert debit["unmatched_amount_paise"] == 7000
