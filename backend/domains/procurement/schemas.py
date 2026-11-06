@@ -9,6 +9,7 @@ from backend.domains.procurement.models import (
     IndentStatusEnum,
     PurchaseRequisitionStatusEnum,
     VendorInvoiceStatusEnum,
+    SupplierPaymentMethodEnum,
     SupplierQuotationStatusEnum,
     POAmendmentStatusEnum,
     POShipmentStatusEnum,
@@ -272,6 +273,60 @@ class VendorInvoiceItemReview(BaseModel):
     unit_price_paise: int = Field(ge=0)
     tax_percentage: int = Field(ge=0, le=100)
     total_price_paise: int = Field(ge=0)
+
+class SupplierPaymentAllocationCreate(BaseModel):
+    invoice_id: int = Field(gt=0)
+    amount_paise: int = Field(gt=0)
+
+
+class SupplierPaymentCreate(BaseModel):
+    vendor_id: int = Field(gt=0)
+    payment_reference: str = Field(min_length=2, max_length=100)
+    payment_method: SupplierPaymentMethodEnum
+    payment_date: datetime
+    amount_paise: int = Field(gt=0)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    allocations: List[SupplierPaymentAllocationCreate] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_allocations(self):
+        invoice_ids = [row.invoice_id for row in self.allocations]
+        if len(invoice_ids) != len(set(invoice_ids)):
+            raise ValueError("Each invoice may appear only once in a payment allocation.")
+        if sum(row.amount_paise for row in self.allocations) != self.amount_paise:
+            raise ValueError("Payment amount must equal the sum of its invoice allocations.")
+        return self
+
+
+class SupplierPaymentAllocationResponse(BaseModel):
+    id: int
+    invoice_id: int
+    amount_paise: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupplierPaymentResponse(BaseModel):
+    id: int
+    vendor_id: int
+    payment_reference: str
+    payment_method: SupplierPaymentMethodEnum
+    payment_date: datetime
+    amount_paise: int
+    notes: Optional[str]
+    recorded_by_id: int
+    allocations: List[SupplierPaymentAllocationResponse]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupplierInvoiceSettlementResponse(BaseModel):
+    invoice_id: int
+    vendor_id: int
+    invoice_number: str
+    invoice_total_paise: int
+    amount_paid_paise: int
+    outstanding_paise: int
+    status: VendorInvoiceStatusEnum
+
 
 class VendorInvoiceReview(BaseModel):
     po_id: Optional[int] = None
