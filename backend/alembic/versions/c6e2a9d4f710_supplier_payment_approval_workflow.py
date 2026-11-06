@@ -1,6 +1,7 @@
 """Supplier payment request approval, scheduling, and execution."""
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision = "c6e2a9d4f710"
 down_revision = "b4d7e2a9c610"
@@ -16,7 +17,7 @@ def upgrade() -> None:
         sa.Column("payment_reference", sa.String(100), nullable=False),
         sa.Column(
             "payment_method",
-            sa.Enum("BANK_TRANSFER", "UPI", "CHEQUE", "CASH", "CARD", "NEFT", "RTGS", "IMPS", "OTHER", name="supplierpaymentmethodenum", create_type=False),
+            postgresql.ENUM("BANK_TRANSFER", "UPI", "CHEQUE", "CASH", "CARD", "NEFT", "RTGS", "IMPS", "OTHER", name="supplierpaymentmethodenum", create_type=False),
             nullable=False,
         ),
         sa.Column("scheduled_date", sa.Date(), nullable=False),
