@@ -3354,6 +3354,49 @@ def test_reconciliation_evidence_upload_download_and_audit(
         assert mismatch_event.event_metadata["evidence_id"] == evidence_id
 
 
+
+def test_reconciliation_evidence_fails_closed_when_malware_scanner_is_unavailable(
+    client, superuser_headers, multi_tenant_env, monkeypatch
+):
+    from fastapi import HTTPException
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.procurement import documents as procurement_documents
+    from backend.domains.procurement.models import (
+        ProcurementReconciliationException,
+        ProcurementReconciliationEvidence,
+    )
+
+    def scanner_unavailable(_path):
+        raise HTTPException(status_code=503, detail="Scanner unavailable.")
+
+    monkeypatch.setattr(procurement_documents, "scan_file_with_clamav", scanner_unavailable)
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        row = ProcurementReconciliationException(
+            fingerprint="TEST_EXCEPTION:EVIDENCE_SCANNER_DOWN:987686",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="IN_REVIEW",
+            reference_type="BANK_STATEMENT_LINE", reference_id=987686,
+            amount_paise=5000, matched_amount_paise=0, unmatched_amount_paise=5000,
+            summary="Scanner failure test.",
+            detection_snapshot={},
+        )
+        db.add(row)
+        db.commit()
+        exception_id = row.id
+
+    response = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/evidence",
+        headers=superuser_headers,
+        data={"evidence_type": "BANK_STATEMENT"},
+        files={"file": ("statement.pdf", b"%PDF-1.7 evidence bytes", "application/pdf")},
+    )
+    assert response.status_code == 503, response.text
+    with session_factory() as db:
+        assert db.query(ProcurementReconciliationEvidence).filter(
+            ProcurementReconciliationEvidence.exception_id == exception_id
+        ).count() == 0
+
+
 def test_reconciliation_evidence_rejects_invalid_signature_and_closed_case(
     client, superuser_headers, multi_tenant_env, monkeypatch
 ):
