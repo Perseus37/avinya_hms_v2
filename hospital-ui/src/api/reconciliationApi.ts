@@ -121,7 +121,7 @@ export const reconciliationApi = {
     apiClient<ReconciliationDashboard>("/api/procurement/analytics/reconciliation-dashboard", {
       params: { ...filters },
     }),
-  getQueue: (filters: Pick<ReconciliationFilters, "severity" | "status" | "assigned_to_id" | "exception_type"> & { source_present?: boolean; sla_overdue?: boolean; unassigned_only?: boolean } = {}) =>
+  getQueue: (filters: Pick<ReconciliationFilters, "severity" | "status" | "assigned_to_id" | "exception_type"> & { source_present?: boolean; sla_overdue?: boolean; unassigned_only?: boolean; open_only?: boolean } = {}) =>
     apiClient<ReconciliationQueue>("/api/procurement/reconciliation/exceptions/queue", {
       params: { ...filters },
     }),
