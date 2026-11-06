@@ -125,4 +125,31 @@ export const reconciliationApi = {
     apiClient<ReconciliationQueue>("/api/procurement/reconciliation/exceptions/queue", {
       params: { ...filters },
     }),
+  getExceptionHistory: (id: number) =>
+    apiClient<ReconciliationExceptionHistory>("/api/procurement/reconciliation/exceptions/" + id + "/history"),
+  assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
+    apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: payload }),
+  updateExceptionStatus: (id: number, payload: { status: ReconciliationStatus; note?: string }) =>
+    apiClient<{ id: number; status: ReconciliationStatus; resolved_at: string | null; resolution_note: string | null }>("/api/procurement/reconciliation/exceptions/" + id + "/status", { method: "PATCH", body: payload }),
+  addExceptionNote: (id: number, payload: { note: string }) =>
+    apiClient<{ exception_id: number; note_recorded: boolean }>("/api/procurement/reconciliation/exceptions/" + id + "/notes", { method: "POST", body: payload }),
 };
+
+
+export interface ReconciliationExceptionEvent {
+  id: number;
+  event_type: string;
+  actor_user_id: number | null;
+  old_status: string | null;
+  new_status: string | null;
+  old_assignee_id: number | null;
+  new_assignee_id: number | null;
+  note: string | null;
+  event_metadata: Record<string, unknown> | null;
+  occurred_at: string;
+}
+
+export interface ReconciliationExceptionHistory {
+  exception_id: number;
+  events: ReconciliationExceptionEvent[];
+}
