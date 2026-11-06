@@ -17,7 +17,7 @@ from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.document_responses import pdf_attachment_response
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.queue import enqueue_task
+from backend.core.queue import enqueue_task, get_task_status
 from backend.core.dependencies import RequirePermission, get_current_user, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User, UserStatusEnum, Department, Role, UserRole
@@ -8503,17 +8503,27 @@ def list_reconciliation_assignment_escalations(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
-    """Read-only queue of unacknowledged assignments beyond severity-based response targets.
+    """Read-only queue of unacknowledged assignments and their escalation delivery state.
 
-    This endpoint identifies escalation candidates; a scheduler/manager must take
-    the escalation action. It does not send notifications or silently reassign cases.
+    The existing Redis worker performs scheduled escalation. Notification state here
+    reflects queue job status, not proof of recipient mailbox delivery.
     """
     rows = db.query(ProcurementReconciliationException).filter(
         ProcurementReconciliationException.status.in_(["OPEN", "IN_REVIEW"]),
         ProcurementReconciliationException.assigned_to_id.is_not(None),
     ).all()
-    response_targets = {"CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24}
     now = datetime.now(timezone.utc)
+    active_escalation_policy = db.query(ProcurementReconciliationEscalationPolicy).filter(
+        ProcurementReconciliationEscalationPolicy.status == "PUBLISHED",
+        ProcurementReconciliationEscalationPolicy.effective_from <= now,
+        or_(
+            ProcurementReconciliationEscalationPolicy.effective_to.is_(None),
+            ProcurementReconciliationEscalationPolicy.effective_to > now,
+        ),
+    ).order_by(ProcurementReconciliationEscalationPolicy.version.desc()).first()
+    response_targets = active_escalation_policy.response_targets_hours if active_escalation_policy else {
+        "CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24
+    }
     candidates = []
     for row in rows:
         assignment = db.query(ProcurementReconciliationExceptionEvent).filter(
@@ -8543,6 +8553,20 @@ def list_reconciliation_assignment_escalations(
         target_hours = response_targets.get(row.severity, 24)
         if elapsed_hours < target_hours or _reconciliation_sla_clock(row, now)["paused"]:
             continue
+        escalation_events = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == row.id,
+            ProcurementReconciliationExceptionEvent.id > assignment.id,
+            ProcurementReconciliationExceptionEvent.event_type == "ESCALATION_NOTIFIED",
+        ).order_by(ProcurementReconciliationExceptionEvent.id.desc()).all()
+        delivery_jobs = []
+        for event in escalation_events:
+            for job_id in (event.event_metadata or {}).get("notification_job_ids", []):
+                task = get_task_status(job_id)
+                delivery_jobs.append({
+                    "job_id": job_id,
+                    "queue_status": task.get("status") if task else "UNKNOWN_OR_EXPIRED",
+                    "completed_at": task.get("completed_at") if task else None,
+                })
         candidates.append({
             "exception_id": row.id,
             "severity": row.severity,
@@ -8552,9 +8576,12 @@ def list_reconciliation_assignment_escalations(
             "unacknowledged_hours": round(elapsed_hours, 2),
             "response_target_hours": target_hours,
             "escalation_due": True,
+            "escalation_levels_notified": len(escalation_events),
+            "notification_jobs": delivery_jobs,
+            "delivery_semantics": "QUEUE_STATUS_ONLY_NOT_MAILBOX_DELIVERY",
         })
     candidates.sort(key=lambda item: (-item["unacknowledged_hours"], item["exception_id"]))
-    return {"total": len(candidates), "items": candidates[:limit], "automatic_escalation": False}
+    return {"total": len(candidates), "items": candidates[:limit], "automatic_escalation": True}
 
 
 _RECONCILIATION_RESOLUTION_CHECKLISTS = {
