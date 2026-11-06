@@ -10,7 +10,7 @@
 - Assignment events capture the published policy's response target and preferences at assignment time; later policy publication does not rewrite queued task payloads.
 - Existing Redis worker performs assignment-event-bound, multi-level escalation. Reassignment, terminal status, acknowledgement, and already-notified levels are checked before dispatch. Committed event history deduplicates normal retries; enqueue and event commit are not a distributed transaction, so a process crash in that narrow window can still cause at-least-once duplicate email. A durable transactional outbox is required for stronger exactly-once dispatch guarantees.
 - Escalation events retain level, recipient IDs, queued email task IDs, and queue state.
-- Queue status is not proof of SMTP acceptance or mailbox delivery. The current email task provider does not expose a durable delivery receipt contract to this workflow; the UI and API label this as queue status only.
+- The register exposes Redis task state and the email handler's send result (mailer accepted or delivery failed) while task metadata remains available. Neither state proves final mailbox delivery. Task metadata expires after the queue's configured retention window; older records are shown as UNKNOWN_OR_EXPIRED.
 
 ### 3S.4 — Closure quality and recurring root causes
 - Read-only closure-quality endpoint reports resolution duration, median/average, reopen rate, independent review outcomes, and recurring root-cause buckets.
@@ -54,6 +54,6 @@ All endpoints execute against the tenant database session and use existing finan
 
 - The existing Redis queue/worker is reused; no second scheduler is introduced.
 - Existing default acknowledgement targets remain CRITICAL 0.5h, HIGH 2h, MEDIUM 8h, LOW 24h until a published escalation policy takes effect.
-- Notification task status is exposed as QUEUED/COMPLETED/FAILED where Redis task metadata remains available, otherwise UNKNOWN_OR_EXPIRED. This is not a delivery receipt.
+- Notification task status and mailer send result are exposed while Redis task metadata remains available, otherwise UNKNOWN_OR_EXPIRED. This is not a mailbox delivery receipt.
 - Added API regression coverage in tests/test_26_reconciliation_governance.py.
 - Automated tests, Alembic upgrade/downgrade, TypeScript typecheck, and production build have NOT been executed in this environment. Run them before deploying this migration.
