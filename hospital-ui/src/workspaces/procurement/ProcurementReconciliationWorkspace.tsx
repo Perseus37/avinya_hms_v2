@@ -862,6 +862,44 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
               <div className="flex-1 space-y-4 overflow-y-auto p-5">
                 {detailError && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">{detailError}</div>}
                 {detailMessage && <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-800">{detailMessage}</div>}
+                {selectedException.status !== "RESOLVED" && selectedException.status !== "DISMISSED" && (
+                  <section className="rounded-xl border border-slate-200 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-xs font-bold text-slate-800">SLA clock</h3>
+                        <p className="mt-1 text-[10px] text-slate-500">
+                          {selectedException.sla_paused
+                            ? `Paused since ${selectedException.sla_paused_at ? new Date(selectedException.sla_paused_at).toLocaleString() : "—"}`
+                            : `${hours(selectedException.sla_remaining_hours)} remaining · active clock`}
+                        </p>
+                      </div>
+                      <Badge variant={selectedException.sla_paused ? "warning" : selectedException.sla_overdue ? "danger" : "success"}>
+                        {selectedException.sla_paused ? "Paused" : selectedException.sla_overdue ? "Breached" : "Running"}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
+                      <div className="rounded-lg bg-slate-50 p-2"><span className="text-slate-500">Active elapsed</span><strong className="mt-0.5 block text-slate-800">{hours(selectedException.sla_elapsed_hours)}</strong></div>
+                      <div className="rounded-lg bg-slate-50 p-2"><span className="text-slate-500">Total paused</span><strong className="mt-0.5 block text-slate-800">{hours((selectedException.sla_paused_seconds || 0) / 3600)}</strong></div>
+                    </div>
+                    {selectedException.sla_breached_at && <p className="mt-2 text-[10px] text-rose-700">First breach: {new Date(selectedException.sla_breached_at).toLocaleString()}</p>}
+                    {hasPermission("finance.approve_reconciliation") && (
+                      <div className="mt-3 space-y-2">
+                        {selectedException.sla_paused ? (
+                          <>
+                            <textarea value={slaResumeReason} onChange={(event) => setSlaResumeReason(event.target.value)} rows={2} maxLength={2000} placeholder="Reason for resuming the SLA clock (minimum 10 characters)" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                            <div className="flex justify-end"><Button size="sm" onClick={() => void resumeSelectedSla()} disabled={actionLoading || slaResumeReason.trim().length < 10}>Resume SLA clock</Button></div>
+                          </>
+                        ) : (
+                          <>
+                            <textarea value={slaPauseReason} onChange={(event) => setSlaPauseReason(event.target.value)} rows={2} maxLength={2000} placeholder="Reason for pausing the SLA clock (minimum 10 characters)" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                            <div className="flex justify-end"><Button size="sm" variant="secondary" onClick={() => void pauseSelectedSla()} disabled={actionLoading || slaPauseReason.trim().length < 10}>Pause SLA clock</Button></div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    <p className="mt-2 text-[9px] text-slate-400">Pausing requires finance approval permission and a recorded reason. Closing an investigation automatically ends an active pause.</p>
+                  </section>
+                )}
                 <section className="rounded-xl border border-slate-200 p-3">
                   <h3 className="text-xs font-bold text-slate-800">Detection summary</h3><p className="mt-2 text-xs leading-relaxed text-slate-600">{selectedException.summary}</p>
                   <div className="mt-3 grid grid-cols-2 gap-3 text-[11px]">
