@@ -1,9 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
-  Banknote,
   CalendarDays,
   CheckCircle2,
   Clock3,
@@ -188,10 +185,10 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
           </div>
           <div className="flex items-center gap-2">
             {lastLoadedAt && <span className="hidden text-[10px] text-slate-400 sm:inline">Updated {lastLoadedAt.toLocaleTimeString()}</span>}
-            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+            <Button variant="outline" size="sm" className="border-slate-300 text-slate-700 hover:bg-slate-100 focus:ring-blue-400 focus:ring-offset-white" onClick={() => void load()} disabled={loading}>
               <RefreshCw size={13} className={loading ? "mr-1.5 animate-spin" : "mr-1.5"} /> Reload
             </Button>
-            <Button variant="outline" size="sm" onClick={exportQueue} disabled={!queue?.exceptions.length}>
+            <Button variant="outline" size="sm" className="border-slate-300 text-slate-700 hover:bg-slate-100 focus:ring-blue-400 focus:ring-offset-white" onClick={exportQueue} disabled={!queue?.exceptions.length}>
               <Download size={13} className="mr-1.5" /> Export queue
             </Button>
           </div>
