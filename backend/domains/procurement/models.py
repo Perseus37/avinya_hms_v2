@@ -111,6 +111,32 @@ class VendorMaster(AuditMixin, Base):
     bank_ifsc: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     credit_period_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_suspended: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    suspension_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    suspended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    suspended_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class SupplierLifecycleRequest(Base):
+    """Maker-checker request and durable decision history for supplier suspension."""
+    __tablename__ = "procurement_supplier_lifecycle_requests"
+    __table_args__ = (
+        CheckConstraint("action IN ('SUSPEND','REINSTATE')", name="ck_supplier_lifecycle_action"),
+        CheckConstraint("status IN ('PENDING','APPROVED','REJECTED')", name="ck_supplier_lifecycle_status"),
+        Index("ix_supplier_lifecycle_vendor_created", "vendor_id", "requested_at"),
+        Index("ix_supplier_lifecycle_status_created", "status", "requested_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False)
+    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class PurchaseRequisition(AuditMixin, Base):
