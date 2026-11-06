@@ -128,11 +128,11 @@ export const reconciliationApi = {
   getExceptionHistory: (id: number) =>
     apiClient<ReconciliationExceptionHistory>("/api/procurement/reconciliation/exceptions/" + id + "/history"),
   assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
-    apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: payload }),
+    apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: JSON.stringify(payload) }),
   updateExceptionStatus: (id: number, payload: { status: ReconciliationStatus; note?: string }) =>
-    apiClient<{ id: number; status: ReconciliationStatus; resolved_at: string | null; resolution_note: string | null }>("/api/procurement/reconciliation/exceptions/" + id + "/status", { method: "PATCH", body: payload }),
+    apiClient<{ id: number; status: ReconciliationStatus; resolved_at: string | null; resolution_note: string | null }>("/api/procurement/reconciliation/exceptions/" + id + "/status", { method: "PATCH", body: JSON.stringify(payload) }),
   addExceptionNote: (id: number, payload: { note: string }) =>
-    apiClient<{ exception_id: number; note_recorded: boolean }>("/api/procurement/reconciliation/exceptions/" + id + "/notes", { method: "POST", body: payload }),
+    apiClient<{ exception_id: number; note_recorded: boolean }>("/api/procurement/reconciliation/exceptions/" + id + "/notes", { method: "POST", body: JSON.stringify(payload) }),
 };
 
 
