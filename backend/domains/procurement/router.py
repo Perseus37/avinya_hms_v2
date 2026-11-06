@@ -180,6 +180,12 @@ def _supplier_paid_amounts_by_invoice(db: Session, invoice_ids: set[int]) -> dic
     return {int(invoice_id): int(amount or 0) for invoice_id, amount in rows}
 
 
+def _effective_invoice_paid_amount(invoice: VendorInvoice, paid_by_invoice: dict[int, int]) -> int:
+    if invoice.id not in paid_by_invoice and invoice.status == VendorInvoiceStatusEnum.PAID:
+        return int(invoice.total_amount_paise or 0)
+    return min(max(int(paid_by_invoice.get(invoice.id, 0)), 0), int(invoice.total_amount_paise or 0))
+
+
 def _allocate_paid_amount_to_invoice_lines(lines: list, line_values: dict[int, int], paid_amount_paise: int) -> dict[int, int]:
     """Allocate cash paid proportionally to invoice line gross values with exact paise reconciliation."""
     total_value = sum(max(int(value), 0) for value in line_values.values())
@@ -258,7 +264,7 @@ def _budget_invoice_actuals(db: Session, budget: ProcurementBudget) -> dict:
             for line, discount_share, _ in shares
         }
         paid_line_values = _allocate_paid_amount_to_invoice_lines(
-            lines, line_values, paid_by_invoice.get(invoice.id, 0)
+            lines, line_values, _effective_invoice_paid_amount(invoice, paid_by_invoice)
         )
         invoice_budget_value = 0
         invoice_paid_value = 0
@@ -3549,22 +3555,30 @@ def get_procurement_financial_intelligence(
     )
 
     linked_expense_ids = [row.linked_expense_id for row in invoices if row.linked_expense_id]
-    ap_expenses = []
+    ap_expenses = {}
     if linked_expense_ids:
-        ap_expenses = db.query(ExpenseRecord).filter(
-            ExpenseRecord.id.in_(linked_expense_ids)
-        ).all()
-    outstanding_expenses = [
-        row for row in ap_expenses if row.status == ExpenseStatusEnum.APPROVED
+        ap_expenses = {
+            row.id: row for row in db.query(ExpenseRecord).filter(
+                ExpenseRecord.id.in_(linked_expense_ids)
+            ).all()
+        }
+    paid_by_invoice = _supplier_paid_amounts_by_invoice(db, {row.id for row in invoices})
+    ap_balances = []
+    for invoice in invoices:
+        expense = ap_expenses.get(invoice.linked_expense_id) if invoice.linked_expense_id else None
+        if expense is None:
+            continue
+        paid_amount = _effective_invoice_paid_amount(invoice, paid_by_invoice)
+        outstanding_amount = max(int(invoice.total_amount_paise or 0) - paid_amount, 0)
+        ap_balances.append((invoice, expense, paid_amount, outstanding_amount))
+    outstanding_balances = [row for row in ap_balances if row[3] > 0]
+    overdue_balances = [
+        row for row in outstanding_balances
+        if row[1].due_date is not None and row[1].due_date < now
     ]
-    paid_expenses = [row for row in ap_expenses if row.status == ExpenseStatusEnum.PAID]
-    overdue_expenses = [
-        row for row in outstanding_expenses
-        if row.due_date is not None and row.due_date < now
-    ]
-    upcoming_expenses = [
-        row for row in outstanding_expenses
-        if row.due_date is not None and now <= row.due_date <= due_cutoff
+    upcoming_balances = [
+        row for row in outstanding_balances
+        if row[1].due_date is not None and now <= row[1].due_date <= due_cutoff
     ]
 
     return {
@@ -3595,14 +3609,14 @@ def get_procurement_financial_intelligence(
         },
         "accounts_payable": {
             "posted_invoice_count": len(ap_expenses),
-            "approved_unpaid_value_paise": sum(int(row.amount_paise or 0) for row in outstanding_expenses),
-            "paid_expense_value_paise": sum(int(row.amount_paise or 0) for row in paid_expenses),
-            "overdue_approved_count": len(overdue_expenses),
-            "overdue_approved_value_paise": sum(int(row.amount_paise or 0) for row in overdue_expenses),
+            "approved_unpaid_value_paise": sum(row[3] for row in outstanding_balances),
+            "paid_expense_value_paise": sum(row[2] for row in ap_balances),
+            "overdue_approved_count": len(overdue_balances),
+            "overdue_approved_value_paise": sum(row[3] for row in overdue_balances),
             "due_within_days": due_within_days,
-            "due_soon_count": len(upcoming_expenses),
-            "due_soon_value_paise": sum(int(row.amount_paise or 0) for row in upcoming_expenses),
-            "definition": "Derived from finance expenses linked to vendor invoices. APPROVED is treated as unpaid; PAID as paid. No partial settlement ledger exists, so partial payments are not represented.",
+            "due_soon_count": len(upcoming_balances),
+            "due_soon_value_paise": sum(row[3] for row in upcoming_balances),
+            "definition": "Derived from posted supplier invoices and their immutable payment allocations. Partial payments reduce the outstanding balance; fully settled invoices have zero outstanding."
         },
         "supplier_concentration": {
             "basis": "Tax-inclusive PO commitments in the selected PO creation-date period.",
@@ -3612,7 +3626,7 @@ def get_procurement_financial_intelligence(
         "limitations": [
             "No procurement budget or department budget allocation model exists; budget utilization and budget variance are not reported.",
             "PO commitment, accepted receipt valuation, invoice value and AP expense value are distinct lifecycle measures and must not be added together.",
-            "AP payment tracking is expense-status based; partial settlements and bank reconciliation are not modeled.",
+            "Supplier payments are recorded as hospital-entered outflows; external bank-statement reconciliation and automated bank feeds are not modeled.",
             "Supplier concentration is based on PO commitments, not settled payments or accepted receipt value.",
         ],
     }
