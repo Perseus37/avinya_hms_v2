@@ -8,7 +8,7 @@
 - One to five ordered escalation levels, each with its own elapsed-hours threshold and recipient switches.
 - Notification preferences for email enablement, assignee, assigning manager, and Finance Manager recipients.
 - Assignment events capture the published policy's response target and preferences at assignment time; later policy publication does not rewrite queued task payloads.
-- Existing Redis worker performs idempotent, assignment-event-bound escalation. Reassignment, terminal status, acknowledgement, and already-notified levels are checked before dispatch.
+- Existing Redis worker performs assignment-event-bound, multi-level escalation. Reassignment, terminal status, acknowledgement, and already-notified levels are checked before dispatch. Committed event history deduplicates normal retries; enqueue and event commit are not a distributed transaction, so a process crash in that narrow window can still cause at-least-once duplicate email. A durable transactional outbox is required for stronger exactly-once dispatch guarantees.
 - Escalation events retain level, recipient IDs, queued email task IDs, and queue state.
 - Queue status is not proof of SMTP acceptance or mailbox delivery. The current email task provider does not expose a durable delivery receipt contract to this workflow; the UI and API label this as queue status only.
 
@@ -22,7 +22,7 @@
 - Existing finance:read controls visibility; policy/report generation requires finance:sla:manage.
 
 ### 3S.6 — Monthly governance reports
-- Authorized users can create immutable point-in-time snapshots for complete calendar-month periods.
+- Authorized users can create immutable point-in-time snapshots for complete calendar-month periods. The snapshot basis is current case state for cases first detected during the selected period, not a reconstructed historical state as of the period end.
 - Duplicate periods are rejected; historical report snapshots are not recalculated when case data changes.
 - Snapshot includes status/severity distribution, breached open cases, resolved count, reopen count, and root-cause distribution.
 
