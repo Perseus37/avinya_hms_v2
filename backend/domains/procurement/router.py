@@ -9203,6 +9203,11 @@ def create_reconciliation_monthly_governance_report(
         ProcurementReconciliationException.first_detected_at < end_dt,
     ).all()
     resolved = [r for r in cases if r.status == "RESOLVED"]
+    reopen_events_period = db.query(ProcurementReconciliationExceptionEvent).filter(
+        ProcurementReconciliationExceptionEvent.event_type == "REOPENED",
+        ProcurementReconciliationExceptionEvent.occurred_at >= start_dt,
+        ProcurementReconciliationExceptionEvent.occurred_at < end_dt,
+    ).all()
     resolution_hours = []
     for case in resolved:
         first = case.first_detected_at.replace(tzinfo=timezone.utc) if case.first_detected_at.tzinfo is None else case.first_detected_at
@@ -9227,7 +9232,9 @@ def create_reconciliation_monthly_governance_report(
         "resolved_count": len(resolved),
         "average_resolution_hours": round(sum(resolution_hours) / len(resolution_hours), 2) if resolution_hours else None,
         "median_resolution_hours": median_resolution_hours,
-        "reopened_case_count": sum(int(r.reopen_count or 0) for r in cases),
+        "reopened_event_count": len(reopen_events_period),
+        "reopened_cases_in_period": len({event.exception_id for event in reopen_events_period}),
+        "cohort_cumulative_reopen_count": sum(int(r.reopen_count or 0) for r in cases),
         "root_causes": {},
     }
     for row in resolved:
