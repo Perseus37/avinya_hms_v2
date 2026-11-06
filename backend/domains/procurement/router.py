@@ -7075,10 +7075,11 @@ def list_my_reconciliation_assignments(
         ProcurementReconciliationException.assigned_to_id == current_user.id,
         ProcurementReconciliationException.status.in_(["OPEN", "IN_REVIEW"]),
     ).order_by(
-        ProcurementReconciliationException.severity.asc(),
         ProcurementReconciliationException.first_detected_at.asc(),
         ProcurementReconciliationException.id.asc(),
     ).limit(limit).all()
+    severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    rows.sort(key=lambda row: (severity_order.get(row.severity, 4), row.first_detected_at, row.id))
     items = []
     for row in rows:
         assignment = db.query(ProcurementReconciliationExceptionEvent).filter(
