@@ -3161,7 +3161,7 @@ def test_procurement_reconciliation_dashboard_aggregates_without_double_counting
         )
         supplier_payment = ProcurementReconciliationException(
             fingerprint="DASHBOARD:UNRECONCILED_SUPPLIER_PAYMENT:10005",
-            exception_type="UNRECONCILED_SUPPLIER_PAYMENT", severity="HIGH", status="OPEN",
+            exception_type="UNRECONCILED_SUPPLIER_PAYMENT", severity="HIGH", status="IN_REVIEW",
             reference_type="SUPPLIER_PAYMENT", reference_id=10005,
             amount_paise=12000, matched_amount_paise=2000, unmatched_amount_paise=10000,
             summary="Unreconciled supplier payment dashboard test.",
@@ -3216,6 +3216,15 @@ def test_procurement_reconciliation_dashboard_aggregates_without_double_counting
     )
     assert overdue_unassigned.status_code == 200, overdue_unassigned.text
     assert any(item["reference_id"] == 10001 for item in overdue_unassigned.json()["exceptions"])
+
+    open_worklist = client.get(
+        "/v1/api/procurement/reconciliation/exceptions/queue",
+        headers=superuser_headers,
+        params={"open_only": "true"},
+    )
+    assert open_worklist.status_code == 200, open_worklist.text
+    assert any(item["reference_id"] == 10005 and item["status"] == "IN_REVIEW" for item in open_worklist.json()["exceptions"])
+    assert all(item["status"] in {"OPEN", "IN_REVIEW"} for item in open_worklist.json()["exceptions"])
 
     filtered = client.get(
         "/v1/api/procurement/analytics/reconciliation-dashboard",
