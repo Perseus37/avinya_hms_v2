@@ -7691,6 +7691,8 @@ def assign_reconciliation_exception(
     ).first()
     db.commit()
     notification_status = "NOT_REQUIRED"
+    if assignee_id is not None and not assignee.email:
+        notification_status = "EMAIL_UNAVAILABLE"
     if assignee_id is not None and assignee.email:
         tenant_context = resolve_tenant_context(request)
         target_hours = {"CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24}.get(row.severity, 24)
