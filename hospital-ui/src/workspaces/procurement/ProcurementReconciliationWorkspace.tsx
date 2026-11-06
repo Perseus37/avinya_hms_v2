@@ -156,6 +156,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [evidence, setEvidence] = useState<ReconciliationEvidence[]>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [evidenceUploading, setEvidenceUploading] = useState(false);
+  const [auditExporting, setAuditExporting] = useState(false);
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [evidenceType, setEvidenceType] = useState<ReconciliationEvidence["evidence_type"]>("OTHER");
   const [evidenceDescription, setEvidenceDescription] = useState("");
@@ -469,6 +470,25 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
       URL.revokeObjectURL(objectUrl);
       setDetailMessage("Evidence download requested and recorded in the access audit.");
     } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to download evidence."); }
+  };
+
+  const exportInvestigationAudit = async () => {
+    if (!selectedException) return;
+    setAuditExporting(true); setDetailError(""); setDetailMessage("");
+    try {
+      const blob = await reconciliationApi.exportAuditPackage(selectedException.id);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = "reconciliation-" + selectedException.id + "-audit.zip";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      setDetailMessage("Audit package generated. The export event has been recorded in investigation history.");
+      await refreshSelectedHistory(selectedException.id);
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to generate the investigation audit package."); }
+    finally { setAuditExporting(false); }
   };
 
   const saveInvestigationNote = async () => {
@@ -795,7 +815,10 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                 <div><div className="flex flex-wrap items-center gap-2"><Badge variant={severityVariant(selectedException.severity)} size="sm">{selectedException.severity}</Badge><Badge variant={statusVariant(selectedException.status)} size="sm">{titleCase(selectedException.status)}</Badge></div>
                   <h2 id="exception-drawer-title" className="mt-2 text-base font-bold text-slate-900">{titleCase(selectedException.exception_type)} <span className="text-slate-400">#{selectedException.id}</span></h2>
                   <p className="mt-1 text-xs text-slate-500">{selectedException.reference_type} #{selectedException.reference_id}</p></div>
-                <button type="button" onClick={() => { selectedExceptionIdRef.current = null; setSelectedException(null); }} disabled={actionLoading} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Close</button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button type="button" onClick={() => void exportInvestigationAudit()} disabled={auditExporting || !hasPermission("finance.view_reconciliation")} className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-700 disabled:opacity-50">{auditExporting ? "Preparing ZIP…" : "Export audit ZIP"}</button>
+                  <button type="button" onClick={() => { selectedExceptionIdRef.current = null; setSelectedException(null); }} disabled={actionLoading || auditExporting} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600">Close</button>
+                </div>
               </div>
               <div className="flex-1 space-y-4 overflow-y-auto p-5">
                 {detailError && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">{detailError}</div>}
