@@ -35,6 +35,43 @@ export interface RequestOptions extends RequestInit {
   params?: Record<string, string | number | boolean | undefined>;
 }
 
+export async function apiClientBlob(endpoint: string, options: RequestOptions = {}): Promise<Blob> {
+  const token = getAuthToken();
+  const tenantSlug = getTenantSlug();
+  const headers: Record<string, string> = {
+    "X-Hospital-Subdomain": tenantSlug,
+    ...(options.headers as Record<string, string>),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  let response = await fetch(endpoint, { ...options, headers });
+  if (response.status === 401 && token && !endpoint.includes("/auth/")) {
+    try {
+      const refreshRes = await fetch("/api/auth/session/refresh", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "X-Hospital-Subdomain": tenantSlug,
+        },
+      });
+      if (refreshRes.ok) {
+        const refreshData = await refreshRes.json();
+        setAuthToken(refreshData.access_token);
+        headers.Authorization = `Bearer ${refreshData.access_token}`;
+        response = await fetch(endpoint, { ...options, headers });
+      }
+    } catch {
+      clearAuthSession();
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("avinya:session-expired"));
+    }
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(body.detail || body.message || `HTTP Error ${response.status}`);
+  }
+  return response.blob();
+}
+
 export async function apiClient<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
   const token = getAuthToken();
   const tenantSlug = getTenantSlug();
