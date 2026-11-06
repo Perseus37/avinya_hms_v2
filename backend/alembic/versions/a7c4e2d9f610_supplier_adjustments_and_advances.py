@@ -1,6 +1,7 @@
 """Supplier credit/debit adjustments and supplier advance allocations."""
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision = "a7c4e2d9f610"
 down_revision = "f1c8a4d7e920"
@@ -9,9 +10,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    adjustment_type = sa.Enum("SUPPLIER_CREDIT_NOTE", "HOSPITAL_DEBIT_NOTE", name="supplieradjustmenttypeenum")
-    adjustment_status = sa.Enum("PENDING", "APPROVED", "REJECTED", name="supplieradjustmentstatusenum")
-    payment_method = sa.Enum("BANK_TRANSFER", "UPI", "CHEQUE", "CASH", "CARD", "NEFT", "RTGS", "IMPS", "OTHER", name="supplierpaymentmethodenum")
+    adjustment_type = postgresql.ENUM("SUPPLIER_CREDIT_NOTE", "HOSPITAL_DEBIT_NOTE", name="supplieradjustmenttypeenum", create_type=False)
+    adjustment_status = postgresql.ENUM("PENDING", "APPROVED", "REJECTED", name="supplieradjustmentstatusenum", create_type=False)
+    payment_method = postgresql.ENUM("BANK_TRANSFER", "UPI", "CHEQUE", "CASH", "CARD", "NEFT", "RTGS", "IMPS", "OTHER", name="supplierpaymentmethodenum", create_type=False)
     adjustment_type.create(op.get_bind(), checkfirst=True)
     adjustment_status.create(op.get_bind(), checkfirst=True)
     op.create_table(
