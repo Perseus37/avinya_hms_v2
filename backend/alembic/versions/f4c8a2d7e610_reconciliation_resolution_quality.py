@@ -39,6 +39,11 @@ def downgrade() -> None:
         "procurement_reconciliation_exceptions",
         type_="check",
     )
+    op.drop_constraint("ck_proc_recon_resolution_review_status", "procurement_reconciliation_exceptions", type_="check")
+    op.drop_column("procurement_reconciliation_exceptions", "resolution_reviewed_at")
+    op.drop_column("procurement_reconciliation_exceptions", "resolution_reviewed_by_id")
+    op.drop_column("procurement_reconciliation_exceptions", "resolution_submitted_by_id")
+    op.drop_column("procurement_reconciliation_exceptions", "resolution_review_status")
     op.drop_column("procurement_reconciliation_exceptions", "reopen_count")
     op.drop_column("procurement_reconciliation_exceptions", "resolution_checklist")
     op.drop_column("procurement_reconciliation_exceptions", "root_cause_code")
