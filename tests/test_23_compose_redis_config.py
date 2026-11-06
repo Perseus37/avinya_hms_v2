@@ -138,12 +138,16 @@ def test_clamav_service_is_private_pinned_and_required_for_api_uploads():
     for compose in (local, production):
         scanner = compose["services"]["clamav"]
         api = compose["services"]["api"]
-        assert "@sha256:" in scanner["image"]
+        assert scanner["image"] == "avinya-clamav:1.4.6-patched"
+        assert scanner["build"]["dockerfile"] == "Dockerfile.clamav"
         assert "ports" not in scanner
         assert scanner["healthcheck"]["test"][1].startswith("clamdscan --ping")
         assert api["depends_on"]["clamav"]["condition"] == "service_healthy"
         assert "hms_clamav_db:/var/lib/clamav" in scanner["volumes"]
 
+    clamav_dockerfile = (REPOSITORY_ROOT / "Dockerfile.clamav").read_text()
+    assert "FROM clamav/clamav:1.4.6-debian13-slim@sha256:" in clamav_dockerfile
+    assert "apt-get upgrade -y" in clamav_dockerfile
     prod_scanner = production["services"]["clamav"]
     assert set(prod_scanner["networks"]) == {"scanner-net", "scanner-egress"}
     assert set(production["services"]["api"]["networks"]) == {
