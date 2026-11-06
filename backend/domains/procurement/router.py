@@ -29,10 +29,14 @@ from backend.domains.procurement.models import (
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
     MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement,
     SupplierPayment, SupplierPaymentAllocation,
+    SupplierAdjustment, SupplierAdjustmentApplication, SupplierAdjustmentTypeEnum, SupplierAdjustmentStatusEnum,
+    SupplierAdvance, SupplierAdvanceAllocation,
     SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest
 )
 from backend.domains.procurement.schemas import (
-    VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, SupplierPaymentCreate, SupplierPaymentResponse, SupplierInvoiceSettlementResponse, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
+    VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, SupplierPaymentCreate, SupplierPaymentResponse, SupplierInvoiceSettlementResponse,
+    SupplierAdjustmentCreate, SupplierAdjustmentReview, SupplierAdjustmentApply, SupplierAdjustmentResponse,
+    SupplierAdvanceCreate, SupplierAdvanceApply, SupplierAdvanceResponse, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
     IndentIssueRequest, PurchaseReturnCreate,
     PurchaseRequisitionCreate, PurchaseRequisitionResponse, PurchaseRequisitionReview,
     PurchaseOrderFromRequisitionCreate, SupplierQuotationCreate,
@@ -2067,6 +2071,215 @@ def _supplier_invoice_paid_amount(db: Session, invoice_id: int) -> int:
     ).scalar() or 0)
 
 
+
+def _supplier_invoice_adjustment_amount(db: Session, invoice_id: int) -> int:
+    return int(db.query(func.coalesce(func.sum(SupplierAdjustmentApplication.amount_paise), 0)).join(
+        SupplierAdjustment, SupplierAdjustment.id == SupplierAdjustmentApplication.adjustment_id
+    ).filter(
+        SupplierAdjustmentApplication.invoice_id == invoice_id,
+        SupplierAdjustment.status == SupplierAdjustmentStatusEnum.APPROVED,
+    ).scalar() or 0)
+
+
+def _supplier_invoice_advance_amount(db: Session, invoice_id: int) -> int:
+    return int(db.query(func.coalesce(func.sum(SupplierAdvanceAllocation.amount_paise), 0)).filter(
+        SupplierAdvanceAllocation.invoice_id == invoice_id
+    ).scalar() or 0)
+
+
+def _supplier_invoice_outstanding(db: Session, invoice: VendorInvoice) -> tuple[int, int, int]:
+    cash = _effective_invoice_paid_amount(invoice, {invoice.id: _supplier_invoice_paid_amount(db, invoice.id)} if _supplier_invoice_paid_amount(db, invoice.id) else {})
+    credits = _supplier_invoice_adjustment_amount(db, invoice.id)
+    advances = _supplier_invoice_advance_amount(db, invoice.id)
+    return max(int(invoice.total_amount_paise) - cash - credits - advances, 0), credits, advances
+
+
+@router.post("/supplier-adjustments", response_model=SupplierAdjustmentResponse, status_code=status.HTTP_201_CREATED)
+def create_supplier_adjustment(
+    payload: SupplierAdjustmentCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:write")),
+):
+    vendor = db.query(VendorMaster).filter(VendorMaster.id == payload.vendor_id).with_for_update().one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    duplicate = db.query(SupplierAdjustment.id).filter(
+        SupplierAdjustment.vendor_id == vendor.id,
+        SupplierAdjustment.adjustment_type == payload.adjustment_type,
+        SupplierAdjustment.document_number == payload.document_number.strip(),
+    ).first()
+    if duplicate:
+        raise HTTPException(status_code=409, detail="This supplier adjustment document is already recorded.")
+    row = SupplierAdjustment(
+        vendor_id=vendor.id, adjustment_type=payload.adjustment_type,
+        document_number=payload.document_number.strip(), document_date=payload.document_date,
+        amount_paise=payload.amount_paise, reason=payload.reason.strip(),
+        notes=payload.notes.strip() if payload.notes else None,
+        status=SupplierAdjustmentStatusEnum.PENDING, requested_by_id=current_user.id,
+        created_by_id=current_user.id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.get("/vendors/{vendor_id}/adjustments", response_model=list[SupplierAdjustmentResponse])
+def list_supplier_adjustments(
+    vendor_id: int, db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("procurement:read")),
+):
+    if db.get(VendorMaster, vendor_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    return db.query(SupplierAdjustment).filter(
+        SupplierAdjustment.vendor_id == vendor_id
+    ).order_by(SupplierAdjustment.document_date.desc(), SupplierAdjustment.id.desc()).all()
+
+
+@router.patch("/supplier-adjustments/{adjustment_id}/review", response_model=SupplierAdjustmentResponse)
+def review_supplier_adjustment(
+    adjustment_id: int, payload: SupplierAdjustmentReview,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    row = db.query(SupplierAdjustment).filter(
+        SupplierAdjustment.id == adjustment_id
+    ).with_for_update().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Supplier adjustment not found.")
+    if row.status != SupplierAdjustmentStatusEnum.PENDING:
+        raise HTTPException(status_code=409, detail="Only pending supplier adjustments can be reviewed.")
+    if row.requested_by_id == current_user.id:
+        raise HTTPException(status_code=403, detail="The adjustment requester cannot approve their own adjustment.")
+    if not payload.approved and not (payload.review_notes or "").strip():
+        raise HTTPException(status_code=422, detail="A rejection reason is required.")
+    row.status = SupplierAdjustmentStatusEnum.APPROVED if payload.approved else SupplierAdjustmentStatusEnum.REJECTED
+    row.reviewed_by_id = current_user.id
+    row.reviewed_at = datetime.now(timezone.utc)
+    row.review_notes = payload.review_notes.strip() if payload.review_notes else None
+    row.updated_by_id = current_user.id
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.post("/supplier-adjustments/{adjustment_id}/applications", status_code=status.HTTP_201_CREATED)
+def apply_supplier_adjustment(
+    adjustment_id: int, payload: SupplierAdjustmentApply,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:pay")),
+):
+    adjustment = db.query(SupplierAdjustment).filter(
+        SupplierAdjustment.id == adjustment_id
+    ).with_for_update().one_or_none()
+    if adjustment is None:
+        raise HTTPException(status_code=404, detail="Supplier adjustment not found.")
+    if adjustment.status != SupplierAdjustmentStatusEnum.APPROVED:
+        raise HTTPException(status_code=409, detail="Only approved supplier adjustments can be applied.")
+    invoice = db.query(VendorInvoice).filter(
+        VendorInvoice.id == payload.invoice_id
+    ).with_for_update().one_or_none()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Supplier invoice not found.")
+    if invoice.vendor_id != adjustment.vendor_id:
+        raise HTTPException(status_code=422, detail="Adjustment and invoice must belong to the same supplier.")
+    if invoice.status not in {VendorInvoiceStatusEnum.MATCHED_APPROVED, VendorInvoiceStatusEnum.PAID}:
+        raise HTTPException(status_code=409, detail="Only approved invoices can receive supplier adjustments.")
+    if db.query(SupplierAdjustmentApplication.id).filter(
+        SupplierAdjustmentApplication.adjustment_id == adjustment.id,
+        SupplierAdjustmentApplication.invoice_id == invoice.id,
+    ).first():
+        raise HTTPException(status_code=409, detail="This adjustment is already applied to the selected invoice.")
+    applied = int(db.query(func.coalesce(func.sum(SupplierAdjustmentApplication.amount_paise), 0)).filter(
+        SupplierAdjustmentApplication.adjustment_id == adjustment.id
+    ).scalar() or 0)
+    if payload.amount_paise > int(adjustment.amount_paise) - applied:
+        raise HTTPException(status_code=409, detail="Application exceeds the remaining adjustment value.")
+    outstanding, _, _ = _supplier_invoice_outstanding(db, invoice)
+    if payload.amount_paise > outstanding:
+        raise HTTPException(status_code=409, detail={"message":"Application exceeds invoice outstanding balance.","outstanding_paise":outstanding})
+    db.add(SupplierAdjustmentApplication(adjustment_id=adjustment.id, invoice_id=invoice.id, amount_paise=payload.amount_paise))
+    db.commit()
+    return {"status":"APPLIED","adjustment_id":adjustment.id,"invoice_id":invoice.id,"amount_paise":payload.amount_paise}
+
+
+@router.post("/supplier-advances", response_model=SupplierAdvanceResponse, status_code=status.HTTP_201_CREATED)
+def record_supplier_advance(
+    payload: SupplierAdvanceCreate, db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:pay")),
+):
+    vendor = db.query(VendorMaster).filter(VendorMaster.id == payload.vendor_id).with_for_update().one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    duplicate = db.query(SupplierAdvance.id).filter(
+        SupplierAdvance.vendor_id == vendor.id,
+        SupplierAdvance.advance_reference == payload.advance_reference.strip(),
+    ).first()
+    if duplicate:
+        raise HTTPException(status_code=409, detail="This supplier advance reference has already been recorded.")
+    row = SupplierAdvance(
+        vendor_id=vendor.id, advance_reference=payload.advance_reference.strip(),
+        payment_method=payload.payment_method, advance_date=payload.advance_date,
+        amount_paise=payload.amount_paise, notes=payload.notes.strip() if payload.notes else None,
+        recorded_by_id=current_user.id, created_by_id=current_user.id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.get("/vendors/{vendor_id}/advances", response_model=list[SupplierAdvanceResponse])
+def list_supplier_advances(
+    vendor_id: int, db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    if db.get(VendorMaster, vendor_id) is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    return db.query(SupplierAdvance).filter(
+        SupplierAdvance.vendor_id == vendor_id
+    ).order_by(SupplierAdvance.advance_date.desc(), SupplierAdvance.id.desc()).all()
+
+
+@router.post("/supplier-advances/{advance_id}/applications", status_code=status.HTTP_201_CREATED)
+def apply_supplier_advance(
+    advance_id: int, payload: SupplierAdvanceApply,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:pay")),
+):
+    advance = db.query(SupplierAdvance).filter(
+        SupplierAdvance.id == advance_id
+    ).with_for_update().one_or_none()
+    if advance is None:
+        raise HTTPException(status_code=404, detail="Supplier advance not found.")
+    invoice = db.query(VendorInvoice).filter(
+        VendorInvoice.id == payload.invoice_id
+    ).with_for_update().one_or_none()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Supplier invoice not found.")
+    if invoice.vendor_id != advance.vendor_id:
+        raise HTTPException(status_code=422, detail="Advance and invoice must belong to the same supplier.")
+    if invoice.status not in {VendorInvoiceStatusEnum.MATCHED_APPROVED, VendorInvoiceStatusEnum.PAID}:
+        raise HTTPException(status_code=409, detail="Only approved invoices can receive supplier advances.")
+    if db.query(SupplierAdvanceAllocation.id).filter(
+        SupplierAdvanceAllocation.advance_id == advance.id,
+        SupplierAdvanceAllocation.invoice_id == invoice.id,
+    ).first():
+        raise HTTPException(status_code=409, detail="This advance is already applied to the selected invoice.")
+    allocated = int(db.query(func.coalesce(func.sum(SupplierAdvanceAllocation.amount_paise), 0)).filter(
+        SupplierAdvanceAllocation.advance_id == advance.id
+    ).scalar() or 0)
+    if payload.amount_paise > int(advance.amount_paise) - allocated:
+        raise HTTPException(status_code=409, detail="Application exceeds the remaining advance balance.")
+    outstanding, _, _ = _supplier_invoice_outstanding(db, invoice)
+    if payload.amount_paise > outstanding:
+        raise HTTPException(status_code=409, detail={"message":"Application exceeds invoice outstanding balance.","outstanding_paise":outstanding})
+    db.add(SupplierAdvanceAllocation(advance_id=advance.id, invoice_id=invoice.id, amount_paise=payload.amount_paise))
+    db.commit()
+    return {"status":"APPLIED","advance_id":advance.id,"invoice_id":invoice.id,"amount_paise":payload.amount_paise}
+
+
+
 @router.post("/supplier-payments", response_model=SupplierPaymentResponse, status_code=status.HTTP_201_CREATED)
 def record_supplier_payment(
     payload: SupplierPaymentCreate,
@@ -2180,13 +2393,16 @@ def get_supplier_invoice_settlement(
     if invoice is None:
         raise HTTPException(status_code=404, detail="Invoice not found.")
     paid = _supplier_invoice_paid_amount(db, invoice.id)
+    outstanding, credits, advances = _supplier_invoice_outstanding(db, invoice)
     return {
         "invoice_id": invoice.id,
         "vendor_id": invoice.vendor_id,
         "invoice_number": invoice.invoice_number,
         "invoice_total_paise": invoice.total_amount_paise,
         "amount_paid_paise": paid,
-        "outstanding_paise": max(int(invoice.total_amount_paise) - paid, 0),
+        "credit_adjustments_paise": credits,
+        "advances_applied_paise": advances,
+        "outstanding_paise": outstanding,
         "status": invoice.status,
     }
 
