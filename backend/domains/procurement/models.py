@@ -1245,6 +1245,8 @@ class ProcurementReconciliationException(Base):
     unmatched_amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     detection_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    source_present: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    missed_refresh_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     first_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     assigned_to_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
