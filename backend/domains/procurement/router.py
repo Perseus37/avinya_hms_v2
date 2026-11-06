@@ -1,4 +1,6 @@
 import secrets
+import re
+from pathlib import PurePath
 from decimal import Decimal
 
 from datetime import date, datetime, timezone, timedelta
@@ -33,7 +35,8 @@ from backend.domains.procurement.models import (
     SupplierAdjustment, SupplierAdjustmentApplication, SupplierAdjustmentTypeEnum, SupplierAdjustmentStatusEnum,
     SupplierAdvance, SupplierAdvanceAllocation,
     BankStatementBatch, BankStatementLine, BankStatementDirectionEnum, SupplierPaymentBankMatch,
-    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest, ProcurementReconciliationException, ProcurementReconciliationExceptionEvent
+    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest, ProcurementReconciliationException, ProcurementReconciliationExceptionEvent,
+    ProcurementReconciliationEvidence, ProcurementReconciliationEvidenceDownloadAudit
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, SupplierPaymentCreate, SupplierPaymentResponse, SupplierInvoiceSettlementResponse, SupplierPaymentRequestCreate, SupplierPaymentRequestReview, SupplierPaymentRequestExecute, SupplierPaymentRequestResponse,
@@ -69,6 +72,8 @@ from backend.domains.procurement.documents import (
     resolve_supplier_contract_document,
     store_supplier_compliance_document,
     resolve_supplier_compliance_document,
+    store_reconciliation_evidence,
+    resolve_reconciliation_evidence,
 )
 
 from backend.domains.reports.models import PrintModeEnum, ReportTypeEnum
@@ -6965,6 +6970,160 @@ def download_supplier_contract_document(
     ))
     db.commit()
     return FileResponse(path, media_type=media_type, filename=f"{contract.contract_number}{path.suffix}")
+
+
+# --- Private reconciliation investigation evidence ---
+_RECONCILIATION_EVIDENCE_TYPES = {
+    "BANK_STATEMENT", "PAYMENT_PROOF", "INVOICE",
+    "SUPPLIER_CORRESPONDENCE", "APPROVAL_RECORD", "OTHER",
+}
+
+
+@router.post("/reconciliation/exceptions/{exception_id}/evidence", status_code=status.HTTP_201_CREATED)
+def upload_reconciliation_evidence(
+    exception_id: int,
+    request: Request,
+    evidence_type: str = Form(...),
+    description: Optional[str] = Form(default=None, max_length=500),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:write")),
+):
+    exception_row = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).with_for_update().one_or_none()
+    if exception_row is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    if exception_row.status in {"RESOLVED", "DISMISSED"}:
+        raise HTTPException(status_code=409, detail="Reopen the investigation before attaching additional evidence.")
+    kind = evidence_type.strip().upper()
+    if kind not in _RECONCILIATION_EVIDENCE_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported reconciliation evidence type.")
+    clean_description = description.strip() if description else None
+    if clean_description == "":
+        clean_description = None
+    original_filename = PurePath((file.filename or "evidence").replace("\\\\", "/")).name
+    original_filename = re.sub(r"[^A-Za-z0-9._ -]", "_", original_filename).strip(" .")[:255] or "evidence"
+    tenant = resolve_tenant_context(request)
+    try:
+        storage_key, stored_path, size_bytes, sha256_hex, media_type = store_reconciliation_evidence(
+            tenant.subdomain_slug, file.filename, file.file
+        )
+    finally:
+        file.file.close()
+
+    evidence = ProcurementReconciliationEvidence(
+        exception_id=exception_row.id,
+        evidence_type=kind,
+        description=clean_description,
+        storage_key=storage_key,
+        original_filename=original_filename,
+        media_type=media_type,
+        size_bytes=size_bytes,
+        sha256_hex=sha256_hex,
+        uploaded_by_id=current_user.id,
+    )
+    db.add(evidence)
+    try:
+        db.flush()
+        _record_reconciliation_event(
+            db, exception_row, "EVIDENCE_ATTACHED", current_user.id,
+            note=f"Evidence attached: {kind}",
+            event_metadata={
+                "evidence_id": evidence.id,
+                "evidence_type": kind,
+                "original_filename": original_filename,
+                "size_bytes": size_bytes,
+                "sha256_hex": sha256_hex,
+            },
+        )
+        db.commit()
+        db.refresh(evidence)
+    except Exception:
+        db.rollback()
+        stored_path.unlink(missing_ok=True)
+        raise
+    return {
+        "id": evidence.id,
+        "exception_id": evidence.exception_id,
+        "evidence_type": evidence.evidence_type,
+        "description": evidence.description,
+        "original_filename": evidence.original_filename,
+        "media_type": evidence.media_type,
+        "size_bytes": evidence.size_bytes,
+        "sha256_hex": evidence.sha256_hex,
+        "uploaded_by_id": evidence.uploaded_by_id,
+        "uploaded_at": evidence.uploaded_at,
+    }
+
+
+@router.get("/reconciliation/exceptions/{exception_id}/evidence")
+def list_reconciliation_evidence(
+    exception_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    if db.get(ProcurementReconciliationException, exception_id) is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    rows = db.query(ProcurementReconciliationEvidence).filter(
+        ProcurementReconciliationEvidence.exception_id == exception_id
+    ).order_by(
+        ProcurementReconciliationEvidence.uploaded_at.asc(),
+        ProcurementReconciliationEvidence.id.asc(),
+    ).all()
+    return [{
+        "id": row.id,
+        "exception_id": row.exception_id,
+        "evidence_type": row.evidence_type,
+        "description": row.description,
+        "original_filename": row.original_filename,
+        "media_type": row.media_type,
+        "size_bytes": row.size_bytes,
+        "sha256_hex": row.sha256_hex,
+        "uploaded_by_id": row.uploaded_by_id,
+        "uploaded_at": row.uploaded_at,
+        "download_url": f"/api/procurement/reconciliation/exceptions/{exception_id}/evidence/{row.id}/download",
+    } for row in rows]
+
+
+@router.get("/reconciliation/exceptions/{exception_id}/evidence/{evidence_id}/download")
+def download_reconciliation_evidence(
+    exception_id: int,
+    evidence_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:read")),
+):
+    tenant = resolve_tenant_context(request)
+    row = db.query(ProcurementReconciliationEvidence).filter(
+        ProcurementReconciliationEvidence.id == evidence_id,
+        ProcurementReconciliationEvidence.exception_id == exception_id,
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reconciliation evidence not found.")
+    path = resolve_reconciliation_evidence(tenant.subdomain_slug, row.storage_key)
+    db.add(ProcurementReconciliationEvidenceDownloadAudit(
+        evidence_id=row.id,
+        exception_id=exception_id,
+        evidence_type=row.evidence_type,
+        original_filename=row.original_filename,
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+    ))
+    db.commit()
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", f"reconciliation-{exception_id}-{row.evidence_type}")
+    return FileResponse(
+        path,
+        media_type=row.media_type,
+        filename=f"{safe_name}{path.suffix.lower()}",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "Cross-Origin-Resource-Policy": "same-origin",
+        },
+    )
 
 
 # --- Persisted reconciliation exception investigation queue ---
