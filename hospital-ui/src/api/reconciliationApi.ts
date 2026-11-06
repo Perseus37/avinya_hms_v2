@@ -197,7 +197,7 @@ export const reconciliationApi = {
   exportAuditPackage: (id: number) =>
     apiClientBlob("/api/procurement/reconciliation/exceptions/" + id + "/audit-export"),
   assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
-    apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus; acknowledgement_status: string; notification_status?: "QUEUED" | "QUEUE_UNAVAILABLE" | "EMAIL_UNAVAILABLE" | "DISABLED_BY_POLICY" | "NOT_REQUIRED" }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: JSON.stringify(payload) }),
+    apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus; acknowledgement_status: string; notification_status?: "QUEUED" | "QUEUE_UNAVAILABLE" | "EMAIL_UNAVAILABLE" | "DISABLED_BY_POLICY" | "ASSIGNEE_EMAIL_UNAVAILABLE" | "NOT_REQUIRED" }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: JSON.stringify(payload) }),
   getResolutionGuidance: (id: number) =>
     apiClient<ReconciliationResolutionGuidance>("/api/procurement/reconciliation/exceptions/" + id + "/resolution-guidance"),
   updateExceptionStatus: (id: number, payload: { status: ReconciliationStatus; note?: string; root_cause_code?: string; resolution_checklist?: Record<string, boolean> }) =>
