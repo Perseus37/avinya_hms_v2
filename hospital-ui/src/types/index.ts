@@ -12,6 +12,7 @@ export type WorkspaceId =
   | "pharmacy"
   | "diagnostics"
   | "billing"
+  | "procurement-reconciliation"
   | "infection-control"
   | "biomedical"
   | "admin";
