@@ -293,7 +293,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
       const updated = { ...selectedException, assigned_to_id: result.assigned_to_id };
       setSelectedException(updated);
       setQueue((current) => current ? { ...current, exceptions: current.exceptions.map((row) => row.id === updated.id ? updated : row) } : current);
-      setDetailMessage("Assignment saved."); setAssignmentNote(""); await refreshSelectedHistory(updated.id); void load();
+      setDetailMessage(result.notification_status === "QUEUED" ? "Assignment saved. An email notification and acknowledgement reminder have been queued." : result.notification_status === "QUEUE_UNAVAILABLE" ? "Assignment saved, but notification delivery could not be queued. Please notify the assignee manually." : "Assignment saved."); setAssignmentNote(""); await refreshSelectedHistory(updated.id); void load();
     } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to save assignment."); }
     finally { setActionLoading(false); }
   };
