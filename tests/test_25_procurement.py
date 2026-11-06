@@ -3080,6 +3080,13 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
         db.commit()
         exception_id = row.id
 
+    refresh = client.post(
+        "/v1/api/procurement/reconciliation/exceptions/refresh",
+        headers=superuser_headers,
+    )
+    assert refresh.status_code == 200, refresh.text
+    assert refresh.json()["marked_missing"] >= 1
+
     assigned = client.patch(
         f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/assignment",
         headers=superuser_headers, json={"assigned_to_id": actor_id, "note": "Assigned for finance review."},
@@ -3125,7 +3132,8 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
 
     queue = client.get(
         "/v1/api/procurement/reconciliation/exceptions/queue",
-        headers=superuser_headers, params={"status": "RESOLVED", "severity": "HIGH"},
+        headers=superuser_headers, params={"status": "RESOLVED", "severity": "HIGH", "source_present": "false"},
     )
     assert queue.status_code == 200, queue.text
-    assert any(item["id"] == exception_id for item in queue.json()["exceptions"])
+    assert any(item["id"] == exception_id and item["source_present"] is False for item in queue.json()["exceptions"])
+    assert "sla_overdue" in queue.json()["sla_summary"]
