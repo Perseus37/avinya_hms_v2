@@ -331,7 +331,7 @@ def handle_retention_execute(payload: dict[str, Any]) -> dict[str, Any]:
     from datetime import datetime, timezone
     from backend.core.config import settings
     from backend.control_plane.models import TenantRegistry
-    from backend.domains.identity.models import User, UserStatusEnum
+    from backend.domains.identity.models import User, UserRole, Role, UserStatusEnum
     from backend.domains.privacy.models import PrivacyPolicyRevision
     from backend.domains.privacy.retention_service import execute_retention_policy_revision
 
@@ -563,6 +563,17 @@ def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict
                 recipients.append(manager)
             if next_level.get("notify_assignee", True) and preferences.get("assignee", True) and assignee and assignee.email and assignee.id not in {user.id for user in recipients}:
                 recipients.append(assignee)
+            if next_level.get("notify_finance_managers", False) and preferences.get("finance_managers", False):
+                finance_managers = tenant_db.query(User).join(
+                    UserRole, UserRole.user_id == User.id
+                ).join(
+                    Role, Role.id == UserRole.role_id
+                ).filter(
+                    Role.code == "ROLE_FINANCE_MANAGER",
+                    User.email.is_not(None),
+                ).all()
+                recipient_ids = {user.id for user in recipients}
+                recipients.extend(user for user in finance_managers if user.id not in recipient_ids)
         delivery_jobs = []
         for recipient in recipients:
             delivery_jobs.append(enqueue_task("email.send", {
