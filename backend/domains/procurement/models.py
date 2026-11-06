@@ -1256,6 +1256,10 @@ class ProcurementReconciliationException(Base):
     root_cause_code: Mapped[Optional[str]] = mapped_column(String(48), nullable=True)
     resolution_checklist: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     reopen_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    resolution_review_status: Mapped[str] = mapped_column(String(16), default="NOT_REQUIRED", nullable=False)
+    resolution_submitted_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolution_reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolution_reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     assigned_to: Mapped[Optional["User"]] = relationship(foreign_keys=[assigned_to_id])
     resolved_by: Mapped[Optional["User"]] = relationship(foreign_keys=[resolved_by_id])
 
