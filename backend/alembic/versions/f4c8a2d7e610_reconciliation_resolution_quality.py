@@ -34,6 +34,7 @@ def upgrade() -> None:
     op.create_foreign_key("fk_proc_recon_resolution_submitted_by", "procurement_reconciliation_exceptions", "users", ["resolution_submitted_by_id"], ["id"], ondelete="SET NULL")
     op.create_foreign_key("fk_proc_recon_resolution_reviewed_by", "procurement_reconciliation_exceptions", "users", ["resolution_reviewed_by_id"], ["id"], ondelete="SET NULL")
     op.create_check_constraint("ck_proc_recon_resolution_review_status", "procurement_reconciliation_exceptions", "resolution_review_status IN ('NOT_REQUIRED','PENDING','APPROVED','REJECTED')")
+    op.create_check_constraint("ck_proc_recon_resolution_submitted_status", "procurement_reconciliation_exceptions", "resolution_submitted_status IS NULL OR resolution_submitted_status IN ('RESOLVED','DISMISSED')")
 
 
 def downgrade() -> None:
@@ -43,6 +44,7 @@ def downgrade() -> None:
         type_="check",
     )
     op.drop_constraint("ck_proc_recon_resolution_review_status", "procurement_reconciliation_exceptions", type_="check")
+    op.drop_constraint("ck_proc_recon_resolution_submitted_status", "procurement_reconciliation_exceptions", type_="check")
     op.drop_constraint("fk_proc_recon_resolution_reviewed_by", "procurement_reconciliation_exceptions", type_="foreignkey")
     op.drop_constraint("fk_proc_recon_resolution_submitted_by", "procurement_reconciliation_exceptions", type_="foreignkey")
     op.drop_column("procurement_reconciliation_exceptions", "resolution_reviewed_at")
