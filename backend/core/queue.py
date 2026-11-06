@@ -520,27 +520,37 @@ def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict
         if response is not None:
             return {"status": "SKIPPED", "reason": "ALREADY_ACKNOWLEDGED"}
 
-        already_notified = tenant_db.query(ProcurementReconciliationExceptionEvent.id).filter(
+        notified_events = tenant_db.query(ProcurementReconciliationExceptionEvent).filter(
             ProcurementReconciliationExceptionEvent.exception_id == row.id,
             ProcurementReconciliationExceptionEvent.id > assignment_event_id,
             ProcurementReconciliationExceptionEvent.event_type == "ESCALATION_NOTIFIED",
-        ).first()
-        if already_notified is not None:
-            return {"status": "SKIPPED", "reason": "ESCALATION_ALREADY_NOTIFIED"}
+        ).all()
+        notified_levels = {
+            int((event.event_metadata or {}).get("escalation_level", 0))
+            for event in notified_events
+        }
+        levels = payload.get("escalation_levels") or [
+            {"level": 1, "after_hours": target_hours, "notify_assignee": True, "notify_assigning_manager": True}
+        ]
+        next_level = next((level for level in levels if int(level.get("level", 0)) not in notified_levels), None)
+        if next_level is None:
+            return {"status": "SKIPPED", "reason": "ALL_ESCALATION_LEVELS_COMPLETED"}
 
         assigned_at = assignment.occurred_at
         if assigned_at.tzinfo is None:
             assigned_at = assigned_at.replace(tzinfo=timezone.utc)
-        elapsed_hours = max((datetime.now(timezone.utc) - assigned_at).total_seconds() / 3600, 0)
-        if elapsed_hours < target_hours:
-            remaining_seconds = max(int((target_hours - elapsed_hours) * 3600), 1)
+        now = datetime.now(timezone.utc)
+        elapsed_hours = max((now - assigned_at).total_seconds() / 3600, 0)
+        level_target_hours = float(next_level.get("after_hours", target_hours))
+        if elapsed_hours < level_target_hours:
+            remaining_seconds = max(int((level_target_hours - elapsed_hours) * 3600), 1)
             enqueue_task(
                 "procurement.reconciliation.assignment_escalation",
                 payload,
                 delay_seconds=remaining_seconds,
                 sync_fallback=False,
             )
-            return {"status": "RESCHEDULED", "remaining_seconds": remaining_seconds}
+            return {"status": "RESCHEDULED", "remaining_seconds": remaining_seconds, "escalation_level": next_level.get("level")}
 
         manager = tenant_db.get(User, assignment.actor_user_id) if assignment.actor_user_id else None
         assignee = tenant_db.get(User, assignee_id)
@@ -549,9 +559,9 @@ def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict
         }
         recipients = []
         if preferences.get("email_enabled", True):
-            if preferences.get("assigning_manager", True) and manager and manager.email:
+            if next_level.get("notify_assigning_manager", True) and preferences.get("assigning_manager", True) and manager and manager.email:
                 recipients.append(manager)
-            if preferences.get("assignee", True) and assignee and assignee.email and assignee.id not in {user.id for user in recipients}:
+            if next_level.get("notify_assignee", True) and preferences.get("assignee", True) and assignee and assignee.email and assignee.id not in {user.id for user in recipients}:
                 recipients.append(assignee)
         delivery_jobs = []
         for recipient in recipients:
@@ -577,6 +587,7 @@ def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict
                 "assignment_event_id": assignment_event_id,
                 "unacknowledged_hours": round(elapsed_hours, 2),
                 "response_target_hours": target_hours,
+                "escalation_level": int(next_level.get("level", 1)),
                 "notification_recipients": [recipient.id for recipient in recipients],
                 "notification_job_ids": delivery_jobs,
                 "delivery_state": "QUEUED" if delivery_jobs else "SUPPRESSED_BY_PREFERENCE",
@@ -584,4 +595,14 @@ def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict
             },
         ))
         tenant_db.commit()
-        return {"status": "QUEUED" if delivery_jobs else "SUPPRESSED", "recipient_count": len(recipients), "elapsed_hours": round(elapsed_hours, 2)}
+        later_levels = [level for level in levels if int(level.get("level", 0)) > int(next_level.get("level", 0))]
+        if later_levels:
+            following = later_levels[0]
+            delay = max(int((float(following.get("after_hours", level_target_hours)) - elapsed_hours) * 3600), 1)
+            enqueue_task(
+                "procurement.reconciliation.assignment_escalation",
+                payload,
+                delay_seconds=delay,
+                sync_fallback=False,
+            )
+        return {"status": "QUEUED" if delivery_jobs else "SUPPRESSED", "recipient_count": len(recipients), "elapsed_hours": round(elapsed_hours, 2), "escalation_level": next_level.get("level")}
