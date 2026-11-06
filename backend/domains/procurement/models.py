@@ -556,7 +556,6 @@ class SupplierPaymentBankMatch(Base):
     """Append-only match between a bank debit line and a recorded supplier payment."""
     __tablename__ = "procurement_supplier_payment_bank_matches"
     __table_args__ = (
-        UniqueConstraint("statement_line_id", "payment_id", name="uq_supplier_payment_bank_match"),
         CheckConstraint("amount_paise > 0", name="ck_supplier_payment_bank_match_positive"),
         Index("ix_supplier_payment_bank_match_payment", "payment_id"),
     )
