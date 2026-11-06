@@ -3348,10 +3348,6 @@ def test_reconciliation_assignment_recommendations_are_advisory_and_workload_awa
     assert candidate["score"] > 0
     assert candidate["reasons"]
 
-    terminal = client.post(
-        "/v1/api/procurement/reconciliation/exceptions/refresh",
-        headers=superuser_headers,
-    )
     # The recommendation endpoint must never mutate assignment state.
     with session_factory() as db:
         persisted = db.get(ProcurementReconciliationException, target_id)
