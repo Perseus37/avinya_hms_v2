@@ -241,16 +241,21 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   };
   const loadAssignmentRecommendations = async () => {
     if (!selectedException) return;
+    const targetId = selectedException.id;
     setRecommendationsLoading(true);
     setDetailError("");
     try {
-      const result = await reconciliationApi.getAssignmentRecommendations(selectedException.id, 5);
-      setAssignmentRecommendations(result.recommendations || []);
-      setRecommendationsLoaded(true);
+      const result = await reconciliationApi.getAssignmentRecommendations(targetId, 5);
+      if (selectedException?.id === targetId) {
+        setAssignmentRecommendations(result.recommendations || []);
+        setRecommendationsLoaded(true);
+      }
     } catch (err) {
-      setDetailError(err instanceof Error ? err.message : "Unable to calculate assignment recommendations.");
+      if (selectedException?.id === targetId) {
+        setDetailError(err instanceof Error ? err.message : "Unable to calculate assignment recommendations.");
+      }
     } finally {
-      setRecommendationsLoading(false);
+      if (selectedException?.id === targetId) setRecommendationsLoading(false);
     }
   };
 
