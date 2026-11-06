@@ -7401,6 +7401,159 @@ def get_reconciliation_dashboard(
     }
 
 
+@router.get("/reconciliation/exceptions/{exception_id}/assignment-recommendations")
+def get_reconciliation_assignment_recommendations(
+    exception_id: int,
+    limit: int = Query(default=5, ge=1, le=10),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    """Rank active branch staff for a manual, workload-aware assignment decision.
+
+    Recommendations are advisory only. Role suitability is inferred from the
+    user's assigned role permissions; workload is calculated from all current
+    branch investigations, independent of dashboard date filters.
+    """
+    target = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    if target.status in {"RESOLVED", "DISMISSED"}:
+        raise HTTPException(status_code=409, detail="Terminal investigations cannot be assigned.")
+
+    active_users = db.execute(
+        select(User)
+        .options(selectinload(User.roles).selectinload(Role.permissions))
+        .where(User.status == UserStatusEnum.ACTIVE)
+        .order_by(User.full_name.asc(), User.id.asc())
+    ).scalars().unique().all()
+
+    investigations = db.query(ProcurementReconciliationException).all()
+    now = datetime.now(timezone.utc)
+    sla_hours = {"CRITICAL": 4, "HIGH": 24, "MEDIUM": 72, "LOW": 168}
+    workload = {}
+    resolved_durations = {}
+    all_resolved_durations = []
+
+    def _utc(value):
+        if value is None:
+            return None
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+    for item in investigations:
+        user_id = item.assigned_to_id
+        if user_id is None:
+            continue
+        stats = workload.setdefault(user_id, {
+            "open": 0, "overdue": 0, "severity": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0},
+            "resolved": 0,
+        })
+        first = _utc(item.first_detected_at)
+        end = _utc(item.resolved_at) if item.resolved_at else now
+        elapsed_hours = max((end - first).total_seconds() / 3600, 0) if first else 0
+        if item.status in {"OPEN", "IN_REVIEW"}:
+            stats["open"] += 1
+            stats["severity"][item.severity] = stats["severity"].get(item.severity, 0) + 1
+            if elapsed_hours > sla_hours.get(item.severity, 168):
+                stats["overdue"] += 1
+        elif item.status == "RESOLVED" and item.resolved_at and first:
+            stats["resolved"] += 1
+            resolved_durations.setdefault(user_id, []).append(elapsed_hours)
+            all_resolved_durations.append(elapsed_hours)
+
+    overall_median = None
+    if all_resolved_durations:
+        values = sorted(all_resolved_durations)
+        mid = len(values) // 2
+        overall_median = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+
+    candidates = []
+    for user in active_users:
+        stats = workload.get(user.id, {
+            "open": 0, "overdue": 0, "severity": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0},
+            "resolved": 0,
+        })
+        permission_codes = {
+            permission.code
+            for role in user.roles
+            for permission in role.permissions
+        }
+        finance_permissions = sorted(
+            code for code in permission_codes
+            if code.startswith("finance:") or code.startswith("procurement:")
+        )
+        finance_suitable = bool(finance_permissions)
+        severity_load = stats["severity"].get(target.severity, 0)
+        score = 0
+        reasons = []
+        if finance_suitable:
+            score += 35
+            reasons.append("Has finance or procurement permissions")
+        else:
+            reasons.append("No finance/procurement role permission detected")
+        open_score = max(0, 25 - stats["open"] * 5)
+        overdue_score = max(0, 20 - stats["overdue"] * 8)
+        severity_score = max(0, 10 - severity_load * 5)
+        score += open_score + overdue_score + severity_score
+        reasons.append(f"{stats['open']} open investigations")
+        reasons.append(f"{stats['overdue']} SLA-overdue investigations")
+        reasons.append(f"{severity_load} open {target.severity.lower()} investigations")
+        durations = resolved_durations.get(user.id, [])
+        median_hours = None
+        if durations:
+            ordered = sorted(durations)
+            middle = len(ordered) // 2
+            median_hours = round(ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2, 2)
+            if overall_median is not None:
+                if median_hours <= overall_median:
+                    score += 10
+                    reasons.append("Historical attributed resolution time is at or below branch median")
+                else:
+                    score = max(0, score - 5)
+                    reasons.append("Historical attributed resolution time is above branch median")
+            else:
+                reasons.append("Historical resolution baseline is not yet available")
+        else:
+            reasons.append("No resolved investigations currently attributed to this user")
+        candidates.append({
+            "user_id": user.id,
+            "user_name": user.full_name,
+            "login_id": user.login_id,
+            "roles": [{"code": role.code, "name": role.name} for role in user.roles],
+            "finance_suitable": finance_suitable,
+            "finance_permissions": finance_permissions,
+            "current_assignee": user.id == target.assigned_to_id,
+            "open_count": stats["open"],
+            "overdue_count": stats["overdue"],
+            "open_by_severity": stats["severity"],
+            "resolved_count": stats["resolved"],
+            "median_resolution_hours": median_hours,
+            "score": min(100, score),
+            "reasons": reasons,
+        })
+
+    candidates.sort(key=lambda item: (
+        not item["finance_suitable"], -item["score"], item["overdue_count"],
+        item["open_count"], item["user_name"].lower(), item["user_id"],
+    ))
+    ranked = candidates[:limit]
+    return {
+        "exception_id": exception_id,
+        "target_severity": target.severity,
+        "current_assignee_id": target.assigned_to_id,
+        "recommendations": ranked,
+        "methodology": {
+            "manual_confirmation_required": True,
+            "workload_scope": "All persisted investigations in the current branch, not the dashboard date filter.",
+            "historical_resolution_scope": "Resolved cases still attributed to the assignee; median elapsed hours compared with the branch median.",
+            "role_suitability": "Presence of at least one finance:* or procurement:* permission on an assigned role.",
+            "score_weights": {"role_suitability": 35, "open_workload": 25, "overdue_workload": 20, "target_severity_load": 10, "historical_resolution": 10},
+            "automatic_assignment": False,
+        },
+    }
+
+
 @router.get("/reconciliation/assignees")
 def list_reconciliation_assignees(
     q: str | None = Query(default=None, min_length=1, max_length=100),
