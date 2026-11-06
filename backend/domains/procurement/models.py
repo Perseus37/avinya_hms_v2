@@ -1220,3 +1220,55 @@ class SupplierContractDocumentDownloadAudit(Base):
     actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     actor_email: Mapped[str] = mapped_column(String(255), nullable=False)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProcurementReconciliationException(Base):
+    """Persisted finance investigation item; state changes are separately journaled."""
+    __tablename__ = "procurement_reconciliation_exceptions"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_proc_recon_exception_fingerprint"),
+        CheckConstraint("status IN ('OPEN','IN_REVIEW','RESOLVED','DISMISSED')", name="ck_proc_recon_exception_status"),
+        CheckConstraint("severity IN ('CRITICAL','HIGH','MEDIUM','LOW')", name="ck_proc_recon_exception_severity"),
+        Index("ix_proc_recon_exception_queue", "status", "severity", "last_detected_at"),
+        Index("ix_proc_recon_exception_assignee", "assigned_to_id", "status"),
+        Index("ix_proc_recon_exception_reference", "reference_type", "reference_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
+    exception_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(12), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="OPEN", nullable=False)
+    reference_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    reference_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    matched_amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    unmatched_amount_paise: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    detection_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    first_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    assigned_to_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    assigned_to: Mapped[Optional["User"]] = relationship(foreign_keys=[assigned_to_id])
+    resolved_by: Mapped[Optional["User"]] = relationship(foreign_keys=[resolved_by_id])
+
+
+class ProcurementReconciliationExceptionEvent(Base):
+    """Append-only investigation history for reconciliation exceptions."""
+    __tablename__ = "procurement_reconciliation_exception_events"
+    __table_args__ = (
+        Index("ix_proc_recon_exception_event_time", "exception_id", "occurred_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    exception_id: Mapped[int] = mapped_column(ForeignKey("procurement_reconciliation_exceptions.id", ondelete="RESTRICT"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    old_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    new_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    old_assignee_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    new_assignee_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    event_metadata: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
