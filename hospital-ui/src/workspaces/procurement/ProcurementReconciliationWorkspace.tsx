@@ -132,13 +132,14 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [assigneeOptions, setAssigneeOptions] = useState<ReconciliationAssignee[]>([]);
   const [assigneeLoading, setAssigneeLoading] = useState(false);
+  const [assigneePickerOpen, setAssigneePickerOpen] = useState(false);
   const [assignmentNote, setAssignmentNote] = useState("");
   const [investigationNote, setInvestigationNote] = useState("");
   const [statusChoice, setStatusChoice] = useState<ReconciliationStatus>("IN_REVIEW");
   const [statusNote, setStatusNote] = useState("");
 
   useEffect(() => {
-    if (!selectedException || !hasPermission("finance.manage_reconciliation")) {
+    if (!selectedException || !hasPermission("finance.manage_reconciliation") || !assigneePickerOpen) {
       setAssigneeOptions([]);
       setAssigneeLoading(false);
       return;
@@ -159,7 +160,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
       active = false;
       window.clearTimeout(timer);
     };
-  }, [selectedException?.id, assigneeSearch, hasPermission]);
+  }, [selectedException?.id, assigneeSearch, assigneePickerOpen, hasPermission]);
 
   const filters = useMemo<ReconciliationFilters>(() => ({
     from_date: fromDate || undefined,
@@ -212,6 +213,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     setAssigneeInput(item.assigned_to_id === null ? "" : String(item.assigned_to_id));
     setAssigneeSearch("");
     setAssigneeOptions([]);
+    setAssigneePickerOpen(false);
     setAssignmentNote(""); setInvestigationNote(""); setStatusChoice(item.status === "IN_REVIEW" ? "OPEN" : "IN_REVIEW"); setStatusNote("");
     setHistoryLoading(true);
     try { const result = await reconciliationApi.getExceptionHistory(item.id); setHistory(result.events || []); }
@@ -570,12 +572,12 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                   <p className="mt-1 text-[10px] text-slate-500">Search active staff in this hospital branch. Results include their branch roles.</p>
                   <div className="mt-2">
                     <label htmlFor="reconciliation-assignee-search" className="mb-1 block text-[10px] font-semibold text-slate-600">Find branch staff</label>
-                    <input id="reconciliation-assignee-search" role="combobox" aria-autocomplete="list" aria-expanded={assigneeOptions.length > 0} value={assigneeSearch} onChange={(event) => setAssigneeSearch(event.target.value)} placeholder="Search by staff name or login ID…" disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                    <input id="reconciliation-assignee-search" role="combobox" aria-autocomplete="list" aria-expanded={assigneeOptions.length > 0} value={assigneeSearch} onChange={(event) => { setAssigneeSearch(event.target.value); setAssigneePickerOpen(true); }} placeholder="Search by staff name or login ID…" disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
                     {assigneeLoading && <p className="mt-2 text-[10px] text-slate-400">Searching branch directory…</p>}
                     {!assigneeLoading && assigneeSearch.trim() && assigneeOptions.length === 0 && <p className="mt-2 text-[10px] text-slate-400">No active staff matched this search.</p>}
-                    {assigneeOptions.length > 0 && <ul role="listbox" aria-label="Active branch staff" className="mt-2 max-h-44 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+                    {assigneePickerOpen && assigneeOptions.length > 0 && <ul role="listbox" aria-label="Active branch staff" className="mt-2 max-h-44 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
                       {assigneeOptions.map((person) => <li key={person.id}>
-                        <button type="button" role="option" aria-selected={assigneeInput === String(person.id)} onClick={() => { setAssigneeInput(String(person.id)); setAssigneeSearch(person.full_name); setAssigneeOptions([]); }} disabled={actionLoading} className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-blue-50 disabled:opacity-50">
+                        <button type="button" role="option" aria-selected={assigneeInput === String(person.id)} onClick={() => { setAssigneeInput(String(person.id)); setAssigneeSearch(person.full_name); setAssigneeOptions([]); setAssigneePickerOpen(false); }} disabled={actionLoading} className="flex w-full items-start justify-between gap-3 px-3 py-2 text-left hover:bg-blue-50 disabled:opacity-50">
                           <span className="min-w-0"><span className="block truncate text-xs font-semibold text-slate-800">{person.full_name}</span><span className="block text-[10px] text-slate-400">{person.login_id} · User #{person.id}</span><span className="mt-1 flex flex-wrap gap-1">{person.roles.length ? person.roles.map((role) => <span key={role.code} className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] text-slate-600">{role.name}</span>) : <span className="text-[9px] text-slate-400">No assigned role</span>}</span></span>
                           {assigneeInput === String(person.id) && <CheckCircle2 size={15} className="mt-1 shrink-0 text-blue-600" />}
                         </button>
@@ -584,7 +586,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                   </div>
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2">
                     <div><span className="block text-[9px] uppercase tracking-wide text-slate-400">Selected assignee</span><span className="text-xs font-semibold text-slate-700">{assigneeInput ? (assigneeOptions.find((person) => String(person.id) === assigneeInput)?.full_name || (assigneeSearch.trim() && !assigneeOptions.length ? assigneeSearch : "User #" + assigneeInput)) : "Unassigned"}</span></div>
-                    <button type="button" onClick={() => { setAssigneeInput(""); setAssigneeSearch(""); setAssigneeOptions([]); }} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading || !assigneeInput} className="text-[10px] font-semibold text-rose-700 disabled:text-slate-300">Clear assignment</button>
+                    <button type="button" onClick={() => { setAssigneeInput(""); setAssigneeSearch(""); setAssigneeOptions([]); setAssigneePickerOpen(false); }} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading || !assigneeInput} className="text-[10px] font-semibold text-rose-700 disabled:text-slate-300">Clear assignment</button>
                   </div>
                   <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
                     <input aria-label="Assignment note" value={assignmentNote} onChange={(event) => setAssignmentNote(event.target.value)} placeholder="Optional assignment note" disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
