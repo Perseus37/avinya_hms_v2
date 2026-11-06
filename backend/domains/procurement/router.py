@@ -28,14 +28,14 @@ from backend.domains.procurement.models import (
     PurchaseOrderShipment, PurchaseOrderShipmentEvent, POShipmentStatusEnum,
     ProcurementUnitOfMeasure, MedicationPackConfiguration,
     MedicationPriceControl, PurchaseOrderPriceReview, ProcurementBudget, ProcurementBudgetRevision, ProcurementBudgetMovement,
-    SupplierPayment, SupplierPaymentAllocation,
+    SupplierPayment, SupplierPaymentAllocation, SupplierPaymentRequest, SupplierPaymentRequestAllocation,
     SupplierAdjustment, SupplierAdjustmentApplication, SupplierAdjustmentTypeEnum, SupplierAdjustmentStatusEnum,
     SupplierAdvance, SupplierAdvanceAllocation,
     BankStatementBatch, BankStatementLine, BankStatementDirectionEnum, SupplierPaymentBankMatch,
     SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest
 )
 from backend.domains.procurement.schemas import (
-    VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, SupplierPaymentCreate, SupplierPaymentResponse, SupplierInvoiceSettlementResponse,
+    VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, SupplierPaymentCreate, SupplierPaymentResponse, SupplierInvoiceSettlementResponse, SupplierPaymentRequestCreate, SupplierPaymentRequestReview, SupplierPaymentRequestExecute, SupplierPaymentRequestResponse,
     SupplierAdjustmentCreate, SupplierAdjustmentReview, SupplierAdjustmentApply, SupplierAdjustmentResponse,
     SupplierAdvanceCreate, SupplierAdvanceApply, SupplierAdvanceResponse,
     BankStatementImportCreate, BankStatementBatchResponse, SupplierPaymentBankMatchCreate, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
@@ -2100,6 +2100,21 @@ def _supplier_invoice_outstanding(db: Session, invoice: VendorInvoice) -> tuple[
     return max(int(invoice.total_amount_paise) - cash - credits - advances, 0), credits, advances
 
 
+def _reserved_supplier_payment_amount(
+    db: Session, invoice_id: int, *, exclude_request_id: Optional[int] = None
+) -> int:
+    query = db.query(func.coalesce(func.sum(SupplierPaymentRequestAllocation.amount_paise), 0)).join(
+        SupplierPaymentRequest,
+        SupplierPaymentRequest.id == SupplierPaymentRequestAllocation.request_id,
+    ).filter(
+        SupplierPaymentRequestAllocation.invoice_id == invoice_id,
+        SupplierPaymentRequest.status.in_(["PENDING", "APPROVED"]),
+    )
+    if exclude_request_id is not None:
+        query = query.filter(SupplierPaymentRequest.id != exclude_request_id)
+    return int(query.scalar() or 0)
+
+
 @router.post("/supplier-adjustments", response_model=SupplierAdjustmentResponse, status_code=status.HTTP_201_CREATED)
 def create_supplier_adjustment(
     payload: SupplierAdjustmentCreate,
@@ -2736,6 +2751,282 @@ def get_supplier_payment_priorities(
         "totals": totals,
         "invoices": rows,
     }
+
+
+@router.post(
+    "/supplier-payment-requests",
+    response_model=SupplierPaymentRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_supplier_payment_request(
+    payload: SupplierPaymentRequestCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:pay")),
+):
+    vendor = db.query(VendorMaster).filter(
+        VendorMaster.id == payload.vendor_id
+    ).with_for_update().one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    if not vendor.is_active or vendor.is_suspended:
+        raise HTTPException(status_code=409, detail="Inactive or suspended suppliers cannot receive new payment requests.")
+    if db.query(SupplierPayment.id).filter(
+        SupplierPayment.vendor_id == vendor.id,
+        SupplierPayment.payment_reference == payload.payment_reference.strip(),
+    ).first():
+        raise HTTPException(status_code=409, detail="This payment reference is already recorded.")
+    if db.query(SupplierPaymentRequest.id).filter(
+        SupplierPaymentRequest.vendor_id == vendor.id,
+        SupplierPaymentRequest.payment_reference == payload.payment_reference.strip(),
+    ).first():
+        raise HTTPException(status_code=409, detail="This payment reference already has a request.")
+
+    invoice_ids = sorted(row.invoice_id for row in payload.allocations)
+    invoices = db.query(VendorInvoice).filter(
+        VendorInvoice.id.in_(invoice_ids)
+    ).order_by(VendorInvoice.id).with_for_update().all()
+    by_id = {row.id: row for row in invoices}
+    if set(by_id) != set(invoice_ids):
+        raise HTTPException(status_code=404, detail="One or more supplier invoices were not found.")
+    for allocation in payload.allocations:
+        invoice = by_id[allocation.invoice_id]
+        if invoice.vendor_id != vendor.id:
+            raise HTTPException(status_code=422, detail="A payment request can only include invoices from its selected supplier.")
+        if invoice.status not in {VendorInvoiceStatusEnum.MATCHED_APPROVED, VendorInvoiceStatusEnum.PAID}:
+            raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoice_number} is not approved for settlement.")
+        if invoice.linked_expense_id is None:
+            raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoice_number} has no Accounts Payable posting.")
+        expense = db.get(ExpenseRecord, invoice.linked_expense_id)
+        if expense is None or expense.status != ExpenseStatusEnum.APPROVED:
+            raise HTTPException(status_code=409, detail=f"Accounts Payable entry for invoice {invoice.invoice_number} is not payable.")
+        outstanding, _, _ = _supplier_invoice_outstanding(db, invoice)
+        reserved = _reserved_supplier_payment_amount(db, invoice.id)
+        available = max(outstanding - reserved, 0)
+        if allocation.amount_paise > available:
+            raise HTTPException(status_code=409, detail={
+                "message": f"Payment request exceeds the unreserved balance for invoice {invoice.invoice_number}.",
+                "invoice_id": invoice.id, "outstanding_paise": outstanding,
+                "reserved_paise": reserved, "available_paise": available,
+            })
+
+    request_row = SupplierPaymentRequest(
+        vendor_id=vendor.id,
+        payment_reference=payload.payment_reference.strip(),
+        payment_method=payload.payment_method,
+        scheduled_date=payload.scheduled_date,
+        payment_run_reference=payload.payment_run_reference.strip() if payload.payment_run_reference else None,
+        amount_paise=payload.amount_paise,
+        notes=payload.notes.strip() if payload.notes else None,
+        status="PENDING",
+        requested_by_id=current_user.id,
+        created_by_id=current_user.id,
+    )
+    request_row.allocations = [
+        SupplierPaymentRequestAllocation(invoice_id=row.invoice_id, amount_paise=row.amount_paise)
+        for row in payload.allocations
+    ]
+    db.add(request_row)
+    db.commit()
+    return db.query(SupplierPaymentRequest).options(
+        selectinload(SupplierPaymentRequest.allocations)
+    ).filter(SupplierPaymentRequest.id == request_row.id).one()
+
+
+@router.get("/supplier-payment-requests", response_model=list[SupplierPaymentRequestResponse])
+def list_supplier_payment_requests(
+    status_filter: Optional[str] = Query(default=None, alias="status", pattern="^(PENDING|APPROVED|REJECTED|EXECUTED|CANCELLED)$"),
+    vendor_id: Optional[int] = Query(default=None, gt=0),
+    payment_run_reference: Optional[str] = Query(default=None, min_length=2, max_length=100),
+    scheduled_from: Optional[date] = Query(default=None),
+    scheduled_to: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    if scheduled_from and scheduled_to and scheduled_from > scheduled_to:
+        raise HTTPException(status_code=422, detail="scheduled_from must be on or before scheduled_to.")
+    query = db.query(SupplierPaymentRequest).options(
+        selectinload(SupplierPaymentRequest.allocations)
+    )
+    if status_filter:
+        query = query.filter(SupplierPaymentRequest.status == status_filter)
+    if vendor_id:
+        query = query.filter(SupplierPaymentRequest.vendor_id == vendor_id)
+    if payment_run_reference:
+        query = query.filter(SupplierPaymentRequest.payment_run_reference == payment_run_reference.strip())
+    if scheduled_from:
+        query = query.filter(SupplierPaymentRequest.scheduled_date >= scheduled_from)
+    if scheduled_to:
+        query = query.filter(SupplierPaymentRequest.scheduled_date <= scheduled_to)
+    return query.order_by(
+        SupplierPaymentRequest.scheduled_date.asc(),
+        SupplierPaymentRequest.id.asc(),
+    ).all()
+
+
+@router.patch(
+    "/supplier-payment-requests/{request_id}/review",
+    response_model=SupplierPaymentRequestResponse,
+)
+def review_supplier_payment_request(
+    request_id: int,
+    payload: SupplierPaymentRequestReview,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    request_row = db.query(SupplierPaymentRequest).options(
+        selectinload(SupplierPaymentRequest.allocations)
+    ).filter(SupplierPaymentRequest.id == request_id).with_for_update().one_or_none()
+    if request_row is None:
+        raise HTTPException(status_code=404, detail="Supplier payment request not found.")
+    if request_row.status != "PENDING":
+        raise HTTPException(status_code=409, detail="Only pending payment requests can be reviewed.")
+    if request_row.requested_by_id == current_user.id:
+        raise HTTPException(status_code=403, detail="The payment requester cannot approve or reject their own request.")
+    if payload.approved:
+        invoice_ids = sorted(row.invoice_id for row in request_row.allocations)
+        invoices = db.query(VendorInvoice).filter(
+            VendorInvoice.id.in_(invoice_ids)
+        ).order_by(VendorInvoice.id).with_for_update().all()
+        by_id = {row.id: row for row in invoices}
+        for allocation in request_row.allocations:
+            invoice = by_id.get(allocation.invoice_id)
+            if invoice is None or invoice.vendor_id != request_row.vendor_id:
+                raise HTTPException(status_code=409, detail="A requested invoice is no longer available for this supplier.")
+            outstanding, _, _ = _supplier_invoice_outstanding(db, invoice)
+            reserved = _reserved_supplier_payment_amount(
+                db, invoice.id, exclude_request_id=request_row.id
+            )
+            available = max(outstanding - reserved, 0)
+            if allocation.amount_paise > available:
+                raise HTTPException(status_code=409, detail={
+                    "message": f"Invoice {invoice.invoice_number} no longer has enough unreserved balance.",
+                    "invoice_id": invoice.id, "outstanding_paise": outstanding,
+                    "reserved_paise": reserved, "available_paise": available,
+                })
+        request_row.status = "APPROVED"
+    else:
+        request_row.status = "REJECTED"
+    request_row.reviewed_by_id = current_user.id
+    request_row.reviewed_at = datetime.now(timezone.utc)
+    request_row.review_notes = payload.review_notes.strip()
+    request_row.updated_by_id = current_user.id
+    db.commit()
+    return db.query(SupplierPaymentRequest).options(
+        selectinload(SupplierPaymentRequest.allocations)
+    ).filter(SupplierPaymentRequest.id == request_row.id).one()
+
+
+@router.post(
+    "/supplier-payment-requests/{request_id}/execute",
+    response_model=SupplierPaymentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def execute_supplier_payment_request(
+    request_id: int,
+    payload: SupplierPaymentRequestExecute,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:pay")),
+):
+    request_row = db.query(SupplierPaymentRequest).options(
+        selectinload(SupplierPaymentRequest.allocations)
+    ).filter(SupplierPaymentRequest.id == request_id).with_for_update().one_or_none()
+    if request_row is None:
+        raise HTTPException(status_code=404, detail="Supplier payment request not found.")
+    if request_row.status != "APPROVED":
+        raise HTTPException(status_code=409, detail="Only approved payment requests can be executed.")
+    if request_row.scheduled_date > datetime.now(timezone.utc).date():
+        raise HTTPException(status_code=409, detail="This payment is scheduled for a future date and cannot yet be executed.")
+    vendor = db.query(VendorMaster).filter(
+        VendorMaster.id == request_row.vendor_id
+    ).with_for_update().one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+    invoice_ids = sorted(row.invoice_id for row in request_row.allocations)
+    invoices = db.query(VendorInvoice).filter(
+        VendorInvoice.id.in_(invoice_ids)
+    ).order_by(VendorInvoice.id).with_for_update().all()
+    by_id = {row.id: row for row in invoices}
+    if set(by_id) != set(invoice_ids):
+        raise HTTPException(status_code=409, detail="A requested invoice no longer exists.")
+    for allocation in request_row.allocations:
+        invoice = by_id[allocation.invoice_id]
+        outstanding, _, _ = _supplier_invoice_outstanding(db, invoice)
+        reserved = _reserved_supplier_payment_amount(
+            db, invoice.id, exclude_request_id=request_row.id
+        )
+        available = max(outstanding - reserved, 0)
+        if invoice.vendor_id != vendor.id or allocation.amount_paise > available:
+            raise HTTPException(status_code=409, detail={
+                "message": f"Invoice {invoice.invoice_number} no longer has sufficient unreserved balance.",
+                "invoice_id": invoice.id, "outstanding_paise": outstanding,
+                "reserved_paise": reserved, "available_paise": available,
+            })
+        if invoice.linked_expense_id is None:
+            raise HTTPException(status_code=409, detail="A requested invoice no longer has an Accounts Payable posting.")
+        expense = db.get(ExpenseRecord, invoice.linked_expense_id)
+        if expense is None or expense.status != ExpenseStatusEnum.APPROVED:
+            raise HTTPException(status_code=409, detail="A requested Accounts Payable entry is no longer payable.")
+
+    payment = SupplierPayment(
+        vendor_id=vendor.id,
+        payment_reference=request_row.payment_reference,
+        payment_method=request_row.payment_method,
+        payment_date=payload.payment_date,
+        amount_paise=request_row.amount_paise,
+        notes=request_row.notes,
+        recorded_by_id=current_user.id,
+        created_by_id=current_user.id,
+    )
+    payment.allocations = [
+        SupplierPaymentAllocation(invoice_id=row.invoice_id, amount_paise=row.amount_paise)
+        for row in request_row.allocations
+    ]
+    db.add(payment)
+    db.flush()
+    for invoice in invoices:
+        paid_amount = _supplier_invoice_paid_amount(db, invoice.id)
+        if paid_amount >= int(invoice.total_amount_paise):
+            invoice.status = VendorInvoiceStatusEnum.PAID
+            expense = db.get(ExpenseRecord, invoice.linked_expense_id)
+            expense.status = ExpenseStatusEnum.PAID
+            expense.receipt_reference = payment.payment_reference
+            expense.updated_by_id = current_user.id
+        else:
+            invoice.status = VendorInvoiceStatusEnum.MATCHED_APPROVED
+    request_row.status = "EXECUTED"
+    request_row.executed_payment_id = payment.id
+    request_row.executed_at = datetime.now(timezone.utc)
+    request_row.updated_by_id = current_user.id
+    db.commit()
+    return db.query(SupplierPayment).options(
+        selectinload(SupplierPayment.allocations)
+    ).filter(SupplierPayment.id == payment.id).one()
+
+
+@router.post(
+    "/supplier-payment-requests/{request_id}/cancel",
+    response_model=SupplierPaymentRequestResponse,
+)
+def cancel_supplier_payment_request(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:pay")),
+):
+    request_row = db.query(SupplierPaymentRequest).options(
+        selectinload(SupplierPaymentRequest.allocations)
+    ).filter(SupplierPaymentRequest.id == request_id).with_for_update().one_or_none()
+    if request_row is None:
+        raise HTTPException(status_code=404, detail="Supplier payment request not found.")
+    if request_row.requested_by_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Only the requester or a superuser can cancel this request.")
+    if request_row.status not in {"PENDING", "APPROVED"}:
+        raise HTTPException(status_code=409, detail="Only pending or approved requests can be cancelled.")
+    request_row.status = "CANCELLED"
+    request_row.updated_by_id = current_user.id
+    db.commit()
+    return db.query(SupplierPaymentRequest).options(
+        selectinload(SupplierPaymentRequest.allocations)
+    ).filter(SupplierPaymentRequest.id == request_row.id).one()
 
 
 @router.get("/invoices/{invoice_id}/settlement", response_model=SupplierInvoiceSettlementResponse)
