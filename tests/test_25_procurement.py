@@ -3139,6 +3139,53 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
     assert "sla_overdue" in queue.json()["sla_summary"]
 
 
+def test_reconciliation_assignee_directory_is_branch_scoped_and_active_only(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import User, UserStatusEnum
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        admin = db.query(User).filter(User.email == "admin@default.com").one()
+        suspended = User(
+            login_id="recon-suspended",
+            email="recon-suspended@default.com",
+            hashed_password="not-a-login-credential",
+            full_name="Suspended Finance Candidate",
+            status=UserStatusEnum.SUSPENDED,
+        )
+        exception = ProcurementReconciliationException(
+            fingerprint="TEST_EXCEPTION:ASSIGNEE_DIRECTORY:987655",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="OPEN",
+            reference_type="BANK_STATEMENT_LINE", reference_id=987655,
+            amount_paise=2500, matched_amount_paise=0, unmatched_amount_paise=2500,
+            summary="Assignee directory test exception.",
+            detection_snapshot={},
+        )
+        db.add_all([suspended, exception])
+        db.commit()
+        admin_id, suspended_id, exception_id = admin.id, suspended.id, exception.id
+
+    directory = client.get(
+        "/v1/api/procurement/reconciliation/assignees",
+        headers=superuser_headers,
+        params={"q": "admin", "limit": 20},
+    )
+    assert directory.status_code == 200, directory.text
+    assert any(item["id"] == admin_id for item in directory.json()["items"])
+    assert all(item["id"] != suspended_id for item in directory.json()["items"])
+    assert all("roles" in item for item in directory.json()["items"])
+
+    inactive_assignment = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/assignment",
+        headers=superuser_headers,
+        json={"assigned_to_id": suspended_id},
+    )
+    assert inactive_assignment.status_code == 422, inactive_assignment.text
+
+
 def test_procurement_reconciliation_dashboard_aggregates_without_double_counting(
     client, superuser_headers, multi_tenant_env
 ):
