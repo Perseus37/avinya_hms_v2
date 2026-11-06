@@ -2642,7 +2642,7 @@ def test_supplier_adjustments_and_advances_are_approved_allocated_and_bounded(
     assert settlement.json()["advances_applied_paise"] == 3000
     assert settlement.json()["outstanding_paise"] == 5000
     too_much = client.post(
-        f"/v1/api/supplier-advances/{advance_id}/applications", headers=superuser_headers,
+        f"/v1/api/procurement/supplier-advances/{advance_id}/applications", headers=superuser_headers,
         json={"invoice_id": invoice_id, "amount_paise": 1},
     )
     assert too_much.status_code == 404
