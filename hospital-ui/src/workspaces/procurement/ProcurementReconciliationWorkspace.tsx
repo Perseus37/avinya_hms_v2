@@ -27,6 +27,7 @@ import {
   ReconciliationEvidence,
 } from "../../api/reconciliationApi";
 import { Badge } from "../../components/ui/Badge";
+import { ReconciliationSlaPolicyPanel } from "./ReconciliationSlaPolicyPanel";
 import { Button } from "../../components/ui/Button";
 import { usePermissions } from "../../core/context/PermissionsContext";
 import { useAuth } from "../../core/context/AuthContext";
@@ -560,6 +561,8 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
             Possible duplicate-payment candidates are investigation signals only and are excluded from monetary totals.
           </p>
         </div>
+
+        <ReconciliationSlaPolicyPanel />
 
         {escalations && escalations.total > 0 && (
           <section className="rounded-xl border border-rose-200 bg-rose-50 p-4">
