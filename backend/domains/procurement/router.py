@@ -7466,7 +7466,13 @@ def refresh_procurement_reconciliation_exceptions(
             was_missing = not row.source_present
             row.source_present = True
             row.missed_refresh_count = 0
+            previous_severity = row.severity
+            previous_sla_target_hours = row.sla_target_hours
+            severity_changed = previous_severity != item["severity"]
             row.severity = item["severity"]
+            if severity_changed:
+                row.sla_policy_id = sla_policy_id
+                row.sla_target_hours = sla_target_hours
             row.amount_paise = int(item.get("amount_paise", 0))
             row.matched_amount_paise = int(item.get("matched_amount_paise", 0))
             row.unmatched_amount_paise = int(item.get("unmatched_amount_paise", 0))
@@ -7474,8 +7480,14 @@ def refresh_procurement_reconciliation_exceptions(
             row.detection_snapshot = snapshot
             row.last_detected_at = now
             _record_reconciliation_event(db, row,
-                "SOURCE_REAPPEARED" if was_missing else "UPDATED", current_user.id,
-                event_metadata={"severity": item["severity"]})
+                "SEVERITY_CHANGED" if severity_changed else ("SOURCE_REAPPEARED" if was_missing else "UPDATED"), current_user.id,
+                event_metadata={
+                    "severity": item["severity"],
+                    "previous_severity": previous_severity if severity_changed else None,
+                    "previous_sla_target_hours": previous_sla_target_hours if severity_changed else None,
+                    "sla_target_hours": row.sla_target_hours,
+                    "sla_policy_id": row.sla_policy_id,
+                })
             updated += 1
 
     # Only a completed full scan reaches this point. Absence is evidence of disappearance,
