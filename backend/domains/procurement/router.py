@@ -9092,9 +9092,10 @@ def get_reconciliation_closure_quality(
     if to_date:
         query = query.filter(ProcurementReconciliationException.resolved_at < datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc))
     rows = query.all()
+    all_cases = db.query(ProcurementReconciliationException).all()
     resolved = [r for r in rows if r.status == "RESOLVED" and r.resolved_at and r.first_detected_at]
     cause_counts = {}
-    reopened = 0
+    reopened = sum(int(row.reopen_count or 0) for row in all_cases)
     review_required = 0
     review_approved = 0
     review_rejected = 0
@@ -9104,7 +9105,6 @@ def get_reconciliation_closure_quality(
         bucket = cause_counts.setdefault(code, {"resolved_count": 0, "reopened_count": 0, "exception_types": {}})
         bucket["resolved_count"] += 1
         bucket["exception_types"][row.exception_type] = bucket["exception_types"].get(row.exception_type, 0) + 1
-        reopened += int(row.reopen_count or 0)
         if row.resolution_review_status != "NOT_REQUIRED":
             review_required += 1
         if row.resolution_review_status == "APPROVED":
