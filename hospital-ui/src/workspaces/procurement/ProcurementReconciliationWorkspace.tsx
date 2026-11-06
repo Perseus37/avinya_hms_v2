@@ -538,24 +538,24 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                 <section className="rounded-xl border border-slate-200 p-3">
                   <h3 className="text-xs font-bold">Assignment</h3><p className="mt-1 text-[10px] text-slate-500">Enter an active user ID from this branch. Leave blank to unassign.</p>
                   <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_1.5fr_auto]">
-                    <input aria-label="Assignee user ID" type="number" min="1" value={assigneeInput} onChange={(event) => setAssigneeInput(event.target.value)} placeholder="User ID" disabled={!hasPermission("finance.view_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
-                    <input aria-label="Assignment note" value={assignmentNote} onChange={(event) => setAssignmentNote(event.target.value)} placeholder="Optional assignment note" disabled={!hasPermission("finance.view_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
-                    <Button size="sm" onClick={() => void saveAssignment()} disabled={!hasPermission("finance.view_reconciliation") || actionLoading}>Save</Button>
+                    <input aria-label="Assignee user ID" type="number" min="1" value={assigneeInput} onChange={(event) => setAssigneeInput(event.target.value)} placeholder="User ID" disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                    <input aria-label="Assignment note" value={assignmentNote} onChange={(event) => setAssignmentNote(event.target.value)} placeholder="Optional assignment note" disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                    <Button size="sm" onClick={() => void saveAssignment()} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading}>Save</Button>
                   </div>
                 </section>
                 {selectedException.status !== "RESOLVED" && selectedException.status !== "DISMISSED" && <section className="rounded-xl border border-slate-200 p-3">
                   <h3 className="text-xs font-bold">Reviewer action</h3><p className="mt-1 text-[10px] text-slate-500">Resolution and dismissal require a reason of at least 10 characters. Finance approval is enforced by the server.</p>
                   <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_2fr]">
-                    <select aria-label="New exception status" value={statusChoice} onChange={(event) => setStatusChoice(event.target.value as ReconciliationStatus)} disabled={!hasPermission("finance.view_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs">
+                    <select aria-label="New exception status" value={statusChoice} onChange={(event) => setStatusChoice(event.target.value as ReconciliationStatus)} disabled={!hasPermission("finance.approve_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs">
                       {(["OPEN", "IN_REVIEW", "RESOLVED", "DISMISSED"] as ReconciliationStatus[]).filter((value) => value !== selectedException.status).map((value) => <option key={value} value={value}>{titleCase(value)}</option>)}
                     </select>
-                    <input aria-label="Reviewer note" value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder="Reviewer / resolution reason" disabled={!hasPermission("finance.view_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                    <input aria-label="Reviewer note" value={statusNote} onChange={(event) => setStatusNote(event.target.value)} placeholder="Reviewer / resolution reason" disabled={!hasPermission("finance.approve_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
                   </div>
-                  <div className="mt-2 flex justify-end"><Button size="sm" onClick={() => void saveExceptionStatus()} disabled={!hasPermission("finance.view_reconciliation") || actionLoading}>Apply status</Button></div>
+                  <div className="mt-2 flex justify-end"><Button size="sm" onClick={() => void saveExceptionStatus()} disabled={!hasPermission("finance.approve_reconciliation") || actionLoading}>Apply status</Button></div>
                 </section>}
                 <section className="rounded-xl border border-slate-200 p-3">
-                  <h3 className="text-xs font-bold">Add investigation note</h3><textarea value={investigationNote} onChange={(event) => setInvestigationNote(event.target.value)} rows={3} maxLength={4000} placeholder="Record findings, evidence references or follow-up..." disabled={!hasPermission("finance.view_reconciliation") || actionLoading} className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
-                  <div className="mt-2 flex justify-end"><Button size="sm" onClick={() => void saveInvestigationNote()} disabled={!hasPermission("finance.view_reconciliation") || actionLoading || !investigationNote.trim()}>Add note</Button></div>
+                  <h3 className="text-xs font-bold">Add investigation note</h3><textarea value={investigationNote} onChange={(event) => setInvestigationNote(event.target.value)} rows={3} maxLength={4000} placeholder="Record findings, evidence references or follow-up..." disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                  <div className="mt-2 flex justify-end"><Button size="sm" onClick={() => void saveInvestigationNote()} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading || !investigationNote.trim()}>Add note</Button></div>
                 </section>
                 <section className="rounded-xl border border-slate-200 p-3">
                   <div className="flex items-center justify-between"><h3 className="text-xs font-bold">Audit timeline</h3><button type="button" onClick={() => void refreshSelectedHistory(selectedException.id).catch((err) => setDetailError(err instanceof Error ? err.message : "Unable to refresh history."))} disabled={historyLoading || actionLoading} className="text-[10px] font-semibold text-blue-700">Refresh history</button></div>
