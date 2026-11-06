@@ -13,12 +13,13 @@
 - The register exposes Redis task state and the email handler's send result (mailer accepted or delivery failed) while task metadata remains available. Neither state proves final mailbox delivery. Task metadata expires after the queue's configured retention window; older records are shown as UNKNOWN_OR_EXPIRED.
 
 ### 3S.4 — Closure quality and recurring root causes
-- Read-only closure-quality endpoint reports resolution duration, median/average, reopen rate, independent review outcomes, and recurring root-cause buckets.
+- Read-only closure-quality endpoint reports resolution duration, median/average, case-level reopen rate, independent review outcomes, and recurring root-cause buckets.
+- Reopen rate denominator: distinct cases with a RESOLVED transition during the selected period. Numerator: distinct cases in that cohort with a later REOPENED event. Repeated reopen cycles count once in the rate and separately in reopen_events.
 - Reopened events retain their prior root-cause metadata; current root-cause labels are not treated as proof that the underlying issue is permanently fixed.
 - Root-cause counts are descriptive; they do not automatically infer or overwrite root-cause codes.
 
 ### 3S.5 — Finance Manager governance dashboard
-- Read-only governance dashboard aggregates open cases, SLA breaches, unassigned work, resolved cases, reopened cases, and closure-quality measures.
+- Read-only governance dashboard aggregates open cases, SLA breaches, unassigned work, resolved cases, distinct cases with one or more reopen cycles, and closure-quality measures.
 - Existing finance:read controls visibility; policy/report generation requires finance:sla:manage.
 
 ### 3S.6 — Monthly governance reports
@@ -49,11 +50,20 @@ All endpoints execute against the tenant database session and use existing finan
 - Parent: h4c2e7a9d510
 - Adds escalation policy versions, immutable monthly report snapshots, and audit export register.
 - PostgreSQL triggers protect published escalation policy content and make report/export records immutable.
+- Revision: k6e9f1b3c210 (parent: j5d8c2a7f410) changes the audit-export-to-investigation FK from ON DELETE SET NULL to ON DELETE RESTRICT, preventing a parent deletion from mutating an append-only export row.
 
 ## Operational notes and verification
 
 - The existing Redis queue/worker is reused; no second scheduler is introduced.
 - Existing default acknowledgement targets remain CRITICAL 0.5h, HIGH 2h, MEDIUM 8h, LOW 24h until a published escalation policy takes effect.
 - Notification task status and mailer send result are exposed while Redis task metadata remains available, otherwise UNKNOWN_OR_EXPIRED. This is not a mailbox delivery receipt.
-- Added API regression coverage in tests/test_26_reconciliation_governance.py.
+- Added API regression coverage in tests/test_26_reconciliation_governance.py and tests/test_27_reconciliation_governance_regressions.py / tests/test_28_reconciliation_governance_regressions.py.
 - Automated tests, Alembic upgrade/downgrade, TypeScript typecheck, and production build have NOT been executed in this environment. Run them before deploying this migration.
+
+
+## Phase 3S verification corrections
+
+- The escalation-policy register now applies the same effective-window rule as assignment: effective_from <= now and (effective_to IS NULL or effective_to > now). A published future-dated policy is not presented as active before its start.
+- The governance dashboard's reopened_cases value is a distinct-case count, not the sum of cumulative reopen_count values.
+- The audit-export register's nullable investigation reference is protected with RESTRICT semantics. Export rows remain immutable and cannot be silently rewritten by deleting an investigation.
+- Regression tests cover future-effective policy visibility and a case with multiple reopen events. Execution remains pending CI/local validation.
