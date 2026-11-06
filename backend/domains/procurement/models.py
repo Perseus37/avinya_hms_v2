@@ -90,6 +90,17 @@ class VendorInvoiceStatusEnum(str, PyEnum):
     PAID = "PAID"
     REJECTED = "REJECTED"
 
+class SupplierPaymentMethodEnum(str, PyEnum):
+    BANK_TRANSFER = "BANK_TRANSFER"
+    UPI = "UPI"
+    CHEQUE = "CHEQUE"
+    CASH = "CASH"
+    CARD = "CARD"
+    NEFT = "NEFT"
+    RTGS = "RTGS"
+    IMPS = "IMPS"
+    OTHER = "OTHER"
+
 class VendorMaster(AuditMixin, Base):
     """Registered hospital suppliers, distributors, and manufacturers."""
     __tablename__ = "procurement_vendors"
@@ -405,6 +416,40 @@ class VendorInvoice(AuditMixin, Base):
     grn: Mapped[Optional["GoodsReceiptNote"]] = relationship()
     verified_by: Mapped[Optional["User"]] = relationship(foreign_keys=[verified_by_id])
     items: Mapped[List["VendorInvoiceItem"]] = relationship(back_populates="invoice", cascade="all, delete-orphan")
+
+
+class SupplierPayment(AuditMixin, Base):
+    """Immutable recorded outflow to a supplier; allocations identify invoices settled."""
+    __tablename__ = "procurement_supplier_payments"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "payment_reference", name="uq_supplier_payment_vendor_reference"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_amount_positive"),
+        Index("ix_supplier_payment_vendor_date", "vendor_id", "payment_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    payment_reference: Mapped[str] = mapped_column(String(100), nullable=False)
+    payment_method: Mapped[SupplierPaymentMethodEnum] = mapped_column(Enum(SupplierPaymentMethodEnum), nullable=False)
+    payment_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recorded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+
+
+class SupplierPaymentAllocation(Base):
+    """Append-only allocation of a supplier payment to one verified invoice."""
+    __tablename__ = "procurement_supplier_payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_supplier_payment_invoice_allocation"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_allocation_positive"),
+        Index("ix_supplier_payment_allocation_invoice", "invoice_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    payment_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class ProcurementDocumentDownloadAudit(Base):
