@@ -74,6 +74,7 @@ from backend.domains.procurement.documents import (
     resolve_supplier_compliance_document,
     store_reconciliation_evidence,
     resolve_reconciliation_evidence,
+    reconciliation_evidence_sha256,
 )
 
 from backend.domains.reports.models import PrintModeEnum, ReportTypeEnum
@@ -7102,6 +7103,20 @@ def download_reconciliation_evidence(
     if row is None:
         raise HTTPException(status_code=404, detail="Reconciliation evidence not found.")
     path = resolve_reconciliation_evidence(tenant.subdomain_slug, row.storage_key)
+    try:
+        actual_sha256 = reconciliation_evidence_sha256(path)
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="Reconciliation evidence storage is unavailable.") from exc
+    if actual_sha256 != row.sha256_hex:
+        exception_row = db.get(ProcurementReconciliationException, exception_id)
+        if exception_row is not None:
+            _record_reconciliation_event(
+                db, exception_row, "EVIDENCE_HASH_MISMATCH", current_user.id,
+                note="Evidence integrity verification failed during download.",
+                event_metadata={"evidence_id": row.id, "expected_sha256": row.sha256_hex, "actual_sha256": actual_sha256},
+            )
+            db.commit()
+        raise HTTPException(status_code=409, detail="Evidence integrity verification failed; the file was not served.")
     db.add(ProcurementReconciliationEvidenceDownloadAudit(
         evidence_id=row.id,
         exception_id=exception_id,
