@@ -2100,9 +2100,13 @@ def record_supplier_payment(
         if invoice.linked_expense_id is None:
             raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoice_number} has no Accounts Payable posting.")
         expense = db.get(ExpenseRecord, invoice.linked_expense_id)
-        if expense is None or expense.status not in {ExpenseStatusEnum.APPROVED, ExpenseStatusEnum.PAID}:
-            raise HTTPException(status_code=409, detail=f"Accounts Payable entry for invoice {invoice.invoice_number} is not payable.")
-        already_paid = _supplier_invoice_paid_amount(db, invoice.id)
+        if expense is None or expense.status != ExpenseStatusEnum.APPROVED:
+            raise HTTPException(status_code=409, detail=f"Accounts Payable entry for invoice {invoice.invoice_number} is not payable or has already been settled.")
+        recorded_paid = _supplier_invoice_paid_amount(db, invoice.id)
+        already_paid = _effective_invoice_paid_amount(
+            invoice,
+            {invoice.id: recorded_paid} if recorded_paid else {},
+        )
         outstanding = int(invoice.total_amount_paise) - already_paid
         if allocation.amount_paise > outstanding:
             raise HTTPException(
