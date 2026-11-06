@@ -13,7 +13,7 @@ from backend.core.document_responses import pdf_attachment_response
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
-from backend.domains.identity.models import User, Department, Role, UserRole
+from backend.domains.identity.models import User, UserStatusEnum, Department, Role, UserRole
 from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
 from backend.domains.pharmacy.models import MedicationMaster, InventoryMovement, InventoryBatch
 from backend.domains.procurement.models import (
@@ -7395,6 +7395,41 @@ def get_reconciliation_dashboard(
     }
 
 
+@router.get("/reconciliation/assignees")
+def list_reconciliation_assignees(
+    q: str | None = Query(default=None, min_length=1, max_length=100),
+    limit: int = Query(default=50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    """Return active users from the current branch for reconciliation assignment."""
+    statement = (
+        select(User)
+        .options(selectinload(User.roles))
+        .where(User.status == UserStatusEnum.ACTIVE)
+        .order_by(User.full_name.asc(), User.id.asc())
+    )
+    if q:
+        term = f"%{q.strip().lower()}%"
+        statement = statement.where(
+            or_(func.lower(User.full_name).like(term), func.lower(User.login_id).like(term))
+        )
+    users = db.execute(statement.limit(limit)).scalars().unique().all()
+    return {
+        "items": [
+            {
+                "id": user.id,
+                "full_name": user.full_name,
+                "login_id": user.login_id,
+                "roles": [{"code": role.code, "name": role.name} for role in user.roles],
+            }
+            for user in users
+        ],
+        "count": len(users),
+        "limit": limit,
+    }
+
+
 @router.patch("/reconciliation/exceptions/{exception_id}/assignment")
 def assign_reconciliation_exception(
     exception_id: int, payload: dict,
@@ -7408,7 +7443,7 @@ def assign_reconciliation_exception(
     assignee_id = payload.get("assigned_to_id")
     if assignee_id is not None:
         assignee = db.get(User, assignee_id)
-        if assignee is None or not getattr(assignee, "is_active", True):
+        if assignee is None or assignee.status != UserStatusEnum.ACTIVE:
             raise HTTPException(status_code=422, detail="Assignee must be an active user in this branch.")
     old = row.assigned_to_id
     row.assigned_to_id = assignee_id
