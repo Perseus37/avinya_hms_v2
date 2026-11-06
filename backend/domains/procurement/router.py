@@ -7479,17 +7479,19 @@ def get_reconciliation_assignment_recommendations(
             for role in user.roles
             for permission in role.permissions
         }
-        finance_permissions = sorted(
-            code for code in permission_codes
-            if code.startswith("finance:") or code.startswith("procurement:")
-        )
+        finance_permissions = sorted(code for code in permission_codes if code.startswith("finance:"))
+        procurement_permissions = sorted(code for code in permission_codes if code.startswith("procurement:"))
         finance_suitable = bool(finance_permissions)
+        procurement_suitable = bool(procurement_permissions)
         severity_load = stats["severity"].get(target.severity, 0)
         score = 0
         reasons = []
         if finance_suitable:
             score += 35
-            reasons.append("Has finance or procurement permissions")
+            reasons.append("Has finance permissions on an assigned role")
+        elif procurement_suitable:
+            score += 20
+            reasons.append("Has procurement permissions but no finance permission detected")
         else:
             reasons.append("No finance/procurement role permission detected")
         open_score = max(0, 25 - stats["open"] * 5)
@@ -7522,7 +7524,9 @@ def get_reconciliation_assignment_recommendations(
             "login_id": user.login_id,
             "roles": [{"code": role.code, "name": role.name} for role in user.roles],
             "finance_suitable": finance_suitable,
+            "procurement_suitable": procurement_suitable,
             "finance_permissions": finance_permissions,
+            "procurement_permissions": procurement_permissions,
             "current_assignee": user.id == target.assigned_to_id,
             "open_count": stats["open"],
             "overdue_count": stats["overdue"],
@@ -7547,7 +7551,7 @@ def get_reconciliation_assignment_recommendations(
             "manual_confirmation_required": True,
             "workload_scope": "All persisted investigations in the current branch, not the dashboard date filter.",
             "historical_resolution_scope": "Resolved cases still attributed to the assignee; median elapsed hours compared with the branch median.",
-            "role_suitability": "Presence of at least one finance:* or procurement:* permission on an assigned role.",
+            "role_suitability": "Finance permissions receive the strongest suitability weight; procurement-only permissions receive a lower supporting weight.",
             "score_weights": {"role_suitability": 35, "open_workload": 25, "overdue_workload": 20, "target_severity_load": 10, "historical_resolution": 10},
             "automatic_assignment": False,
         },
