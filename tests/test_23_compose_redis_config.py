@@ -32,10 +32,14 @@ def test_compose_runs_database_bootstrap_once_before_api():
         api = compose["services"]["api"]
 
         assert db_init["restart"] == "no"
-        assert db_init["command"] in (
+        command = db_init["command"]
+        assert command in (
             "python backend/scripts/bootstrap.py",
             ["python", "backend/scripts/bootstrap.py"],
+            ["python", "backend/scripts/bootstrap.py", "--apply-roles"],
         )
+        if compose_file == "docker-compose.prod.yml":
+            assert command[-1] == "--apply-roles"
         assert (
             api["depends_on"]["db-init"]["condition"]
             == "service_completed_successfully"
