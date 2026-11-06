@@ -7540,6 +7540,55 @@ def _reconciliation_sla_hours(row) -> int:
     return int(row.sla_target_hours or RECONCILIATION_DEFAULT_SLA_HOURS.get(row.severity, 168))
 
 
+def _reconciliation_sla_clock(row, at: Optional[datetime] = None):
+    """Return pause-aware SLA elapsed time, deadline, and breach timestamp.
+
+    first_detected_at is the immutable clock origin. Resolution stops the clock;
+    authorized pauses are excluded from active elapsed time.
+    """
+    now = at or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+
+    def utc(value):
+        if value is None:
+            return None
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+    started_at = utc(row.first_detected_at)
+    resolved_at = utc(row.resolved_at) if row.status in {"RESOLVED", "DISMISSED"} else None
+    clock_end = min(resolved_at, now) if resolved_at else now
+    paused_seconds = max(int(row.sla_paused_seconds or 0), 0)
+    paused_at = utc(row.sla_paused_at)
+    currently_paused = paused_at is not None and row.status in {"OPEN", "IN_REVIEW"}
+    current_pause_seconds = 0
+    if paused_at is not None:
+        pause_end = min(clock_end, now)
+        current_pause_seconds = max(int((pause_end - paused_at).total_seconds()), 0)
+    elapsed_seconds = max(int((clock_end - started_at).total_seconds()) - paused_seconds - current_pause_seconds, 0)
+    target_seconds = _reconciliation_sla_hours(row) * 3600
+    breached = elapsed_seconds > target_seconds
+    breached_at = utc(row.sla_breached_at)
+    if breached and breached_at is None and not currently_paused:
+        breached_at = started_at + timedelta(seconds=target_seconds + paused_seconds)
+    due_at = None if currently_paused and not breached else started_at + timedelta(seconds=target_seconds + paused_seconds)
+    return {
+        "elapsed_seconds": elapsed_seconds,
+        "elapsed_hours": round(elapsed_seconds / 3600, 2),
+        "remaining_seconds": max(target_seconds - elapsed_seconds, 0),
+        "remaining_hours": round(max(target_seconds - elapsed_seconds, 0) / 3600, 2),
+        "paused": currently_paused,
+        "paused_at": paused_at,
+        "paused_seconds": paused_seconds + current_pause_seconds,
+        "due_at": due_at,
+        "breached": breached or breached_at is not None,
+        "breached_at": breached_at,
+        "target_hours": _reconciliation_sla_hours(row),
+    }
+
+
 @router.get("/reconciliation/sla-policies")
 def list_reconciliation_sla_policies(
     db: Session = Depends(get_db),
@@ -7768,6 +7817,9 @@ def list_persisted_reconciliation_exceptions(
             detected = detected.replace(tzinfo=timezone.utc)
         return max(int((now - detected).total_seconds() // 3600), 0)
 
+    def sla_clock(row):
+        return _reconciliation_sla_clock(row, now)
+
     if open_only:
         rows = [row for row in rows if row.status in ("OPEN", "IN_REVIEW")]
     if unassigned_only:
@@ -7775,13 +7827,13 @@ def list_persisted_reconciliation_exceptions(
     if sla_overdue is not None:
         rows = [
             row for row in rows
-            if (row.status in ("OPEN", "IN_REVIEW") and age_hours(row) > sla_hours_for(row)) == sla_overdue
+            if (row.status in ("OPEN", "IN_REVIEW") and sla_clock(row)["breached"]) == sla_overdue
         ]
 
     open_rows = [row for row in rows if row.status in ("OPEN", "IN_REVIEW")]
     overdue_rows = [
         row for row in open_rows
-        if age_hours(row) > sla_hours_for(row)
+        if sla_clock(row)["breached"]
     ]
     return {
         "total": len(rows),
@@ -7797,7 +7849,14 @@ def list_persisted_reconciliation_exceptions(
             "sla_policy_id": row.sla_policy_id,
             "source_present": row.source_present, "missed_refresh_count": row.missed_refresh_count,
             "age_hours": age_hours(row), "sla_hours": sla_hours_for(row),
-            "sla_overdue": row.status in ("OPEN", "IN_REVIEW") and age_hours(row) > sla_hours_for(row),
+            "sla_elapsed_hours": sla_clock(row)["elapsed_hours"],
+            "sla_remaining_hours": sla_clock(row)["remaining_hours"],
+            "sla_paused": sla_clock(row)["paused"],
+            "sla_paused_at": sla_clock(row)["paused_at"],
+            "sla_paused_seconds": sla_clock(row)["paused_seconds"],
+            "sla_due_at": sla_clock(row)["due_at"],
+            "sla_breached_at": sla_clock(row)["breached_at"],
+            "sla_overdue": row.status in ("OPEN", "IN_REVIEW") and sla_clock(row)["breached"],
             "amount_paise": row.amount_paise, "matched_amount_paise": row.matched_amount_paise,
             "unmatched_amount_paise": row.unmatched_amount_paise, "summary": row.summary,
             "assigned_to_id": row.assigned_to_id, "first_detected_at": row.first_detected_at,
@@ -7896,13 +7955,16 @@ def get_reconciliation_dashboard(
         opened_by_day[opened_day] = opened_by_day.get(opened_day, 0) + 1
 
         elapsed = age_hours(row)
+        sla_clock = _reconciliation_sla_clock(row, now)
         breached = (
             row.status in open_statuses or row.status == "RESOLVED"
-        ) and elapsed > sla_hours_for(row)
+        ) and sla_clock["breached"]
         if breached:
             sla_breaches_by_day[opened_day] = sla_breaches_by_day.get(opened_day, 0) + 1
         if row.status in open_statuses:
-            if elapsed < 4:
+            if sla_clock["paused"]:
+                aging["under_4_hours"] += 1
+            elif elapsed < 4:
                 aging["under_4_hours"] += 1
             elif elapsed < 24:
                 aging["4_to_24_hours"] += 1
@@ -8446,7 +8508,7 @@ def list_reconciliation_assignment_escalations(
             assigned_at = assigned_at.replace(tzinfo=timezone.utc)
         elapsed_hours = max((now - assigned_at).total_seconds() / 3600, 0)
         target_hours = response_targets.get(row.severity, 24)
-        if elapsed_hours < target_hours:
+        if elapsed_hours < target_hours or _reconciliation_sla_clock(row, now)["paused"]:
             continue
         candidates.append({
             "exception_id": row.id,
