@@ -467,7 +467,7 @@ def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict
     """
     from datetime import datetime, timezone
     from backend.control_plane.models import TenantRegistry
-    from backend.domains.identity.models import User
+    from backend.domains.identity.models import User, UserRole, Role
     from backend.domains.procurement.models import (
         ProcurementReconciliationException,
         ProcurementReconciliationExceptionEvent,
