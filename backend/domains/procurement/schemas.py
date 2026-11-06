@@ -1040,3 +1040,37 @@ class SupplierContractRevisionResponse(BaseModel):
     reviewed_at: Optional[datetime]
     review_notes: Optional[str]
     model_config = ConfigDict(from_attributes=True)
+
+
+class ReconciliationSlaPolicyCreate(BaseModel):
+    severity_targets_hours: dict[str, int]
+    change_reason: str = Field(min_length=10, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_severity_targets(self):
+        required = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+        if set(self.severity_targets_hours) != required:
+            raise ValueError("SLA targets must define CRITICAL, HIGH, MEDIUM, and LOW exactly once.")
+        if any(not isinstance(value, int) or value < 1 or value > 8760 for value in self.severity_targets_hours.values()):
+            raise ValueError("SLA targets must be whole hours between 1 and 8760.")
+        return self
+
+
+class ReconciliationSlaPolicyPublish(BaseModel):
+    effective_from: Optional[datetime] = None
+
+
+class ReconciliationSlaPolicyResponse(BaseModel):
+    id: int
+    policy_key: str
+    version: int
+    status: str
+    severity_targets_hours: dict[str, int]
+    change_reason: str
+    effective_from: datetime
+    effective_to: Optional[datetime] = None
+    created_by_id: int
+    created_at: datetime
+    published_by_id: Optional[int] = None
+    published_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
