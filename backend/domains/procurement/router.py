@@ -168,6 +168,37 @@ def _budget_available_paise(db: Session, budget: ProcurementBudget) -> tuple[int
     return budget.total_amount_paise - used - earmarked_for_active_quarters, earmarked_for_active_quarters
 
 
+def _supplier_paid_amounts_by_invoice(db: Session, invoice_ids: set[int]) -> dict[int, int]:
+    if not invoice_ids:
+        return {}
+    rows = db.query(
+        SupplierPaymentAllocation.invoice_id,
+        func.sum(SupplierPaymentAllocation.amount_paise),
+    ).filter(
+        SupplierPaymentAllocation.invoice_id.in_(invoice_ids)
+    ).group_by(SupplierPaymentAllocation.invoice_id).all()
+    return {int(invoice_id): int(amount or 0) for invoice_id, amount in rows}
+
+
+def _allocate_paid_amount_to_invoice_lines(lines: list, line_values: dict[int, int], paid_amount_paise: int) -> dict[int, int]:
+    """Allocate cash paid proportionally to invoice line gross values with exact paise reconciliation."""
+    total_value = sum(max(int(value), 0) for value in line_values.values())
+    if total_value <= 0 or paid_amount_paise <= 0:
+        return {line.id: 0 for line in lines}
+    amount = min(int(paid_amount_paise), total_value)
+    allocations = []
+    allocated = 0
+    for line in lines:
+        value = max(int(line_values.get(line.id, 0)), 0)
+        base, remainder = divmod(amount * value, total_value)
+        allocations.append([line.id, base, remainder])
+        allocated += base
+    remaining = amount - allocated
+    for entry in sorted(allocations, key=lambda row: (-row[2], row[0]))[:remaining]:
+        entry[1] += 1
+    return {line_id: amount for line_id, amount, _ in allocations}
+
+
 def _budget_invoice_actuals(db: Session, budget: ProcurementBudget) -> dict:
     """Calculate verified invoice actuals separately from budget consumption.
 
@@ -190,6 +221,7 @@ def _budget_invoice_actuals(db: Session, budget: ProcurementBudget) -> dict:
             VendorInvoiceStatusEnum.PAID,
         ])
     ).all()
+    paid_by_invoice = _supplier_paid_amounts_by_invoice(db, {invoice.id for invoice in invoices})
     po_item_ids = {
         line.po_item_id
         for invoice in invoices
@@ -221,22 +253,28 @@ def _budget_invoice_actuals(db: Session, budget: ProcurementBudget) -> dict:
         remaining_discount = discount - allocated_discount
         for entry in sorted(shares, key=lambda value: (-value[2], value[0].id))[:remaining_discount]:
             entry[1] += 1
+        line_values = {
+            line.id: max(int(line.total_price_paise) + (int(line.total_price_paise) * int(line.tax_percentage or 0) + 50) // 100 - discount_share, 0)
+            for line, discount_share, _ in shares
+        }
+        paid_line_values = _allocate_paid_amount_to_invoice_lines(
+            lines, line_values, paid_by_invoice.get(invoice.id, 0)
+        )
         invoice_budget_value = 0
-        for line, discount_share, _ in shares:
+        invoice_paid_value = 0
+        for line, _, _ in shares:
             po_item = po_items.get(line.po_item_id) if line.po_item_id is not None else None
             if po_item is None or po_item.budget_id not in budget_ids:
                 continue
-            net = int(line.total_price_paise)
-            tax = (net * int(line.tax_percentage or 0) + 50) // 100
-            invoice_budget_value += max(net + tax - discount_share, 0)
+            value = line_values.get(line.id, 0)
+            invoice_budget_value += value
+            invoice_paid_value += min(paid_line_values.get(line.id, 0), value)
         if invoice_budget_value <= 0:
             continue
         invoice_ids.add(invoice.id)
         verified_total += invoice_budget_value
-        if invoice.status == VendorInvoiceStatusEnum.PAID:
-            paid_total += invoice_budget_value
-        else:
-            unpaid_total += invoice_budget_value
+        paid_total += invoice_paid_value
+        unpaid_total += invoice_budget_value - invoice_paid_value
     return {
         "verified_invoice_actuals_paise": verified_total,
         "paid_invoice_actuals_paise": paid_total,
@@ -293,21 +331,25 @@ def _budget_invoice_actuals_by_budget_ids(db: Session, budget_ids: set[int]) -> 
         remaining_discount = discount - allocated_discount
         for entry in sorted(shares, key=lambda value: (-value[2], value[0].id))[:remaining_discount]:
             entry[1] += 1
-        for line, discount_share, _ in shares:
+        line_values = {
+            line.id: max(int(line.total_price_paise) + (int(line.total_price_paise) * int(line.tax_percentage or 0) + 50) // 100 - discount_share, 0)
+            for line, discount_share, _ in shares
+        }
+        paid_line_values = _allocate_paid_amount_to_invoice_lines(
+            lines, line_values, paid_by_invoice.get(invoice.id, 0)
+        )
+        for line, _, _ in shares:
             po_item = po_items.get(line.po_item_id) if line.po_item_id is not None else None
             if po_item is None or po_item.budget_id not in budget_ids:
                 continue
-            net = int(line.total_price_paise)
-            tax = (net * int(line.tax_percentage or 0) + 50) // 100
-            value = max(net + tax - discount_share, 0)
+            value = line_values.get(line.id, 0)
             if value <= 0:
                 continue
+            paid_value = min(paid_line_values.get(line.id, 0), value)
             actuals = result[po_item.budget_id]
             actuals["verified_invoice_actuals_paise"] += value
-            if invoice.status == VendorInvoiceStatusEnum.PAID:
-                actuals["paid_invoice_actuals_paise"] += value
-            else:
-                actuals["unpaid_verified_invoice_actuals_paise"] += value
+            actuals["paid_invoice_actuals_paise"] += paid_value
+            actuals["unpaid_verified_invoice_actuals_paise"] += value - paid_value
             actuals["verified_invoice_ids"].add(invoice.id)
     return result
 
