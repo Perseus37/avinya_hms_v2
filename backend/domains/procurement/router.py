@@ -2950,6 +2950,11 @@ def execute_supplier_payment_request(
         raise HTTPException(status_code=409, detail="Only approved payment requests can be executed.")
     if request_row.scheduled_date > datetime.now(timezone.utc).date():
         raise HTTPException(status_code=409, detail="This payment is scheduled for a future date and cannot yet be executed.")
+    if db.query(SupplierPayment.id).filter(
+        SupplierPayment.vendor_id == request_row.vendor_id,
+        SupplierPayment.payment_reference == request_row.payment_reference,
+    ).first():
+        raise HTTPException(status_code=409, detail="The payment reference has already been recorded outside this request.")
     vendor = db.query(VendorMaster).filter(
         VendorMaster.id == request_row.vendor_id
     ).with_for_update().one_or_none()
@@ -2964,6 +2969,8 @@ def execute_supplier_payment_request(
         raise HTTPException(status_code=409, detail="A requested invoice no longer exists.")
     for allocation in request_row.allocations:
         invoice = by_id[allocation.invoice_id]
+        if invoice.status not in {VendorInvoiceStatusEnum.MATCHED_APPROVED, VendorInvoiceStatusEnum.PAID}:
+            raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoice_number} is no longer approved for settlement.")
         outstanding, _, _ = _supplier_invoice_outstanding(db, invoice)
         reserved = _reserved_supplier_payment_amount(
             db, invoice.id, exclude_request_id=request_row.id
