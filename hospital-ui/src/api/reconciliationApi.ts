@@ -96,6 +96,10 @@ export interface ReconciliationException {
   last_detected_at: string;
   resolved_at: string | null;
   resolution_note: string | null;
+  root_cause_code?: string | null;
+  resolution_checklist?: Record<string, boolean>;
+  reopen_count?: number;
+  resolution_review_status?: "NOT_REQUIRED" | "PENDING" | "APPROVED" | "REJECTED";
   detection_snapshot: Record<string, unknown>;
 }
 
@@ -163,7 +167,9 @@ export const reconciliationApi = {
   getResolutionGuidance: (id: number) =>
     apiClient<ReconciliationResolutionGuidance>("/api/procurement/reconciliation/exceptions/" + id + "/resolution-guidance"),
   updateExceptionStatus: (id: number, payload: { status: ReconciliationStatus; note?: string; root_cause_code?: string; resolution_checklist?: Record<string, boolean> }) =>
-    apiClient<{ id: number; status: ReconciliationStatus; resolved_at: string | null; resolution_note: string | null; root_cause_code?: string | null; resolution_checklist?: Record<string, boolean> }>("/api/procurement/reconciliation/exceptions/" + id + "/status", { method: "PATCH", body: JSON.stringify(payload) }),
+    apiClient<{ id: number; status: ReconciliationStatus; resolved_at: string | null; resolution_note: string | null; root_cause_code?: string | null; resolution_checklist?: Record<string, boolean>; resolution_review_status?: "NOT_REQUIRED" | "PENDING" | "APPROVED" | "REJECTED" }>("/api/procurement/reconciliation/exceptions/" + id + "/status", { method: "PATCH", body: JSON.stringify(payload) }),
+  reviewExceptionResolution: (id: number, payload: { decision: "APPROVE" | "REJECT"; note: string }) =>
+    apiClient<{ id: number; status: ReconciliationStatus; resolution_review_status: "APPROVED" | "REJECTED"; resolved_at: string | null; resolved_by_id: number | null }>("/api/procurement/reconciliation/exceptions/" + id + "/resolution-review", { method: "PATCH", body: JSON.stringify(payload) }),
   reopenException: (id: number, payload: { reason: string }) =>
     apiClient<{ id: number; status: ReconciliationStatus; reopen_count: number }>("/api/procurement/reconciliation/exceptions/" + id + "/reopen", { method: "POST", body: JSON.stringify(payload) }),
   addExceptionNote: (id: number, payload: { note: string }) =>
