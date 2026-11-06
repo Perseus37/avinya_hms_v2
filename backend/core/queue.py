@@ -100,7 +100,7 @@ def enqueue_task(
         pipe = r.pipeline()
         pipe.hset(f"{KEY_TASK_PREFIX}{task_id}", mapping=task_data)
         # N-22: Secrets in queue: sensitive email and auth payloads expire in 1 hour; standard tasks in 24 hours
-        task_ttl = 3600 if task_name == "email.send" else 86400
+        task_ttl = 3600 if task_name == "email.send" else (7 * 86400 if task_name == "procurement.reconciliation.assignment_escalation" else 86400)
         pipe.expire(f"{KEY_TASK_PREFIX}{task_id}", task_ttl)
 
         if delay_seconds > 0:
@@ -456,3 +456,124 @@ def handle_scheduled_retention_sweep(payload: dict[str, Any]) -> dict[str, Any]:
 
     return {"status": "SUCCESS", "enqueued_tenants": executed_tenants, "dry_run": safe_dry_run}
 
+
+
+@registry.register("procurement.reconciliation.assignment_escalation")
+def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict[str, Any]:
+    """Notify the assigning manager and assignee if an assignment remains unacknowledged.
+
+    The delayed task is bound to one assignment-event ID. Reassignments, responses,
+    terminal status changes, or already-recorded escalation events make it a no-op.
+    """
+    from datetime import datetime, timezone
+    from backend.control_plane.models import TenantRegistry
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import (
+        ProcurementReconciliationException,
+        ProcurementReconciliationExceptionEvent,
+    )
+
+    tenant_slug = payload["tenant_subdomain"]
+    exception_id = int(payload["exception_id"])
+    assignment_event_id = int(payload["assignment_event_id"])
+    assignee_id = int(payload["assignee_id"])
+    target_hours = float(payload["response_target_hours"])
+
+    with ControlSessionLocal() as cp_db:
+        tenant = cp_db.query(TenantRegistry).filter(
+            TenantRegistry.subdomain_slug == tenant_slug,
+            TenantRegistry.is_active == True,
+        ).first()
+        if tenant is None:
+            return {"status": "SKIPPED", "reason": "TENANT_INACTIVE_OR_MISSING"}
+        engine = tenant_engine_pool.get_engine(tenant.db_name)
+
+    TenantSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    with TenantSession() as tenant_db:
+        row = tenant_db.query(ProcurementReconciliationException).filter(
+            ProcurementReconciliationException.id == exception_id
+        ).with_for_update().one_or_none()
+        assignment = tenant_db.get(ProcurementReconciliationExceptionEvent, assignment_event_id)
+        if row is None or assignment is None:
+            return {"status": "SKIPPED", "reason": "ASSIGNMENT_NOT_FOUND"}
+        if (
+            assignment.exception_id != row.id
+            or assignment.event_type != "ASSIGNED"
+            or assignment.new_assignee_id != assignee_id
+            or row.assigned_to_id != assignee_id
+            or row.status not in {"OPEN", "IN_REVIEW"}
+        ):
+            return {"status": "SKIPPED", "reason": "ASSIGNMENT_NO_LONGER_ACTIVE"}
+
+        latest_assignment = tenant_db.query(ProcurementReconciliationExceptionEvent.id).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == row.id,
+            ProcurementReconciliationExceptionEvent.event_type == "ASSIGNED",
+        ).order_by(ProcurementReconciliationExceptionEvent.id.desc()).first()
+        if latest_assignment is None or latest_assignment[0] != assignment_event_id:
+            return {"status": "SKIPPED", "reason": "SUPERSEDED_ASSIGNMENT"}
+
+        response = tenant_db.query(ProcurementReconciliationExceptionEvent.id).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == row.id,
+            ProcurementReconciliationExceptionEvent.id > assignment_event_id,
+            ProcurementReconciliationExceptionEvent.event_type.in_(["ASSIGNMENT_ACCEPTED", "ASSIGNMENT_REJECTED"]),
+        ).first()
+        if response is not None:
+            return {"status": "SKIPPED", "reason": "ALREADY_ACKNOWLEDGED"}
+
+        already_notified = tenant_db.query(ProcurementReconciliationExceptionEvent.id).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == row.id,
+            ProcurementReconciliationExceptionEvent.id > assignment_event_id,
+            ProcurementReconciliationExceptionEvent.event_type == "ESCALATION_NOTIFIED",
+        ).first()
+        if already_notified is not None:
+            return {"status": "SKIPPED", "reason": "ESCALATION_ALREADY_NOTIFIED"}
+
+        assigned_at = assignment.occurred_at
+        if assigned_at.tzinfo is None:
+            assigned_at = assigned_at.replace(tzinfo=timezone.utc)
+        elapsed_hours = max((datetime.now(timezone.utc) - assigned_at).total_seconds() / 3600, 0)
+        if elapsed_hours < target_hours:
+            remaining_seconds = max(int((target_hours - elapsed_hours) * 3600), 1)
+            enqueue_task(
+                "procurement.reconciliation.assignment_escalation",
+                payload,
+                delay_seconds=remaining_seconds,
+                sync_fallback=False,
+            )
+            return {"status": "RESCHEDULED", "remaining_seconds": remaining_seconds}
+
+        manager = tenant_db.get(User, assignment.actor_user_id) if assignment.actor_user_id else None
+        assignee = tenant_db.get(User, assignee_id)
+        recipients = []
+        if manager and manager.email:
+            recipients.append(manager)
+        if assignee and assignee.email and assignee.id not in {user.id for user in recipients}:
+            recipients.append(assignee)
+        for recipient in recipients:
+            enqueue_task("email.send", {
+                "recipient": recipient.email,
+                "subject": f"Escalation: investigation #{row.id} remains unacknowledged",
+                "text_body": (
+                    f"Reconciliation investigation #{row.id} ({row.severity}) at {tenant.hospital_name} "
+                    f"has not been acknowledged within its {target_hours:g}-hour response target.\\n\\n"
+                    f"Current status: {row.status}. Current assignee: "
+                    f"{assignee.full_name if assignee else 'Unavailable'}."
+                ),
+            }, sync_fallback=False)
+
+        tenant_db.add(ProcurementReconciliationExceptionEvent(
+            exception_id=row.id,
+            event_type="ESCALATION_NOTIFIED",
+            actor_user_id=None,
+            old_assignee_id=assignee_id,
+            new_assignee_id=assignee_id,
+            note="Acknowledgement response target elapsed; notification queued.",
+            event_metadata={
+                "assignment_event_id": assignment_event_id,
+                "unacknowledged_hours": round(elapsed_hours, 2),
+                "response_target_hours": target_hours,
+                "notification_recipients": [recipient.id for recipient in recipients],
+            },
+        ))
+        tenant_db.commit()
+        return {"status": "NOTIFIED", "recipient_count": len(recipients), "elapsed_hours": round(elapsed_hours, 2)}
