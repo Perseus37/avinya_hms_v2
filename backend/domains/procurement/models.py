@@ -1424,6 +1424,7 @@ class ProcurementReconciliationAuditExport(Base):
     __tablename__ = "procurement_reconciliation_audit_exports"
     __table_args__ = (
         CheckConstraint("status IN ('GENERATED','FAILED','EXPIRED')", name="ck_proc_recon_audit_export_status"),
+        CheckConstraint("file_size_bytes IS NULL OR file_size_bytes >= 0", name="ck_proc_recon_audit_export_size"),
         Index("ix_proc_recon_audit_export_time", "requested_at"),
         Index("ix_proc_recon_audit_export_actor", "actor_user_id", "requested_at"),
     )
