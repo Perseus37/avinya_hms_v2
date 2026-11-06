@@ -8378,9 +8378,24 @@ def assign_reconciliation_exception(
         notification_status = "EMAIL_UNAVAILABLE"
     if assignee_id is not None and assignee.email:
         tenant_context = resolve_tenant_context(request)
-        target_hours = {"CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24}.get(row.severity, 24)
+        active_escalation_policy = db.query(ProcurementReconciliationEscalationPolicy).filter(
+            ProcurementReconciliationEscalationPolicy.status == "PUBLISHED",
+            ProcurementReconciliationEscalationPolicy.effective_from <= now,
+            or_(
+                ProcurementReconciliationEscalationPolicy.effective_to.is_(None),
+                ProcurementReconciliationEscalationPolicy.effective_to > now,
+            ),
+        ).order_by(ProcurementReconciliationEscalationPolicy.version.desc()).first()
+        policy_targets = active_escalation_policy.response_targets_hours if active_escalation_policy else {
+            "CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24
+        }
+        notification_preferences = active_escalation_policy.notification_preferences if active_escalation_policy else {
+            "email_enabled": True, "assignee": True, "assigning_manager": True, "finance_managers": False
+        }
+        target_hours = float(policy_targets.get(row.severity, 24))
         try:
-            enqueue_task("email.send", {
+            if notification_preferences.get("email_enabled", True) and notification_preferences.get("assignee", True):
+                enqueue_task("email.send", {
                 "recipient": assignee.email,
                 "subject": f"Reconciliation investigation #{row.id} assigned to you",
                 "text_body": (
@@ -8399,8 +8414,10 @@ def assign_reconciliation_exception(
                     "assignment_event_id": assignment_event.id,
                     "assignee_id": assignee_id,
                     "response_target_hours": target_hours,
+                    "notification_preferences": notification_preferences,
+                    "escalation_levels": active_escalation_policy.escalation_levels if active_escalation_policy else [],
                 }, delay_seconds=int(target_hours * 3600), sync_fallback=False)
-            notification_status = "QUEUED"
+            notification_status = "QUEUED" if notification_preferences.get("email_enabled", True) else "DISABLED_BY_POLICY"
         except Exception:
             # Assignment is already committed. Queue failures are observable to the
             # caller but must never roll back or silently undo the assignment.
