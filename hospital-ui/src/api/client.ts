@@ -39,8 +39,9 @@ export async function apiClient<T>(endpoint: string, options: RequestOptions = {
   const token = getAuthToken();
   const tenantSlug = getTenantSlug();
 
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
     "X-Hospital-Subdomain": tenantSlug,
     ...(options.headers as Record<string, string>),
   };
