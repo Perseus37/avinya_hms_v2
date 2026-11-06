@@ -283,6 +283,10 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     if (!selectedException) return;
     const parsed = assigneeInput.trim() ? Number(assigneeInput) : null;
     if (parsed !== null && (!Number.isInteger(parsed) || parsed < 1)) { setDetailError("Enter a positive branch user ID or leave blank to unassign."); return; }
+    if (selectedException.assigned_to_id !== null && parsed !== selectedException.assigned_to_id && assignmentNote.trim().length < 10) {
+      setDetailError("A reassignment reason of at least 10 characters is required.");
+      return;
+    }
     setActionLoading(true); setDetailError(""); setDetailMessage("");
     try {
       const result = await reconciliationApi.assignException(selectedException.id, { assigned_to_id: parsed, note: assignmentNote.trim() || undefined });
@@ -757,7 +761,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                     <button type="button" onClick={() => { setAssigneeInput(""); setAssigneeSearch(""); setAssigneeOptions([]); setAssigneePickerOpen(false); }} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading || !assigneeInput} className="text-[10px] font-semibold text-rose-700 disabled:text-slate-300">Clear assignment</button>
                   </div>
                   <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
-                    <input aria-label="Assignment note" value={assignmentNote} onChange={(event) => setAssignmentNote(event.target.value)} placeholder="Optional assignment note" disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                    <input aria-label="Assignment note" value={assignmentNote} onChange={(event) => setAssignmentNote(event.target.value)} placeholder={selectedException.assigned_to_id !== null && assigneeInput !== String(selectedException.assigned_to_id) ? "Reassignment reason (minimum 10 characters)" : "Optional assignment note"} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading} className="rounded-lg border border-slate-200 px-3 py-2 text-xs" />
                     <Button size="sm" onClick={() => void saveAssignment()} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading}>Save assignment</Button>
                   </div>
                 </section>
