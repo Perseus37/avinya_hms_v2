@@ -185,6 +185,8 @@ export const reconciliationApi = {
     }),
   downloadEvidence: (id: number, evidenceId: number) =>
     apiClientBlob("/api/procurement/reconciliation/exceptions/" + id + "/evidence/" + evidenceId + "/download"),
+  exportAuditPackage: (id: number) =>
+    apiClientBlob("/api/procurement/reconciliation/exceptions/" + id + "/audit-export"),
   assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
     apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus; acknowledgement_status: string; notification_status?: "QUEUED" | "QUEUE_UNAVAILABLE" | "EMAIL_UNAVAILABLE" | "NOT_REQUIRED" }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: JSON.stringify(payload) }),
   getResolutionGuidance: (id: number) =>
