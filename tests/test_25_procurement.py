@@ -3152,7 +3152,7 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
 
     queue = client.get(
         "/v1/api/procurement/reconciliation/exceptions/queue",
-        headers=superuser_headers, params={"status": "RESOLVED", "severity": "MEDIUM", "source_present": "false"},
+        headers=superuser_headers, params={"status": "OPEN", "severity": "MEDIUM", "source_present": "false"},
     )
     assert queue.status_code == 200, queue.text
     assert any(item["id"] == exception_id and item["source_present"] is False for item in queue.json()["exceptions"])
