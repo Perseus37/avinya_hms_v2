@@ -9105,10 +9105,17 @@ def get_reconciliation_closure_quality(
     if to_date:
         query = query.filter(ProcurementReconciliationException.resolved_at < datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc))
     rows = query.all()
-    all_cases = db.query(ProcurementReconciliationException).all()
     resolved = [r for r in rows if r.status == "RESOLVED" and r.resolved_at and r.first_detected_at]
     cause_counts = {}
-    reopened = sum(int(row.reopen_count or 0) for row in all_cases)
+    reopen_query = db.query(ProcurementReconciliationExceptionEvent).filter(
+        ProcurementReconciliationExceptionEvent.event_type == "REOPENED"
+    )
+    if from_date:
+        reopen_query = reopen_query.filter(ProcurementReconciliationExceptionEvent.occurred_at >= datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc))
+    if to_date:
+        reopen_query = reopen_query.filter(ProcurementReconciliationExceptionEvent.occurred_at < datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc))
+    events = reopen_query.all()
+    reopened = len(events)
     review_required = 0
     review_approved = 0
     review_rejected = 0
@@ -9127,9 +9134,6 @@ def get_reconciliation_closure_quality(
         start = row.first_detected_at.replace(tzinfo=timezone.utc) if row.first_detected_at.tzinfo is None else row.first_detected_at
         end = row.resolved_at.replace(tzinfo=timezone.utc) if row.resolved_at.tzinfo is None else row.resolved_at
         resolution_hours.append(max((end - start).total_seconds() / 3600, 0))
-    events = db.query(ProcurementReconciliationExceptionEvent).filter(
-        ProcurementReconciliationExceptionEvent.event_type == "REOPENED"
-    ).all()
     for event in events:
         root = (event.event_metadata or {}).get("prior_resolution", {}).get("root_cause_code") or "UNCLASSIFIED"
         bucket = cause_counts.setdefault(root, {"resolved_count": 0, "reopened_count": 0, "exception_types": {}})
