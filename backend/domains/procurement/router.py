@@ -2703,6 +2703,8 @@ def get_supplier_payment_priorities(
     for invoice, vendor_name in records:
         outstanding, credits, advances = _supplier_invoice_outstanding(db, invoice)
         outstanding = max(int(outstanding), 0)
+        reserved = _reserved_supplier_payment_amount(db, invoice.id)
+        available_to_schedule = max(outstanding - reserved, 0)
         if outstanding <= 0:
             continue
         due_date = invoice.due_date.date() if isinstance(invoice.due_date, datetime) else invoice.due_date
@@ -2732,6 +2734,8 @@ def get_supplier_payment_priorities(
             "credit_adjustments_paise": int(credits),
             "advances_applied_paise": int(advances),
             "outstanding_paise": outstanding,
+            "reserved_paise": reserved,
+            "available_to_schedule_paise": available_to_schedule,
         })
 
     priority_order = {"OVERDUE": 0, "DUE_TODAY": 1, "DUE_SOON": 2, "UPCOMING": 3}
@@ -2744,6 +2748,8 @@ def get_supplier_payment_priorities(
     totals = {
         "invoice_count": len(rows),
         "outstanding_paise": sum(row["outstanding_paise"] for row in rows),
+        "reserved_paise": sum(row["reserved_paise"] for row in rows),
+        "available_to_schedule_paise": sum(row["available_to_schedule_paise"] for row in rows),
         "overdue_count": sum(row["priority"] == "OVERDUE" for row in rows),
         "overdue_paise": sum(row["outstanding_paise"] for row in rows if row["priority"] == "OVERDUE"),
         "due_today_count": sum(row["priority"] == "DUE_TODAY" for row in rows),
