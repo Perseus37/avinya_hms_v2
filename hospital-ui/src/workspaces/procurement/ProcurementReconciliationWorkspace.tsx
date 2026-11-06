@@ -151,6 +151,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [rootCauseCode, setRootCauseCode] = useState("");
   const [resolutionChecklist, setResolutionChecklist] = useState<Record<string, boolean>>({});
   const [resolutionReviewNote, setResolutionReviewNote] = useState("");
+  const [reopenReason, setReopenReason] = useState("");
   const rankedAssigneeOptions = useMemo(() => [...assigneeOptions].sort((a, b) => {
     const loadA = dashboard?.finance_workload.find((item) => item.user_id === a.id);
     const loadB = dashboard?.finance_workload.find((item) => item.user_id === b.id);
@@ -247,7 +248,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     setRecommendationsLoaded(false);
     setRecommendationsLoading(false);
     setAssignmentNote(""); setAssignmentResponseReason(""); setInvestigationNote(""); setStatusChoice(item.status === "IN_REVIEW" ? "OPEN" : "IN_REVIEW"); setStatusNote("");
-    setResolutionGuidance(null); setRootCauseCode(""); setResolutionChecklist({}); setResolutionReviewNote("");
+    setResolutionGuidance(null); setRootCauseCode(""); setResolutionChecklist({}); setResolutionReviewNote(""); setReopenReason("");
     setHistoryLoading(true);
     try {
       const [historyResult, guidance] = await Promise.all([
@@ -378,6 +379,29 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to update status."); }
     finally { setActionLoading(false); }
   };
+  const reopenSelectedException = async () => {
+    if (!selectedException) return;
+    if (reopenReason.trim().length < 10) {
+      setDetailError("A reason of at least 10 characters is required to reopen this investigation.");
+      return;
+    }
+    setActionLoading(true); setDetailError(""); setDetailMessage("");
+    try {
+      const result = await reconciliationApi.reopenException(selectedException.id, { reason: reopenReason.trim() });
+      const updated = {
+        ...selectedException, status: result.status, reopen_count: result.reopen_count,
+        resolved_at: null, resolution_note: null, root_cause_code: null,
+        resolution_checklist: {}, resolution_review_status: "NOT_REQUIRED" as const,
+      };
+      setSelectedException(updated);
+      setQueue((current) => current ? { ...current, exceptions: current.exceptions.map((row) => row.id === updated.id ? updated : row) } : current);
+      setReopenReason(""); setStatusChoice("IN_REVIEW");
+      setDetailMessage("Investigation reopened. The previous resolution remains in the audit history.");
+      await refreshSelectedHistory(updated.id); void load();
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to reopen investigation."); }
+    finally { setActionLoading(false); }
+  };
+
   const reviewResolution = async (decision: "APPROVE" | "REJECT") => {
     if (!selectedException) return;
     if (resolutionReviewNote.trim().length < 10) {
@@ -827,6 +851,14 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                       ))}
                     </div>
                     {resolutionGuidance.independent_review_required && <p className="mt-2 text-[10px] font-semibold text-amber-800">This severity requires an independent reviewer before closure.</p>}
+                  </section>
+                )}
+                {(selectedException.status === "RESOLVED" || selectedException.status === "DISMISSED") && (
+                  <section className="rounded-xl border border-slate-200 p-3">
+                    <h3 className="text-xs font-bold">Reopen investigation</h3>
+                    <p className="mt-1 text-[10px] text-slate-500">Reopening creates a new audit event and retains the previous resolution in history. Current reopen count: {selectedException.reopen_count || 0}.</p>
+                    <textarea value={reopenReason} onChange={(event) => setReopenReason(event.target.value)} rows={2} maxLength={2000} placeholder="Why does this case need to be reopened? (minimum 10 characters)" className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                    <div className="mt-2 flex justify-end"><Button size="sm" onClick={() => void reopenSelectedException()} disabled={!hasPermission("finance.approve_reconciliation") || actionLoading}>Reopen investigation</Button></div>
                   </section>
                 )}
                 {selectedException.resolution_review_status === "PENDING" && selectedException.status === "IN_REVIEW" && (
