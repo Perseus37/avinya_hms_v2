@@ -2316,3 +2316,103 @@ def test_supplier_risk_register_flags_missing_compliance_and_supports_filters(
         headers=superuser_headers,
     )
     assert invalid_risk.status_code == 422
+
+
+def test_supplier_suspension_requires_independent_approval_and_blocks_new_orders(
+    client, pharmacist_headers, superuser_headers
+):
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-LIFECYCLE-01",
+            "name": "Lifecycle Controlled Supplier",
+            "category": "GENERAL_SUPPLIES",
+            "contact_person": "Lifecycle Contact",
+            "phone": "9876543214",
+            "email": "lifecycle-supplier@example.test",
+            "address": "Supplier registered address",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    request = client.post(
+        f"/v1/api/procurement/vendors/{vendor_id}/lifecycle-requests",
+        headers=pharmacist_headers,
+        json={"action": "SUSPEND", "reason": "Regulatory investigation pending verification."},
+    )
+    assert request.status_code == 201, request.text
+    request_id = request.json()["id"]
+    assert request.json()["status"] == "PENDING"
+
+    duplicate = client.post(
+        f"/v1/api/procurement/vendors/{vendor_id}/lifecycle-requests",
+        headers=pharmacist_headers,
+        json={"action": "SUSPEND", "reason": "Duplicate request while review is pending."},
+    )
+    assert duplicate.status_code == 409
+
+    self_review = client.patch(
+        f"/v1/api/procurement/vendors/{vendor_id}/lifecycle-requests/{request_id}/review",
+        headers=pharmacist_headers,
+        json={"approved": True, "review_notes": "Attempted self approval."},
+    )
+    assert self_review.status_code == 403
+
+    approved = client.patch(
+        f"/v1/api/procurement/vendors/{vendor_id}/lifecycle-requests/{request_id}/review",
+        headers=superuser_headers,
+        json={"approved": True, "review_notes": "Independent review confirms temporary suspension."},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "APPROVED"
+
+    vendor = client.get(f"/v1/api/procurement/vendors/{vendor_id}", headers=superuser_headers)
+    assert vendor.status_code == 200, vendor.text
+    assert vendor.json()["is_active"] is True
+    assert vendor.json()["is_suspended"] is True
+    assert vendor.json()["suspension_reason"] == "Regulatory investigation pending verification."
+
+    blocked_po = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor_id,
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+            "payment_terms": "Net 30",
+            "items": [{
+                "item_description": "Sterile examination gloves",
+                "quantity_ordered": 5,
+                "unit_price_paise": 1000,
+            }],
+        },
+    )
+    assert blocked_po.status_code == 409
+    assert "suspended" in str(blocked_po.json()).lower()
+
+    reinstatement = client.post(
+        f"/v1/api/procurement/vendors/{vendor_id}/lifecycle-requests",
+        headers=pharmacist_headers,
+        json={"action": "REINSTATE", "reason": "Regulatory investigation completed with clearance."},
+    )
+    assert reinstatement.status_code == 201, reinstatement.text
+    reinstated = client.patch(
+        f"/v1/api/procurement/vendors/{vendor_id}/lifecycle-requests/{reinstatement.json()['id']}/review",
+        headers=superuser_headers,
+        json={"approved": True, "review_notes": "Clearance evidence reviewed and accepted."},
+    )
+    assert reinstated.status_code == 200, reinstated.text
+
+    final_vendor = client.get(f"/v1/api/procurement/vendors/{vendor_id}", headers=superuser_headers)
+    assert final_vendor.status_code == 200
+    assert final_vendor.json()["is_suspended"] is False
+    assert final_vendor.json()["is_active"] is True
+
+    history = client.get(
+        f"/v1/api/procurement/vendors/{vendor_id}/lifecycle-requests",
+        headers=superuser_headers,
+    )
+    assert history.status_code == 200, history.text
+    assert [row["action"] for row in history.json()] == ["REINSTATE", "SUSPEND"]
+    assert all(row["status"] == "APPROVED" for row in history.json())
