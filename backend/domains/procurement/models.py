@@ -1382,6 +1382,7 @@ class ProcurementReconciliationEscalationPolicy(Base):
         UniqueConstraint("policy_key", "version", name="uq_proc_recon_escalation_policy_version"),
         CheckConstraint("version > 0", name="ck_proc_recon_escalation_policy_version"),
         CheckConstraint("status IN ('DRAFT','PUBLISHED','RETIRED')", name="ck_proc_recon_escalation_policy_status"),
+        CheckConstraint("effective_to IS NULL OR effective_to > effective_from", name="ck_proc_recon_escalation_policy_window"),
         Index("uq_proc_recon_escalation_policy_active", "policy_key", unique=True,
               postgresql_where=text("status = 'PUBLISHED' AND effective_to IS NULL"),
               sqlite_where=text("status = 'PUBLISHED' AND effective_to IS NULL")),
@@ -1407,6 +1408,7 @@ class ProcurementReconciliationGovernanceReport(Base):
     __tablename__ = "procurement_reconciliation_governance_reports"
     __table_args__ = (
         UniqueConstraint("period_start", "period_end", name="uq_proc_recon_governance_period"),
+        CheckConstraint("period_end >= period_start", name="ck_proc_recon_governance_period"),
         Index("ix_proc_recon_governance_report_created", "created_at"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
