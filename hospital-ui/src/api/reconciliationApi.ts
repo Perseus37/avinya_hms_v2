@@ -338,4 +338,15 @@ export const reconciliationSlaPolicyApi = {
     apiClient<ReconciliationSlaPolicy>(`/api/procurement/reconciliation/sla-policies/${id}/publish`, {
       method: "POST", body: JSON.stringify({}),
     }),
+  events: (id: number) => apiClient<{ policy_id: number; events: ReconciliationSlaPolicyEvent[] }>(`/api/procurement/reconciliation/sla-policies/${id}/events`),
 };
+
+
+export interface ReconciliationSlaPolicyEvent {
+  id: number;
+  event_type: string;
+  actor_user_id: number | null;
+  event_metadata: Record<string, unknown>;
+  occurred_at: string;
+}
+
