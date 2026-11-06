@@ -3109,7 +3109,17 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
     resolved = client.patch(
         f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/status",
         headers=superuser_headers,
-        json={"status": "RESOLVED", "note": "Bank advice verified and reconciliation evidence attached."},
+        json={
+            "status": "RESOLVED",
+            "note": "Bank advice verified and reconciliation evidence attached.",
+            "root_cause_code": "REFERENCE_MISMATCH",
+            "resolution_checklist": {
+                "bank_statement_verified": True,
+                "bank_account_and_period_confirmed": True,
+                "payment_or_expense_traced": True,
+                "supporting_evidence_reviewed": True,
+            },
+        },
     )
     assert resolved.status_code == 200, resolved.text
     assert resolved.json()["status"] == "RESOLVED"
@@ -3120,6 +3130,15 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
     )
     assert reopen.status_code == 409
 
+    reopened = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/reopen",
+        headers=superuser_headers,
+        json={"reason": "New bank statement evidence contradicts the earlier closure."},
+    )
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["status"] == "OPEN"
+    assert reopened.json()["reopen_count"] == 1
+
     history = client.get(
         f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/history",
         headers=superuser_headers,
@@ -3128,7 +3147,8 @@ def test_persisted_reconciliation_exception_assignment_resolution_and_history(
     event_types = [event["event_type"] for event in history.json()["events"]]
     assert "ASSIGNED" in event_types
     assert "STATUS_CHANGED" in event_types
-    assert len(history.json()["events"]) >= 3
+    assert "REOPENED" in event_types
+    assert len(history.json()["events"]) >= 4
 
     queue = client.get(
         "/v1/api/procurement/reconciliation/exceptions/queue",
