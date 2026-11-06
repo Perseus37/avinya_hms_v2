@@ -2577,6 +2577,11 @@ def record_supplier_payment(
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("finance:pay")),
 ):
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=403,
+            detail="Direct supplier payment recording is a superuser break-glass action. Use the payment request and approval workflow.",
+        )
     vendor = db.query(VendorMaster).filter(VendorMaster.id == payload.vendor_id).with_for_update().one_or_none()
     if vendor is None:
         raise HTTPException(status_code=404, detail="Supplier not found.")
@@ -2607,13 +2612,17 @@ def record_supplier_payment(
         if expense is None or expense.status != ExpenseStatusEnum.APPROVED:
             raise HTTPException(status_code=409, detail=f"Accounts Payable entry for invoice {invoice.invoice_number} is not payable or has already been settled.")
         outstanding, _, _ = _supplier_invoice_outstanding(db, invoice)
-        if allocation.amount_paise > outstanding:
+        reserved = _reserved_supplier_payment_amount(db, invoice.id)
+        available = max(outstanding - reserved, 0)
+        if allocation.amount_paise > available:
             raise HTTPException(
                 status_code=409,
                 detail={
                     "message": f"Allocation exceeds the outstanding balance for invoice {invoice.invoice_number}.",
                     "invoice_id": invoice.id,
                     "outstanding_paise": max(outstanding, 0),
+                    "reserved_paise": reserved,
+                    "available_paise": available,
                 },
             )
         if outstanding <= 0:
@@ -2625,7 +2634,7 @@ def record_supplier_payment(
         payment_method=payload.payment_method,
         payment_date=payload.payment_date,
         amount_paise=payload.amount_paise,
-        notes=payload.notes.strip() if payload.notes else None,
+        notes=(f"[SUPERUSER DIRECT SETTLEMENT by user {current_user.id}] " + (payload.notes.strip() if payload.notes else "Break-glass settlement")),
         recorded_by_id=current_user.id,
         created_by_id=current_user.id,
     )
@@ -2892,6 +2901,11 @@ def review_supplier_payment_request(
             invoice = by_id.get(allocation.invoice_id)
             if invoice is None or invoice.vendor_id != request_row.vendor_id:
                 raise HTTPException(status_code=409, detail="A requested invoice is no longer available for this supplier.")
+            if invoice.status not in {VendorInvoiceStatusEnum.MATCHED_APPROVED, VendorInvoiceStatusEnum.PAID} or invoice.linked_expense_id is None:
+                raise HTTPException(status_code=409, detail="A requested invoice is no longer approved for settlement.")
+            expense = db.get(ExpenseRecord, invoice.linked_expense_id)
+            if expense is None or expense.status != ExpenseStatusEnum.APPROVED:
+                raise HTTPException(status_code=409, detail="A requested Accounts Payable entry is no longer payable.")
             outstanding, _, _ = _supplier_invoice_outstanding(db, invoice)
             reserved = _reserved_supplier_payment_amount(
                 db, invoice.id, exclude_request_id=request_row.id
