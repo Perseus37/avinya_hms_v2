@@ -7927,14 +7927,16 @@ def update_reconciliation_exception_status(
         row.resolution_checklist = {code: True for code in required}
 
     old_status = row.status
-    if new_status == "RESOLVED" and row.severity in {"CRITICAL", "HIGH"}:
+    if new_status in {"RESOLVED", "DISMISSED"} and row.severity in {"CRITICAL", "HIGH"}:
         row.resolution_review_status = "PENDING"
+        row.resolution_submitted_status = new_status
+        row.status = "IN_REVIEW"
         row.resolution_submitted_by_id = current_user.id
         row.resolution_reviewed_by_id = None
         row.resolution_reviewed_at = None
         row.resolution_note = note
         _record_reconciliation_event(db, row, "RESOLUTION_SUBMITTED", current_user.id,
-            old_status=old_status, new_status=old_status, note=note,
+            old_status=old_status, new_status="IN_REVIEW", note=note,
             event_metadata={"root_cause_code": row.root_cause_code, "resolution_checklist": row.resolution_checklist})
     else:
         row.status = new_status
@@ -7984,7 +7986,7 @@ def review_reconciliation_resolution(
     row.resolution_review_status = "APPROVED" if decision == "APPROVE" else "REJECTED"
     old_status = row.status
     if decision == "APPROVE":
-        row.status = "RESOLVED"
+        row.status = row.resolution_submitted_status or "RESOLVED"
         row.resolved_at = now
         row.resolved_by_id = row.resolution_submitted_by_id
     else:
@@ -8034,8 +8036,6 @@ def reopen_reconciliation_exception(
         "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
     }
     row.status = "OPEN"
-    row.source_present = True
-    row.missed_refresh_count = 0
     row.reopen_count = (row.reopen_count or 0) + 1
     row.resolved_at = None
     row.resolved_by_id = None
@@ -8043,6 +8043,7 @@ def reopen_reconciliation_exception(
     row.root_cause_code = None
     row.resolution_checklist = {}
     row.resolution_review_status = "NOT_REQUIRED"
+    row.resolution_submitted_status = None
     row.resolution_submitted_by_id = None
     row.resolution_reviewed_by_id = None
     row.resolution_reviewed_at = None
