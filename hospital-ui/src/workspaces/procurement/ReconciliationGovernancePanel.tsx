@@ -17,6 +17,10 @@ export const ReconciliationGovernancePanel: React.FC = () => {
   const [targets, setTargets] = useState({ CRITICAL: 0.5, HIGH: 2, MEDIUM: 8, LOW: 24 });
   const [levels, setLevels] = useState([0.5, 2, 8]);
   const [reason, setReason] = useState("");
+  const [emailEnabled, setEmailEnabled] = useState(true);
+  const [notifyAssignee, setNotifyAssignee] = useState(true);
+  const [notifyManager, setNotifyManager] = useState(true);
+  const [notifyFinanceManagers, setNotifyFinanceManagers] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -50,9 +54,9 @@ export const ReconciliationGovernancePanel: React.FC = () => {
       const draft = await reconciliationGovernanceApi.createEscalationPolicy({
         response_targets_hours: targets,
         escalation_levels: levels.map((after_hours) => ({
-          after_hours, notify_assignee: true, notify_assigning_manager: true, notify_finance_managers: false,
+          after_hours, notify_assignee: notifyAssignee, notify_assigning_manager: notifyManager, notify_finance_managers: notifyFinanceManagers,
         })),
-        notification_preferences: { email_enabled: true, assignee: true, assigning_manager: true, finance_managers: false },
+        notification_preferences: { email_enabled: emailEnabled, assignee: notifyAssignee, assigning_manager: notifyManager, finance_managers: notifyFinanceManagers },
         change_reason: reason,
       });
       setDraftId(draft.id);
@@ -128,6 +132,12 @@ export const ReconciliationGovernancePanel: React.FC = () => {
             <label className="block text-[10px] text-slate-600">Escalation levels (hours after assignment, comma-separated)
               <input className={field + " mt-1 w-full"} value={levels.join(", ")} onChange={(e) => setLevels(e.target.value.split(",").map(Number).filter((v) => Number.isFinite(v) && v > 0))} />
             </label>
+            <div className="flex flex-wrap gap-x-4 gap-y-2 text-[10px] text-slate-600">
+              <label className="flex items-center gap-1"><input type="checkbox" checked={emailEnabled} onChange={(e) => setEmailEnabled(e.target.checked)} /> Email enabled</label>
+              <label className="flex items-center gap-1"><input type="checkbox" checked={notifyAssignee} onChange={(e) => setNotifyAssignee(e.target.checked)} /> Assignee</label>
+              <label className="flex items-center gap-1"><input type="checkbox" checked={notifyManager} onChange={(e) => setNotifyManager(e.target.checked)} /> Assigning manager</label>
+              <label className="flex items-center gap-1"><input type="checkbox" checked={notifyFinanceManagers} onChange={(e) => setNotifyFinanceManagers(e.target.checked)} /> Finance Managers</label>
+            </div>
             <textarea className={field + " w-full"} rows={2} minLength={10} maxLength={1000} placeholder="Reason for policy change (minimum 10 characters)" value={reason} onChange={(e) => setReason(e.target.value)} />
             <div className="flex flex-wrap gap-2">
               <button type="button" className={button} disabled={busy || reason.trim().length < 10 || !levels.length} onClick={() => void savePolicy()}>Create policy draft</button>
