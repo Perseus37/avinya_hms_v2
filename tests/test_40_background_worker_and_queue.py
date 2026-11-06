@@ -192,3 +192,20 @@ def test_worker_burst_execution(fake_redis, monkeypatch):
     assert exit_code == 0
     assert executed == ["job 1", "job 2"]
 
+
+
+def test_reconciliation_assignment_escalation_is_registered_and_schedulable(fake_redis):
+    task_name = "procurement.reconciliation.assignment_escalation"
+    assert registry.get_handler(task_name) is not None
+
+    payload = {
+        "tenant_subdomain": "default",
+        "exception_id": 901,
+        "assignment_event_id": 902,
+        "assignee_id": 1,
+        "response_target_hours": 2,
+    }
+    task_id = enqueue_task(task_name, payload, delay_seconds=7200, sync_fallback=False)
+
+    assert task_id in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
+    assert task_id not in fake_redis._lists.get(KEY_PENDING_TASKS, [])
