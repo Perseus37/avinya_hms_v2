@@ -23,6 +23,7 @@ import {
   ReconciliationExceptionEvent,
   ReconciliationAssignee,
   ReconciliationAssignmentRecommendation,
+  ReconciliationResolutionGuidance,
 } from "../../api/reconciliationApi";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -146,6 +147,10 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [investigationNote, setInvestigationNote] = useState("");
   const [statusChoice, setStatusChoice] = useState<ReconciliationStatus>("IN_REVIEW");
   const [statusNote, setStatusNote] = useState("");
+  const [resolutionGuidance, setResolutionGuidance] = useState<ReconciliationResolutionGuidance | null>(null);
+  const [rootCauseCode, setRootCauseCode] = useState("");
+  const [resolutionChecklist, setResolutionChecklist] = useState<Record<string, boolean>>({});
+  const [resolutionReviewNote, setResolutionReviewNote] = useState("");
   const rankedAssigneeOptions = useMemo(() => [...assigneeOptions].sort((a, b) => {
     const loadA = dashboard?.finance_workload.find((item) => item.user_id === a.id);
     const loadB = dashboard?.finance_workload.find((item) => item.user_id === b.id);
@@ -242,9 +247,18 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     setRecommendationsLoaded(false);
     setRecommendationsLoading(false);
     setAssignmentNote(""); setAssignmentResponseReason(""); setInvestigationNote(""); setStatusChoice(item.status === "IN_REVIEW" ? "OPEN" : "IN_REVIEW"); setStatusNote("");
+    setResolutionGuidance(null); setRootCauseCode(""); setResolutionChecklist({}); setResolutionReviewNote("");
     setHistoryLoading(true);
-    try { const result = await reconciliationApi.getExceptionHistory(item.id); setHistory(result.events || []); }
-    catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to load investigation history."); }
+    try {
+      const [historyResult, guidance] = await Promise.all([
+        reconciliationApi.getExceptionHistory(item.id),
+        reconciliationApi.getResolutionGuidance(item.id),
+      ]);
+      if (selectedExceptionIdRef.current === item.id) {
+        setHistory(historyResult.events || []);
+        setResolutionGuidance(guidance);
+      }
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to load investigation history or resolution guidance."); }
     finally { setHistoryLoading(false); }
   };
   const refreshSelectedHistory = async (id: number) => {
@@ -346,14 +360,45 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     if ((statusChoice === "RESOLVED" || statusChoice === "DISMISSED") && statusNote.trim().length < 10) { setDetailError("Resolution and dismissal notes must contain at least 10 characters."); return; }
     setActionLoading(true); setDetailError(""); setDetailMessage("");
     try {
-      const result = await reconciliationApi.updateExceptionStatus(selectedException.id, { status: statusChoice, note: statusNote.trim() || undefined });
-      const updated = { ...selectedException, status: result.status, resolved_at: result.resolved_at, resolution_note: result.resolution_note };
+      const result = await reconciliationApi.updateExceptionStatus(selectedException.id, {
+        status: statusChoice,
+        note: statusNote.trim() || undefined,
+        root_cause_code: statusChoice === "RESOLVED" ? rootCauseCode : undefined,
+        resolution_checklist: statusChoice === "RESOLVED" ? resolutionChecklist : undefined,
+      });
+      const updated = {
+        ...selectedException, status: result.status, resolved_at: result.resolved_at,
+        resolution_note: result.resolution_note, root_cause_code: result.root_cause_code,
+        resolution_checklist: result.resolution_checklist, resolution_review_status: result.resolution_review_status,
+      };
       setSelectedException(updated);
       setQueue((current) => current ? { ...current, exceptions: current.exceptions.map((row) => row.id === updated.id ? updated : row) } : current);
-      setDetailMessage("Investigation status updated."); setStatusNote(""); await refreshSelectedHistory(updated.id); void load();
+      setDetailMessage(result.resolution_review_status === "PENDING" ? "Resolution submitted. Independent review is required before this case can close." : "Investigation status updated.");
+      setStatusNote(""); await refreshSelectedHistory(updated.id); void load();
     } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to update status."); }
     finally { setActionLoading(false); }
   };
+  const reviewResolution = async (decision: "APPROVE" | "REJECT") => {
+    if (!selectedException) return;
+    if (resolutionReviewNote.trim().length < 10) {
+      setDetailError("An independent review note of at least 10 characters is required.");
+      return;
+    }
+    setActionLoading(true); setDetailError(""); setDetailMessage("");
+    try {
+      const result = await reconciliationApi.reviewExceptionResolution(selectedException.id, {
+        decision, note: resolutionReviewNote.trim(),
+      });
+      const updated = { ...selectedException, status: result.status, resolution_review_status: result.resolution_review_status, resolved_at: result.resolved_at };
+      setSelectedException(updated);
+      setQueue((current) => current ? { ...current, exceptions: current.exceptions.map((row) => row.id === updated.id ? updated : row) } : current);
+      setResolutionReviewNote("");
+      setDetailMessage(decision === "APPROVE" ? "Resolution independently approved and case closed." : "Resolution rejected. Case returned to investigation.");
+      await refreshSelectedHistory(updated.id); void load();
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to review resolution."); }
+    finally { setActionLoading(false); }
+  };
+
   const saveInvestigationNote = async () => {
     if (!selectedException || !investigationNote.trim()) return;
     setActionLoading(true); setDetailError(""); setDetailMessage("");
@@ -765,6 +810,36 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                     <Button size="sm" onClick={() => void saveAssignment()} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading}>Save assignment</Button>
                   </div>
                 </section>
+                {statusChoice === "RESOLVED" && resolutionGuidance && (
+                  <section className="rounded-xl border border-amber-200 bg-amber-50/50 p-3">
+                    <h3 className="text-xs font-bold text-slate-900">Resolution evidence and root cause</h3>
+                    <p className="mt-1 text-[10px] text-slate-600">{resolutionGuidance.resolution_policy}</p>
+                    <select aria-label="Root cause" value={rootCauseCode} onChange={(event) => setRootCauseCode(event.target.value)} className="mt-3 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs">
+                      <option value="">Select root cause</option>
+                      {resolutionGuidance.root_cause_codes.map((code) => <option key={code} value={code}>{titleCase(code)}</option>)}
+                    </select>
+                    <div className="mt-3 space-y-2">
+                      {resolutionGuidance.required_checklist.map((item) => (
+                        <label key={item.code} className="flex items-start gap-2 text-[11px] text-slate-700">
+                          <input type="checkbox" checked={resolutionChecklist[item.code] === true} onChange={(event) => setResolutionChecklist((current) => ({ ...current, [item.code]: event.target.checked }))} />
+                          <span>{titleCase(item.code)}</span>
+                        </label>
+                      ))}
+                    </div>
+                    {resolutionGuidance.independent_review_required && <p className="mt-2 text-[10px] font-semibold text-amber-800">This severity requires an independent reviewer before closure.</p>}
+                  </section>
+                )}
+                {selectedException.resolution_review_status === "PENDING" && selectedException.status === "IN_REVIEW" && (
+                  <section className="rounded-xl border border-amber-300 bg-amber-50 p-3">
+                    <h3 className="text-xs font-bold text-amber-900">Independent resolution review pending</h3>
+                    <p className="mt-1 text-[10px] text-amber-800">The investigator submitted a resolution. A different user with finance approval permission must approve or reject it.</p>
+                    <textarea value={resolutionReviewNote} onChange={(event) => setResolutionReviewNote(event.target.value)} rows={2} maxLength={2000} placeholder="Independent review findings (minimum 10 characters)" className="mt-2 w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs" />
+                    <div className="mt-2 flex justify-end gap-2">
+                      <Button size="sm" variant="outline" onClick={() => void reviewResolution("REJECT")} disabled={!hasPermission("finance.approve_reconciliation") || actionLoading}>Reject resolution</Button>
+                      <Button size="sm" onClick={() => void reviewResolution("APPROVE")} disabled={!hasPermission("finance.approve_reconciliation") || actionLoading}>Approve resolution</Button>
+                    </div>
+                  </section>
+                )}
                 {selectedException.status !== "RESOLVED" && selectedException.status !== "DISMISSED" && <section className="rounded-xl border border-slate-200 p-3">
                   <h3 className="text-xs font-bold">Reviewer action</h3><p className="mt-1 text-[10px] text-slate-500">Resolution and dismissal require a reason of at least 10 characters. Finance approval is enforced by the server.</p>
                   <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_2fr]">
