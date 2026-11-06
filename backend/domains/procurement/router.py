@@ -11,6 +11,7 @@ from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.document_responses import pdf_attachment_response
 from backend.core.date_ranges import resolve_record_date_window
+from backend.core.queue import enqueue_task
 from backend.core.dependencies import RequirePermission, get_current_user, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User, UserStatusEnum, Department, Role, UserRole
@@ -7653,6 +7654,7 @@ def list_reconciliation_assignees(
 @router.patch("/reconciliation/exceptions/{exception_id}/assignment")
 def assign_reconciliation_exception(
     exception_id: int, payload: dict,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("finance:write")),
 ):
@@ -7681,11 +7683,48 @@ def assign_reconciliation_exception(
             "assigned_at": now.isoformat(),
             "reassignment": old is not None and old != assignee_id,
         })
+    assignment_event = db.query(ProcurementReconciliationExceptionEvent).filter(
+        ProcurementReconciliationExceptionEvent.exception_id == row.id,
+        ProcurementReconciliationExceptionEvent.event_type == "ASSIGNED",
+    ).order_by(
+        ProcurementReconciliationExceptionEvent.id.desc()
+    ).first()
     db.commit()
+    notification_status = "NOT_REQUIRED"
+    if assignee_id is not None and assignee.email:
+        tenant_context = resolve_tenant_context(request)
+        target_hours = {"CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24}.get(row.severity, 24)
+        try:
+            enqueue_task("email.send", {
+                "recipient": assignee.email,
+                "subject": f"Reconciliation investigation #{row.id} assigned to you",
+                "text_body": (
+                    f"Hello {assignee.full_name},\\n\\n"
+                    f"Investigation #{row.id} ({row.severity}) has been assigned to you at "
+                    f"{tenant_context.hospital_name}.\\n"
+                    f"{row.summary}\\n\\n"
+                    f"Please open My Assigned Investigations in Avinya HMS and acknowledge "
+                    f"the assignment within {target_hours:g} hour(s)."
+                ),
+            }, sync_fallback=False)
+            if assignment_event is not None:
+                enqueue_task("procurement.reconciliation.assignment_escalation", {
+                    "tenant_subdomain": tenant_context.subdomain_slug,
+                    "exception_id": row.id,
+                    "assignment_event_id": assignment_event.id,
+                    "assignee_id": assignee_id,
+                    "response_target_hours": target_hours,
+                }, delay_seconds=int(target_hours * 3600), sync_fallback=False)
+            notification_status = "QUEUED"
+        except Exception:
+            # Assignment is already committed. Queue failures are observable to the
+            # caller but must never roll back or silently undo the assignment.
+            notification_status = "QUEUE_UNAVAILABLE"
     return {
         "id": row.id, "assigned_to_id": row.assigned_to_id, "status": row.status,
         "acknowledgement_status": "PENDING" if assignee_id is not None else "NOT_REQUIRED",
         "assigned_at": now,
+        "notification_status": notification_status,
     }
 
 
