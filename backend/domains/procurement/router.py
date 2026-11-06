@@ -2481,12 +2481,6 @@ def match_supplier_bank_statement_line(
     if line.bank_reference and line.bank_reference.strip().lower() != payment.payment_reference.strip().lower():
         if not (payload.match_reason or "").strip():
             raise HTTPException(status_code=422, detail="A match reason is required when bank reference differs from the recorded payment reference.")
-    existing = db.query(SupplierPaymentBankMatch.id).filter(
-        SupplierPaymentBankMatch.statement_line_id == line.id,
-        SupplierPaymentBankMatch.payment_id == payment.id,
-    ).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="This payment is already matched to this bank transaction.")
     line_remaining = int(line.amount_paise) - _bank_line_matched_amount(db, line.id)
     payment_remaining = int(payment.amount_paise) - _supplier_payment_bank_matched_amount(db, payment.id)
     if payload.amount_paise > line_remaining:
