@@ -32,7 +32,7 @@ from backend.domains.procurement.models import (
     SupplierAdjustment, SupplierAdjustmentApplication, SupplierAdjustmentTypeEnum, SupplierAdjustmentStatusEnum,
     SupplierAdvance, SupplierAdvanceAllocation,
     BankStatementBatch, BankStatementLine, BankStatementDirectionEnum, SupplierPaymentBankMatch,
-    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest
+    SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest, ProcurementReconciliationException, ProcurementReconciliationExceptionEvent
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, SupplierPaymentCreate, SupplierPaymentResponse, SupplierInvoiceSettlementResponse, SupplierPaymentRequestCreate, SupplierPaymentRequestReview, SupplierPaymentRequestExecute, SupplierPaymentRequestResponse,
@@ -6964,3 +6964,182 @@ def download_supplier_contract_document(
     ))
     db.commit()
     return FileResponse(path, media_type=media_type, filename=f"{contract.contract_number}{path.suffix}")
+
+
+# --- Persisted reconciliation exception investigation queue ---
+def _record_reconciliation_event(db: Session, exception_row: ProcurementReconciliationException, event_type: str, actor_id: int, **kwargs):
+    db.add(ProcurementReconciliationExceptionEvent(
+        exception_id=exception_row.id, event_type=event_type, actor_user_id=actor_id,
+        old_status=kwargs.get("old_status"), new_status=kwargs.get("new_status"),
+        old_assignee_id=kwargs.get("old_assignee_id"), new_assignee_id=kwargs.get("new_assignee_id"),
+        note=kwargs.get("note"), event_metadata=kwargs.get("event_metadata") or {},
+    ))
+
+
+@router.post("/reconciliation/exceptions/refresh")
+def refresh_procurement_reconciliation_exceptions(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:write")),
+):
+    """Snapshot current detections. Existing resolved/dismissed items are never silently reopened."""
+    live = get_procurement_reconciliation_exceptions(None, None, 0, db, current_user)
+    now = datetime.now(timezone.utc)
+    created = updated = unchanged_terminal = 0
+    for item in live["exceptions"]:
+        fingerprint = f'{item["exception_type"]}:{item["reference_type"]}:{item["reference_id"]}'
+        row = db.query(ProcurementReconciliationException).filter(
+            ProcurementReconciliationException.fingerprint == fingerprint
+        ).with_for_update().one_or_none()
+        snapshot = {
+            key: (value.isoformat() if isinstance(value, (date, datetime)) else value)
+            for key, value in item.items()
+        }
+        if row is None:
+            row = ProcurementReconciliationException(
+                fingerprint=fingerprint, exception_type=item["exception_type"],
+                severity=item["severity"], status="OPEN",
+                reference_type=item["reference_type"], reference_id=item["reference_id"],
+                amount_paise=int(item.get("amount_paise", 0)),
+                matched_amount_paise=int(item.get("matched_amount_paise", 0)),
+                unmatched_amount_paise=int(item.get("unmatched_amount_paise", 0)),
+                summary=item["description"], detection_snapshot=snapshot,
+                first_detected_at=now, last_detected_at=now,
+            )
+            db.add(row)
+            db.flush()
+            _record_reconciliation_event(db, row, "DETECTED", current_user.id, event_metadata={"severity": item["severity"]})
+            created += 1
+        elif row.status in ("RESOLVED", "DISMISSED"):
+            unchanged_terminal += 1
+        else:
+            row.severity = item["severity"]
+            row.amount_paise = int(item.get("amount_paise", 0))
+            row.matched_amount_paise = int(item.get("matched_amount_paise", 0))
+            row.unmatched_amount_paise = int(item.get("unmatched_amount_paise", 0))
+            row.summary = item["description"]
+            row.detection_snapshot = snapshot
+            row.last_detected_at = now
+            _record_reconciliation_event(db, row, "UPDATED", current_user.id, event_metadata={"severity": item["severity"]})
+            updated += 1
+    db.commit()
+    return {
+        "detected": len(live["exceptions"]), "created": created, "updated": updated,
+        "terminal_items_not_reopened": unchanged_terminal, "refreshed_at": now,
+        "note": "Detection refresh is a snapshot operation; it does not resolve items that disappear from the live detector.",
+    }
+
+
+@router.get("/reconciliation/exceptions/queue")
+def list_persisted_reconciliation_exceptions(
+    status_filter: Optional[str] = Query(default=None, alias="status", pattern="^(OPEN|IN_REVIEW|RESOLVED|DISMISSED)$"),
+    severity: Optional[str] = Query(default=None, pattern="^(CRITICAL|HIGH|MEDIUM|LOW)$"),
+    assigned_to_id: Optional[int] = Query(default=None, ge=1),
+    exception_type: Optional[str] = Query(default=None, max_length=64),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    query = db.query(ProcurementReconciliationException)
+    if status_filter: query = query.filter(ProcurementReconciliationException.status == status_filter)
+    if severity: query = query.filter(ProcurementReconciliationException.severity == severity)
+    if assigned_to_id: query = query.filter(ProcurementReconciliationException.assigned_to_id == assigned_to_id)
+    if exception_type: query = query.filter(ProcurementReconciliationException.exception_type == exception_type)
+    rows = query.order_by(ProcurementReconciliationException.last_detected_at.desc(), ProcurementReconciliationException.id.desc()).limit(1000).all()
+    return {"total": len(rows), "exceptions": [{
+        "id": row.id, "exception_type": row.exception_type, "severity": row.severity,
+        "status": row.status, "reference_type": row.reference_type, "reference_id": row.reference_id,
+        "amount_paise": row.amount_paise, "matched_amount_paise": row.matched_amount_paise,
+        "unmatched_amount_paise": row.unmatched_amount_paise, "summary": row.summary,
+        "assigned_to_id": row.assigned_to_id, "first_detected_at": row.first_detected_at,
+        "last_detected_at": row.last_detected_at, "resolved_at": row.resolved_at,
+        "resolution_note": row.resolution_note, "detection_snapshot": row.detection_snapshot,
+    } for row in rows]}
+
+
+@router.patch("/reconciliation/exceptions/{exception_id}/assignment")
+def assign_reconciliation_exception(
+    exception_id: int, payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:write")),
+):
+    row = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).with_for_update().one_or_none()
+    if row is None: raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    assignee_id = payload.get("assigned_to_id")
+    if assignee_id is not None:
+        assignee = db.get(User, assignee_id)
+        if assignee is None or not getattr(assignee, "is_active", True):
+            raise HTTPException(status_code=422, detail="Assignee must be an active user in this branch.")
+    old = row.assigned_to_id
+    row.assigned_to_id = assignee_id
+    _record_reconciliation_event(db, row, "ASSIGNED", current_user.id,
+        old_assignee_id=old, new_assignee_id=assignee_id,
+        note=(payload.get("note") or "").strip() or None)
+    db.commit()
+    return {"id": row.id, "assigned_to_id": row.assigned_to_id, "status": row.status}
+
+
+@router.patch("/reconciliation/exceptions/{exception_id}/status")
+def update_reconciliation_exception_status(
+    exception_id: int, payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    row = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).with_for_update().one_or_none()
+    if row is None: raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    new_status = str(payload.get("status", "")).upper()
+    note = str(payload.get("note") or "").strip()
+    if new_status not in {"IN_REVIEW", "RESOLVED", "DISMISSED", "OPEN"}:
+        raise HTTPException(status_code=422, detail="Unsupported reconciliation exception status.")
+    if new_status in {"RESOLVED", "DISMISSED"} and len(note) < 10:
+        raise HTTPException(status_code=422, detail="A resolution or dismissal note of at least 10 characters is required.")
+    if row.status in {"RESOLVED", "DISMISSED"}:
+        raise HTTPException(status_code=409, detail="Terminal exceptions cannot be reopened or changed. A materially new detection must be recorded separately.")
+    if new_status == row.status:
+        raise HTTPException(status_code=409, detail="Exception is already in the requested status.")
+    old_status = row.status
+    row.status = new_status
+    if new_status in {"RESOLVED", "DISMISSED"}:
+        row.resolved_at = datetime.now(timezone.utc)
+        row.resolved_by_id = current_user.id
+        row.resolution_note = note
+    _record_reconciliation_event(db, row, "STATUS_CHANGED", current_user.id,
+        old_status=old_status, new_status=new_status, note=note or None)
+    db.commit()
+    return {"id": row.id, "status": row.status, "resolved_at": row.resolved_at, "resolution_note": row.resolution_note}
+
+
+@router.post("/reconciliation/exceptions/{exception_id}/notes", status_code=status.HTTP_201_CREATED)
+def add_reconciliation_exception_note(
+    exception_id: int, payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:write")),
+):
+    row = db.get(ProcurementReconciliationException, exception_id)
+    if row is None: raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    note = str(payload.get("note") or "").strip()
+    if not note or len(note) > 4000:
+        raise HTTPException(status_code=422, detail="Note is required and must not exceed 4000 characters.")
+    _record_reconciliation_event(db, row, "NOTE_ADDED", current_user.id, note=note)
+    db.commit()
+    return {"exception_id": row.id, "note_recorded": True}
+
+
+@router.get("/reconciliation/exceptions/{exception_id}/history")
+def get_reconciliation_exception_history(
+    exception_id: int, db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    if db.get(ProcurementReconciliationException, exception_id) is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    events = db.query(ProcurementReconciliationExceptionEvent).filter(
+        ProcurementReconciliationExceptionEvent.exception_id == exception_id
+    ).order_by(ProcurementReconciliationExceptionEvent.occurred_at, ProcurementReconciliationExceptionEvent.id).all()
+    return {"exception_id": exception_id, "events": [{
+        "id": event.id, "event_type": event.event_type, "actor_user_id": event.actor_user_id,
+        "old_status": event.old_status, "new_status": event.new_status,
+        "old_assignee_id": event.old_assignee_id, "new_assignee_id": event.new_assignee_id,
+        "note": event.note, "event_metadata": event.event_metadata, "occurred_at": event.occurred_at,
+    } for event in events]}
