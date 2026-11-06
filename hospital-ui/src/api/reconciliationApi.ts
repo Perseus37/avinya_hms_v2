@@ -120,6 +120,8 @@ export interface ReconciliationFilters {
 }
 
 export const reconciliationApi = {
+  getMyAssignments: (limit = 100) =>
+    apiClient<MyReconciliationAssignments>("/api/procurement/reconciliation/my-assignments", { params: { limit } }),
   getDashboard: (filters: ReconciliationFilters = {}) =>
     apiClient<ReconciliationDashboard>("/api/procurement/analytics/reconciliation-dashboard", {
       params: { ...filters },
@@ -155,6 +157,27 @@ export const reconciliationApi = {
     apiClient<{ exception_id: number; note_recorded: boolean }>("/api/procurement/reconciliation/exceptions/" + id + "/notes", { method: "POST", body: JSON.stringify(payload) }),
 };
 
+
+export interface MyReconciliationAssignment {
+  id: number;
+  exception_type: string;
+  severity: ReconciliationSeverity;
+  status: ReconciliationStatus;
+  reference_type: string;
+  summary: string;
+  source_present: boolean;
+  first_detected_at: string;
+  assigned_at: string;
+  acknowledgement_status: "PENDING" | "ACCEPTED" | "REJECTED";
+  acknowledged_at: string | null;
+  response_target_hours: number;
+}
+
+export interface MyReconciliationAssignments {
+  total: number;
+  items: MyReconciliationAssignment[];
+  scope: "CURRENT_USER_ACTIVE_ASSIGNMENTS";
+}
 
 export interface ReconciliationExceptionEvent {
   id: number;
