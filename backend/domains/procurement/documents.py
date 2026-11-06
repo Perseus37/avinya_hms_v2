@@ -409,7 +409,7 @@ def resolve_reconciliation_evidence(tenant_slug: str, document_key: str) -> Path
         key.is_absolute()
         or key.parts[:2] != expected_prefix.parts
         or len(key.parts) != 3
-        or not re.fullmatch(r"[0-9a-f]{32}\\.(?:pdf|png|jpg|jpeg)", key.name)
+        or not re.fullmatch(r"[0-9a-f]{32}\.(?:pdf|png|jpg|jpeg)", key.name)
     ):
         raise HTTPException(status_code=404, detail="Reconciliation evidence not found.")
     tenant_dir = _reconciliation_evidence_storage_directory(tenant_slug, create=False)
