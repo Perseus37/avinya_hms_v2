@@ -7177,6 +7177,8 @@ def get_reconciliation_dashboard(
     }
     sla_breaches = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
     exposure_by_type = {}
+    exposure_by_supplier = {}
+    exposure_by_bank_account = {}
     workload = {}
     resolution_hours = []
     opened_by_day = {}
@@ -7245,6 +7247,30 @@ def get_reconciliation_dashboard(
                 bucket["investigation_amount_paise"] += max(int(row.amount_paise or 0), 0)
                 bucket["unmatched_amount_paise"] += max(int(row.unmatched_amount_paise or 0), 0)
 
+                snapshot = row.detection_snapshot or {}
+                vendor_id = snapshot.get("vendor_id")
+                vendor_name = snapshot.get("vendor_name")
+                if vendor_id is not None:
+                    supplier_key = str(vendor_id)
+                    supplier_bucket = exposure_by_supplier.setdefault(supplier_key, {
+                        "vendor_id": int(vendor_id), "vendor_name": vendor_name,
+                        "exception_count": 0, "investigation_amount_paise": 0,
+                        "unmatched_amount_paise": 0,
+                    })
+                    supplier_bucket["exception_count"] += 1
+                    supplier_bucket["investigation_amount_paise"] += max(int(row.amount_paise or 0), 0)
+                    supplier_bucket["unmatched_amount_paise"] += max(int(row.unmatched_amount_paise or 0), 0)
+
+                bank_account_ref = snapshot.get("bank_account_ref")
+                if bank_account_ref and row.reference_type == "BANK_STATEMENT_LINE":
+                    account_bucket = exposure_by_bank_account.setdefault(str(bank_account_ref), {
+                        "bank_account_ref": str(bank_account_ref), "exception_count": 0,
+                        "investigation_amount_paise": 0, "unmatched_amount_paise": 0,
+                    })
+                    account_bucket["exception_count"] += 1
+                    account_bucket["investigation_amount_paise"] += max(int(row.amount_paise or 0), 0)
+                    account_bucket["unmatched_amount_paise"] += max(int(row.unmatched_amount_paise or 0), 0)
+
         assignee_key = str(row.assigned_to_id) if row.assigned_to_id is not None else "UNASSIGNED"
         assignee = workload.setdefault(assignee_key, {
             "user_id": row.assigned_to_id, "assigned_total": 0, "assigned_open": 0,
@@ -7292,6 +7318,14 @@ def get_reconciliation_dashboard(
         "resolved_count": count,
     } for key, count in resolved_by_user.items()]
     resolver_rows.sort(key=lambda item: (-item["resolved_count"], item["user_id"] or 0))
+    supplier_exposure_rows = sorted(
+        exposure_by_supplier.values(),
+        key=lambda item: (-item["unmatched_amount_paise"], item["vendor_id"]),
+    )
+    bank_account_exposure_rows = sorted(
+        exposure_by_bank_account.values(),
+        key=lambda item: (-item["unmatched_amount_paise"], item["bank_account_ref"]),
+    )
 
     trend_days = sorted(set(opened_by_day) | set(resolved_by_day) | set(sla_breaches_by_day))
     return {
@@ -7336,6 +7370,8 @@ def get_reconciliation_dashboard(
         "finance_workload": workload_rows,
         "resolved_by_user": resolver_rows,
         "investigation_amounts_by_exception_type": exposure_by_type,
+        "investigation_amounts_by_supplier": supplier_exposure_rows,
+        "investigation_amounts_by_bank_account": bank_account_exposure_rows,
         "amount_methodology": {
             "currency_unit": "INR paise",
             "not_a_confirmed_loss": True,
