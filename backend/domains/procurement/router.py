@@ -2585,9 +2585,14 @@ def get_procurement_reconciliation_exceptions(
             })
 
     # Supplier payments not fully evidenced by imported bank debits.
-    payments = db.query(SupplierPayment).options(
-        joinedload(SupplierPayment.vendor)
-    ).order_by(SupplierPayment.payment_date, SupplierPayment.id).all()
+    payments = db.query(SupplierPayment).order_by(
+        SupplierPayment.payment_date, SupplierPayment.id
+    ).all()
+    vendor_ids = {payment.vendor_id for payment in payments}
+    vendor_names = {
+        vendor.id: vendor.name
+        for vendor in db.query(VendorMaster).filter(VendorMaster.id.in_(vendor_ids)).all()
+    } if vendor_ids else {}
     normalized_payment_keys = {}
     for payment in payments:
         if not in_window(payment.payment_date):
@@ -2602,7 +2607,7 @@ def get_procurement_reconciliation_exceptions(
                 "reference_type": "SUPPLIER_PAYMENT",
                 "reference_id": payment.id,
                 "vendor_id": payment.vendor_id,
-                "vendor_name": payment.vendor.name if payment.vendor else None,
+                "vendor_name": vendor_names.get(payment.vendor_id),
                 "payment_reference": payment.payment_reference,
                 "transaction_date": payment.payment_date,
                 "amount_paise": int(payment.amount_paise),
@@ -2664,7 +2669,7 @@ def get_procurement_reconciliation_exceptions(
     severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
     exceptions.sort(key=lambda row: (
         severity_rank.get(row["severity"], 9),
-        row.get("transaction_date") or date.min,
+        (row.get("transaction_date").isoformat() if row.get("transaction_date") else ""),
         row["exception_type"],
         row["reference_id"],
     ))
