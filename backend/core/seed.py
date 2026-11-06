@@ -200,6 +200,20 @@ def seed_universal_hospital_data(
         existing_billing_role = db.query(Role).filter(Role.code == "ROLE_BILLING").first()
         if existing_billing_role and perm_map["finance:read"] not in existing_billing_role.permissions:
             existing_billing_role.permissions.append(perm_map["finance:read"])
+        existing_finance_manager = db.query(Role).filter(Role.code == "ROLE_FINANCE_MANAGER").first()
+        if existing_finance_manager is None:
+            existing_finance_manager = Role(
+                code="ROLE_FINANCE_MANAGER",
+                name="Finance Manager",
+                description="Govern reconciliation investigations, SLA policies, and finance approvals.",
+                is_system_role=True,
+            )
+            existing_finance_manager.permissions.extend([
+                perm_map["finance:read"], perm_map["finance:sla:manage"],
+            ])
+            db.add(existing_finance_manager)
+        elif perm_map["finance:sla:manage"] not in existing_finance_manager.permissions:
+            existing_finance_manager.permissions.append(perm_map["finance:sla:manage"])
         db.commit()
         return False
 
@@ -248,6 +262,12 @@ def seed_universal_hospital_data(
         description="Strictly read-only access across modules",
         is_system_role=False,
     )
+    role_finance_manager = Role(
+        code="ROLE_FINANCE_MANAGER",
+        name="Finance Manager",
+        description="Govern reconciliation investigations, SLA policies, and finance approvals.",
+        is_system_role=True,
+    )
 
     role_admin.permissions.extend(
         perm for code, perm in perm_map.items() if code != "break_glass:request"
@@ -277,8 +297,11 @@ def seed_universal_hospital_data(
         perm for code, perm in perm_map.items()
         if code.endswith(":read") and code != "payroll:read"
     ])
+    role_finance_manager.permissions.extend([
+        perm_map["finance:read"], perm_map["finance:sla:manage"],
+    ])
 
-    db.add_all([role_admin, role_doctor, role_nurse, role_pharm, role_billing, role_auditor])
+    db.add_all([role_admin, role_doctor, role_nurse, role_pharm, role_billing, role_auditor, role_finance_manager])
     db.flush()
 
     admin_user = User(
