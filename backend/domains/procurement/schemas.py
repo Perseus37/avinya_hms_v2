@@ -47,10 +47,37 @@ class VendorDirectoryResponse(BaseModel):
     address: str
     credit_period_days: int
     is_active: bool
+    is_suspended: bool = False
+    suspension_reason: Optional[str] = None
+    suspended_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 class VendorStatusUpdate(BaseModel):
     is_active: bool
+
+
+class SupplierLifecycleRequestCreate(BaseModel):
+    action: str = Field(pattern="^(SUSPEND|REINSTATE)$")
+    reason: str = Field(min_length=10, max_length=2000)
+
+
+class SupplierLifecycleRequestReview(BaseModel):
+    approved: bool
+    review_notes: str = Field(min_length=3, max_length=2000)
+
+
+class SupplierLifecycleRequestResponse(BaseModel):
+    id: int
+    vendor_id: int
+    action: str
+    reason: str
+    status: str
+    requested_by_id: int
+    requested_at: datetime
+    reviewed_by_id: Optional[int]
+    reviewed_at: Optional[datetime]
+    review_notes: Optional[str]
+    model_config = ConfigDict(from_attributes=True)
 
 # --- Purchase Requisitions ---
 class PurchaseRequisitionItemCreate(BaseModel):
