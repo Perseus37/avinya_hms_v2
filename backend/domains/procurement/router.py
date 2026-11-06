@@ -7573,7 +7573,7 @@ def _reconciliation_sla_clock(row, at: Optional[datetime] = None):
     breached_at = utc(row.sla_breached_at)
     if breached and breached_at is None and not currently_paused:
         breached_at = started_at + timedelta(seconds=target_seconds + paused_seconds)
-    due_at = None if currently_paused and not breached else started_at + timedelta(seconds=target_seconds + paused_seconds)
+    due_at = breached_at if breached_at is not None else (None if currently_paused else started_at + timedelta(seconds=target_seconds + paused_seconds))
     return {
         "elapsed_seconds": elapsed_seconds,
         "elapsed_hours": round(elapsed_seconds / 3600, 2),
@@ -7840,6 +7840,7 @@ def list_persisted_reconciliation_exceptions(
         "sla_summary": {
             "open_or_in_review": len(open_rows),
             "sla_overdue": len(overdue_rows),
+            "sla_paused": sum(1 for row in open_rows if sla_clock(row)["paused"]),
             "unassigned_open": sum(1 for row in open_rows if row.assigned_to_id is None),
             "missing_from_latest_detection": sum(1 for row in rows if not row.source_present),
         },
@@ -7923,6 +7924,7 @@ def get_reconciliation_dashboard(
         "3_to_7_days": 0, "over_7_days": 0,
     }
     sla_breaches = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    sla_paused_open_count = 0
     exposure_by_type = {}
     exposure_by_supplier = {}
     exposure_by_bank_account = {}
@@ -7962,6 +7964,8 @@ def get_reconciliation_dashboard(
         if breached:
             sla_breaches_by_day[opened_day] = sla_breaches_by_day.get(opened_day, 0) + 1
         if row.status in open_statuses:
+            if sla_clock["paused"]:
+                sla_paused_open_count += 1
             if elapsed < 4:
                 aging["under_4_hours"] += 1
             elif elapsed < 24:
@@ -8101,6 +8105,7 @@ def get_reconciliation_dashboard(
             "source_missing_open_count": sum(1 for row in rows if row.status in open_statuses and not row.source_present),
             "unassigned_open_count": sum(1 for row in rows if row.status in open_statuses and row.assigned_to_id is None),
             "sla_breached_open_count": sum(sla_breaches.values()),
+            "sla_paused_open_count": sla_paused_open_count,
         },
         "by_status": status_counts,
         "by_severity": severity_counts,
