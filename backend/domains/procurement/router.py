@@ -41,7 +41,9 @@ from backend.domains.procurement.models import (
     BankStatementBatch, BankStatementLine, BankStatementDirectionEnum, SupplierPaymentBankMatch,
     SupplierContract, SupplierContractRate, SupplierContractRevision, SupplierContractDocumentDownloadAudit, SupplierComplianceDocument, SupplierComplianceDocumentDownloadAudit, SupplierCompliancePolicy, SupplierCompliancePolicyAudit, SupplierLifecycleRequest, ProcurementReconciliationException, ProcurementReconciliationExceptionEvent,
     ProcurementReconciliationEvidence, ProcurementReconciliationEvidenceDownloadAudit,
-    ProcurementReconciliationSlaPolicy, ProcurementReconciliationSlaPolicyEvent
+    ProcurementReconciliationSlaPolicy, ProcurementReconciliationSlaPolicyEvent,
+    ProcurementReconciliationEscalationPolicy, ProcurementReconciliationGovernanceReport,
+    ProcurementReconciliationAuditExport
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, VendorDirectoryResponse, VendorStatusUpdate, SupplierLifecycleRequestCreate, SupplierLifecycleRequestReview, SupplierLifecycleRequestResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, SupplierPaymentCreate, SupplierPaymentResponse, SupplierInvoiceSettlementResponse, SupplierPaymentRequestCreate, SupplierPaymentRequestReview, SupplierPaymentRequestExecute, SupplierPaymentRequestResponse,
@@ -8894,3 +8896,306 @@ def get_reconciliation_exception_history(
         "old_assignee_id": event.old_assignee_id, "new_assignee_id": event.new_assignee_id,
         "note": event.note, "event_metadata": event.event_metadata, "occurred_at": event.occurred_at,
     } for event in events]}
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation governance: escalation policy, quality analytics, reporting,
+# and export accountability. All queries are tenant-schema scoped by get_db.
+# ---------------------------------------------------------------------------
+
+@router.get("/reconciliation/escalation-policies")
+def list_reconciliation_escalation_policies(
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    items = db.query(ProcurementReconciliationEscalationPolicy).order_by(
+        ProcurementReconciliationEscalationPolicy.version.desc()
+    ).limit(50).all()
+    active = db.query(ProcurementReconciliationEscalationPolicy).filter(
+        ProcurementReconciliationEscalationPolicy.status == "PUBLISHED",
+        ProcurementReconciliationEscalationPolicy.effective_to.is_(None),
+    ).order_by(ProcurementReconciliationEscalationPolicy.version.desc()).first()
+    return {
+        "active_policy_id": active.id if active else None,
+        "active_policy_version": active.version if active else None,
+        "baseline_response_targets_hours": {"CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24},
+        "items": [{
+            "id": row.id, "version": row.version, "status": row.status,
+            "response_targets_hours": row.response_targets_hours,
+            "escalation_levels": row.escalation_levels,
+            "notification_preferences": row.notification_preferences,
+            "change_reason": row.change_reason, "effective_from": row.effective_from,
+            "effective_to": row.effective_to, "created_at": row.created_at,
+            "published_at": row.published_at,
+        } for row in items],
+    }
+
+
+@router.post("/reconciliation/escalation-policies", status_code=status.HTTP_201_CREATED)
+def create_reconciliation_escalation_policy(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:sla:manage")),
+):
+    targets = payload.get("response_targets_hours")
+    required = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+    if not isinstance(targets, dict) or set(targets) != required or any(
+        not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0 or v > 8760 for v in targets.values()
+    ):
+        raise HTTPException(status_code=422, detail="Response targets must define positive hours for all four severities.")
+    levels = payload.get("escalation_levels")
+    if not isinstance(levels, list) or not 1 <= len(levels) <= 5:
+        raise HTTPException(status_code=422, detail="Define between one and five escalation levels.")
+    normalized_levels = []
+    prior = 0
+    for index, level in enumerate(levels, start=1):
+        if not isinstance(level, dict):
+            raise HTTPException(status_code=422, detail="Each escalation level must be an object.")
+        after_hours = level.get("after_hours")
+        if not isinstance(after_hours, (int, float)) or isinstance(after_hours, bool) or after_hours <= prior or after_hours > 8760:
+            raise HTTPException(status_code=422, detail="Escalation levels must have strictly increasing positive after_hours.")
+        normalized_levels.append({
+            "level": index, "after_hours": float(after_hours),
+            "notify_assignee": bool(level.get("notify_assignee", True)),
+            "notify_assigning_manager": bool(level.get("notify_assigning_manager", True)),
+            "notify_finance_managers": bool(level.get("notify_finance_managers", False)),
+        })
+        prior = after_hours
+    preferences = payload.get("notification_preferences") or {
+        "email_enabled": True, "assignee": True, "assigning_manager": True, "finance_managers": False,
+    }
+    allowed_preferences = {"email_enabled", "assignee", "assigning_manager", "finance_managers"}
+    if not isinstance(preferences, dict) or set(preferences) - allowed_preferences or any(type(v) is not bool for v in preferences.values()):
+        raise HTTPException(status_code=422, detail="Notification preferences contain unsupported or non-boolean settings.")
+    reason = str(payload.get("change_reason") or "").strip()
+    if not 10 <= len(reason) <= 1000:
+        raise HTTPException(status_code=422, detail="A change reason between 10 and 1000 characters is required.")
+    latest = db.query(func.max(ProcurementReconciliationEscalationPolicy.version)).scalar() or 0
+    row = ProcurementReconciliationEscalationPolicy(
+        policy_key="DEFAULT", version=latest + 1, status="DRAFT",
+        response_targets_hours={k: float(v) for k, v in targets.items()},
+        escalation_levels=normalized_levels, notification_preferences=preferences,
+        change_reason=reason, effective_from=datetime.now(timezone.utc),
+        created_by_id=current_user.id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "version": row.version, "status": row.status}
+
+
+@router.post("/reconciliation/escalation-policies/{policy_id}/publish")
+def publish_reconciliation_escalation_policy(
+    policy_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:sla:manage")),
+):
+    row = db.query(ProcurementReconciliationEscalationPolicy).filter(
+        ProcurementReconciliationEscalationPolicy.id == policy_id
+    ).with_for_update().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Escalation policy not found.")
+    if row.status != "DRAFT":
+        raise HTTPException(status_code=409, detail="Only draft escalation policies can be published.")
+    effective_from = payload.get("effective_from")
+    if isinstance(effective_from, str):
+        try:
+            effective_from = datetime.fromisoformat(effective_from.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="effective_from must be an ISO-8601 timestamp.")
+    effective_from = effective_from or datetime.now(timezone.utc)
+    if effective_from.tzinfo is None:
+        effective_from = effective_from.replace(tzinfo=timezone.utc)
+    active = db.query(ProcurementReconciliationEscalationPolicy).filter(
+        ProcurementReconciliationEscalationPolicy.status == "PUBLISHED",
+        ProcurementReconciliationEscalationPolicy.effective_to.is_(None),
+    ).with_for_update().all()
+    for prior in active:
+        prior.effective_to = effective_from
+    row.status = "PUBLISHED"
+    row.effective_from = effective_from
+    row.published_by_id = current_user.id
+    row.published_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": row.id, "version": row.version, "status": row.status, "effective_from": row.effective_from}
+
+
+@router.get("/reconciliation/governance/closure-quality")
+def get_reconciliation_closure_quality(
+    from_date: Optional[date] = Query(default=None),
+    to_date: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    query = db.query(ProcurementReconciliationException)
+    if from_date:
+        query = query.filter(ProcurementReconciliationException.resolved_at >= datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc))
+    if to_date:
+        query = query.filter(ProcurementReconciliationException.resolved_at < datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc))
+    rows = query.all()
+    resolved = [r for r in rows if r.status == "RESOLVED" and r.resolved_at and r.first_detected_at]
+    cause_counts = {}
+    reopened = 0
+    review_required = 0
+    review_approved = 0
+    review_rejected = 0
+    resolution_hours = []
+    for row in resolved:
+        code = row.root_cause_code or "UNCLASSIFIED"
+        bucket = cause_counts.setdefault(code, {"resolved_count": 0, "reopened_count": 0, "exception_types": {}})
+        bucket["resolved_count"] += 1
+        bucket["exception_types"][row.exception_type] = bucket["exception_types"].get(row.exception_type, 0) + 1
+        reopened += int(row.reopen_count or 0)
+        if row.resolution_review_status != "NOT_REQUIRED":
+            review_required += 1
+        if row.resolution_review_status == "APPROVED":
+            review_approved += 1
+        if row.resolution_review_status == "REJECTED":
+            review_rejected += 1
+        start = row.first_detected_at.replace(tzinfo=timezone.utc) if row.first_detected_at.tzinfo is None else row.first_detected_at
+        end = row.resolved_at.replace(tzinfo=timezone.utc) if row.resolved_at.tzinfo is None else row.resolved_at
+        resolution_hours.append(max((end - start).total_seconds() / 3600, 0))
+    events = db.query(ProcurementReconciliationExceptionEvent).filter(
+        ProcurementReconciliationExceptionEvent.event_type == "REOPENED"
+    ).all()
+    for event in events:
+        root = (event.event_metadata or {}).get("prior_resolution", {}).get("root_cause_code") or "UNCLASSIFIED"
+        bucket = cause_counts.setdefault(root, {"resolved_count": 0, "reopened_count": 0, "exception_types": {}})
+        bucket["reopened_count"] += 1
+    return {
+        "resolved_count": len(resolved),
+        "average_resolution_hours": round(sum(resolution_hours) / len(resolution_hours), 2) if resolution_hours else None,
+        "median_resolution_hours": round(sorted(resolution_hours)[len(resolution_hours)//2], 2) if resolution_hours else None,
+        "reopen_events": reopened,
+        "reopen_rate_percent": round((reopened / len(resolved)) * 100, 2) if resolved else 0,
+        "independent_review": {"required": review_required, "approved": review_approved, "rejected": review_rejected},
+        "root_causes": sorted([{"root_cause_code": key, **value} for key, value in cause_counts.items()],
+                              key=lambda x: (x["reopened_count"], x["resolved_count"]), reverse=True),
+        "methodology": "Resolution duration uses first_detected_at to current resolved_at; reopened count is cumulative case reopen_count.",
+    }
+
+
+@router.get("/reconciliation/governance/dashboard")
+def get_reconciliation_governance_dashboard(
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    rows = db.query(ProcurementReconciliationException).all()
+    open_rows = [r for r in rows if r.status in {"OPEN", "IN_REVIEW"}]
+    overdue = [r for r in open_rows if _reconciliation_sla_clock(r)["breached"]]
+    quality = get_reconciliation_closure_quality(db=db, _=None)
+    return {
+        "as_of": datetime.now(timezone.utc),
+        "overview": {
+            "total_cases": len(rows), "open_cases": len(open_rows),
+            "sla_breached_open": len(overdue),
+            "unassigned_open": sum(1 for r in open_rows if r.assigned_to_id is None),
+            "resolved_cases": sum(1 for r in rows if r.status == "RESOLVED"),
+            "reopened_cases": sum(int(r.reopen_count or 0) for r in rows),
+        },
+        "closure_quality": quality,
+    }
+
+
+@router.post("/reconciliation/governance/monthly-reports", status_code=status.HTTP_201_CREATED)
+def create_reconciliation_monthly_governance_report(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:sla:manage")),
+):
+    try:
+        start = date.fromisoformat(str(payload.get("period_start")))
+        end = date.fromisoformat(str(payload.get("period_end")))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="period_start and period_end must be ISO dates.")
+    if start.day != 1 or (end + timedelta(days=1)).day != 1 or end < start:
+        raise HTTPException(status_code=422, detail="Report periods must cover one or more complete calendar months.")
+    existing = db.query(ProcurementReconciliationGovernanceReport).filter(
+        ProcurementReconciliationGovernanceReport.period_start == start,
+        ProcurementReconciliationGovernanceReport.period_end == end,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="A governance report already exists for this period.")
+    start_dt = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+    end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    cases = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.first_detected_at >= start_dt,
+        ProcurementReconciliationException.first_detected_at < end_dt,
+    ).all()
+    resolved = [r for r in cases if r.status == "RESOLVED"]
+    snapshot = {
+        "period_start": start.isoformat(), "period_end": end.isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "case_count": len(cases),
+        "by_status": {key: sum(1 for r in cases if r.status == key) for key in ("OPEN", "IN_REVIEW", "RESOLVED", "DISMISSED")},
+        "by_severity": {key: sum(1 for r in cases if r.severity == key) for key in ("CRITICAL", "HIGH", "MEDIUM", "LOW")},
+        "sla_breached_open": sum(1 for r in cases if r.status in {"OPEN", "IN_REVIEW"} and _reconciliation_sla_clock(r)["breached"]),
+        "resolved_count": len(resolved),
+        "reopened_case_count": sum(int(r.reopen_count or 0) for r in cases),
+        "root_causes": {},
+    }
+    for row in resolved:
+        key = row.root_cause_code or "UNCLASSIFIED"
+        snapshot["root_causes"][key] = snapshot["root_causes"].get(key, 0) + 1
+    report = ProcurementReconciliationGovernanceReport(
+        period_start=start, period_end=end, report_snapshot=snapshot, generated_by_id=current_user.id,
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    return {"id": report.id, "period_start": start, "period_end": end, "snapshot": snapshot, "created_at": report.created_at}
+
+
+@router.get("/reconciliation/governance/monthly-reports")
+def list_reconciliation_monthly_governance_reports(
+    limit: int = Query(default=24, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    rows = db.query(ProcurementReconciliationGovernanceReport).order_by(
+        ProcurementReconciliationGovernanceReport.period_start.desc()
+    ).limit(limit).all()
+    return {"items": [{"id": r.id, "period_start": r.period_start, "period_end": r.period_end,
+                       "snapshot": r.report_snapshot, "generated_by_id": r.generated_by_id,
+                       "created_at": r.created_at} for r in rows]}
+
+
+@router.post("/reconciliation/audit-exports/register", status_code=status.HTTP_201_CREATED)
+def register_reconciliation_audit_export(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:read")),
+):
+    export_type = str(payload.get("export_type") or "").strip().upper()
+    if export_type not in {"EXCEPTION_AUDIT_ZIP", "GOVERNANCE_REPORT", "QUEUE_CSV"}:
+        raise HTTPException(status_code=422, detail="Unsupported reconciliation export type.")
+    exception_id = payload.get("exception_id")
+    if exception_id is not None and db.get(ProcurementReconciliationException, int(exception_id)) is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    row = ProcurementReconciliationAuditExport(
+        exception_id=exception_id, export_type=export_type, status="GENERATED",
+        filter_snapshot=payload.get("filters") if isinstance(payload.get("filters"), dict) else {},
+        actor_user_id=current_user.id, actor_email=current_user.email,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "status": row.status, "requested_at": row.requested_at}
+
+
+@router.get("/reconciliation/audit-exports")
+def list_reconciliation_audit_exports(
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    rows = db.query(ProcurementReconciliationAuditExport).order_by(
+        ProcurementReconciliationAuditExport.requested_at.desc()
+    ).limit(limit).all()
+    return {"items": [{
+        "id": r.id, "exception_id": r.exception_id, "export_type": r.export_type,
+        "status": r.status, "file_sha256": r.file_sha256, "file_size_bytes": r.file_size_bytes,
+        "filter_snapshot": r.filter_snapshot, "actor_user_id": r.actor_user_id,
+        "actor_email": r.actor_email, "requested_at": r.requested_at,
+    } for r in rows]}
