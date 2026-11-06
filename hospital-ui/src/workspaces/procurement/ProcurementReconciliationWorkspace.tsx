@@ -22,6 +22,7 @@ import {
   ReconciliationStatus,
   ReconciliationExceptionEvent,
   ReconciliationAssignee,
+  ReconciliationAssignmentRecommendation,
 } from "../../api/reconciliationApi";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -133,6 +134,9 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [assigneeOptions, setAssigneeOptions] = useState<ReconciliationAssignee[]>([]);
   const [assigneeLoading, setAssigneeLoading] = useState(false);
   const [assigneePickerOpen, setAssigneePickerOpen] = useState(false);
+  const [assignmentRecommendations, setAssignmentRecommendations] = useState<ReconciliationAssignmentRecommendation[]>([]);
+  const [recommendationsLoading, setRecommendationsLoading] = useState(false);
+  const [recommendationsLoaded, setRecommendationsLoaded] = useState(false);
   const [assignmentNote, setAssignmentNote] = useState("");
   const [investigationNote, setInvestigationNote] = useState("");
   const [statusChoice, setStatusChoice] = useState<ReconciliationStatus>("IN_REVIEW");
@@ -222,6 +226,9 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     setAssigneeSearch("");
     setAssigneeOptions([]);
     setAssigneePickerOpen(false);
+    setAssignmentRecommendations([]);
+    setRecommendationsLoaded(false);
+    setRecommendationsLoading(false);
     setAssignmentNote(""); setInvestigationNote(""); setStatusChoice(item.status === "IN_REVIEW" ? "OPEN" : "IN_REVIEW"); setStatusNote("");
     setHistoryLoading(true);
     try { const result = await reconciliationApi.getExceptionHistory(item.id); setHistory(result.events || []); }
@@ -232,6 +239,29 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     const result = await reconciliationApi.getExceptionHistory(id);
     setHistory(result.events || []);
   };
+  const loadAssignmentRecommendations = async () => {
+    if (!selectedException) return;
+    setRecommendationsLoading(true);
+    setDetailError("");
+    try {
+      const result = await reconciliationApi.getAssignmentRecommendations(selectedException.id, 5);
+      setAssignmentRecommendations(result.recommendations || []);
+      setRecommendationsLoaded(true);
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : "Unable to calculate assignment recommendations.");
+    } finally {
+      setRecommendationsLoading(false);
+    }
+  };
+
+  const chooseRecommendedAssignee = (person: ReconciliationAssignmentRecommendation) => {
+    setAssigneeInput(String(person.user_id));
+    setAssigneeSearch(person.user_name);
+    setAssigneeOptions([]);
+    setAssigneePickerOpen(false);
+    setDetailMessage(`${person.user_name} selected. Review the recommendation and save to confirm assignment.`);
+  };
+
   const saveAssignment = async () => {
     if (!selectedException) return;
     const parsed = assigneeInput.trim() ? Number(assigneeInput) : null;
@@ -583,6 +613,29 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                   <p className="mt-3 rounded-lg bg-amber-50 p-2 text-[10px] text-amber-800">Investigation values are not confirmed losses. Bank-side and supplier-payment exposures must not be added together.</p>
                 </section>
                 <section className="rounded-xl border border-slate-200 p-3"><h3 className="text-xs font-bold">Detection evidence snapshot</h3><pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-[10px]">{JSON.stringify(selectedException.detection_snapshot || {}, null, 2)}</pre></section>
+                <section className="rounded-xl border border-slate-200 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div><h3 className="text-xs font-bold">Assignment recommendations</h3><p className="mt-1 text-[10px] text-slate-500">Advisory ranking based on branch workload, SLA pressure, severity fit, role permissions and historical outcomes.</p></div>
+                    <Button size="sm" variant="secondary" onClick={() => void loadAssignmentRecommendations()} disabled={recommendationsLoading || selectedException.status === "RESOLVED" || selectedException.status === "DISMISSED"}>{recommendationsLoading ? "Calculating…" : recommendationsLoaded ? "Refresh suggestions" : "Suggest assignees"}</Button>
+                  </div>
+                  {recommendationsLoaded && (assignmentRecommendations.length ? (
+                    <div className="mt-3 space-y-2">
+                      {assignmentRecommendations.map((person, index) => (
+                        <div key={person.user_id} className="rounded-lg border border-slate-100 p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><span className="text-xs font-semibold text-slate-800">{person.user_name}</span>{index === 0 && <Badge variant="success" size="sm">Top recommendation</Badge>}{person.current_assignee && <Badge variant="info" size="sm">Current assignee</Badge>}</div><div className="mt-0.5 text-[10px] text-slate-400">{person.login_id} · {person.roles.map((role) => role.name).join(", ") || "No role labels"}</div></div>
+                            <div className="shrink-0 text-right"><div className="text-sm font-bold tabular-nums text-slate-900">{number(person.score)}/100</div><div className="text-[9px] text-slate-400">recommendation score</div></div>
+                          </div>
+                          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px]"><span className="rounded bg-slate-50 px-2 py-1">{number(person.open_count)} open</span><span className={`rounded px-2 py-1 ${person.overdue_count ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}>{number(person.overdue_count)} overdue</span><span className="rounded bg-slate-50 px-2 py-1">{number(person.open_by_severity[selectedException.severity])} {selectedException.severity} open</span><span className="rounded bg-slate-50 px-2 py-1">{number(person.resolved_count)} attributed resolved</span>{person.median_resolution_hours !== null && <span className="rounded bg-slate-50 px-2 py-1">Median resolution {hours(person.median_resolution_hours)}</span>}</div>
+                          <ul className="mt-2 list-disc space-y-0.5 pl-4 text-[10px] text-slate-500">{person.reasons.map((reason, reasonIndex) => <li key={reasonIndex}>{reason}</li>)}</ul>
+                          {!person.finance_suitable && <p className="mt-2 text-[10px] font-medium text-amber-700">No finance/procurement permission was detected on this user's assigned roles. Confirm suitability before assigning.</p>}
+                          <div className="mt-2 flex justify-end"><Button size="sm" variant="secondary" onClick={() => chooseRecommendedAssignee(person)} disabled={!hasPermission("finance.manage_reconciliation") || actionLoading || selectedException.status === "RESOLVED" || selectedException.status === "DISMISSED"}>Select this person</Button></div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <p className="mt-3 text-[10px] text-slate-400">No active branch staff were available for recommendation.</p>)}
+                  <p className="mt-3 text-[9px] leading-relaxed text-slate-400">Suggestions are not assignments. Workload uses all persisted investigations in this branch, independent of dashboard date filters. Historical resolution statistics use resolved records still attributed to each assignee. Authorized staff must confirm every assignment.</p>
+                </section>
                 <section className="rounded-xl border border-slate-200 p-3">
                   <h3 className="text-xs font-bold">Assignment</h3>
                   <p className="mt-1 text-[10px] text-slate-500">Search active staff in this hospital branch. Results include their branch roles.</p>
