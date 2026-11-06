@@ -4282,3 +4282,62 @@ def test_reconciliation_sla_pause_requires_sla_governance_permission(
     )
     assert response.status_code == 403, response.text
 
+
+
+def test_reconciliation_sla_pause_is_finalized_when_case_closes(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    now = datetime.now(timezone.utc)
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        row = ProcurementReconciliationException(
+            fingerprint="SLA-CLOCK:AUTO-RESUME:930104",
+            exception_type="UNMATCHED_BANK_DEBIT",
+            severity="LOW",
+            status="OPEN",
+            reference_type="BANK_STATEMENT_LINE",
+            reference_id=930104,
+            summary="Auto-resume SLA clock on case closure regression.",
+            detection_snapshot={},
+            first_detected_at=now - timedelta(hours=2),
+            last_detected_at=now,
+            sla_target_hours=4,
+            sla_paused_at=now - timedelta(hours=1),
+            sla_paused_seconds=0,
+        )
+        db.add(row)
+        db.commit()
+        exception_id = row.id
+
+    closed = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/status",
+        headers=superuser_headers,
+        json={
+            "status": "RESOLVED",
+            "note": "Bank statement and supporting payment evidence reconciled.",
+            "root_cause_code": "REFERENCE_MISMATCH",
+            "resolution_checklist": {
+                "bank_statement_verified": True,
+                "bank_account_and_period_confirmed": True,
+                "payment_or_expense_traced": True,
+                "supporting_evidence_reviewed": True,
+            },
+        },
+    )
+    assert closed.status_code == 200, closed.text
+    with session_factory() as db:
+        saved = db.query(ProcurementReconciliationException).filter_by(id=exception_id).one()
+        assert saved.status == "RESOLVED"
+        assert saved.sla_paused_at is None
+        assert saved.sla_paused_seconds >= 3599
+
+    history = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/history",
+        headers=superuser_headers,
+    )
+    assert history.status_code == 200, history.text
+    assert "SLA_AUTO_RESUMED" in [event["event_type"] for event in history.json()["events"]]
+
