@@ -898,7 +898,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                       <div className="rounded-lg bg-slate-50 p-2"><span className="text-slate-500">Total paused</span><strong className="mt-0.5 block text-slate-800">{hours((selectedException.sla_paused_seconds || 0) / 3600)}</strong></div>
                     </div>
                     {selectedException.sla_breached_at && <p className="mt-2 text-[10px] text-rose-700">First breach: {new Date(selectedException.sla_breached_at).toLocaleString()}</p>}
-                    {hasPermission("finance.approve_reconciliation") && (
+                    {hasPermission("finance.manage_sla_policies") && (
                       <div className="mt-3 space-y-2">
                         {selectedException.sla_paused ? (
                           <>
@@ -913,7 +913,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                         )}
                       </div>
                     )}
-                    <p className="mt-2 text-[9px] text-slate-400">Pausing requires finance approval permission and a recorded reason. Closing an investigation automatically ends an active pause.</p>
+                    <p className="mt-2 text-[9px] text-slate-400">SLA clock controls require SLA governance permission and a recorded reason. Closing an investigation automatically ends an active pause.</p>
                   </section>
                 )}
                 <section className="rounded-xl border border-slate-200 p-3">
