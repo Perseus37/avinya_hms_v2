@@ -8194,7 +8194,7 @@ def get_reconciliation_assignment_recommendations(
         if item.status in {"OPEN", "IN_REVIEW"}:
             stats["open"] += 1
             stats["severity"][item.severity] = stats["severity"].get(item.severity, 0) + 1
-            if elapsed_hours > _reconciliation_sla_hours(item):
+            if _reconciliation_sla_clock(item, now)["breached"]:
                 stats["overdue"] += 1
         elif item.status == "RESOLVED" and item.resolved_at and first:
             stats["resolved"] += 1
