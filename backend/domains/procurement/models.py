@@ -1429,7 +1429,7 @@ class ProcurementReconciliationAuditExport(Base):
         Index("ix_proc_recon_audit_export_actor", "actor_user_id", "requested_at"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    exception_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_reconciliation_exceptions.id", ondelete="SET NULL"), nullable=True)
+    exception_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_reconciliation_exceptions.id", ondelete="RESTRICT"), nullable=True)
     export_type: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(12), default="GENERATED", nullable=False)
     file_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
