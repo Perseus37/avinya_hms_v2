@@ -1268,6 +1268,45 @@ class ProcurementReconciliationException(Base):
     resolved_by: Mapped[Optional["User"]] = relationship(foreign_keys=[resolved_by_id])
 
 
+class ProcurementReconciliationEvidence(Base):
+    """Private, immutable evidence file attached to one finance investigation."""
+    __tablename__ = "procurement_reconciliation_evidence"
+    __table_args__ = (
+        UniqueConstraint("storage_key", name="uq_proc_recon_evidence_storage_key"),
+        CheckConstraint("evidence_type IN ('BANK_STATEMENT','PAYMENT_PROOF','INVOICE','SUPPLIER_CORRESPONDENCE','APPROVAL_RECORD','OTHER')", name="ck_proc_recon_evidence_type"),
+        CheckConstraint("size_bytes > 0", name="ck_proc_recon_evidence_size"),
+        Index("ix_proc_recon_evidence_exception_time", "exception_id", "uploaded_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    exception_id: Mapped[int] = mapped_column(ForeignKey("procurement_reconciliation_exceptions.id", ondelete="RESTRICT"), nullable=False)
+    evidence_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    storage_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256_hex: Mapped[str] = mapped_column(String(64), nullable=False)
+    uploaded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ProcurementReconciliationEvidenceDownloadAudit(Base):
+    """Append-only audit of authorized evidence downloads."""
+    __tablename__ = "procurement_reconciliation_evidence_download_audits"
+    __table_args__ = (
+        Index("ix_proc_recon_evidence_download_time", "exception_id", "requested_at"),
+        Index("ix_proc_recon_evidence_download_actor", "actor_user_id", "requested_at"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    evidence_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_reconciliation_evidence.id", ondelete="SET NULL"), nullable=True)
+    exception_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    actor_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class ProcurementReconciliationExceptionEvent(Base):
     """Append-only investigation history for reconciliation exceptions."""
     __tablename__ = "procurement_reconciliation_exception_events"
