@@ -622,13 +622,13 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
           <section className="rounded-xl border border-rose-200 bg-rose-50 p-4">
             <div className="flex flex-wrap items-start justify-between gap-2">
               <div><div className="flex items-center gap-2 text-sm font-bold text-rose-900"><AlertTriangle size={16} /> Unacknowledged assignments requiring escalation</div>
-                <p className="mt-1 text-[11px] text-rose-800">{escalations.total} assignment{escalations.total === 1 ? "" : "s"} exceeded the acknowledgement target. These are escalation candidates, not automatically reassigned cases.</p></div>
+                <p className="mt-1 text-[11px] text-rose-800">{escalations.total} assignment{escalations.total === 1 ? "" : "s"} exceeded the acknowledgement target. The worker sends configured escalation notifications; cases are never automatically reassigned. Queue state is not mailbox-delivery confirmation.</p></div>
               <Badge variant="danger">{escalations.total} overdue</Badge>
             </div>
             <div className="mt-3 grid gap-2 md:grid-cols-2">
               {escalations.items.slice(0, 6).map((item) => (
                 <button key={item.exception_id} type="button" onClick={() => void openEscalation(item.exception_id)} className="flex items-center justify-between gap-3 rounded-lg border border-rose-200 bg-white px-3 py-2 text-left hover:bg-rose-100">
-                  <span><span className="block text-xs font-semibold text-slate-800">#{item.exception_id} · {item.severity}</span><span className="block text-[10px] text-slate-500">Assigned to user #{item.assigned_to_id} · {hours(item.unacknowledged_hours)} unacknowledged</span></span>
+                  <span className="min-w-0"><span className="block text-xs font-semibold text-slate-800">#{item.exception_id} · {item.severity}</span><span className="block text-[10px] text-slate-500">Assigned to user #{item.assigned_to_id} · {hours(item.unacknowledged_hours)} unacknowledged</span>{item.notification_jobs?.length ? <span className="mt-1 block text-[10px] text-slate-500">{item.notification_jobs.map((job) => job.queue_status).join(" · ")} queue status · {item.escalation_levels_notified ?? 0} level(s) notified</span> : <span className="mt-1 block text-[10px] text-slate-400">No persisted escalation job status available</span>}</span>
                   <span className="shrink-0 text-[10px] font-semibold text-rose-700">Review <span aria-hidden="true">→</span></span>
                 </button>
               ))}
