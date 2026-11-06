@@ -11,7 +11,7 @@ from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.document_responses import pdf_attachment_response
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequirePermission, validate_pagination, user_has_department_access
+from backend.core.dependencies import RequirePermission, get_current_user, validate_pagination, user_has_department_access
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User, UserStatusEnum, Department, Role, UserRole
 from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
@@ -7637,7 +7637,7 @@ def respond_to_reconciliation_assignment(
     exception_id: int,
     payload: dict,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RequirePermission("finance:read")),
+    current_user: User = Depends(get_current_user),
 ):
     """Allow only the current assignee to accept or reject a pending assignment."""
     row = db.query(ProcurementReconciliationException).filter(
@@ -7674,14 +7674,18 @@ def respond_to_reconciliation_assignment(
     if assignment_state != "PENDING" or prior_response is not None:
         raise HTTPException(status_code=409, detail="This assignment has already been answered.")
     event_type = "ASSIGNMENT_ACCEPTED" if decision == "ACCEPT" else "ASSIGNMENT_REJECTED"
+    if decision == "REJECT":
+        # Rejection returns the investigation to the manager's unassigned queue.
+        row.assigned_to_id = None
     _record_reconciliation_event(
         db, row, event_type, current_user.id,
-        old_assignee_id=current_user.id, new_assignee_id=current_user.id,
+        old_assignee_id=current_user.id,
+        new_assignee_id=current_user.id if decision == "ACCEPT" else None,
         note=note or None,
         event_metadata={"assignment_event_id": latest_assignment.id, "responded_at": datetime.now(timezone.utc).isoformat()},
     )
     db.commit()
-    return {"exception_id": row.id, "decision": decision, "recorded": True}
+    return {"exception_id": row.id, "decision": decision, "assigned_to_id": row.assigned_to_id, "recorded": True}
 
 
 @router.get("/reconciliation/exceptions/escalations")
