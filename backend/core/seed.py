@@ -195,6 +195,11 @@ def seed_universal_hospital_data(
             existing_admin_role.permissions.append(perm_map["config:write"])
         if existing_admin_role and perm_map["pharmacy:location:manage"] not in existing_admin_role.permissions:
             existing_admin_role.permissions.append(perm_map["pharmacy:location:manage"])
+        if existing_admin_role and perm_map["finance:sla:manage"] not in existing_admin_role.permissions:
+            existing_admin_role.permissions.append(perm_map["finance:sla:manage"])
+        existing_billing_role = db.query(Role).filter(Role.code == "ROLE_BILLING").first()
+        if existing_billing_role and perm_map["finance:read"] not in existing_billing_role.permissions:
+            existing_billing_role.permissions.append(perm_map["finance:read"])
         db.commit()
         return False
 
