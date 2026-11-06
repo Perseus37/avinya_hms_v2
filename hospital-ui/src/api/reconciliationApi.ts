@@ -150,7 +150,7 @@ export const reconciliationApi = {
   getExceptionHistory: (id: number) =>
     apiClient<ReconciliationExceptionHistory>("/api/procurement/reconciliation/exceptions/" + id + "/history"),
   assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
-    apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus; acknowledgement_status: string; notification_status?: "QUEUED" | "QUEUE_UNAVAILABLE" | "NOT_REQUIRED" }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: JSON.stringify(payload) }),
+    apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus; acknowledgement_status: string; notification_status?: "QUEUED" | "QUEUE_UNAVAILABLE" | "EMAIL_UNAVAILABLE" | "NOT_REQUIRED" }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: JSON.stringify(payload) }),
   updateExceptionStatus: (id: number, payload: { status: ReconciliationStatus; note?: string }) =>
     apiClient<{ id: number; status: ReconciliationStatus; resolved_at: string | null; resolution_note: string | null }>("/api/procurement/reconciliation/exceptions/" + id + "/status", { method: "PATCH", body: JSON.stringify(payload) }),
   addExceptionNote: (id: number, payload: { note: string }) =>
