@@ -7753,6 +7753,7 @@ def list_persisted_reconciliation_exceptions(
         "exceptions": [{
             "id": row.id, "exception_type": row.exception_type, "severity": row.severity,
             "status": row.status, "reference_type": row.reference_type, "reference_id": row.reference_id,
+            "sla_policy_id": row.sla_policy_id,
             "source_present": row.source_present, "missed_refresh_count": row.missed_refresh_count,
             "age_hours": age_hours(row), "sla_hours": sla_hours_for(row),
             "sla_overdue": row.status in ("OPEN", "IN_REVIEW") and age_hours(row) > sla_hours_for(row),
