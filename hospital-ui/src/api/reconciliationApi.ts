@@ -141,7 +141,7 @@ export const reconciliationApi = {
       params: { limit },
     }),
   respondToAssignment: (id: number, payload: { decision: "ACCEPT" | "REJECT"; reason?: string }) =>
-    apiClient<{ exception_id: number; decision: "ACCEPT" | "REJECT"; recorded: boolean }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment-response", {
+    apiClient<{ exception_id: number; decision: "ACCEPT" | "REJECT"; assigned_to_id: number | null; recorded: boolean }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment-response", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
