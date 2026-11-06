@@ -7666,7 +7666,12 @@ def respond_to_reconciliation_assignment(
     if latest_assignment is None:
         raise HTTPException(status_code=409, detail="No active assignment event was found.")
     assignment_state = (latest_assignment.event_metadata or {}).get("acknowledgement_status", "PENDING")
-    if assignment_state != "PENDING":
+    prior_response = db.query(ProcurementReconciliationExceptionEvent.id).filter(
+        ProcurementReconciliationExceptionEvent.exception_id == row.id,
+        ProcurementReconciliationExceptionEvent.id > latest_assignment.id,
+        ProcurementReconciliationExceptionEvent.event_type.in_(["ASSIGNMENT_ACCEPTED", "ASSIGNMENT_REJECTED"]),
+    ).first()
+    if assignment_state != "PENDING" or prior_response is not None:
         raise HTTPException(status_code=409, detail="This assignment has already been answered.")
     event_type = "ASSIGNMENT_ACCEPTED" if decision == "ACCEPT" else "ASSIGNMENT_REJECTED"
     _record_reconciliation_event(
@@ -7710,6 +7715,13 @@ def list_reconciliation_assignment_escalations(
             continue
         metadata = assignment.event_metadata or {}
         if metadata.get("acknowledgement_status", "PENDING") != "PENDING":
+            continue
+        answered = db.query(ProcurementReconciliationExceptionEvent.id).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == row.id,
+            ProcurementReconciliationExceptionEvent.id > assignment.id,
+            ProcurementReconciliationExceptionEvent.event_type.in_(["ASSIGNMENT_ACCEPTED", "ASSIGNMENT_REJECTED"]),
+        ).first()
+        if answered is not None:
             continue
         assigned_at = assignment.occurred_at
         if assigned_at.tzinfo is None:
