@@ -3164,12 +3164,26 @@ def test_high_risk_reconciliation_resolution_requires_independent_review(
     client, superuser_headers, multi_tenant_env
 ):
     from sqlalchemy.orm import sessionmaker
-    from backend.domains.identity.models import User
+    from backend.domains.identity.models import User, UserRole, UserStatusEnum
     from backend.domains.procurement.models import ProcurementReconciliationException
+    from conftest import _mint_test_headers
 
     session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
     with session_factory() as db:
-        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        admin = db.query(User).filter(User.email == "admin@default.com").one()
+        reviewer = User(
+            login_id="recon-independent-reviewer",
+            email="recon-independent-reviewer@default.com",
+            hashed_password="not-a-login-credential",
+            full_name="Independent Finance Reviewer",
+            status=UserStatusEnum.ACTIVE,
+        )
+        db.add(reviewer)
+        db.flush()
+        for role_id, in db.query(UserRole.role_id).filter(UserRole.user_id == admin.id).all():
+            db.add(UserRole(user_id=reviewer.id, role_id=role_id))
+        db.commit()
+        reviewer_email = reviewer.email
         row = ProcurementReconciliationException(
             fingerprint="TEST_EXCEPTION:HIGH_RISK_REVIEW:987699",
             exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="IN_REVIEW",
@@ -3214,6 +3228,19 @@ def test_high_risk_reconciliation_resolution_requires_independent_review(
         json={"decision": "APPROVE", "note": "Reviewed and approved independently."},
     )
     assert self_review.status_code == 409, self_review.text
+
+    reviewer_headers = _mint_test_headers(
+        multi_tenant_env, "default", reviewer_email,
+        multi_tenant_env["tenant_keys"]["default"]["jwt"], "HQ-HYD-01",
+    )
+    approved = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/resolution-review",
+        headers=reviewer_headers,
+        json={"decision": "APPROVE", "note": "Independent review confirms evidence and conclusion."},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "RESOLVED"
+    assert approved.json()["resolution_review_status"] == "APPROVED"
 
 def test_reconciliation_assignee_directory_is_branch_scoped_and_active_only(
     client, superuser_headers, multi_tenant_env
