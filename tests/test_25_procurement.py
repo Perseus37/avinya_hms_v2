@@ -2552,3 +2552,97 @@ def test_supplier_payment_allocations_support_partial_and_full_invoice_settlemen
         },
     )
     assert overpayment.status_code == 409
+
+
+
+def test_supplier_adjustments_and_advances_are_approved_allocated_and_bounded(
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.finance.models import ExpenseCategoryEnum, ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import VendorInvoice, VendorInvoiceStatusEnum
+
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-ADJ-ADV-01", "name": "Adjustment and Advance Supplier",
+            "category": "GENERAL_SUPPLIES", "contact_person": "Accounts Contact",
+            "phone": "9876543216", "email": "adjustment-advance@example.test",
+            "address": "Supplier registered address",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        expense = ExpenseRecord(
+            category=ExpenseCategoryEnum.PHARMACY_STOCK, title="Adjustment test AP",
+            amount_paise=10000, status=ExpenseStatusEnum.APPROVED,
+            approved_by_id=actor_id, approved_at=datetime.now(timezone.utc),
+            due_date=datetime.now(timezone.utc) + timedelta(days=15),
+            vendor_name="Adjustment and Advance Supplier", created_by_id=actor_id,
+        )
+        db.add(expense)
+        db.flush()
+        invoice = VendorInvoice(
+            vendor_id=vendor_id, invoice_number="ADJ-ADV-INV-001",
+            invoice_date=datetime.now(timezone.utc), due_date=datetime.now(timezone.utc) + timedelta(days=15),
+            subtotal_paise=10000, tax_amount_paise=0, discount_paise=0, total_amount_paise=10000,
+            status=VendorInvoiceStatusEnum.MATCHED_APPROVED, verified_by_id=actor_id,
+            verified_at=datetime.now(timezone.utc), linked_expense_id=expense.id, created_by_id=actor_id,
+        )
+        db.add(invoice)
+        db.commit()
+        invoice_id = invoice.id
+
+    note = client.post("/v1/api/procurement/supplier-adjustments", headers=pharmacist_headers, json={
+        "vendor_id": vendor_id, "adjustment_type": "SUPPLIER_CREDIT_NOTE",
+        "document_number": "CN-001", "document_date": datetime.now(timezone.utc).date().isoformat(),
+        "amount_paise": 2000, "reason": "Supplier issued credit for damaged goods.",
+    })
+    assert note.status_code == 201, note.text
+    note_id = note.json()["id"]
+    self_approval = client.patch(
+        f"/v1/api/procurement/supplier-adjustments/{note_id}/review",
+        headers=pharmacist_headers, json={"approved": True, "review_notes": "Self approval"},
+    )
+    assert self_approval.status_code == 403
+    approved = client.patch(
+        f"/v1/api/procurement/supplier-adjustments/{note_id}/review",
+        headers=superuser_headers, json={"approved": True, "review_notes": "Supplier credit note verified."},
+    )
+    assert approved.status_code == 200, approved.text
+    applied = client.post(
+        f"/v1/api/procurement/supplier-adjustments/{note_id}/applications",
+        headers=superuser_headers, json={"invoice_id": invoice_id, "amount_paise": 2000},
+    )
+    assert applied.status_code == 201, applied.text
+
+    advance = client.post("/v1/api/procurement/supplier-advances", headers=superuser_headers, json={
+        "vendor_id": vendor_id, "advance_reference": "ADV-UTR-001",
+        "payment_method": "NEFT", "advance_date": datetime.now(timezone.utc).isoformat(),
+        "amount_paise": 3000,
+    })
+    assert advance.status_code == 201, advance.text
+    advance_id = advance.json()["id"]
+    advance_apply = client.post(
+        f"/v1/api/procurement/supplier-advances/{advance_id}/applications",
+        headers=superuser_headers, json={"invoice_id": invoice_id, "amount_paise": 3000},
+    )
+    assert advance_apply.status_code == 201, advance_apply.text
+
+    settlement = client.get(
+        f"/v1/api/procurement/invoices/{invoice_id}/settlement", headers=superuser_headers,
+    )
+    assert settlement.status_code == 200, settlement.text
+    assert settlement.json()["credit_adjustments_paise"] == 2000
+    assert settlement.json()["advances_applied_paise"] == 3000
+    assert settlement.json()["outstanding_paise"] == 5000
+    too_much = client.post(
+        f"/v1/api/supplier-advances/{advance_id}/applications", headers=superuser_headers,
+        json={"invoice_id": invoice_id, "amount_paise": 1},
+    )
+    assert too_much.status_code == 404
