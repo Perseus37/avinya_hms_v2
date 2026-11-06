@@ -1270,7 +1270,7 @@ class ProcurementReconciliationException(Base):
     sla_policy_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_reconciliation_sla_policies.id", ondelete="SET NULL"), nullable=True)
     sla_target_hours: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     sla_paused_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    sla_paused_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sla_paused_seconds: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
     sla_breached_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     assigned_to: Mapped[Optional["User"]] = relationship(foreign_keys=[assigned_to_id])
     resolved_by: Mapped[Optional["User"]] = relationship(foreign_keys=[resolved_by_id])
