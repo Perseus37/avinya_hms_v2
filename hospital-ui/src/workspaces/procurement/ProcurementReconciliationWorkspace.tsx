@@ -147,7 +147,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   useEffect(() => { void load(); }, [load]);
 
   const exceptionTypes = useMemo(() => Object.keys(dashboard?.by_exception_type || {}).sort(), [dashboard]);
-  const maxAging = Math.max(1, ...Object.values(dashboard?.open_aging || {}));
+  const maxAging = Math.max(1, ...Object.values(dashboard?.open_aging || {}).map((value) => Number(value)));
   const trend = dashboard?.daily_trend.slice(-14) || [];
   const maxTrend = Math.max(1, ...trend.flatMap((item) => [item.opened_count, item.resolved_count]));
 
