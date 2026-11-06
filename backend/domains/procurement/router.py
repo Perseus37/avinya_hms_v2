@@ -9151,6 +9151,7 @@ def get_reconciliation_closure_quality(
     # Count a case once if it was reopened after a qualifying resolution in the period.
     reopened_case_ids = set()
     cause_counts = {}
+    reopened_cases_by_root = {}
     for event in reopen_events:
         prior_resolutions = resolution_by_case.get(event.exception_id, [])
         if not any(event.occurred_at > resolved_at for resolved_at in prior_resolutions):
@@ -9159,12 +9160,14 @@ def get_reconciliation_closure_quality(
         root = (event.event_metadata or {}).get("prior_resolution", {}).get("root_cause_code") or "UNCLASSIFIED"
         bucket = cause_counts.setdefault(root, {"resolved_count": 0, "reopened_count": 0, "reopen_events": 0, "exception_types": {}})
         bucket["reopen_events"] += 1
-        bucket["reopened_count"] += 1
+        reopened_cases_by_root.setdefault(root, set()).add(event.exception_id)
 
     case_rows = db.query(ProcurementReconciliationException).filter(
         ProcurementReconciliationException.id.in_(resolved_case_ids)
     ).all() if resolved_case_ids else []
     case_by_id = {row.id: row for row in case_rows}
+    for root, case_ids in reopened_cases_by_root.items():
+        cause_counts[root]["reopened_count"] = len(case_ids)
     for case_id in resolved_case_ids:
         row = case_by_id.get(case_id)
         root = (row.root_cause_code if row else None) or "UNCLASSIFIED"
@@ -9226,7 +9229,7 @@ def get_reconciliation_governance_dashboard(
             "sla_breached_open": len(overdue),
             "unassigned_open": sum(1 for r in open_rows if r.assigned_to_id is None),
             "resolved_cases": sum(1 for r in rows if r.status == "RESOLVED"),
-            "reopened_cases": sum(int(r.reopen_count or 0) for r in rows),
+            "reopened_cases": sum(1 for r in rows if int(r.reopen_count or 0) > 0),
         },
         "closure_quality": quality,
     }
