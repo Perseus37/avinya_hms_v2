@@ -24,6 +24,7 @@ import {
   ReconciliationAssignee,
   ReconciliationAssignmentRecommendation,
   ReconciliationResolutionGuidance,
+  ReconciliationEvidence,
 } from "../../api/reconciliationApi";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -152,6 +153,12 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [resolutionChecklist, setResolutionChecklist] = useState<Record<string, boolean>>({});
   const [resolutionReviewNote, setResolutionReviewNote] = useState("");
   const [reopenReason, setReopenReason] = useState("");
+  const [evidence, setEvidence] = useState<ReconciliationEvidence[]>([]);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceUploading, setEvidenceUploading] = useState(false);
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
+  const [evidenceType, setEvidenceType] = useState<ReconciliationEvidence["evidence_type"]>("OTHER");
+  const [evidenceDescription, setEvidenceDescription] = useState("");
   const rankedAssigneeOptions = useMemo(() => [...assigneeOptions].sort((a, b) => {
     const loadA = dashboard?.finance_workload.find((item) => item.user_id === a.id);
     const loadB = dashboard?.finance_workload.find((item) => item.user_id === b.id);
@@ -249,18 +256,21 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     setRecommendationsLoading(false);
     setAssignmentNote(""); setAssignmentResponseReason(""); setInvestigationNote(""); setStatusChoice(item.status === "IN_REVIEW" ? "OPEN" : "IN_REVIEW"); setStatusNote("");
     setResolutionGuidance(null); setRootCauseCode(""); setResolutionChecklist({}); setResolutionReviewNote(""); setReopenReason("");
-    setHistoryLoading(true);
+    setEvidence([]); setEvidenceFile(null); setEvidenceType("OTHER"); setEvidenceDescription("");
+    setHistoryLoading(true); setEvidenceLoading(true);
     try {
-      const [historyResult, guidance] = await Promise.all([
+      const [historyResult, guidance, evidenceRows] = await Promise.all([
         reconciliationApi.getExceptionHistory(item.id),
         reconciliationApi.getResolutionGuidance(item.id),
+        reconciliationApi.getEvidence(item.id),
       ]);
       if (selectedExceptionIdRef.current === item.id) {
         setHistory(historyResult.events || []);
         setResolutionGuidance(guidance);
+        setEvidence(evidenceRows || []);
       }
-    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to load investigation history or resolution guidance."); }
-    finally { setHistoryLoading(false); }
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to load investigation history, evidence or resolution guidance."); }
+    finally { setHistoryLoading(false); setEvidenceLoading(false); }
   };
   const refreshSelectedHistory = async (id: number) => {
     const result = await reconciliationApi.getExceptionHistory(id);
@@ -421,6 +431,44 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
       await refreshSelectedHistory(updated.id); void load();
     } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to review resolution."); }
     finally { setActionLoading(false); }
+  };
+
+  const uploadInvestigationEvidence = async () => {
+    if (!selectedException || !evidenceFile) return;
+    if (evidenceFile.size <= 0) {
+      setDetailError("Choose a non-empty evidence file.");
+      return;
+    }
+    setEvidenceUploading(true); setDetailError(""); setDetailMessage("");
+    try {
+      const payload = new FormData();
+      payload.append("evidence_type", evidenceType);
+      if (evidenceDescription.trim()) payload.append("description", evidenceDescription.trim());
+      payload.append("file", evidenceFile);
+      const created = await reconciliationApi.uploadEvidence(selectedException.id, payload);
+      setEvidence((current) => [...current, created]);
+      setEvidenceFile(null); setEvidenceDescription("");
+      setDetailMessage("Evidence uploaded, scanned and recorded in the investigation audit history.");
+      await refreshSelectedHistory(selectedException.id);
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to upload evidence."); }
+    finally { setEvidenceUploading(false); }
+  };
+
+  const downloadInvestigationEvidence = async (item: ReconciliationEvidence) => {
+    if (!selectedException) return;
+    setDetailError(""); setDetailMessage("");
+    try {
+      const blob = await reconciliationApi.downloadEvidence(selectedException.id, item.id);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = item.original_filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+      setDetailMessage("Evidence download requested and recorded in the access audit.");
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to download evidence."); }
   };
 
   const saveInvestigationNote = async () => {
@@ -763,6 +811,54 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
                     <div><span className="text-slate-400">Last detected</span><div>{new Date(selectedException.last_detected_at).toLocaleString()}</div></div>
                   </div>
                   <p className="mt-3 rounded-lg bg-amber-50 p-2 text-[10px] text-amber-800">Investigation values are not confirmed losses. Bank-side and supplier-payment exposures must not be added together.</p>
+                </section>
+                <section className="rounded-xl border border-slate-200 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div><h3 className="text-xs font-bold">Investigation evidence files</h3><p className="mt-1 text-[10px] text-slate-500">Private tenant storage · PDF, PNG or JPEG · malware scanned before publication</p></div>
+                    <Badge variant="neutral" size="sm">{evidence.length} files</Badge>
+                  </div>
+                  {evidenceLoading ? <p className="py-3 text-xs text-slate-400">Loading evidence register…</p> : evidence.length ? (
+                    <div className="mt-3 divide-y divide-slate-100 rounded-lg border border-slate-100">
+                      {evidence.map((item) => (
+                        <div key={item.id} className="flex items-center justify-between gap-3 p-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-xs font-semibold text-slate-800">{item.original_filename}</div>
+                            <div className="mt-0.5 text-[10px] text-slate-500">{titleCase(item.evidence_type)} · {(item.size_bytes / 1024).toFixed(1)} KB · {new Date(item.uploaded_at).toLocaleString()}</div>
+                            {item.description && <p className="mt-1 break-words text-[10px] text-slate-500">{item.description}</p>}
+                            <p className="mt-1 break-all font-mono text-[9px] text-slate-400">SHA-256: {item.sha256_hex}</p>
+                          </div>
+                          <Button size="sm" variant="secondary" onClick={() => void downloadInvestigationEvidence(item)} disabled={!hasPermission("finance.view_reconciliation")}>Download</Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <p className="py-3 text-xs text-slate-400">No supporting files have been attached to this investigation.</p>}
+                  {selectedException.status !== "RESOLVED" && selectedException.status !== "DISMISSED" && (
+                    <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <label className="text-[10px] font-semibold text-slate-600">Evidence category
+                          <select value={evidenceType} onChange={(event) => setEvidenceType(event.target.value as ReconciliationEvidence["evidence_type"])} disabled={!hasPermission("finance.manage_reconciliation") || evidenceUploading} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs">
+                            <option value="BANK_STATEMENT">Bank statement</option>
+                            <option value="PAYMENT_PROOF">Payment proof</option>
+                            <option value="INVOICE">Invoice</option>
+                            <option value="SUPPLIER_CORRESPONDENCE">Supplier correspondence</option>
+                            <option value="APPROVAL_RECORD">Approval record</option>
+                            <option value="OTHER">Other</option>
+                          </select>
+                        </label>
+                        <label className="text-[10px] font-semibold text-slate-600">Supporting file
+                          <input type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" onChange={(event) => setEvidenceFile(event.target.files?.[0] || null)} disabled={!hasPermission("finance.manage_reconciliation") || evidenceUploading} className="mt-1 block w-full text-[10px] text-slate-600 file:mr-2 file:rounded-lg file:border-0 file:bg-slate-100 file:px-2 file:py-2 file:text-[10px] file:font-semibold" />
+                        </label>
+                      </div>
+                      <label className="block text-[10px] font-semibold text-slate-600">Description (optional)
+                        <input value={evidenceDescription} onChange={(event) => setEvidenceDescription(event.target.value)} maxLength={500} placeholder="What does this evidence demonstrate?" disabled={!hasPermission("finance.manage_reconciliation") || evidenceUploading} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+                      </label>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-[10px] text-slate-400">{evidenceFile ? evidenceFile.name + " · " + (evidenceFile.size / 1024).toFixed(1) + " KB" : "No file selected"}</span>
+                        <Button size="sm" onClick={() => void uploadInvestigationEvidence()} disabled={!hasPermission("finance.manage_reconciliation") || !evidenceFile || evidenceUploading}>{evidenceUploading ? "Scanning and uploading…" : "Attach evidence"}</Button>
+                      </div>
+                    </div>
+                  )}
+                  {(selectedException.status === "RESOLVED" || selectedException.status === "DISMISSED") && <p className="mt-3 text-[10px] text-slate-500">This investigation is closed. Reopen it before adding further evidence.</p>}
                 </section>
                 <section className="rounded-xl border border-slate-200 p-3"><h3 className="text-xs font-bold">Detection evidence snapshot</h3><pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-50 p-3 text-[10px]">{JSON.stringify(selectedException.detection_snapshot || {}, null, 2)}</pre></section>
                 <section className="rounded-xl border border-slate-200 p-3">
