@@ -35,6 +35,14 @@ def upgrade() -> None:
         "procurement_reconciliation_sla_policies",
         ["status", "effective_from", "effective_to"],
     )
+    op.create_index(
+        "uq_proc_recon_sla_policy_single_open",
+        "procurement_reconciliation_sla_policies",
+        ["policy_key"],
+        unique=True,
+        postgresql_where=sa.text("status = 'PUBLISHED' AND effective_to IS NULL"),
+        sqlite_where=sa.text("status = 'PUBLISHED' AND effective_to IS NULL"),
+    )
     op.create_table(
         "procurement_reconciliation_sla_policy_events",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -137,5 +145,6 @@ def downgrade() -> None:
     op.drop_column("procurement_reconciliation_exceptions", "sla_policy_id")
     op.drop_index("ix_proc_recon_sla_policy_event_time", table_name="procurement_reconciliation_sla_policy_events")
     op.drop_table("procurement_reconciliation_sla_policy_events")
+    op.drop_index("uq_proc_recon_sla_policy_single_open", table_name="procurement_reconciliation_sla_policies")
     op.drop_index("ix_proc_recon_sla_policy_effective", table_name="procurement_reconciliation_sla_policies")
     op.drop_table("procurement_reconciliation_sla_policies")
