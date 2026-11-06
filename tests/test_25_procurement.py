@@ -2985,3 +2985,35 @@ def test_supplier_payment_request_reserves_invoice_and_requires_independent_appr
     assert listed.status_code == 200, listed.text
     assert len(listed.json()) == 1
     assert listed.json()[0]["id"] == replacement.json()["id"]
+
+
+def test_procurement_cash_flow_forecast_separates_ap_from_po_commitments(
+    client, superuser_headers
+):
+    response = client.get(
+        "/v1/api/procurement/analytics/cash-flow-forecast",
+        headers=superuser_headers,
+        params={"horizon_days": 90},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["horizon_days"] == 90
+    assert payload["currency_unit"] == "INR paise"
+    assert len(payload["forecast_buckets"]) == 4
+    assert "projected_ap_cash_need_in_horizon_paise" in payload["cash_position"]
+    assert payload["purchase_order_commitments"]["cash_forecast_included"] is False
+    assert payload["supplier_advances"]["cash_outflow_included_in_forecast"] is False
+    assert payload["methodology"]["no_double_counting"]
+
+    projected = sum(
+        row["projected_ap_cash_need_paise"]
+        for row in payload["forecast_buckets"]
+    )
+    assert projected == payload["cash_position"]["projected_ap_cash_need_in_horizon_paise"]
+
+    invalid = client.get(
+        "/v1/api/procurement/analytics/cash-flow-forecast",
+        headers=superuser_headers,
+        params={"horizon_days": 3},
+    )
+    assert invalid.status_code == 422, invalid.text
