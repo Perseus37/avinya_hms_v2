@@ -8562,7 +8562,7 @@ def list_reconciliation_assignment_escalations(
         if assigned_at.tzinfo is None:
             assigned_at = assigned_at.replace(tzinfo=timezone.utc)
         elapsed_hours = max((now - assigned_at).total_seconds() / 3600, 0)
-        target_hours = response_targets.get(row.severity, 24)
+        target_hours = float(metadata.get("response_target_hours", response_targets.get(row.severity, 24)))
         if elapsed_hours < target_hours or _reconciliation_sla_clock(row, now)["paused"]:
             continue
         escalation_events = db.query(ProcurementReconciliationExceptionEvent).filter(
