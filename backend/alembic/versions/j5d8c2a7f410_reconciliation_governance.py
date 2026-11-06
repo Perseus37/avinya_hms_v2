@@ -77,6 +77,34 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
         op.execute("""
+            CREATE FUNCTION guard_published_proc_recon_escalation_policy()
+            RETURNS trigger LANGUAGE plpgsql AS '
+            BEGIN
+                IF OLD.status = ''PUBLISHED'' AND (
+                    NEW.policy_key IS DISTINCT FROM OLD.policy_key OR
+                    NEW.version IS DISTINCT FROM OLD.version OR
+                    NEW.response_targets_hours::text IS DISTINCT FROM OLD.response_targets_hours::text OR
+                    NEW.escalation_levels::text IS DISTINCT FROM OLD.escalation_levels::text OR
+                    NEW.notification_preferences::text IS DISTINCT FROM OLD.notification_preferences::text OR
+                    NEW.change_reason IS DISTINCT FROM OLD.change_reason OR
+                    NEW.effective_from IS DISTINCT FROM OLD.effective_from OR
+                    NEW.created_by_id IS DISTINCT FROM OLD.created_by_id OR
+                    NEW.created_at IS DISTINCT FROM OLD.created_at OR
+                    NEW.published_by_id IS DISTINCT FROM OLD.published_by_id OR
+                    NEW.published_at IS DISTINCT FROM OLD.published_at OR
+                    (OLD.effective_to IS NOT NULL AND NEW.effective_to IS DISTINCT FROM OLD.effective_to)
+                ) THEN
+                    RAISE EXCEPTION ''Published reconciliation escalation policies are immutable'';
+                END IF;
+                RETURN NEW;
+            END;';
+        """)
+        op.execute("""
+            CREATE TRIGGER trg_proc_recon_escalation_policy_immutable
+            BEFORE UPDATE ON procurement_reconciliation_escalation_policies
+            FOR EACH ROW EXECUTE FUNCTION guard_published_proc_recon_escalation_policy();
+        """)
+        op.execute("""
             CREATE FUNCTION prevent_proc_recon_governance_mutation()
             RETURNS trigger LANGUAGE plpgsql AS '
             BEGIN
@@ -97,6 +125,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
+        op.execute("DROP TRIGGER IF EXISTS trg_proc_recon_escalation_policy_immutable ON procurement_reconciliation_escalation_policies")
+        op.execute("DROP FUNCTION IF EXISTS guard_published_proc_recon_escalation_policy()")
         op.execute("DROP TRIGGER IF EXISTS trg_proc_recon_audit_export_immutable ON procurement_reconciliation_audit_exports")
         op.execute("DROP TRIGGER IF EXISTS trg_proc_recon_governance_report_immutable ON procurement_reconciliation_governance_reports")
         op.execute("DROP FUNCTION IF EXISTS prevent_proc_recon_governance_mutation()")
