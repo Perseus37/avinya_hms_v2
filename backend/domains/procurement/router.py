@@ -2519,6 +2519,186 @@ def match_supplier_bank_statement_line(
     }
 
 
+@router.get("/reconciliation/exceptions")
+def get_procurement_reconciliation_exceptions(
+    from_date: Optional[date] = Query(default=None),
+    to_date: Optional[date] = Query(default=None),
+    overdue_days: int = Query(default=0, ge=0, le=365),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    """Read-only exception worklist; candidates are investigation signals, not confirmed fraud/errors."""
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date must be on or before to_date.")
+    today = datetime.now(timezone.utc).date()
+    exceptions = []
+
+    def in_window(value):
+        day = value.date() if isinstance(value, datetime) else value
+        return (from_date is None or day >= from_date) and (to_date is None or day <= to_date)
+
+    # Bank statement debit lines that are not fully reconciled to a recorded supplier payment.
+    debit_lines = db.query(BankStatementLine).filter(
+        BankStatementLine.direction == BankStatementDirectionEnum.DEBIT
+    ).order_by(BankStatementLine.transaction_date, BankStatementLine.id).all()
+    for line in debit_lines:
+        if not in_window(line.transaction_date):
+            continue
+        matched, state = _bank_line_reconciliation_status(db, line)
+        if state != "MATCHED":
+            exceptions.append({
+                "exception_type": "UNMATCHED_BANK_DEBIT" if matched == 0 else "PARTIAL_BANK_DEBIT_MATCH",
+                "severity": "HIGH" if matched == 0 else "MEDIUM",
+                "status": "OPEN",
+                "reference_type": "BANK_STATEMENT_LINE",
+                "reference_id": line.id,
+                "bank_transaction_id": line.bank_transaction_id,
+                "bank_account_ref": line.bank_account_ref,
+                "transaction_date": line.transaction_date,
+                "amount_paise": int(line.amount_paise),
+                "matched_amount_paise": matched,
+                "unmatched_amount_paise": max(int(line.amount_paise) - matched, 0),
+                "description": "Bank debit has no complete supplier-payment reconciliation.",
+                "investigation_required": True,
+            })
+
+    # Credits are not supplier-payment matches; expose them for treasury classification.
+    credit_lines = db.query(BankStatementLine).filter(
+        BankStatementLine.direction == BankStatementDirectionEnum.CREDIT
+    ).order_by(BankStatementLine.transaction_date, BankStatementLine.id).all()
+    for line in credit_lines:
+        if in_window(line.transaction_date):
+            exceptions.append({
+                "exception_type": "UNCLASSIFIED_BANK_CREDIT",
+                "severity": "LOW",
+                "status": "OPEN",
+                "reference_type": "BANK_STATEMENT_LINE",
+                "reference_id": line.id,
+                "bank_transaction_id": line.bank_transaction_id,
+                "bank_account_ref": line.bank_account_ref,
+                "transaction_date": line.transaction_date,
+                "amount_paise": int(line.amount_paise),
+                "matched_amount_paise": 0,
+                "unmatched_amount_paise": int(line.amount_paise),
+                "description": "Bank credit is imported but is not classified by the supplier-payment reconciliation workflow.",
+                "investigation_required": True,
+            })
+
+    # Supplier payments not fully evidenced by imported bank debits.
+    payments = db.query(SupplierPayment).options(
+        joinedload(SupplierPayment.vendor)
+    ).order_by(SupplierPayment.payment_date, SupplierPayment.id).all()
+    normalized_payment_keys = {}
+    for payment in payments:
+        if not in_window(payment.payment_date):
+            continue
+        matched = _supplier_payment_bank_matched_amount(db, payment.id)
+        remaining = max(int(payment.amount_paise) - matched, 0)
+        if remaining:
+            exceptions.append({
+                "exception_type": "UNRECONCILED_SUPPLIER_PAYMENT" if matched == 0 else "PARTIALLY_RECONCILED_SUPPLIER_PAYMENT",
+                "severity": "HIGH" if matched == 0 else "MEDIUM",
+                "status": "OPEN",
+                "reference_type": "SUPPLIER_PAYMENT",
+                "reference_id": payment.id,
+                "vendor_id": payment.vendor_id,
+                "vendor_name": payment.vendor.name if payment.vendor else None,
+                "payment_reference": payment.payment_reference,
+                "transaction_date": payment.payment_date,
+                "amount_paise": int(payment.amount_paise),
+                "matched_amount_paise": matched,
+                "unmatched_amount_paise": remaining,
+                "description": "Recorded supplier outflow is not fully supported by matched bank debit lines.",
+                "investigation_required": True,
+            })
+        normalized_ref = " ".join((payment.payment_reference or "").casefold().split())
+        key = (payment.vendor_id, normalized_ref, int(payment.amount_paise))
+        normalized_payment_keys.setdefault(key, []).append(payment)
+    for (vendor_id, normalized_ref, amount), duplicates in normalized_payment_keys.items():
+        if normalized_ref and len(duplicates) > 1:
+            for payment in duplicates:
+                exceptions.append({
+                    "exception_type": "POSSIBLE_DUPLICATE_SUPPLIER_PAYMENT",
+                    "severity": "HIGH",
+                    "status": "OPEN",
+                    "reference_type": "SUPPLIER_PAYMENT",
+                    "reference_id": payment.id,
+                    "vendor_id": vendor_id,
+                    "vendor_name": payment.vendor.name if payment.vendor else None,
+                    "payment_reference": payment.payment_reference,
+                    "transaction_date": payment.payment_date,
+                    "amount_paise": amount,
+                    "matched_amount_paise": _supplier_payment_bank_matched_amount(db, payment.id),
+                    "unmatched_amount_paise": 0,
+                    "description": f"Same supplier, normalized reference and amount occur on {len(duplicates)} recorded payments; verify whether these are duplicate records.",
+                    "investigation_required": True,
+                    "candidate_payment_ids": [row.id for row in duplicates],
+                })
+
+    overdue_requests = db.query(SupplierPaymentRequest).filter(
+        SupplierPaymentRequest.status == "APPROVED",
+        SupplierPaymentRequest.scheduled_date < today - timedelta(days=overdue_days),
+    ).order_by(SupplierPaymentRequest.scheduled_date, SupplierPaymentRequest.id).all()
+    for request_row in overdue_requests:
+        if from_date and request_row.scheduled_date < from_date:
+            continue
+        if to_date and request_row.scheduled_date > to_date:
+            continue
+        exceptions.append({
+            "exception_type": "OVERDUE_APPROVED_PAYMENT_REQUEST",
+            "severity": "HIGH" if (today - request_row.scheduled_date).days > 7 else "MEDIUM",
+            "status": "OPEN",
+            "reference_type": "SUPPLIER_PAYMENT_REQUEST",
+            "reference_id": request_row.id,
+            "vendor_id": request_row.vendor_id,
+            "payment_reference": request_row.payment_reference,
+            "transaction_date": request_row.scheduled_date,
+            "amount_paise": int(request_row.amount_paise),
+            "matched_amount_paise": 0,
+            "unmatched_amount_paise": int(request_row.amount_paise),
+            "days_overdue": (today - request_row.scheduled_date).days,
+            "description": "Approved payment request passed its scheduled date but has not been executed.",
+            "investigation_required": True,
+        })
+
+    severity_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    exceptions.sort(key=lambda row: (
+        severity_rank.get(row["severity"], 9),
+        row.get("transaction_date") or date.min,
+        row["exception_type"],
+        row["reference_id"],
+    ))
+    counts = {}
+    for row in exceptions:
+        counts[row["exception_type"]] = counts.get(row["exception_type"], 0) + 1
+    return {
+        "as_of_date": today.isoformat(),
+        "filters": {
+            "from_date": from_date.isoformat() if from_date else None,
+            "to_date": to_date.isoformat() if to_date else None,
+            "overdue_days": overdue_days,
+        },
+        "summary": {
+            "total_exceptions": len(exceptions),
+            "high_severity_count": sum(1 for row in exceptions if row["severity"] == "HIGH"),
+            "medium_severity_count": sum(1 for row in exceptions if row["severity"] == "MEDIUM"),
+            "low_severity_count": sum(1 for row in exceptions if row["severity"] == "LOW"),
+            "by_type": counts,
+        },
+        "exceptions": exceptions,
+        "controls": {
+            "read_only": True,
+            "duplicate_payment_detection": "Candidate detection only; same vendor, normalized reference and amount must be manually investigated before declaring a duplicate.",
+            "bank_credit_classification": "All imported bank credits are surfaced because this supplier debit-matching workflow does not classify receipts or transfers.",
+            "limitations": [
+                "Exceptions are derived live and are not persisted, assigned or resolved in this version.",
+                "Unmatched transactions may be timing differences, bank fees, transfers or payments outside the imported statement window.",
+                "A payment mismatch is an unreconciled amount, not proof of an incorrect payment.",
+            ],
+        },
+    }
+
+
 @router.get("/supplier-payments/reconciliation")
 def get_supplier_payment_reconciliation(
     from_date: Optional[date] = Query(default=None),
