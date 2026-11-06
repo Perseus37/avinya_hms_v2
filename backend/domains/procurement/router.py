@@ -7608,13 +7608,128 @@ def assign_reconciliation_exception(
         assignee = db.get(User, assignee_id)
         if assignee is None or assignee.status != UserStatusEnum.ACTIVE:
             raise HTTPException(status_code=422, detail="Assignee must be an active user in this branch.")
+    if row.status in {"RESOLVED", "DISMISSED"}:
+        raise HTTPException(status_code=409, detail="Terminal investigations cannot be reassigned.")
     old = row.assigned_to_id
+    reason = str(payload.get("note") or payload.get("reason") or "").strip()
+    if old != assignee_id and old is not None and len(reason) < 10:
+        raise HTTPException(status_code=422, detail="A reassignment reason of at least 10 characters is required.")
     row.assigned_to_id = assignee_id
+    now = datetime.now(timezone.utc)
     _record_reconciliation_event(db, row, "ASSIGNED", current_user.id,
         old_assignee_id=old, new_assignee_id=assignee_id,
-        note=(payload.get("note") or "").strip() or None)
+        note=reason or None,
+        event_metadata={
+            "acknowledgement_status": "PENDING" if assignee_id is not None else "NOT_REQUIRED",
+            "assigned_at": now.isoformat(),
+            "reassignment": old is not None and old != assignee_id,
+        })
     db.commit()
-    return {"id": row.id, "assigned_to_id": row.assigned_to_id, "status": row.status}
+    return {
+        "id": row.id, "assigned_to_id": row.assigned_to_id, "status": row.status,
+        "acknowledgement_status": "PENDING" if assignee_id is not None else "NOT_REQUIRED",
+        "assigned_at": now,
+    }
+
+
+@router.post("/reconciliation/exceptions/{exception_id}/assignment-response")
+def respond_to_reconciliation_assignment(
+    exception_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:read")),
+):
+    """Allow only the current assignee to accept or reject a pending assignment."""
+    row = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).with_for_update().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+    if row.status in {"RESOLVED", "DISMISSED"}:
+        raise HTTPException(status_code=409, detail="Terminal investigations cannot receive assignment responses.")
+    if row.assigned_to_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the currently assigned staff member can respond.")
+    decision = str(payload.get("decision", "")).upper()
+    if decision not in {"ACCEPT", "REJECT"}:
+        raise HTTPException(status_code=422, detail="Decision must be ACCEPT or REJECT.")
+    note = str(payload.get("reason") or "").strip()
+    if decision == "REJECT" and len(note) < 10:
+        raise HTTPException(status_code=422, detail="A rejection reason of at least 10 characters is required.")
+    latest_assignment = db.query(ProcurementReconciliationExceptionEvent).filter(
+        ProcurementReconciliationExceptionEvent.exception_id == row.id,
+        ProcurementReconciliationExceptionEvent.event_type == "ASSIGNED",
+        ProcurementReconciliationExceptionEvent.new_assignee_id == current_user.id,
+    ).order_by(
+        ProcurementReconciliationExceptionEvent.occurred_at.desc(),
+        ProcurementReconciliationExceptionEvent.id.desc(),
+    ).first()
+    if latest_assignment is None:
+        raise HTTPException(status_code=409, detail="No active assignment event was found.")
+    assignment_state = (latest_assignment.event_metadata or {}).get("acknowledgement_status", "PENDING")
+    if assignment_state != "PENDING":
+        raise HTTPException(status_code=409, detail="This assignment has already been answered.")
+    event_type = "ASSIGNMENT_ACCEPTED" if decision == "ACCEPT" else "ASSIGNMENT_REJECTED"
+    _record_reconciliation_event(
+        db, row, event_type, current_user.id,
+        old_assignee_id=current_user.id, new_assignee_id=current_user.id,
+        note=note or None,
+        event_metadata={"assignment_event_id": latest_assignment.id, "responded_at": datetime.now(timezone.utc).isoformat()},
+    )
+    db.commit()
+    return {"exception_id": row.id, "decision": decision, "recorded": True}
+
+
+@router.get("/reconciliation/exceptions/escalations")
+def list_reconciliation_assignment_escalations(
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    """Read-only queue of unacknowledged assignments beyond severity-based response targets.
+
+    This endpoint identifies escalation candidates; a scheduler/manager must take
+    the escalation action. It does not send notifications or silently reassign cases.
+    """
+    rows = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.status.in_(["OPEN", "IN_REVIEW"]),
+        ProcurementReconciliationException.assigned_to_id.is_not(None),
+    ).all()
+    response_targets = {"CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24}
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for row in rows:
+        assignment = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == row.id,
+            ProcurementReconciliationExceptionEvent.event_type == "ASSIGNED",
+            ProcurementReconciliationExceptionEvent.new_assignee_id == row.assigned_to_id,
+        ).order_by(
+            ProcurementReconciliationExceptionEvent.occurred_at.desc(),
+            ProcurementReconciliationExceptionEvent.id.desc(),
+        ).first()
+        if assignment is None:
+            continue
+        metadata = assignment.event_metadata or {}
+        if metadata.get("acknowledgement_status", "PENDING") != "PENDING":
+            continue
+        assigned_at = assignment.occurred_at
+        if assigned_at.tzinfo is None:
+            assigned_at = assigned_at.replace(tzinfo=timezone.utc)
+        elapsed_hours = max((now - assigned_at).total_seconds() / 3600, 0)
+        target_hours = response_targets.get(row.severity, 24)
+        if elapsed_hours < target_hours:
+            continue
+        candidates.append({
+            "exception_id": row.id,
+            "severity": row.severity,
+            "status": row.status,
+            "assigned_to_id": row.assigned_to_id,
+            "assigned_at": assignment.occurred_at,
+            "unacknowledged_hours": round(elapsed_hours, 2),
+            "response_target_hours": target_hours,
+            "escalation_due": True,
+        })
+    candidates.sort(key=lambda item: (-item["unacknowledged_hours"], item["exception_id"]))
+    return {"total": len(candidates), "items": candidates[:limit], "automatic_escalation": False}
 
 
 @router.patch("/reconciliation/exceptions/{exception_id}/status")
