@@ -1237,6 +1237,7 @@ class ProcurementReconciliationException(Base):
         Index("ix_proc_recon_exception_queue", "status", "severity", "last_detected_at"),
         Index("ix_proc_recon_exception_assignee", "assigned_to_id", "status"),
         Index("ix_proc_recon_exception_reference", "reference_type", "reference_id"),
+        Index("ix_proc_recon_exception_sla_pause", "status", "sla_paused_at"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
