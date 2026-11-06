@@ -7335,6 +7335,17 @@ def export_reconciliation_exception_audit(
             package.writestr(name, content)
     archive_bytes = archive.getvalue()
     safe_tenant = re.sub(r"[^A-Za-z0-9_-]", "_", tenant.subdomain_slug)
+    db.add(ProcurementReconciliationAuditExport(
+        exception_id=exception_id,
+        export_type="EXCEPTION_AUDIT_ZIP",
+        status="GENERATED",
+        file_sha256=hashlib.sha256(archive_bytes).hexdigest(),
+        file_size_bytes=len(archive_bytes),
+        filter_snapshot={"manifest_sha256": manifest_sha256, "evidence_count": len(evidence_rows)},
+        actor_user_id=current_user.id,
+        actor_email=current_user.email,
+    ))
+    db.commit()
     return Response(
         content=archive_bytes,
         media_type="application/zip",
@@ -9083,7 +9094,11 @@ def get_reconciliation_closure_quality(
     return {
         "resolved_count": len(resolved),
         "average_resolution_hours": round(sum(resolution_hours) / len(resolution_hours), 2) if resolution_hours else None,
-        "median_resolution_hours": round(sorted(resolution_hours)[len(resolution_hours)//2], 2) if resolution_hours else None,
+        "median_resolution_hours": (
+            round((sorted(resolution_hours)[len(resolution_hours)//2 - 1] + sorted(resolution_hours)[len(resolution_hours)//2]) / 2, 2)
+            if len(resolution_hours) and len(resolution_hours) % 2 == 0
+            else (round(sorted(resolution_hours)[len(resolution_hours)//2], 2) if resolution_hours else None)
+        ),
         "reopen_events": reopened,
         "reopen_rate_percent": round((reopened / len(resolved)) * 100, 2) if resolved else 0,
         "independent_review": {"required": review_required, "approved": review_approved, "rejected": review_rejected},
@@ -9101,7 +9116,7 @@ def get_reconciliation_governance_dashboard(
     rows = db.query(ProcurementReconciliationException).all()
     open_rows = [r for r in rows if r.status in {"OPEN", "IN_REVIEW"}]
     overdue = [r for r in open_rows if _reconciliation_sla_clock(r)["breached"]]
-    quality = get_reconciliation_closure_quality(db=db, _=None)
+    quality = get_reconciliation_closure_quality(from_date=None, to_date=None, db=db, _=None)
     return {
         "as_of": datetime.now(timezone.utc),
         "overview": {
@@ -9176,29 +9191,6 @@ def list_reconciliation_monthly_governance_reports(
     return {"items": [{"id": r.id, "period_start": r.period_start, "period_end": r.period_end,
                        "snapshot": r.report_snapshot, "generated_by_id": r.generated_by_id,
                        "created_at": r.created_at} for r in rows]}
-
-
-@router.post("/reconciliation/audit-exports/register", status_code=status.HTTP_201_CREATED)
-def register_reconciliation_audit_export(
-    payload: dict,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(RequirePermission("finance:read")),
-):
-    export_type = str(payload.get("export_type") or "").strip().upper()
-    if export_type not in {"EXCEPTION_AUDIT_ZIP", "GOVERNANCE_REPORT", "QUEUE_CSV"}:
-        raise HTTPException(status_code=422, detail="Unsupported reconciliation export type.")
-    exception_id = payload.get("exception_id")
-    if exception_id is not None and db.get(ProcurementReconciliationException, int(exception_id)) is None:
-        raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
-    row = ProcurementReconciliationAuditExport(
-        exception_id=exception_id, export_type=export_type, status="GENERATED",
-        filter_snapshot=payload.get("filters") if isinstance(payload.get("filters"), dict) else {},
-        actor_user_id=current_user.id, actor_email=current_user.email,
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return {"id": row.id, "status": row.status, "requested_at": row.requested_at}
 
 
 @router.get("/reconciliation/audit-exports")
