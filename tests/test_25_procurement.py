@@ -3438,3 +3438,46 @@ def test_reconciliation_assignment_acknowledgement_rejection_and_escalation_queu
     assert any(item["exception_id"] == escalation_id for item in escalations.json()["items"])
     assert all(item["exception_id"] != accepted_id for item in escalations.json()["items"])
     assert escalations.json()["automatic_escalation"] is False
+
+
+def test_rejected_reconciliation_assignment_returns_to_unassigned_queue(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    now = datetime.now(timezone.utc)
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        row = ProcurementReconciliationException(
+            fingerprint="ASSIGNMENT-REJECT:RETURN:82003",
+            exception_type="UNRECONCILED_SUPPLIER_PAYMENT", severity="HIGH", status="OPEN",
+            reference_type="SUPPLIER_PAYMENT", reference_id=82003,
+            amount_paise=4500, matched_amount_paise=0, unmatched_amount_paise=4500,
+            summary="Rejected assignment must return to unassigned worklist.", detection_snapshot={},
+            first_detected_at=now, last_detected_at=now,
+        )
+        db.add(row)
+        db.commit()
+        exception_id = row.id
+
+    assigned = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/assignment",
+        headers=superuser_headers,
+        json={"assigned_to_id": actor_id},
+    )
+    assert assigned.status_code == 200, assigned.text
+
+    rejected = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/assignment-response",
+        headers=superuser_headers,
+        json={"decision": "REJECT", "reason": "Insufficient supplier payment authority."},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["assigned_to_id"] is None
+
+    with session_factory() as db:
+        persisted = db.get(ProcurementReconciliationException, exception_id)
+        assert persisted.assigned_to_id is None
