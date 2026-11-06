@@ -544,13 +544,18 @@ def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict
 
         manager = tenant_db.get(User, assignment.actor_user_id) if assignment.actor_user_id else None
         assignee = tenant_db.get(User, assignee_id)
+        preferences = payload.get("notification_preferences") or {
+            "email_enabled": True, "assignee": True, "assigning_manager": True, "finance_managers": False
+        }
         recipients = []
-        if manager and manager.email:
-            recipients.append(manager)
-        if assignee and assignee.email and assignee.id not in {user.id for user in recipients}:
-            recipients.append(assignee)
+        if preferences.get("email_enabled", True):
+            if preferences.get("assigning_manager", True) and manager and manager.email:
+                recipients.append(manager)
+            if preferences.get("assignee", True) and assignee and assignee.email and assignee.id not in {user.id for user in recipients}:
+                recipients.append(assignee)
+        delivery_jobs = []
         for recipient in recipients:
-            enqueue_task("email.send", {
+            delivery_jobs.append(enqueue_task("email.send", {
                 "recipient": recipient.email,
                 "subject": f"Escalation: investigation #{row.id} remains unacknowledged",
                 "text_body": (
@@ -559,7 +564,7 @@ def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict
                     f"Current status: {row.status}. Current assignee: "
                     f"{assignee.full_name if assignee else 'Unavailable'}."
                 ),
-            }, sync_fallback=False)
+            }, sync_fallback=False))
 
         tenant_db.add(ProcurementReconciliationExceptionEvent(
             exception_id=row.id,
@@ -573,7 +578,10 @@ def handle_reconciliation_assignment_escalation(payload: dict[str, Any]) -> dict
                 "unacknowledged_hours": round(elapsed_hours, 2),
                 "response_target_hours": target_hours,
                 "notification_recipients": [recipient.id for recipient in recipients],
+                "notification_job_ids": delivery_jobs,
+                "delivery_state": "QUEUED" if delivery_jobs else "SUPPRESSED_BY_PREFERENCE",
+                "escalation_levels": payload.get("escalation_levels") or [],
             },
         ))
         tenant_db.commit()
-        return {"status": "NOTIFIED", "recipient_count": len(recipients), "elapsed_hours": round(elapsed_hours, 2)}
+        return {"status": "QUEUED" if delivery_jobs else "SUPPRESSED", "recipient_count": len(recipients), "elapsed_hours": round(elapsed_hours, 2)}
