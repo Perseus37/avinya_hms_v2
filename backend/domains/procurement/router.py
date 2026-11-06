@@ -7069,6 +7069,7 @@ def list_persisted_reconciliation_exceptions(
     source_present: Optional[bool] = Query(default=None),
     sla_overdue: Optional[bool] = Query(default=None),
     unassigned_only: bool = Query(default=False),
+    open_only: bool = Query(default=False),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
@@ -7096,6 +7097,8 @@ def list_persisted_reconciliation_exceptions(
             detected = detected.replace(tzinfo=timezone.utc)
         return max(int((now - detected).total_seconds() // 3600), 0)
 
+    if open_only:
+        rows = [row for row in rows if row.status in ("OPEN", "IN_REVIEW")]
     if unassigned_only:
         rows = [row for row in rows if row.assigned_to_id is None]
     if sla_overdue is not None:
