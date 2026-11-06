@@ -8427,7 +8427,10 @@ def assign_reconciliation_exception(
                     "response_target_hours": target_hours,
                     "notification_preferences": notification_preferences,
                     "escalation_levels": active_escalation_policy.escalation_levels if active_escalation_policy else [],
-                }, delay_seconds=int(target_hours * 3600), sync_fallback=False)
+                }, delay_seconds=int(min(
+                    [float(level.get("after_hours", target_hours)) for level in (active_escalation_policy.escalation_levels if active_escalation_policy else [])]
+                    or [target_hours]
+                ) * 3600), sync_fallback=False)
             notification_status = "QUEUED" if notification_preferences.get("email_enabled", True) else "DISABLED_BY_POLICY"
         except Exception:
             # Assignment is already committed. Queue failures are observable to the
