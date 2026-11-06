@@ -3017,3 +3017,36 @@ def test_procurement_cash_flow_forecast_separates_ap_from_po_commitments(
         params={"horizon_days": 3},
     )
     assert invalid.status_code == 422, invalid.text
+
+
+def test_procurement_reconciliation_exception_worklist_is_read_only_and_filterable(
+    client, superuser_headers
+):
+    response = client.get(
+        "/v1/api/procurement/reconciliation/exceptions",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert "summary" in payload
+    assert "exceptions" in payload
+    assert payload["controls"]["read_only"] is True
+    assert "POSSIBLE_DUPLICATE_SUPPLIER_PAYMENT" in payload["controls"]["duplicate_payment_detection"]
+    assert "UNCLASSIFIED_BANK_CREDIT" in payload["summary"]["by_type"] or isinstance(
+        payload["summary"]["by_type"], dict
+    )
+
+    filtered = client.get(
+        "/v1/api/procurement/reconciliation/exceptions",
+        headers=superuser_headers,
+        params={"from_date": "2026-11-01", "to_date": "2026-11-06", "overdue_days": 7},
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["filters"]["overdue_days"] == 7
+
+    invalid = client.get(
+        "/v1/api/procurement/reconciliation/exceptions",
+        headers=superuser_headers,
+        params={"from_date": "2026-11-07", "to_date": "2026-11-01"},
+    )
+    assert invalid.status_code == 422, invalid.text
