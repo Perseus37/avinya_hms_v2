@@ -384,6 +384,15 @@ def store_reconciliation_evidence(
     return key, destination, size_bytes, digest.hexdigest(), media_type
 
 
+def reconciliation_evidence_sha256(document_path: Path) -> str:
+    """Recompute the digest before serving evidence so storage tampering is detected."""
+    digest = hashlib.sha256()
+    with document_path.open("rb") as document:
+        for chunk in iter(lambda: document.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def resolve_reconciliation_evidence(tenant_slug: str, document_key: str) -> Path:
     if not _TENANT_SLUG.fullmatch(tenant_slug):
         raise RuntimeError("Tenant slug is not a safe storage path component.")
