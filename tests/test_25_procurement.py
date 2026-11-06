@@ -2784,3 +2784,78 @@ def test_supplier_bank_statement_import_suggestions_and_partial_reconciliation(
     )
     assert final_match.status_code == 201, final_match.text
     assert final_match.json()["statement_line_status"] == "MATCHED"
+
+
+def test_supplier_payment_priorities_use_net_outstanding_and_due_dates(
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.finance.models import ExpenseCategoryEnum, ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import VendorInvoice, VendorInvoiceStatusEnum
+
+    vendor_response = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-PAY-PRIORITY-01",
+            "name": "Payment Priority Supplier",
+            "category": "GENERAL_SUPPLIES",
+            "contact_person": "Accounts Contact",
+            "phone": "9876543218",
+            "email": "payment-priority@example.test",
+            "address": "Supplier registered address",
+        },
+    )
+    assert vendor_response.status_code == 201, vendor_response.text
+    vendor_id = vendor_response.json()["id"]
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    now = datetime.now(timezone.utc)
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        expense = ExpenseRecord(
+            category=ExpenseCategoryEnum.GENERAL,
+            title="Overdue supplier AP priority test",
+            amount_paise=10000,
+            status=ExpenseStatusEnum.APPROVED,
+            approved_by_id=actor_id,
+            approved_at=now,
+            due_date=now - timedelta(days=2),
+            vendor_name="Payment Priority Supplier",
+            created_by_id=actor_id,
+        )
+        db.add(expense)
+        db.flush()
+        invoice = VendorInvoice(
+            vendor_id=vendor_id,
+            invoice_number="PAY-PRIORITY-INV-001",
+            invoice_date=now - timedelta(days=30),
+            due_date=now - timedelta(days=2),
+            subtotal_paise=10000,
+            tax_amount_paise=0,
+            discount_paise=0,
+            total_amount_paise=10000,
+            status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            verified_by_id=actor_id,
+            verified_at=now,
+            linked_expense_id=expense.id,
+            created_by_id=actor_id,
+        )
+        db.add(invoice)
+        db.commit()
+        invoice_id = invoice.id
+
+    response = client.get(
+        "/v1/api/procurement/analytics/payment-priorities",
+        headers=superuser_headers,
+        params={"due_within_days": 30, "vendor_id": vendor_id},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["totals"]["invoice_count"] == 1
+    assert payload["totals"]["overdue_count"] == 1
+    assert payload["totals"]["overdue_paise"] == 10000
+    assert payload["invoices"][0]["invoice_id"] == invoice_id
+    assert payload["invoices"][0]["priority"] == "OVERDUE"
+    assert payload["invoices"][0]["outstanding_paise"] == 10000
