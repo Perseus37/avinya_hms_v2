@@ -154,6 +154,8 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
   const [resolutionChecklist, setResolutionChecklist] = useState<Record<string, boolean>>({});
   const [resolutionReviewNote, setResolutionReviewNote] = useState("");
   const [reopenReason, setReopenReason] = useState("");
+  const [slaPauseReason, setSlaPauseReason] = useState("");
+  const [slaResumeReason, setSlaResumeReason] = useState("");
   const [evidence, setEvidence] = useState<ReconciliationEvidence[]>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [evidenceUploading, setEvidenceUploading] = useState(false);
@@ -391,6 +393,40 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to update status."); }
     finally { setActionLoading(false); }
   };
+  const pauseSelectedSla = async () => {
+    if (!selectedException) return;
+    if (slaPauseReason.trim().length < 10) {
+      setDetailError("A pause reason of at least 10 characters is required.");
+      return;
+    }
+    setActionLoading(true); setDetailError(""); setDetailMessage("");
+    try {
+      await reconciliationApi.pauseSla(selectedException.id, { reason: slaPauseReason.trim() });
+      setSlaPauseReason("");
+      await refreshSelectedHistory(selectedException.id);
+      await load();
+      setDetailMessage("SLA clock paused. The reason and elapsed clock state were recorded in the investigation history.");
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to pause the SLA clock."); }
+    finally { setActionLoading(false); }
+  };
+
+  const resumeSelectedSla = async () => {
+    if (!selectedException) return;
+    if (slaResumeReason.trim().length < 10) {
+      setDetailError("A resume reason of at least 10 characters is required.");
+      return;
+    }
+    setActionLoading(true); setDetailError(""); setDetailMessage("");
+    try {
+      await reconciliationApi.resumeSla(selectedException.id, { reason: slaResumeReason.trim() });
+      setSlaResumeReason("");
+      await refreshSelectedHistory(selectedException.id);
+      await load();
+      setDetailMessage("SLA clock resumed. Paused duration was excluded from active SLA elapsed time.");
+    } catch (err) { setDetailError(err instanceof Error ? err.message : "Unable to resume the SLA clock."); }
+    finally { setActionLoading(false); }
+  };
+
   const reopenSelectedException = async () => {
     if (!selectedException) return;
     if (reopenReason.trim().length < 10) {
