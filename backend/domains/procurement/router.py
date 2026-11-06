@@ -6990,9 +6990,7 @@ def upload_reconciliation_evidence(
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("finance:write")),
 ):
-    exception_row = db.query(ProcurementReconciliationException).filter(
-        ProcurementReconciliationException.id == exception_id
-    ).with_for_update().one_or_none()
+    exception_row = db.get(ProcurementReconciliationException, exception_id)
     if exception_row is None:
         raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
     if exception_row.status in {"RESOLVED", "DISMISSED"}:
@@ -7012,6 +7010,16 @@ def upload_reconciliation_evidence(
         )
     finally:
         file.file.close()
+
+    # Recheck lifecycle under a row lock after the potentially slow malware scan.
+    exception_row = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id == exception_id
+    ).with_for_update().one_or_none()
+    if exception_row is None or exception_row.status in {"RESOLVED", "DISMISSED"}:
+        stored_path.unlink(missing_ok=True)
+        if exception_row is None:
+            raise HTTPException(status_code=404, detail="Reconciliation exception not found.")
+        raise HTTPException(status_code=409, detail="The investigation closed while evidence was being scanned; reopen it before uploading.")
 
     evidence = ProcurementReconciliationEvidence(
         exception_id=exception_row.id,
@@ -7039,11 +7047,11 @@ def upload_reconciliation_evidence(
             },
         )
         db.commit()
-        db.refresh(evidence)
     except Exception:
         db.rollback()
         stored_path.unlink(missing_ok=True)
         raise
+    db.refresh(evidence)
     return {
         "id": evidence.id,
         "exception_id": evidence.exception_id,
