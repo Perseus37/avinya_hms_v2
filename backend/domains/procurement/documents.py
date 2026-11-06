@@ -371,9 +371,16 @@ def store_reconciliation_evidence(
 
     destination = tenant_dir / destination_name
     digest = hashlib.sha256()
-    with destination.open("rb") as published:
-        for chunk in iter(lambda: published.read(1024 * 1024), b""):
-            digest.update(chunk)
+    try:
+        with destination.open("rb") as published:
+            for chunk in iter(lambda: published.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Evidence storage could not verify the published file.",
+        ) from exc
     media_type = {
         ".pdf": "application/pdf",
         ".png": "image/png",
