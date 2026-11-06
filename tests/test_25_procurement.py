@@ -3481,3 +3481,68 @@ def test_rejected_reconciliation_assignment_returns_to_unassigned_queue(
     with session_factory() as db:
         persisted = db.get(ProcurementReconciliationException, exception_id)
         assert persisted.assigned_to_id is None
+
+
+def test_my_reconciliation_assignments_are_scoped_to_authenticated_user(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import (
+        ProcurementReconciliationException,
+        ProcurementReconciliationExceptionEvent,
+    )
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    now = datetime.now(timezone.utc)
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        other_id = db.query(User.id).filter(User.id != actor_id).order_by(User.id).scalar()
+        assert actor_id is not None and other_id is not None
+        own = ProcurementReconciliationException(
+            fingerprint="MY-ASSIGNMENT:OWN:83001",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="CRITICAL", status="OPEN",
+            reference_type="BANK_STATEMENT_LINE", reference_id=83001,
+            amount_paise=8800, matched_amount_paise=0, unmatched_amount_paise=8800,
+            summary="Only the authenticated assignee should see this investigation.",
+            detection_snapshot={}, first_detected_at=now, last_detected_at=now,
+            assigned_to_id=actor_id,
+        )
+        other = ProcurementReconciliationException(
+            fingerprint="MY-ASSIGNMENT:OTHER:83002",
+            exception_type="UNRECONCILED_SUPPLIER_PAYMENT", severity="HIGH", status="OPEN",
+            reference_type="SUPPLIER_PAYMENT", reference_id=83002,
+            amount_paise=9900, matched_amount_paise=0, unmatched_amount_paise=9900,
+            summary="This investigation belongs to another staff member.",
+            detection_snapshot={}, first_detected_at=now, last_detected_at=now,
+            assigned_to_id=other_id,
+        )
+        db.add_all([own, other])
+        db.flush()
+        db.add_all([
+            ProcurementReconciliationExceptionEvent(
+                exception_id=own.id, event_type="ASSIGNED", actor_user_id=actor_id,
+                old_assignee_id=None, new_assignee_id=actor_id,
+                event_metadata={"acknowledgement_status": "PENDING"},
+            ),
+            ProcurementReconciliationExceptionEvent(
+                exception_id=other.id, event_type="ASSIGNED", actor_user_id=actor_id,
+                old_assignee_id=None, new_assignee_id=other_id,
+                event_metadata={"acknowledgement_status": "PENDING"},
+            ),
+        ])
+        own_id = own.id
+        db.commit()
+
+    response = client.get(
+        "/v1/api/procurement/reconciliation/my-assignments",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["scope"] == "CURRENT_USER_ACTIVE_ASSIGNMENTS"
+    assert payload["total"] == 1
+    assert [item["id"] for item in payload["items"]] == [own_id]
+    assert payload["items"][0]["acknowledgement_status"] == "PENDING"
+    assert "amount_paise" not in payload["items"][0]
+    assert "supplier_name" not in payload["items"][0]
