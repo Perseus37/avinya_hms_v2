@@ -418,6 +418,93 @@ class VendorInvoice(AuditMixin, Base):
     items: Mapped[List["VendorInvoiceItem"]] = relationship(back_populates="invoice", cascade="all, delete-orphan")
 
 
+
+
+class SupplierAdjustmentTypeEnum(str, PyEnum):
+    SUPPLIER_CREDIT_NOTE = "SUPPLIER_CREDIT_NOTE"
+    HOSPITAL_DEBIT_NOTE = "HOSPITAL_DEBIT_NOTE"
+
+
+class SupplierAdjustmentStatusEnum(str, PyEnum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+
+
+class SupplierAdjustment(AuditMixin, Base):
+    """Supplier-issued credit or hospital-issued debit note; application is tracked separately."""
+    __tablename__ = "procurement_supplier_adjustments"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "adjustment_type", "document_number", name="uq_supplier_adjustment_document"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_adjustment_amount_positive"),
+        Index("ix_supplier_adjustment_vendor_date", "vendor_id", "document_date"),
+        Index("ix_supplier_adjustment_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    adjustment_type: Mapped[SupplierAdjustmentTypeEnum] = mapped_column(Enum(SupplierAdjustmentTypeEnum), nullable=False)
+    document_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    document_date: Mapped[date] = mapped_column(Date, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[SupplierAdjustmentStatusEnum] = mapped_column(Enum(SupplierAdjustmentStatusEnum), default=SupplierAdjustmentStatusEnum.PENDING, nullable=False)
+    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class SupplierAdjustmentApplication(Base):
+    """Immutable application of an approved supplier adjustment against one invoice."""
+    __tablename__ = "procurement_supplier_adjustment_applications"
+    __table_args__ = (
+        UniqueConstraint("adjustment_id", "invoice_id", name="uq_supplier_adjustment_invoice"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_adjustment_application_positive"),
+        Index("ix_supplier_adjustment_application_invoice", "invoice_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    adjustment_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_adjustments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class SupplierAdvance(AuditMixin, Base):
+    """Cash paid to a supplier in advance; not an invoice payment until allocated."""
+    __tablename__ = "procurement_supplier_advances"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "advance_reference", name="uq_supplier_advance_reference"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_advance_amount_positive"),
+        Index("ix_supplier_advance_vendor_date", "vendor_id", "advance_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    advance_reference: Mapped[str] = mapped_column(String(100), nullable=False)
+    payment_method: Mapped[SupplierPaymentMethodEnum] = mapped_column(Enum(SupplierPaymentMethodEnum), nullable=False)
+    advance_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recorded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+
+
+class SupplierAdvanceAllocation(Base):
+    """Immutable application of a recorded supplier advance to an approved invoice."""
+    __tablename__ = "procurement_supplier_advance_allocations"
+    __table_args__ = (
+        UniqueConstraint("advance_id", "invoice_id", name="uq_supplier_advance_invoice"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_advance_allocation_positive"),
+        Index("ix_supplier_advance_allocation_invoice", "invoice_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    advance_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_advances.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class SupplierPayment(AuditMixin, Base):
     """Immutable recorded outflow to a supplier; allocations identify invoices settled."""
     __tablename__ = "procurement_supplier_payments"
