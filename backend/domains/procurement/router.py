@@ -2088,7 +2088,11 @@ def _supplier_invoice_advance_amount(db: Session, invoice_id: int) -> int:
 
 
 def _supplier_invoice_outstanding(db: Session, invoice: VendorInvoice) -> tuple[int, int, int]:
-    cash = _effective_invoice_paid_amount(invoice, {invoice.id: _supplier_invoice_paid_amount(db, invoice.id)} if _supplier_invoice_paid_amount(db, invoice.id) else {})
+    recorded_cash = _supplier_invoice_paid_amount(db, invoice.id)
+    cash = _effective_invoice_paid_amount(
+        invoice,
+        {invoice.id: recorded_cash} if recorded_cash else {},
+    )
     credits = _supplier_invoice_adjustment_amount(db, invoice.id)
     advances = _supplier_invoice_advance_amount(db, invoice.id)
     return max(int(invoice.total_amount_paise) - cash - credits - advances, 0), credits, advances
