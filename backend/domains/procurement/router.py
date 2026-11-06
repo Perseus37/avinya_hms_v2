@@ -4776,7 +4776,7 @@ def get_procurement_financial_intelligence(
     to_date: Optional[date] = Query(default=None, description="Inclusive PO creation/invoice date filter (UTC)."),
     due_within_days: int = Query(default=30, ge=1, le=365),
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("procurement:read")),
+    current_user: User = Depends(RequirePermission("procurement:read")),
 ):
     """Executive procurement financial view using approved PO, accepted GRN, invoice and AP records."""
     if from_date and to_date and from_date > to_date:
@@ -4862,6 +4862,31 @@ def get_procurement_financial_intelligence(
             row["committed_paise"] / committed_paise * 100, 2
         ) if committed_paise else None
         concentration.append(row)
+    concentration_hhi = round(sum(
+        (row["committed_paise"] / committed_paise * 100) ** 2
+        for row in concentration
+    ), 2) if committed_paise else None
+    top_three_supplier_share_pct = round(
+        sum(row["committed_paise"] for row in concentration[:3]) / committed_paise * 100, 2
+    ) if committed_paise else None
+
+    # Reuse the dedicated analytics so definitions and department access stay consistent.
+    quotation_outcomes = get_procurement_quotation_outcomes(from_date, to_date, db, current_user)
+    budget_dashboard = get_procurement_budget_dashboard(from_date, to_date, None, None, db, current_user)
+    budget_rows = budget_dashboard.get("allocations", [])
+    budget_summary_by_period_type = {}
+    for budget_row in budget_rows:
+        period_type = budget_row["period_type"]
+        summary = budget_summary_by_period_type.setdefault(period_type, {
+            "allocation_count": 0, "allocated_paise": 0, "engaged_paise": 0,
+            "available_paise": 0, "warning_count": 0, "over_budget_count": 0,
+        })
+        summary["allocation_count"] += 1
+        summary["allocated_paise"] += int(budget_row["allocated_paise"])
+        summary["engaged_paise"] += int(budget_row["engaged_paise"])
+        summary["available_paise"] += int(budget_row["available_paise"])
+        summary["warning_count"] += int(budget_row["alert"] == "WARNING")
+        summary["over_budget_count"] += int(budget_row["alert"] == "OVER_BUDGET")
 
     invoice_query = db.query(VendorInvoice).filter(
         VendorInvoice.status.in_([
@@ -4936,9 +4961,11 @@ def get_procurement_financial_intelligence(
             "definition": "Includes pending verification, price-variance flagged, matched-approved and paid invoices in the selected invoice-date period.",
         },
         "accounts_payable": {
-            "posted_invoice_count": len(ap_expenses),
+            "posted_invoice_count": len(ap_balances),
+            "posted_expense_count": len(ap_expenses),
             "approved_unpaid_value_paise": sum(row[3] for row in outstanding_balances),
-            "paid_expense_value_paise": sum(row[2] for row in ap_balances),
+            "cash_paid_value_paise": sum(row[2] for row in ap_balances),
+            "paid_expense_value_paise": sum(row[2] for row in ap_balances),  # Backward-compatible alias.
             "credit_adjustments_applied_paise": sum(row[4] for row in ap_balances),
             "supplier_advances_applied_paise": sum(row[5] for row in ap_balances),
             "overdue_approved_count": len(overdue_balances),
@@ -4952,12 +4979,28 @@ def get_procurement_financial_intelligence(
             "basis": "Tax-inclusive PO commitments in the selected PO creation-date period.",
             "suppliers": concentration,
             "top_supplier_share_pct": concentration[0]["commitment_share_pct"] if concentration else None,
+            "top_three_supplier_share_pct": top_three_supplier_share_pct,
+            "herfindahl_hirschman_index": concentration_hhi,
+            "hhi_scale": "0 to 10,000; sum of squared supplier commitment shares expressed as percentages. Descriptive concentration measure only.",
+        },
+        "quotation_savings": {
+            **quotation_outcomes["summary"],
+            "definition": quotation_outcomes["summary"]["competitive_savings_definition"],
+            "realized_cash_savings_reported": False,
+        },
+        "budget_intelligence": {
+            "allocation_count": len(budget_rows),
+            "by_period_type": budget_summary_by_period_type,
+            "unbudgeted_procurement": budget_dashboard["unbudgeted_procurement"],
+            "allocation_definitions": budget_dashboard["definitions"],
+            "note": "Annual and quarterly budget allocations are reported separately; budget engagement is not cash expenditure.",
         },
         "limitations": [
-            "No procurement budget or department budget allocation model exists; budget utilization and budget variance are not reported.",
-            "PO commitment, accepted receipt valuation, invoice value and AP expense value are distinct lifecycle measures and must not be added together.",
+            "Quotation savings are estimated competitive price advantages against the best comparable non-selected quotation, not realized cash savings or paid-invoice savings.",
+            "PO commitment, accepted receipt valuation, invoice value and AP cash settlement are distinct lifecycle measures and must not be added together.",
             "Supplier payments are recorded as hospital-entered outflows; external bank-statement reconciliation and automated bank feeds are not modeled.",
             "Supplier concentration is based on PO commitments, not settled payments or accepted receipt value.",
+            "Budget utilization uses the existing reservation/accepted-receipt ledger; it is a procurement control measure, not a bank cash balance.",
         ],
     }
 
