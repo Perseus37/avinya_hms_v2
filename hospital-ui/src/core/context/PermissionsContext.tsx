@@ -43,6 +43,7 @@ export type PermissionCode =
   | "finance.view_reconciliation"
   | "finance.manage_reconciliation"
   | "finance.approve_reconciliation"
+  | "finance.manage_sla_policies"
   | "config.facility_manage"
   | "config.roster_manage"
   | "config.policies_manage"
@@ -117,6 +118,7 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
       "finance.view_reconciliation",
       "finance.manage_reconciliation",
       "finance.approve_reconciliation",
+      "finance.manage_sla_policies",
       "config.facility_manage",
       "config.roster_manage",
       "config.policies_manage",
