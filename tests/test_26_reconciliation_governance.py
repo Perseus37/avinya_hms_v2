@@ -103,3 +103,68 @@ def test_reconciliation_audit_export_register_lists_generated_packages(client, s
     )
     assert response.status_code == 200, response.text
     assert isinstance(response.json()["items"], list)
+
+
+def test_assignment_event_snapshots_published_escalation_policy(
+    client, superuser_headers, multi_tenant_env
+):
+    from datetime import datetime, timezone
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import (
+        ProcurementReconciliationException,
+        ProcurementReconciliationExceptionEvent,
+    )
+
+    created = client.post(
+        "/v1/api/procurement/reconciliation/escalation-policies",
+        headers=superuser_headers,
+        json={
+            "response_targets_hours": {"CRITICAL": 1, "HIGH": 4, "MEDIUM": 12, "LOW": 48},
+            "escalation_levels": [{"after_hours": 1}, {"after_hours": 4}],
+            "change_reason": "Snapshot the active escalation policy on each assignment.",
+        },
+    )
+    assert created.status_code == 201, created.text
+    policy_id = created.json()["id"]
+    published = client.post(
+        f"/v1/api/procurement/reconciliation/escalation-policies/{policy_id}/publish",
+        headers=superuser_headers,
+        json={},
+    )
+    assert published.status_code == 200, published.text
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        assignee_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        assert assignee_id is not None
+        now = datetime.now(timezone.utc)
+        row = ProcurementReconciliationException(
+            fingerprint="GOVERNANCE:POLICY-SNAPSHOT:990101",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="OPEN",
+            reference_type="BANK_STATEMENT_LINE", reference_id=990101,
+            amount_paise=1000, matched_amount_paise=0, unmatched_amount_paise=1000,
+            summary="Escalation policy snapshot regression case.",
+            detection_snapshot={}, first_detected_at=now, last_detected_at=now,
+        )
+        db.add(row)
+        db.commit()
+        exception_id = row.id
+
+    assigned = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/assignment",
+        headers=superuser_headers,
+        json={"assigned_to_id": assignee_id},
+    )
+    assert assigned.status_code == 200, assigned.text
+
+    with session_factory() as db:
+        event = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == exception_id,
+            ProcurementReconciliationExceptionEvent.event_type == "ASSIGNED",
+        ).order_by(ProcurementReconciliationExceptionEvent.id.desc()).first()
+        assert event is not None
+        assert event.event_metadata["escalation_policy_id"] == policy_id
+        assert event.event_metadata["escalation_policy_version"] == 1
+        assert event.event_metadata["response_target_hours"] == 4
+        assert len(event.event_metadata["escalation_levels"]) == 2
