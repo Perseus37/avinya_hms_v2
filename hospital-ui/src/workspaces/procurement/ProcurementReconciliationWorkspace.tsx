@@ -28,6 +28,7 @@ import {
 } from "../../api/reconciliationApi";
 import { Badge } from "../../components/ui/Badge";
 import { ReconciliationSlaPolicyPanel } from "./ReconciliationSlaPolicyPanel";
+import { ReconciliationGovernancePanel } from "./ReconciliationGovernancePanel";
 import { Button } from "../../components/ui/Button";
 import { usePermissions } from "../../core/context/PermissionsContext";
 import { useAuth } from "../../core/context/AuthContext";
@@ -615,6 +616,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
         </div>
 
         <ReconciliationSlaPolicyPanel />
+        <ReconciliationGovernancePanel />
 
         {escalations && escalations.total > 0 && (
           <section className="rounded-xl border border-rose-200 bg-rose-50 p-4">
