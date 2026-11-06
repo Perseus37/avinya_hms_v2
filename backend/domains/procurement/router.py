@@ -8408,10 +8408,10 @@ def assign_reconciliation_exception(
     notification_status = "NOT_REQUIRED"
     if assignee_id is not None and not assignee.email:
         notification_status = "EMAIL_UNAVAILABLE"
-    if assignee_id is not None and assignee.email:
+    if assignee_id is not None:
         tenant_context = resolve_tenant_context(request)
         try:
-            if notification_preferences.get("email_enabled", True) and notification_preferences.get("assignee", True):
+            if assignee.email and notification_preferences.get("email_enabled", True) and notification_preferences.get("assignee", True):
                 enqueue_task("email.send", {
                 "recipient": assignee.email,
                 "subject": f"Reconciliation investigation #{row.id} assigned to you",
@@ -8437,7 +8437,10 @@ def assign_reconciliation_exception(
                     [float(level.get("after_hours", target_hours)) for level in escalation_levels]
                     or [target_hours]
                 ) * 3600), sync_fallback=False)
-            notification_status = "QUEUED" if notification_preferences.get("email_enabled", True) else "DISABLED_BY_POLICY"
+            notification_status = (
+                "DISABLED_BY_POLICY" if not notification_preferences.get("email_enabled", True)
+                else ("QUEUED" if assignee.email else "ASSIGNEE_EMAIL_UNAVAILABLE")
+            )
         except Exception:
             # Assignment is already committed. Queue failures are observable to the
             # caller but must never roll back or silently undo the assignment.
