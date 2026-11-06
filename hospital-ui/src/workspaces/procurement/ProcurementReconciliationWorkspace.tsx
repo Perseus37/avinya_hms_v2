@@ -142,7 +142,6 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
     setSlaOverdueOnly(false);
     setUnassignedOnly(false);
     setSourceMissingOnly(false);
-    setOpenOnly(false);
   };
 
   const load = useCallback(async () => {
@@ -263,7 +262,7 @@ export const ProcurementReconciliationWorkspace: React.FC = () => {
           </div>
           <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
             <span className="flex items-center gap-1.5 text-[10px] text-slate-400"><Filter size={12} /> Filters load automatically</span>
-            <button type="button" onClick={() => { setFromDate(localDate(thirtyDaysAgo)); setToDate(localDate(today)); setSeverity(""); setStatus(""); setAssignedToId(""); setExceptionType(""); clearQueueDrilldowns(); }} className="text-[11px] font-semibold text-blue-700 hover:text-blue-900">Reset filters</button>
+            <button type="button" onClick={() => { setFromDate(localDate(thirtyDaysAgo)); setToDate(localDate(today)); setSeverity(""); setStatus(""); setAssignedToId(""); setExceptionType(""); setOpenOnly(false); clearQueueDrilldowns(); }} className="text-[11px] font-semibold text-blue-700 hover:text-blue-900">Reset filters</button>
           </div>
         </Section>
 
