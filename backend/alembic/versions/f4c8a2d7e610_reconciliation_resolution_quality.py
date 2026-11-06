@@ -26,6 +26,11 @@ def upgrade() -> None:
         "procurement_reconciliation_exceptions",
         "reopen_count >= 0",
     )
+    op.add_column("procurement_reconciliation_exceptions", sa.Column("resolution_review_status", sa.String(16), server_default="NOT_REQUIRED", nullable=False))
+    op.add_column("procurement_reconciliation_exceptions", sa.Column("resolution_submitted_by_id", sa.Integer(), nullable=True))
+    op.add_column("procurement_reconciliation_exceptions", sa.Column("resolution_reviewed_by_id", sa.Integer(), nullable=True))
+    op.add_column("procurement_reconciliation_exceptions", sa.Column("resolution_reviewed_at", sa.DateTime(timezone=True), nullable=True))
+    op.create_check_constraint("ck_proc_recon_resolution_review_status", "procurement_reconciliation_exceptions", "resolution_review_status IN ('NOT_REQUIRED','PENDING','APPROVED','REJECTED')")
 
 
 def downgrade() -> None:
