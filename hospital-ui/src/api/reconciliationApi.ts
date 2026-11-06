@@ -22,6 +22,7 @@ export interface ReconciliationDashboard {
     source_missing_open_count: number;
     unassigned_open_count: number;
     sla_breached_open_count: number;
+    sla_paused_open_count: number;
   };
   by_status: Record<ReconciliationStatus, number>;
   by_severity: Record<ReconciliationSeverity, number>;
@@ -115,6 +116,7 @@ export interface ReconciliationQueue {
   sla_summary: {
     open_or_in_review: number;
     sla_overdue: number;
+    sla_paused: number;
     unassigned_open: number;
     missing_from_latest_detection: number;
   };
