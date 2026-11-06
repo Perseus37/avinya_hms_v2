@@ -3956,3 +3956,110 @@ def test_my_reconciliation_assignments_are_scoped_to_authenticated_user(
     assert payload["items"][0]["acknowledgement_status"] == "PENDING"
     assert "amount_paise" not in payload["items"][0]
     assert "supplier_name" not in payload["items"][0]
+
+
+def test_reconciliation_sla_policy_versions_are_effective_dated_and_audited(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.procurement.models import (
+        ProcurementReconciliationSlaPolicy,
+        ProcurementReconciliationSlaPolicyEvent,
+    )
+
+    invalid = client.post(
+        "/v1/api/procurement/reconciliation/sla-policies",
+        headers=superuser_headers,
+        json={
+            "severity_targets_hours": {"CRITICAL": 0, "HIGH": 24, "MEDIUM": 72, "LOW": 168},
+            "change_reason": "Invalid policy target test.",
+        },
+    )
+    assert invalid.status_code == 422, invalid.text
+
+    first = client.post(
+        "/v1/api/procurement/reconciliation/sla-policies",
+        headers=superuser_headers,
+        json={
+            "severity_targets_hours": {"CRITICAL": 2, "HIGH": 12, "MEDIUM": 48, "LOW": 120},
+            "change_reason": "Tighten response targets after finance control review.",
+        },
+    )
+    assert first.status_code == 201, first.text
+    first_policy = first.json()
+    assert first_policy["version"] >= 1
+    assert first_policy["status"] == "DRAFT"
+
+    published_first = client.post(
+        f"/v1/api/procurement/reconciliation/sla-policies/{first_policy['id']}/publish",
+        headers=superuser_headers,
+        json={},
+    )
+    assert published_first.status_code == 200, published_first.text
+    assert published_first.json()["status"] == "PUBLISHED"
+
+    second = client.post(
+        "/v1/api/procurement/reconciliation/sla-policies",
+        headers=superuser_headers,
+        json={
+            "severity_targets_hours": {"CRITICAL": 1, "HIGH": 8, "MEDIUM": 36, "LOW": 96},
+            "change_reason": "Adopt revised escalation risk appetite approved by finance.",
+        },
+    )
+    assert second.status_code == 201, second.text
+    second_policy = second.json()
+    published_second = client.post(
+        f"/v1/api/procurement/reconciliation/sla-policies/{second_policy['id']}/publish",
+        headers=superuser_headers,
+        json={},
+    )
+    assert published_second.status_code == 200, published_second.text
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        prior = db.get(ProcurementReconciliationSlaPolicy, first_policy["id"])
+        assert prior.status == "PUBLISHED"
+        assert prior.effective_to is not None
+        effective_to = prior.effective_to
+        effective_from = datetime.fromisoformat(published_second.json()["effective_from"].replace("Z", "+00:00"))
+        assert abs((effective_to - effective_from).total_seconds()) < 2
+        events = db.query(ProcurementReconciliationSlaPolicyEvent).filter(
+            ProcurementReconciliationSlaPolicyEvent.policy_id.in_([first_policy["id"], second_policy["id"]])
+        ).all()
+        assert {event.event_type for event in events} >= {"DRAFT_CREATED", "PUBLISHED", "SUPERSEDED"}
+
+    listed = client.get(
+        "/v1/api/procurement/reconciliation/sla-policies",
+        headers=superuser_headers,
+    )
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["active_policy_id"] == second_policy["id"]
+    assert listed.json()["active_policy_version"] == second_policy["version"]
+
+
+def test_reconciliation_sla_policy_publish_is_not_repeatable(
+    client, superuser_headers
+):
+    draft = client.post(
+        "/v1/api/procurement/reconciliation/sla-policies",
+        headers=superuser_headers,
+        json={
+            "severity_targets_hours": {"CRITICAL": 3, "HIGH": 18, "MEDIUM": 60, "LOW": 144},
+            "change_reason": "Validate that a policy version cannot be republished.",
+        },
+    )
+    assert draft.status_code == 201, draft.text
+    policy_id = draft.json()["id"]
+    first = client.post(
+        f"/v1/api/procurement/reconciliation/sla-policies/{policy_id}/publish",
+        headers=superuser_headers,
+        json={},
+    )
+    assert first.status_code == 200, first.text
+    second = client.post(
+        f"/v1/api/procurement/reconciliation/sla-policies/{policy_id}/publish",
+        headers=superuser_headers,
+        json={},
+    )
+    assert second.status_code == 409, second.text
+
