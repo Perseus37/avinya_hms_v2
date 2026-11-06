@@ -2391,7 +2391,8 @@ def get_supplier_invoice_settlement(
     invoice = db.get(VendorInvoice, invoice_id)
     if invoice is None:
         raise HTTPException(status_code=404, detail="Invoice not found.")
-    paid = _supplier_invoice_paid_amount(db, invoice.id)
+    recorded_paid = _supplier_invoice_paid_amount(db, invoice.id)
+    paid = _effective_invoice_paid_amount(invoice, {invoice.id: recorded_paid} if recorded_paid else {})
     outstanding, credits, advances = _supplier_invoice_outstanding(db, invoice)
     return {
         "invoice_id": invoice.id,
@@ -3788,8 +3789,8 @@ def get_procurement_financial_intelligence(
         if expense is None:
             continue
         paid_amount = _effective_invoice_paid_amount(invoice, paid_by_invoice)
-        outstanding_amount = max(int(invoice.total_amount_paise or 0) - paid_amount, 0)
-        ap_balances.append((invoice, expense, paid_amount, outstanding_amount))
+        outstanding_amount, credit_amount, advance_amount = _supplier_invoice_outstanding(db, invoice)
+        ap_balances.append((invoice, expense, paid_amount, outstanding_amount, credit_amount, advance_amount))
     outstanding_balances = [row for row in ap_balances if row[3] > 0]
     overdue_balances = [
         row for row in outstanding_balances
@@ -3830,12 +3831,14 @@ def get_procurement_financial_intelligence(
             "posted_invoice_count": len(ap_expenses),
             "approved_unpaid_value_paise": sum(row[3] for row in outstanding_balances),
             "paid_expense_value_paise": sum(row[2] for row in ap_balances),
+            "credit_adjustments_applied_paise": sum(row[4] for row in ap_balances),
+            "supplier_advances_applied_paise": sum(row[5] for row in ap_balances),
             "overdue_approved_count": len(overdue_balances),
             "overdue_approved_value_paise": sum(row[3] for row in overdue_balances),
             "due_within_days": due_within_days,
             "due_soon_count": len(upcoming_balances),
             "due_soon_value_paise": sum(row[3] for row in upcoming_balances),
-            "definition": "Derived from posted supplier invoices and their immutable payment allocations. Partial payments reduce the outstanding balance; fully settled invoices have zero outstanding."
+            "definition": "Derived from posted supplier invoices, immutable cash payment allocations, approved credit/debit note applications and supplier advance applications. All three reduce net outstanding; cash payments remain separately reported."
         },
         "supplier_concentration": {
             "basis": "Tax-inclusive PO commitments in the selected PO creation-date period.",
@@ -3955,7 +3958,7 @@ def get_vendor_metrics(
         if invoice.status != VendorInvoiceStatusEnum.MATCHED_APPROVED:
             continue
         paid_amount = _effective_invoice_paid_amount(invoice, paid_by_invoice)
-        outstanding_amount = max(int(invoice.total_amount_paise or 0) - paid_amount, 0)
+        outstanding_amount, _, _ = _supplier_invoice_outstanding(db, invoice)
         if outstanding_amount > 0:
             matched_unpaid.append(invoice)
             matched_unpaid_exposure_paise += outstanding_amount
@@ -4011,7 +4014,7 @@ def get_vendor_metrics(
             ) if invoice_count else None,
             "matched_approved_unpaid_count": len(matched_unpaid),
             "matched_approved_unpaid_exposure_paise": matched_unpaid_exposure_paise,
-            "exposure_definition": "MATCHED_APPROVED invoices with positive remaining balance are included; partial payment allocations reduce exposure. Pending, flagged, rejected and fully PAID invoices are excluded.",
+            "exposure_definition": "MATCHED_APPROVED invoices with positive net balance are included; cash payments, approved adjustment applications and supplier advance applications reduce exposure. Pending, flagged, rejected and fully PAID invoices are excluded.",
         },
     }
 
