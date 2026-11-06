@@ -8983,9 +8983,14 @@ def list_reconciliation_escalation_policies(
     items = db.query(ProcurementReconciliationEscalationPolicy).order_by(
         ProcurementReconciliationEscalationPolicy.version.desc()
     ).limit(50).all()
+    now = datetime.now(timezone.utc)
     active = db.query(ProcurementReconciliationEscalationPolicy).filter(
         ProcurementReconciliationEscalationPolicy.status == "PUBLISHED",
-        ProcurementReconciliationEscalationPolicy.effective_to.is_(None),
+        ProcurementReconciliationEscalationPolicy.effective_from <= now,
+        or_(
+            ProcurementReconciliationEscalationPolicy.effective_to.is_(None),
+            ProcurementReconciliationEscalationPolicy.effective_to > now,
+        ),
     ).order_by(ProcurementReconciliationEscalationPolicy.version.desc()).first()
     return {
         "active_policy_id": active.id if active else None,
@@ -9107,61 +9112,103 @@ def get_reconciliation_closure_quality(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
-    query = db.query(ProcurementReconciliationException)
-    if from_date:
-        query = query.filter(ProcurementReconciliationException.resolved_at >= datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc))
-    if to_date:
-        query = query.filter(ProcurementReconciliationException.resolved_at < datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc))
-    rows = query.all()
-    resolved = [r for r in rows if r.status == "RESOLVED" and r.resolved_at and r.first_detected_at]
-    cause_counts = {}
-    reopen_query = db.query(ProcurementReconciliationExceptionEvent).filter(
-        ProcurementReconciliationExceptionEvent.event_type == "REOPENED"
+    """Measure case-level reopen rate for cases resolved during the requested period.
+
+    The denominator is distinct cases with a RESOLVED transition in the period.
+    The numerator is distinct cases from that cohort with a later REOPENED event.
+    Reopen events are also reported separately so repeated reopen cycles remain visible.
+    """
+    period_start = datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc) if from_date else None
+    period_end = datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc) if to_date else None
+
+    resolution_query = db.query(ProcurementReconciliationExceptionEvent).filter(
+        ProcurementReconciliationExceptionEvent.new_status == "RESOLVED",
+        ProcurementReconciliationExceptionEvent.event_type.in_(("STATUS_CHANGED", "RESOLUTION_REVIEWED")),
     )
-    if from_date:
-        reopen_query = reopen_query.filter(ProcurementReconciliationExceptionEvent.occurred_at >= datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc))
-    if to_date:
-        reopen_query = reopen_query.filter(ProcurementReconciliationExceptionEvent.occurred_at < datetime.combine(to_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc))
-    events = reopen_query.all()
-    reopened = len(events)
-    review_required = 0
-    review_approved = 0
-    review_rejected = 0
+    if period_start:
+        resolution_query = resolution_query.filter(ProcurementReconciliationExceptionEvent.occurred_at >= period_start)
+    if period_end:
+        resolution_query = resolution_query.filter(ProcurementReconciliationExceptionEvent.occurred_at < period_end)
+    resolution_events = resolution_query.order_by(
+        ProcurementReconciliationExceptionEvent.occurred_at.asc(),
+        ProcurementReconciliationExceptionEvent.id.asc(),
+    ).all()
+    resolution_by_case = {}
+    for event in resolution_events:
+        resolution_by_case.setdefault(event.exception_id, []).append(event.occurred_at)
+    resolved_case_ids = set(resolution_by_case)
+
+    reopen_events = []
+    if resolved_case_ids:
+        reopen_events = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id.in_(resolved_case_ids),
+            ProcurementReconciliationExceptionEvent.event_type == "REOPENED",
+        ).order_by(
+            ProcurementReconciliationExceptionEvent.occurred_at.asc(),
+            ProcurementReconciliationExceptionEvent.id.asc(),
+        ).all()
+
+    # Count a case once if it was reopened after a qualifying resolution in the period.
+    reopened_case_ids = set()
+    cause_counts = {}
+    for event in reopen_events:
+        prior_resolutions = resolution_by_case.get(event.exception_id, [])
+        if not any(event.occurred_at > resolved_at for resolved_at in prior_resolutions):
+            continue
+        reopened_case_ids.add(event.exception_id)
+        root = (event.event_metadata or {}).get("prior_resolution", {}).get("root_cause_code") or "UNCLASSIFIED"
+        bucket = cause_counts.setdefault(root, {"resolved_count": 0, "reopened_count": 0, "reopen_events": 0, "exception_types": {}})
+        bucket["reopen_events"] += 1
+        bucket["reopened_count"] += 1
+
+    case_rows = db.query(ProcurementReconciliationException).filter(
+        ProcurementReconciliationException.id.in_(resolved_case_ids)
+    ).all() if resolved_case_ids else []
+    case_by_id = {row.id: row for row in case_rows}
+    for case_id in resolved_case_ids:
+        row = case_by_id.get(case_id)
+        root = (row.root_cause_code if row else None) or "UNCLASSIFIED"
+        bucket = cause_counts.setdefault(root, {"resolved_count": 0, "reopened_count": 0, "reopen_events": 0, "exception_types": {}})
+        bucket["resolved_count"] += 1
+        if row:
+            bucket["exception_types"][row.exception_type] = bucket["exception_types"].get(row.exception_type, 0) + 1
+
+    # Resolution-time and review metrics use current terminal state for cohort cases;
+    # reopen-rate itself is event-cohort based and does not lose cases reopened after closure.
+    resolved = [row for row in case_rows if row.status == "RESOLVED" and row.resolved_at and row.first_detected_at]
     resolution_hours = []
     for row in resolved:
-        code = row.root_cause_code or "UNCLASSIFIED"
-        bucket = cause_counts.setdefault(code, {"resolved_count": 0, "reopened_count": 0, "exception_types": {}})
-        bucket["resolved_count"] += 1
-        bucket["exception_types"][row.exception_type] = bucket["exception_types"].get(row.exception_type, 0) + 1
-        if row.resolution_review_status != "NOT_REQUIRED":
-            review_required += 1
-        if row.resolution_review_status == "APPROVED":
-            review_approved += 1
-        if row.resolution_review_status == "REJECTED":
-            review_rejected += 1
         start = row.first_detected_at.replace(tzinfo=timezone.utc) if row.first_detected_at.tzinfo is None else row.first_detected_at
         end = row.resolved_at.replace(tzinfo=timezone.utc) if row.resolved_at.tzinfo is None else row.resolved_at
         resolution_hours.append(max((end - start).total_seconds() / 3600, 0))
-    for event in events:
-        root = (event.event_metadata or {}).get("prior_resolution", {}).get("root_cause_code") or "UNCLASSIFIED"
-        bucket = cause_counts.setdefault(root, {"resolved_count": 0, "reopened_count": 0, "exception_types": {}})
-        bucket["reopened_count"] += 1
+    ordered_hours = sorted(resolution_hours)
+    median_hours = None
+    if ordered_hours:
+        middle = len(ordered_hours) // 2
+        median_hours = (
+            round((ordered_hours[middle - 1] + ordered_hours[middle]) / 2, 2)
+            if len(ordered_hours) % 2 == 0 else round(ordered_hours[middle], 2)
+        )
+    review_required = sum(1 for row in resolved if row.resolution_review_status != "NOT_REQUIRED")
+    review_approved = sum(1 for row in resolved if row.resolution_review_status == "APPROVED")
+    review_rejected = sum(1 for row in resolved if row.resolution_review_status == "REJECTED")
+    reopened_event_count = sum(
+        1 for event in reopen_events
+        if any(event.occurred_at > resolved_at for resolved_at in resolution_by_case.get(event.exception_id, []))
+    )
     return {
-        "resolved_count": len(resolved),
+        "resolved_count": len(resolved_case_ids),
+        "currently_resolved_count": len(resolved),
         "average_resolution_hours": round(sum(resolution_hours) / len(resolution_hours), 2) if resolution_hours else None,
-        "median_resolution_hours": (
-            round((sorted(resolution_hours)[len(resolution_hours)//2 - 1] + sorted(resolution_hours)[len(resolution_hours)//2]) / 2, 2)
-            if len(resolution_hours) and len(resolution_hours) % 2 == 0
-            else (round(sorted(resolution_hours)[len(resolution_hours)//2], 2) if resolution_hours else None)
-        ),
-        "reopen_events": reopened,
-        "reopen_rate_percent": round((reopened / len(resolved)) * 100, 2) if resolved else 0,
+        "median_resolution_hours": median_hours,
+        "reopened_cases": len(reopened_case_ids),
+        "reopen_events": reopened_event_count,
+        "reopen_rate_percent": round((len(reopened_case_ids) / len(resolved_case_ids)) * 100, 2) if resolved_case_ids else 0,
         "independent_review": {"required": review_required, "approved": review_approved, "rejected": review_rejected},
         "root_causes": sorted([{"root_cause_code": key, **value} for key, value in cause_counts.items()],
                               key=lambda x: (x["reopened_count"], x["resolved_count"]), reverse=True),
-        "methodology": "Resolution duration uses first_detected_at to current resolved_at; reopened count is cumulative case reopen_count.",
+        "methodology": "Case-level reopen rate: distinct cases with a RESOLVED transition in the selected period that have a subsequent REOPENED event, divided by distinct cases with a RESOLVED transition in that period. Repeated reopen cycles count once in the rate and separately in reopen_events. Resolution duration and independent-review metrics reflect the current terminal state of this resolution cohort.",
     }
-
 
 @router.get("/reconciliation/governance/dashboard")
 def get_reconciliation_governance_dashboard(
