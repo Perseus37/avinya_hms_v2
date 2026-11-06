@@ -110,6 +110,15 @@ export interface ReconciliationQueue {
   exceptions: ReconciliationException[];
 }
 
+export interface ReconciliationResolutionGuidance {
+  exception_id: number;
+  exception_type: string;
+  root_cause_codes: string[];
+  required_checklist: Array<{ code: string; required: boolean }>;
+  independent_review_required: boolean;
+  resolution_policy: string;
+}
+
 export interface ReconciliationFilters {
   from_date?: string;
   to_date?: string;
@@ -151,8 +160,12 @@ export const reconciliationApi = {
     apiClient<ReconciliationExceptionHistory>("/api/procurement/reconciliation/exceptions/" + id + "/history"),
   assignException: (id: number, payload: { assigned_to_id: number | null; note?: string }) =>
     apiClient<{ id: number; assigned_to_id: number | null; status: ReconciliationStatus; acknowledgement_status: string; notification_status?: "QUEUED" | "QUEUE_UNAVAILABLE" | "EMAIL_UNAVAILABLE" | "NOT_REQUIRED" }>("/api/procurement/reconciliation/exceptions/" + id + "/assignment", { method: "PATCH", body: JSON.stringify(payload) }),
-  updateExceptionStatus: (id: number, payload: { status: ReconciliationStatus; note?: string }) =>
-    apiClient<{ id: number; status: ReconciliationStatus; resolved_at: string | null; resolution_note: string | null }>("/api/procurement/reconciliation/exceptions/" + id + "/status", { method: "PATCH", body: JSON.stringify(payload) }),
+  getResolutionGuidance: (id: number) =>
+    apiClient<ReconciliationResolutionGuidance>("/api/procurement/reconciliation/exceptions/" + id + "/resolution-guidance"),
+  updateExceptionStatus: (id: number, payload: { status: ReconciliationStatus; note?: string; root_cause_code?: string; resolution_checklist?: Record<string, boolean> }) =>
+    apiClient<{ id: number; status: ReconciliationStatus; resolved_at: string | null; resolution_note: string | null; root_cause_code?: string | null; resolution_checklist?: Record<string, boolean> }>("/api/procurement/reconciliation/exceptions/" + id + "/status", { method: "PATCH", body: JSON.stringify(payload) }),
+  reopenException: (id: number, payload: { reason: string }) =>
+    apiClient<{ id: number; status: ReconciliationStatus; reopen_count: number }>("/api/procurement/reconciliation/exceptions/" + id + "/reopen", { method: "POST", body: JSON.stringify(payload) }),
   addExceptionNote: (id: number, payload: { note: string }) =>
     apiClient<{ exception_id: number; note_recorded: boolean }>("/api/procurement/reconciliation/exceptions/" + id + "/notes", { method: "POST", body: JSON.stringify(payload) }),
 };
