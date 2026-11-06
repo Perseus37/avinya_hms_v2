@@ -8369,6 +8369,22 @@ def assign_reconciliation_exception(
         raise HTTPException(status_code=422, detail="A reassignment reason of at least 10 characters is required.")
     row.assigned_to_id = assignee_id
     now = datetime.now(timezone.utc)
+    active_escalation_policy = db.query(ProcurementReconciliationEscalationPolicy).filter(
+        ProcurementReconciliationEscalationPolicy.status == "PUBLISHED",
+        ProcurementReconciliationEscalationPolicy.effective_from <= now,
+        or_(
+            ProcurementReconciliationEscalationPolicy.effective_to.is_(None),
+            ProcurementReconciliationEscalationPolicy.effective_to > now,
+        ),
+    ).order_by(ProcurementReconciliationEscalationPolicy.version.desc()).first()
+    policy_targets = active_escalation_policy.response_targets_hours if active_escalation_policy else {
+        "CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24
+    }
+    notification_preferences = active_escalation_policy.notification_preferences if active_escalation_policy else {
+        "email_enabled": True, "assignee": True, "assigning_manager": True, "finance_managers": False
+    }
+    target_hours = float(policy_targets.get(row.severity, 24))
+    escalation_levels = active_escalation_policy.escalation_levels if active_escalation_policy else []
     _record_reconciliation_event(db, row, "ASSIGNED", current_user.id,
         old_assignee_id=old, new_assignee_id=assignee_id,
         note=reason or None,
@@ -8376,6 +8392,11 @@ def assign_reconciliation_exception(
             "acknowledgement_status": "PENDING" if assignee_id is not None else "NOT_REQUIRED",
             "assigned_at": now.isoformat(),
             "reassignment": old is not None and old != assignee_id,
+            "escalation_policy_id": active_escalation_policy.id if active_escalation_policy else None,
+            "escalation_policy_version": active_escalation_policy.version if active_escalation_policy else None,
+            "response_target_hours": target_hours,
+            "notification_preferences": notification_preferences,
+            "escalation_levels": escalation_levels,
         })
     assignment_event = db.query(ProcurementReconciliationExceptionEvent).filter(
         ProcurementReconciliationExceptionEvent.exception_id == row.id,
@@ -8389,21 +8410,6 @@ def assign_reconciliation_exception(
         notification_status = "EMAIL_UNAVAILABLE"
     if assignee_id is not None and assignee.email:
         tenant_context = resolve_tenant_context(request)
-        active_escalation_policy = db.query(ProcurementReconciliationEscalationPolicy).filter(
-            ProcurementReconciliationEscalationPolicy.status == "PUBLISHED",
-            ProcurementReconciliationEscalationPolicy.effective_from <= now,
-            or_(
-                ProcurementReconciliationEscalationPolicy.effective_to.is_(None),
-                ProcurementReconciliationEscalationPolicy.effective_to > now,
-            ),
-        ).order_by(ProcurementReconciliationEscalationPolicy.version.desc()).first()
-        policy_targets = active_escalation_policy.response_targets_hours if active_escalation_policy else {
-            "CRITICAL": 0.5, "HIGH": 2, "MEDIUM": 8, "LOW": 24
-        }
-        notification_preferences = active_escalation_policy.notification_preferences if active_escalation_policy else {
-            "email_enabled": True, "assignee": True, "assigning_manager": True, "finance_managers": False
-        }
-        target_hours = float(policy_targets.get(row.severity, 24))
         try:
             if notification_preferences.get("email_enabled", True) and notification_preferences.get("assignee", True):
                 enqueue_task("email.send", {
@@ -8426,9 +8432,9 @@ def assign_reconciliation_exception(
                     "assignee_id": assignee_id,
                     "response_target_hours": target_hours,
                     "notification_preferences": notification_preferences,
-                    "escalation_levels": active_escalation_policy.escalation_levels if active_escalation_policy else [],
+                    "escalation_levels": escalation_levels,
                 }, delay_seconds=int(min(
-                    [float(level.get("after_hours", target_hours)) for level in (active_escalation_policy.escalation_levels if active_escalation_policy else [])]
+                    [float(level.get("after_hours", target_hours)) for level in escalation_levels]
                     or [target_hours]
                 ) * 3600), sync_fallback=False)
             notification_status = "QUEUED" if notification_preferences.get("email_enabled", True) else "DISABLED_BY_POLICY"
