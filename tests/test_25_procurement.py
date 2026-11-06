@@ -3352,3 +3352,89 @@ def test_reconciliation_assignment_recommendations_are_advisory_and_workload_awa
     with session_factory() as db:
         persisted = db.get(ProcurementReconciliationException, target_id)
         assert persisted.assigned_to_id is None
+
+
+def test_reconciliation_assignment_acknowledgement_rejection_and_escalation_queue(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import (
+        ProcurementReconciliationException,
+        ProcurementReconciliationExceptionEvent,
+    )
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    now = datetime.now(timezone.utc)
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        accepted_case = ProcurementReconciliationException(
+            fingerprint="ASSIGNMENT-ACK:ACCEPT:82001",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="OPEN",
+            reference_type="BANK_STATEMENT_LINE", reference_id=82001,
+            amount_paise=6000, matched_amount_paise=0, unmatched_amount_paise=6000,
+            summary="Assignment acknowledgement acceptance test.", detection_snapshot={},
+            first_detected_at=now, last_detected_at=now,
+        )
+        escalation_case = ProcurementReconciliationException(
+            fingerprint="ASSIGNMENT-ACK:ESCALATE:82002",
+            exception_type="UNRECONCILED_SUPPLIER_PAYMENT", severity="CRITICAL", status="OPEN",
+            reference_type="SUPPLIER_PAYMENT", reference_id=82002,
+            amount_paise=7000, matched_amount_paise=0, unmatched_amount_paise=7000,
+            summary="Unacknowledged critical assignment escalation test.", detection_snapshot={},
+            first_detected_at=now, last_detected_at=now,
+        )
+        db.add_all([accepted_case, escalation_case])
+        db.commit()
+        accepted_id, escalation_id = accepted_case.id, escalation_case.id
+
+    assigned = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{accepted_id}/assignment",
+        headers=superuser_headers,
+        json={"assigned_to_id": actor_id},
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["acknowledgement_status"] == "PENDING"
+
+    accepted = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{accepted_id}/assignment-response",
+        headers=superuser_headers,
+        json={"decision": "ACCEPT"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    duplicate = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{accepted_id}/assignment-response",
+        headers=superuser_headers,
+        json={"decision": "ACCEPT"},
+    )
+    assert duplicate.status_code == 409
+
+    rejected_without_reason = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{accepted_id}/assignment-response",
+        headers=superuser_headers,
+        json={"decision": "REJECT"},
+    )
+    assert rejected_without_reason.status_code == 409
+
+    assigned_escalation = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{escalation_id}/assignment",
+        headers=superuser_headers,
+        json={"assigned_to_id": actor_id},
+    )
+    assert assigned_escalation.status_code == 200, assigned_escalation.text
+    with session_factory() as db:
+        assignment_event = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == escalation_id,
+            ProcurementReconciliationExceptionEvent.event_type == "ASSIGNED",
+        ).one()
+        assignment_event.occurred_at = now - timedelta(hours=1)
+        db.commit()
+
+    escalations = client.get(
+        "/v1/api/procurement/reconciliation/exceptions/escalations",
+        headers=superuser_headers,
+    )
+    assert escalations.status_code == 200, escalations.text
+    assert any(item["exception_id"] == escalation_id for item in escalations.json()["items"])
+    assert all(item["exception_id"] != accepted_id for item in escalations.json()["items"])
+    assert escalations.json()["automatic_escalation"] is False
