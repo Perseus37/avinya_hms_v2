@@ -1386,8 +1386,9 @@ def select_supplier_quotation(
 @router.post("/purchase-orders", response_model=POResponse, status_code=status.HTTP_201_CREATED)
 def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
     vendor = db.get(VendorMaster, payload.vendor_id)
-    if vendor is None or not vendor.is_active:
+    if vendor is None:
         raise HTTPException(status_code=409, detail="An active registered vendor is required to create a purchase order.")
+    _assert_supplier_procurement_eligible(vendor)
     _assert_supplier_compliance_ready(db, vendor)
     if payload.contract_id is not None:
         linked_contract = db.get(SupplierContract, payload.contract_id)
