@@ -10,6 +10,8 @@ from backend.domains.procurement.models import (
     PurchaseRequisitionStatusEnum,
     VendorInvoiceStatusEnum,
     SupplierPaymentMethodEnum,
+    SupplierAdjustmentTypeEnum,
+    SupplierAdjustmentStatusEnum,
     SupplierQuotationStatusEnum,
     POAmendmentStatusEnum,
     POShipmentStatusEnum,
@@ -324,8 +326,75 @@ class SupplierInvoiceSettlementResponse(BaseModel):
     invoice_number: str
     invoice_total_paise: int
     amount_paid_paise: int
+    credit_adjustments_paise: int = 0
+    advances_applied_paise: int = 0
     outstanding_paise: int
     status: VendorInvoiceStatusEnum
+
+
+
+class SupplierAdjustmentCreate(BaseModel):
+    vendor_id: int = Field(gt=0)
+    adjustment_type: SupplierAdjustmentTypeEnum
+    document_number: str = Field(min_length=2, max_length=100)
+    document_date: date
+    amount_paise: int = Field(gt=0)
+    reason: str = Field(min_length=5, max_length=2000)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class SupplierAdjustmentReview(BaseModel):
+    approved: bool
+    review_notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class SupplierAdjustmentApply(BaseModel):
+    invoice_id: int = Field(gt=0)
+    amount_paise: int = Field(gt=0)
+
+
+class SupplierAdjustmentResponse(BaseModel):
+    id: int
+    vendor_id: int
+    adjustment_type: SupplierAdjustmentTypeEnum
+    document_number: str
+    document_date: date
+    amount_paise: int
+    reason: str
+    notes: Optional[str]
+    status: SupplierAdjustmentStatusEnum
+    requested_by_id: int
+    reviewed_by_id: Optional[int]
+    reviewed_at: Optional[datetime]
+    review_notes: Optional[str]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SupplierAdvanceCreate(BaseModel):
+    vendor_id: int = Field(gt=0)
+    advance_reference: str = Field(min_length=2, max_length=100)
+    payment_method: SupplierPaymentMethodEnum
+    advance_date: datetime
+    amount_paise: int = Field(gt=0)
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+
+class SupplierAdvanceApply(BaseModel):
+    invoice_id: int = Field(gt=0)
+    amount_paise: int = Field(gt=0)
+
+
+class SupplierAdvanceResponse(BaseModel):
+    id: int
+    vendor_id: int
+    advance_reference: str
+    payment_method: SupplierPaymentMethodEnum
+    advance_date: datetime
+    amount_paise: int
+    notes: Optional[str]
+    recorded_by_id: int
+    model_config = ConfigDict(from_attributes=True)
+
 
 
 class VendorInvoiceReview(BaseModel):
