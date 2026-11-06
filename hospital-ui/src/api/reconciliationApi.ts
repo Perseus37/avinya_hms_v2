@@ -125,7 +125,7 @@ export interface ReconciliationEvidence {
   sha256_hex: string;
   uploaded_by_id: number;
   uploaded_at: string;
-  download_url: string;
+  download_url?: string;
 }
 
 export interface ReconciliationResolutionGuidance {
