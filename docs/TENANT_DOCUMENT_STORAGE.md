@@ -12,6 +12,8 @@ The current implementation is filesystem-backed through `ATTACHMENTS_STORAGE_DIR
 | --- | --- | --- | --- |
 | Tenant logo/favicon | `branding-assets` | Public, resolved tenant only; required by login bootstrap | `config:write` |
 | Procurement invoice | `procurement-invoices` | Authenticated, permission-gated; download is audited | Procurement upload permission and vendor validation |
+| Supplier compliance evidence | `procurement-vendor-compliance` | Authenticated, permission-gated; download is audited | Procurement write permission; independent verification |
+| Reconciliation investigation evidence | `procurement-reconciliation-evidence` | Finance-read permission; each download is audited | Finance-write permission; investigation must be active; append-only evidence metadata |
 
 Clinical records, lab reports, prescriptions, patient attachments, and other private documents must not be exposed through the public branding route or a static web-server directory.
 
@@ -34,6 +36,19 @@ Regression coverage for procurement invoice/document isolation, insurance provid
 - `stage_and_publish_upload(...)`: streams in bounded chunks to an exclusive temporary file, applies restrictive file permissions, validates the leading signature and optional feature-specific staged-file checks, invokes the supplied malware scanner, then atomically publishes the destination. It removes only a temporary file created by that invocation when any step fails.
 
 The utility intentionally does not decide whether a caller is authorized to read or write a document. It does not define accepted extensions/signatures, scanner policy, audit logging, database metadata persistence, or post-commit orphan cleanup. Feature code supplies those policies and maps shared upload exceptions to its API contract.
+
+## Reconciliation investigation evidence
+
+Reconciliation evidence is stored in the private `procurement-reconciliation-evidence` namespace under the resolved tenant directory. The branch database owns the evidence metadata and links each file to one persisted reconciliation exception.
+
+- Accepted formats: PDF, PNG, and JPEG, validated by extension and leading file signature; the submitted MIME header is not trusted.
+- Uploads use the configured `MAX_ATTACHMENT_UPLOAD_BYTES` limit, restrictive temporary-file permissions, ClamAV scanning, and atomic publication.
+- The API records the original display filename only after stripping path components and unsafe characters. Storage keys are opaque server-generated UUIDs.
+- SHA-256 and byte size are recorded with the metadata and copied into the append-only investigation event when evidence is attached.
+- Closed investigations must be explicitly reopened before additional evidence can be attached.
+- Downloads require finance-read authorization, resolve the key inside the current tenant namespace, and use private no-store, nosniff, and same-origin response headers.
+- Every successful download creates a separate audit row containing the investigation, evidence identity/type, actor identity, and request time. PostgreSQL protects this audit table with an append-only trigger.
+- Evidence metadata has no update/delete API. The database restricts deleting an investigation while evidence exists; evidence retention and legal-hold deletion require a separately approved retention workflow.
 
 ## Required upload lifecycle
 
