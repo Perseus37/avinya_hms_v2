@@ -59,7 +59,6 @@ def upgrade() -> None:
         sa.Column("matched_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("match_reason", sa.Text(), nullable=True),
         sa.CheckConstraint("amount_paise > 0", name="ck_supplier_payment_bank_match_positive"),
-        sa.UniqueConstraint("statement_line_id", "payment_id", name="uq_supplier_payment_bank_match"),
         sa.ForeignKeyConstraint(["statement_line_id"], ["procurement_bank_statement_lines.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["payment_id"], ["procurement_supplier_payments.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["matched_by_id"], ["users.id"], ondelete="RESTRICT"),
