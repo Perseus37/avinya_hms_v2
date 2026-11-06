@@ -7121,6 +7121,206 @@ def list_persisted_reconciliation_exceptions(
         } for row in rows],
     }
 
+@router.get("/analytics/reconciliation-dashboard")
+def get_reconciliation_dashboard(
+    from_date: Optional[date] = Query(default=None, description="Inclusive first-detected date (UTC)."),
+    to_date: Optional[date] = Query(default=None, description="Inclusive first-detected date (UTC)."),
+    severity: Optional[str] = Query(default=None, pattern="^(CRITICAL|HIGH|MEDIUM|LOW)$"),
+    status_filter: Optional[str] = Query(default=None, alias="status", pattern="^(OPEN|IN_REVIEW|RESOLVED|DISMISSED)$"),
+    assigned_to_id: Optional[int] = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    """Read-only finance dashboard over persisted reconciliation investigations.
+
+    Monetary investigation amounts are reported by exception type only. Bank-side
+    and payment-side exceptions can describe the same transfer, so they are never
+    combined into a single exposure total. Possible duplicates are count-only.
+    """
+    if from_date and to_date and from_date > to_date:
+        raise HTTPException(status_code=422, detail="from_date must be on or before to_date.")
+
+    query = db.query(ProcurementReconciliationException)
+    if from_date:
+        query = query.filter(ProcurementReconciliationException.first_detected_at >= datetime.combine(
+            from_date, datetime.min.time(), tzinfo=timezone.utc
+        ))
+    if to_date:
+        query = query.filter(ProcurementReconciliationException.first_detected_at <= datetime.combine(
+            to_date, datetime.max.time(), tzinfo=timezone.utc
+        ))
+    if severity:
+        query = query.filter(ProcurementReconciliationException.severity == severity)
+    if status_filter:
+        query = query.filter(ProcurementReconciliationException.status == status_filter)
+    if assigned_to_id:
+        query = query.filter(ProcurementReconciliationException.assigned_to_id == assigned_to_id)
+
+    rows = query.order_by(ProcurementReconciliationException.first_detected_at, ProcurementReconciliationException.id).all()
+    now = datetime.now(timezone.utc)
+    sla_hours = {"CRITICAL": 4, "HIGH": 24, "MEDIUM": 72, "LOW": 168}
+
+    def as_utc(value):
+        if value is None:
+            return None
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+    def age_hours(row):
+        return max(int(((as_utc(row.resolved_at) or now) - as_utc(row.first_detected_at)).total_seconds() // 3600), 0)
+
+    status_counts = {key: 0 for key in ("OPEN", "IN_REVIEW", "RESOLVED", "DISMISSED")}
+    severity_counts = {key: 0 for key in ("CRITICAL", "HIGH", "MEDIUM", "LOW")}
+    type_counts = {}
+    aging = {
+        "under_4_hours": 0, "4_to_24_hours": 0, "1_to_3_days": 0,
+        "3_to_7_days": 0, "over_7_days": 0,
+    }
+    sla_breaches = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    exposure_by_type = {}
+    workload = {}
+    resolution_hours = []
+    opened_by_day = {}
+    resolved_by_day = {}
+
+    open_statuses = {"OPEN", "IN_REVIEW"}
+    amount_bearing_types = {
+        "UNMATCHED_BANK_DEBIT", "PARTIAL_BANK_DEBIT_MATCH",
+        "UNCLASSIFIED_BANK_CREDIT", "UNRECONCILED_SUPPLIER_PAYMENT",
+        "PARTIALLY_RECONCILED_SUPPLIER_PAYMENT", "OVERDUE_APPROVED_PAYMENT_REQUEST",
+    }
+
+    for row in rows:
+        status_counts[row.status] = status_counts.get(row.status, 0) + 1
+        severity_counts[row.severity] = severity_counts.get(row.severity, 0) + 1
+        type_bucket = type_counts.setdefault(row.exception_type, {"count": 0, "open_count": 0, "resolved_count": 0})
+        type_bucket["count"] += 1
+        if row.status in open_statuses:
+            type_bucket["open_count"] += 1
+        if row.status == "RESOLVED":
+            type_bucket["resolved_count"] += 1
+
+        first_detected = as_utc(row.first_detected_at)
+        opened_day = first_detected.date().isoformat()
+        opened_by_day[opened_day] = opened_by_day.get(opened_day, 0) + 1
+
+        elapsed = age_hours(row)
+        if row.status in open_statuses:
+            if elapsed < 4:
+                aging["under_4_hours"] += 1
+            elif elapsed < 24:
+                aging["4_to_24_hours"] += 1
+            elif elapsed < 72:
+                aging["1_to_3_days"] += 1
+            elif elapsed < 168:
+                aging["3_to_7_days"] += 1
+            else:
+                aging["over_7_days"] += 1
+            if elapsed > sla_hours.get(row.severity, 168):
+                sla_breaches[row.severity] += 1
+        elif row.resolved_at is not None:
+            resolution_hours.append(elapsed)
+            resolved_day = as_utc(row.resolved_at).date().isoformat()
+            resolved_by_day[resolved_day] = resolved_by_day.get(resolved_day, 0) + 1
+
+        # Do not include possible-duplicate candidates in monetary totals.
+        # Keep each exception category separate to avoid summing both sides of
+        # one bank transfer (statement debit and supplier payment).
+        if row.exception_type in amount_bearing_types:
+            bucket = exposure_by_type.setdefault(row.exception_type, {
+                "exception_count": 0, "open_count": 0, "investigation_amount_paise": 0,
+                "unmatched_amount_paise": 0,
+            })
+            bucket["exception_count"] += 1
+            if row.status in open_statuses:
+                bucket["open_count"] += 1
+                bucket["investigation_amount_paise"] += max(int(row.amount_paise or 0), 0)
+                bucket["unmatched_amount_paise"] += max(int(row.unmatched_amount_paise or 0), 0)
+
+        assignee_key = str(row.assigned_to_id) if row.assigned_to_id is not None else "UNASSIGNED"
+        assignee = workload.setdefault(assignee_key, {
+            "user_id": row.assigned_to_id, "assigned_total": 0, "assigned_open": 0,
+            "resolved_total": 0,
+        })
+        assignee["assigned_total"] += 1
+        if row.status in open_statuses:
+            assignee["assigned_open"] += 1
+        if row.status == "RESOLVED":
+            assignee["resolved_total"] += 1
+
+    user_ids = {
+        int(key) for key in workload
+        if key != "UNASSIGNED"
+    }
+    users = {
+        user.id: user.full_name
+        for user in db.query(User).filter(User.id.in_(user_ids)).all()
+    } if user_ids else {}
+    workload_rows = []
+    for key, item in workload.items():
+        workload_rows.append({
+            **item,
+            "user_name": users.get(item["user_id"]) if item["user_id"] is not None else None,
+        })
+    workload_rows.sort(key=lambda item: (-item["assigned_open"], item["user_id"] or 0))
+
+    resolved_count = status_counts["RESOLVED"]
+    median_resolution = None
+    average_resolution = None
+    if resolution_hours:
+        ordered = sorted(resolution_hours)
+        middle = len(ordered) // 2
+        median_resolution = ordered[middle] if len(ordered) % 2 else round((ordered[middle - 1] + ordered[middle]) / 2, 2)
+        average_resolution = round(sum(ordered) / len(ordered), 2)
+
+    trend_days = sorted(set(opened_by_day) | set(resolved_by_day))
+    return {
+        "as_of": now,
+        "filters": {
+            "from_date": from_date.isoformat() if from_date else None,
+            "to_date": to_date.isoformat() if to_date else None,
+            "severity": severity,
+            "status": status_filter,
+            "assigned_to_id": assigned_to_id,
+            "date_basis": "first_detected_at (UTC); resolution trend uses resolved_at (UTC)",
+        },
+        "overview": {
+            "total_exceptions": len(rows),
+            "open_count": status_counts["OPEN"],
+            "in_review_count": status_counts["IN_REVIEW"],
+            "resolved_count": resolved_count,
+            "dismissed_count": status_counts["DISMISSED"],
+            "source_missing_open_count": sum(1 for row in rows if row.status in open_statuses and not row.source_present),
+            "unassigned_open_count": sum(1 for row in rows if row.status in open_statuses and row.assigned_to_id is None),
+            "sla_breached_open_count": sum(sla_breaches.values()),
+        },
+        "by_status": status_counts,
+        "by_severity": severity_counts,
+        "by_exception_type": type_counts,
+        "open_aging": aging,
+        "sla_breaches_by_severity": sla_breaches,
+        "resolution_performance": {
+            "resolved_count": resolved_count,
+            "average_resolution_hours": average_resolution,
+            "median_resolution_hours": median_resolution,
+            "method": "Elapsed time from first detection to terminal resolution; dismissed items are excluded.",
+        },
+        "daily_trend": [{
+            "date": day,
+            "opened_count": opened_by_day.get(day, 0),
+            "resolved_count": resolved_by_day.get(day, 0),
+        } for day in trend_days],
+        "finance_workload": workload_rows,
+        "investigation_amounts_by_exception_type": exposure_by_type,
+        "amount_methodology": {
+            "currency_unit": "INR paise",
+            "not_a_confirmed_loss": True,
+            "possible_duplicate_supplier_payment": "Counted as an investigation signal only; excluded from monetary aggregation.",
+            "no_cross_type_total": "Amounts are separated by exception type because a bank debit and its supplier-payment record may represent the same transfer. Do not sum categories into a portfolio loss figure.",
+        },
+        "controls": {"read_only": True, "persisted_snapshot_only": True},
+    }
+
+
 @router.patch("/reconciliation/exceptions/{exception_id}/assignment")
 def assign_reconciliation_exception(
     exception_id: int, payload: dict,
