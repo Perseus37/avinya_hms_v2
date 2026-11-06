@@ -95,6 +95,7 @@ class VendorMaster(AuditMixin, Base):
     __tablename__ = "procurement_vendors"
     __table_args__ = (
         CheckConstraint("credit_period_days >= 0", name="ck_vendor_credit_days_non_neg"),
+        Index("ix_procurement_vendors_is_suspended", "is_suspended"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
