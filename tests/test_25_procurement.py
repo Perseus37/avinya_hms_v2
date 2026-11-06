@@ -3255,6 +3255,134 @@ def test_high_risk_reconciliation_resolution_requires_independent_review(
     assert approved.json()["status"] == "RESOLVED"
     assert approved.json()["resolution_review_status"] == "APPROVED"
 
+
+def test_reconciliation_evidence_upload_download_and_audit(
+    client, superuser_headers, multi_tenant_env, monkeypatch
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.procurement import documents as procurement_documents
+    from backend.domains.procurement.models import (
+        ProcurementReconciliationException,
+        ProcurementReconciliationEvidence,
+        ProcurementReconciliationEvidenceDownloadAudit,
+    )
+
+    monkeypatch.setattr(procurement_documents, "scan_file_with_clamav", lambda _path: None)
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        row = ProcurementReconciliationException(
+            fingerprint="TEST_EXCEPTION:EVIDENCE_UPLOAD:987688",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="IN_REVIEW",
+            reference_type="BANK_STATEMENT_LINE", reference_id=987688,
+            amount_paise=12000, matched_amount_paise=0, unmatched_amount_paise=12000,
+            summary="Evidence attachment lifecycle test.",
+            detection_snapshot={},
+        )
+        db.add(row)
+        db.commit()
+        exception_id = row.id
+
+    uploaded = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/evidence",
+        headers=superuser_headers,
+        data={
+            "evidence_type": "BANK_STATEMENT",
+            "description": "Relevant bank statement extract for the debit.",
+        },
+        files={"file": ("statement.pdf", b"%PDF-1.7 evidence bytes", "application/pdf")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    body = uploaded.json()
+    evidence_id = body["id"]
+    assert body["exception_id"] == exception_id
+    assert body["evidence_type"] == "BANK_STATEMENT"
+    assert body["sha256_hex"]
+    assert body["size_bytes"] == len(b"%PDF-1.7 evidence bytes")
+
+    listed = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/evidence",
+        headers=superuser_headers,
+    )
+    assert listed.status_code == 200, listed.text
+    assert len(listed.json()) == 1
+    assert listed.json()[0]["id"] == evidence_id
+
+    mismatch = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id + 1}/evidence/{evidence_id}/download",
+        headers=superuser_headers,
+    )
+    assert mismatch.status_code == 404
+
+    downloaded = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/evidence/{evidence_id}/download",
+        headers=superuser_headers,
+    )
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.content == b"%PDF-1.7 evidence bytes"
+    assert downloaded.headers["cache-control"] == "private, no-store"
+    assert downloaded.headers["x-content-type-options"] == "nosniff"
+
+    with session_factory() as db:
+        evidence = db.query(ProcurementReconciliationEvidence).filter(
+            ProcurementReconciliationEvidence.id == evidence_id
+        ).one()
+        audits = db.query(ProcurementReconciliationEvidenceDownloadAudit).filter(
+            ProcurementReconciliationEvidenceDownloadAudit.evidence_id == evidence_id
+        ).all()
+        event = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == exception_id,
+            ProcurementReconciliationExceptionEvent.event_type == "EVIDENCE_ATTACHED",
+        ).one()
+        assert evidence.storage_key.startswith("default/procurement-reconciliation-evidence/")
+        assert len(audits) == 1
+        assert audits[0].actor_email
+        assert event.event_metadata["evidence_id"] == evidence_id
+
+
+def test_reconciliation_evidence_rejects_invalid_signature_and_closed_case(
+    client, superuser_headers, multi_tenant_env, monkeypatch
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.procurement import documents as procurement_documents
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    monkeypatch.setattr(procurement_documents, "scan_file_with_clamav", lambda _path: None)
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        row = ProcurementReconciliationException(
+            fingerprint="TEST_EXCEPTION:EVIDENCE_GUARD:987687",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="MEDIUM", status="OPEN",
+            reference_type="BANK_STATEMENT_LINE", reference_id=987687,
+            amount_paise=1000, matched_amount_paise=0, unmatched_amount_paise=1000,
+            summary="Evidence validation test.",
+            detection_snapshot={},
+        )
+        db.add(row)
+        db.commit()
+        exception_id = row.id
+
+    invalid = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/evidence",
+        headers=superuser_headers,
+        data={"evidence_type": "BANK_STATEMENT"},
+        files={"file": ("statement.pdf", b"not a PDF", "application/pdf")},
+    )
+    assert invalid.status_code == 415
+
+    with session_factory() as db:
+        row = db.get(ProcurementReconciliationException, exception_id)
+        row.status = "RESOLVED"
+        db.commit()
+
+    closed = client.post(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/evidence",
+        headers=superuser_headers,
+        data={"evidence_type": "BANK_STATEMENT"},
+        files={"file": ("statement.pdf", b"%PDF-1.7 evidence bytes", "application/pdf")},
+    )
+    assert closed.status_code == 409
+
+
 def test_reconciliation_assignee_directory_is_branch_scoped_and_active_only(
     client, superuser_headers, multi_tenant_env
 ):
