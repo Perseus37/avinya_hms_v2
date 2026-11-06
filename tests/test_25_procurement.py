@@ -3056,3 +3056,76 @@ def test_procurement_reconciliation_exception_worklist_is_read_only_and_filterab
         params={"from_date": "2026-11-07", "to_date": "2026-11-01"},
     )
     assert invalid.status_code == 422, invalid.text
+
+
+def test_persisted_reconciliation_exception_assignment_resolution_and_history(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import ProcurementReconciliationException
+
+    session_factory = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with session_factory() as db:
+        actor_id = db.query(User.id).filter(User.email == "admin@default.com").scalar()
+        row = ProcurementReconciliationException(
+            fingerprint="TEST_EXCEPTION:BANK_STATEMENT_LINE:987654",
+            exception_type="UNMATCHED_BANK_DEBIT", severity="HIGH", status="OPEN",
+            reference_type="BANK_STATEMENT_LINE", reference_id=987654,
+            amount_paise=5000, matched_amount_paise=0, unmatched_amount_paise=5000,
+            summary="Test unmatched bank debit.",
+            detection_snapshot={"bank_transaction_id": "TEST-987654"},
+        )
+        db.add(row)
+        db.commit()
+        exception_id = row.id
+
+    assigned = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/assignment",
+        headers=superuser_headers, json={"assigned_to_id": actor_id, "note": "Assigned for finance review."},
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["assigned_to_id"] == actor_id
+
+    reviewing = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/status",
+        headers=superuser_headers, json={"status": "IN_REVIEW", "note": "Investigation started."},
+    )
+    assert reviewing.status_code == 200, reviewing.text
+
+    missing_resolution_note = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/status",
+        headers=superuser_headers, json={"status": "RESOLVED"},
+    )
+    assert missing_resolution_note.status_code == 422
+
+    resolved = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/status",
+        headers=superuser_headers,
+        json={"status": "RESOLVED", "note": "Bank advice verified and reconciliation evidence attached."},
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["status"] == "RESOLVED"
+
+    reopen = client.patch(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/status",
+        headers=superuser_headers, json={"status": "OPEN", "note": "Reopen"},
+    )
+    assert reopen.status_code == 409
+
+    history = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/history",
+        headers=superuser_headers,
+    )
+    assert history.status_code == 200, history.text
+    event_types = [event["event_type"] for event in history.json()["events"]]
+    assert "ASSIGNED" in event_types
+    assert "STATUS_CHANGED" in event_types
+    assert len(history.json()["events"]) >= 3
+
+    queue = client.get(
+        "/v1/api/procurement/reconciliation/exceptions/queue",
+        headers=superuser_headers, params={"status": "RESOLVED", "severity": "HIGH"},
+    )
+    assert queue.status_code == 200, queue.text
+    assert any(item["id"] == exception_id for item in queue.json()["exceptions"])
