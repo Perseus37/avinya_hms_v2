@@ -2774,3 +2774,13 @@ def test_supplier_bank_statement_import_suggestions_and_partial_reconciliation(
         json={"payment_id": payment_id, "amount_paise": 2001},
     )
     assert overmatch.status_code == 409
+
+    final_match = client.post(
+        "/v1/api/procurement/bank-statements/lines/{}/matches".format(
+            client.get(f"/v1/api/procurement/bank-statements/{batch_id}/lines", headers=superuser_headers).json()[0]["id"]
+        ),
+        headers=superuser_headers,
+        json={"payment_id": payment_id, "amount_paise": 2000},
+    )
+    assert final_match.status_code == 201, final_match.text
+    assert final_match.json()["statement_line_status"] == "MATCHED"
