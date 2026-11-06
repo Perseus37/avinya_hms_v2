@@ -3367,6 +3367,7 @@ def test_reconciliation_audit_export_contains_history_evidence_manifest_and_expo
     from backend.domains.procurement.models import (
         ProcurementReconciliationException,
         ProcurementReconciliationExceptionEvent,
+        ProcurementReconciliationEvidence,
     )
 
     monkeypatch.setattr(procurement_documents, "scan_file_with_clamav", lambda _path: None)
@@ -3436,6 +3437,23 @@ def test_reconciliation_audit_export_contains_history_evidence_manifest_and_expo
         assert row.status == "IN_REVIEW"
         assert event.event_metadata["manifest_sha256"] == response.headers["x-audit-manifest-sha256"]
         assert event.event_metadata["evidence_count"] == 1
+        evidence_row = db.query(ProcurementReconciliationEvidence).filter(
+            ProcurementReconciliationEvidence.exception_id == exception_id
+        ).one()
+        stored_path = procurement_documents.resolve_reconciliation_evidence("default", evidence_row.storage_key)
+        stored_path.write_bytes(b"%PDF-1.7 modified after upload")
+
+    tampered_export = client.get(
+        f"/v1/api/procurement/reconciliation/exceptions/{exception_id}/audit-export",
+        headers=superuser_headers,
+    )
+    assert tampered_export.status_code == 409, tampered_export.text
+    with session_factory() as db:
+        mismatch = db.query(ProcurementReconciliationExceptionEvent).filter(
+            ProcurementReconciliationExceptionEvent.exception_id == exception_id,
+            ProcurementReconciliationExceptionEvent.event_type == "EVIDENCE_HASH_MISMATCH",
+        ).one()
+        assert mismatch.event_metadata["evidence_id"] == evidence_row.id
 
 
 def test_reconciliation_evidence_fails_closed_when_malware_scanner_is_unavailable(
