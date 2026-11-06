@@ -7739,7 +7739,7 @@ def list_persisted_reconciliation_exceptions(
     open_rows = [row for row in rows if row.status in ("OPEN", "IN_REVIEW")]
     overdue_rows = [
         row for row in open_rows
-        if age_hours(row) > sla_hours.get(row.severity, 168)
+        if age_hours(row) > sla_hours_for(row)
     ]
     return {
         "total": len(rows),
@@ -7754,7 +7754,7 @@ def list_persisted_reconciliation_exceptions(
             "status": row.status, "reference_type": row.reference_type, "reference_id": row.reference_id,
             "source_present": row.source_present, "missed_refresh_count": row.missed_refresh_count,
             "age_hours": age_hours(row), "sla_hours": sla_hours_for(row),
-            "sla_overdue": row.status in ("OPEN", "IN_REVIEW") and age_hours(row) > sla_hours.get(row.severity, 168),
+            "sla_overdue": row.status in ("OPEN", "IN_REVIEW") and age_hours(row) > sla_hours_for(row),
             "amount_paise": row.amount_paise, "matched_amount_paise": row.matched_amount_paise,
             "unmatched_amount_paise": row.unmatched_amount_paise, "summary": row.summary,
             "assigned_to_id": row.assigned_to_id, "first_detected_at": row.first_detected_at,
