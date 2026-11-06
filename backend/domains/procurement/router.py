@@ -7017,6 +7017,12 @@ def refresh_procurement_reconciliation_exceptions(
                 event_metadata={"severity": item["severity"]})
             created += 1
         elif row.status in ("RESOLVED", "DISMISSED"):
+            if not row.source_present:
+                row.source_present = True
+                row.missed_refresh_count = 0
+                row.last_detected_at = now
+                _record_reconciliation_event(db, row, "TERMINAL_SOURCE_REAPPEARED", current_user.id,
+                    event_metadata={"status_preserved": row.status})
             unchanged_terminal += 1
         else:
             was_missing = not row.source_present
