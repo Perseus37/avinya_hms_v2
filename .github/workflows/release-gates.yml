@@ -182,7 +182,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      packages: write
     # Heavy image build and Trivy CVE scans run for main/release branches and dispatches,
     # keeping dev pull requests fast and lightweight.
     if: >-
@@ -239,17 +238,46 @@ jobs:
           vuln-type: os,library
           severity: HIGH,CRITICAL
           trivyignores: .trivyignore
-      # Publish only after every required release gate and image scan succeeds.
-      # Pull requests, scheduled scans, and manual validation never publish images.
+      # Preserve the exact scanned images for a separately permissioned publish job.
+      - name: Export scanned release images
+        run: |
+          docker save avinya-hms-api:ci avinya-hospital-ui:ci avinya-clamav:1.4.6-patched | gzip -1 > release-images.tar.gz
+
+      - name: Upload scanned release images
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-images-${{ github.sha }}
+          path: release-images.tar.gz
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+  publish-images:
+    name: Publish scanned images to GHCR
+    needs: [production-image]
+    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download scanned release images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-images-${{ github.sha }}
+          path: release-images
+
+      - name: Load scanned release images
+        run: gzip -dc release-images/release-images.tar.gz | docker load
+
       - name: Log in to GitHub Container Registry
-        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) }}
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
       - name: Tag and publish scanned images
-        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) }}
         env:
           IMAGE_OWNER: ${{ github.repository_owner }}
           IMAGE_REVISION: ${{ github.sha }}
@@ -275,8 +303,8 @@ jobs:
             docker tag "${IMAGES[$name]}" "$target:$CHANNEL_TAG"
             docker push "$target:$IMAGE_REVISION"
             docker push "$target:$CHANNEL_TAG"
-            digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$target:$IMAGE_REVISION")"
-            printf '%s\n' "$digest" | tee -a image-digests.txt
+            digest="$(docker buildx imagetools inspect "$target:$IMAGE_REVISION" --format '{{.Manifest.Digest}}')"
+            printf '%s\\n' "$target@$digest" | tee -a image-digests.txt
           done
 
           {
@@ -284,7 +312,6 @@ jobs:
             echo
             echo "Source commit: $IMAGE_REVISION"
             echo
-            echo '```text'
+            echo 'text'
             cat image-digests.txt
-            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
