@@ -302,7 +302,7 @@ def upload_tenant_brand_asset(
                     raise UploadContentError("Image content does not match its file type.")
 
     try:
-        stage_and_publish_upload(
+        total_bytes = stage_and_publish_upload(
             tenant_root,
             asset_id,
             f".{asset_id}.part",
@@ -323,6 +323,13 @@ def upload_tenant_brand_asset(
         file.file.close()
 
     asset_url = f"/api/ui/tenant-branding/assets/{asset_id}"
+    try:
+        destination = resolve_tenant_storage_file(tenant_root, asset_id)
+    except StoragePathError as exc:
+        logger.error("Unable to resolve published tenant brand asset.", exc_info=True)
+        _delete_tenant_brand_asset(tenant_context.subdomain_slug, asset_id)
+        raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
+
     try:
         try:
             branding = json.loads(tenant.ui_branding_json or "{}")
