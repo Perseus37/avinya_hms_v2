@@ -241,6 +241,7 @@ jobs:
       # Preserve the exact scanned images for a separately permissioned publish job.
       - name: Export scanned release images
         run: |
+          set -euo pipefail
           docker save avinya-hms-api:ci avinya-hospital-ui:ci avinya-clamav:1.4.6-patched | gzip -1 > release-images.tar.gz
 
       - name: Upload scanned release images
@@ -312,6 +313,7 @@ jobs:
             echo
             echo "Source commit: $IMAGE_REVISION"
             echo
-            echo 'text'
+            echo '\`\`\`text'
             cat image-digests.txt
+            echo '\`\`\`'
           } >> "$GITHUB_STEP_SUMMARY"
