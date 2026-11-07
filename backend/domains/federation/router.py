@@ -330,18 +330,23 @@ def discover_and_aggregate_patient_across_branches(
                 target_group = re.split(r"[-_]", ptr.branch_code)[0].strip().upper()
                 if target_group != calling_group:
                     return None
-            if policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY:
-                if purpose.strip().upper() not in {"EMERGENCY", "EMERGENCY_CARE", "EMERGENCY_TREATMENT", "EMERGENCY_ADMISSION"}:
-                    return None
+            emergency_purpose = purpose.strip().upper() in {
+                "EMERGENCY", "EMERGENCY_CARE", "EMERGENCY_TREATMENT", "EMERGENCY_ADMISSION"
+            }
+            if (
+                policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY
+                and not emergency_purpose
+            ):
+                return None
 
             patient = branch_db.query(Patient).filter(Patient.mrn == ptr.source_mrn, Patient.is_active.is_(True)).first()
             if not patient or getattr(patient, "allow_network_sharing", True) is False:
                 return None
 
-            # F-01: Emergency access is verified only by a real, unexpired grant bound
-            # to the exact source patient. A caller-controlled token prefix is never
-            # accepted as authorization.
-            if policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY:
+            # Every emergency-purpose disclosure requires a real, unexpired grant
+            # bound to the exact source patient, regardless of the branch's general
+            # sharing mode. The restricted mode additionally limits the purpose above.
+            if emergency_purpose:
                 from backend.domains.patients.models import BreakGlassGrant
 
                 if break_glass_grant_id is None:
@@ -526,6 +531,14 @@ def import_federated_patient_locally(
             FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY,
         }:
             raise HTTPException(status_code=403, detail="Source branch policy does not permit demographic import.")
+        if source_policy.federation_sharing_mode == FederationPolicyEnum.CORPORATE_GROUP_ONLY:
+            source_group = re.split(r"[-_]", source_pointer.branch_code)[0].strip().upper()
+            destination_group = re.split(r"[-_]", tenant.branch_code)[0].strip().upper()
+            if source_group != destination_group:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Source branch policy does not permit cross-group demographic import.",
+                )
 
         source_patient = source_db.query(Patient).filter(
             Patient.mrn == source_pointer.source_mrn,
@@ -538,7 +551,9 @@ def import_federated_patient_locally(
             source_db,
             data_use_point="federation.patient.discover",
             patient_id=source_patient.id,
-            actor_user_id=current_user.id,
+            # Destination user IDs do not belong to the source tenant's users table.
+            # The source-side FederationTransferLog records the requesting branch.
+            actor_user_id=None,
             patient_age=calculate_patient_age(source_patient.date_of_birth),
         )
         if not decision.allowed or not source_policy.federation_share_demographics:
