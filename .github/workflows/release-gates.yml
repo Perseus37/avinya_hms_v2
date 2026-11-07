@@ -405,6 +405,21 @@ jobs:
 
       # Provenance attestations bind each immutable image digest to this workflow run and source revision.
       - name: Attest API image provenance
+        id: attest_api_provenance
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/perseus37/avinya-hms-api
+          subject-digest: ${{ steps.publish.outputs.api_digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Wait before retrying attest api image provenance
+        if: ${{ steps.attest_api_provenance.outcome == 'failure' }}
+        run: sleep 10
+
+      - name: Retry attest api image provenance
+        if: ${{ steps.attest_api_provenance.outcome == 'failure' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/perseus37/avinya-hms-api
@@ -413,6 +428,21 @@ jobs:
           create-storage-record: false
 
       - name: Attest Hospital UI image provenance
+        id: attest_hospital_provenance
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/perseus37/avinya-hospital-ui
+          subject-digest: ${{ steps.publish.outputs.hospital_ui_digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Wait before retrying attest hospital ui image provenance
+        if: ${{ steps.attest_hospital_provenance.outcome == 'failure' }}
+        run: sleep 10
+
+      - name: Retry attest hospital ui image provenance
+        if: ${{ steps.attest_hospital_provenance.outcome == 'failure' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/perseus37/avinya-hospital-ui
@@ -421,6 +451,8 @@ jobs:
           create-storage-record: false
 
       - name: Attest ClamAV image provenance
+        id: attest_clamav_provenance
+        continue-on-error: true
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/perseus37/avinya-clamav
@@ -429,7 +461,37 @@ jobs:
           create-storage-record: false
 
       # Sign the CycloneDX SBOMs against the exact image digests published above.
+
+      - name: Wait before retrying attest clamav image provenance
+        if: ${{ steps.attest_clamav_provenance.outcome == 'failure' }}
+        run: sleep 10
+
+      - name: Retry attest clamav image provenance
+        if: ${{ steps.attest_clamav_provenance.outcome == 'failure' }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/perseus37/avinya-clamav
+          subject-digest: ${{ steps.publish.outputs.clamav_digest }}
+          push-to-registry: true
+          create-storage-record: false
+
       - name: Attest API CycloneDX SBOM
+        id: attest_api_sbom
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/perseus37/avinya-hms-api
+          subject-digest: ${{ steps.publish.outputs.api_digest }}
+          sbom-path: release-sbom/avinya-hms-api.cdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Wait before retrying attest api cyclonedx sbom
+        if: ${{ steps.attest_api_sbom.outcome == 'failure' }}
+        run: sleep 10
+
+      - name: Retry attest api cyclonedx sbom
+        if: ${{ steps.attest_api_sbom.outcome == 'failure' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/perseus37/avinya-hms-api
@@ -439,6 +501,22 @@ jobs:
           create-storage-record: false
 
       - name: Attest Hospital UI CycloneDX SBOM
+        id: attest_hospital_sbom
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/perseus37/avinya-hospital-ui
+          subject-digest: ${{ steps.publish.outputs.hospital_ui_digest }}
+          sbom-path: release-sbom/avinya-hospital-ui.cdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Wait before retrying attest hospital ui cyclonedx sbom
+        if: ${{ steps.attest_hospital_sbom.outcome == 'failure' }}
+        run: sleep 10
+
+      - name: Retry attest hospital ui cyclonedx sbom
+        if: ${{ steps.attest_hospital_sbom.outcome == 'failure' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/perseus37/avinya-hospital-ui
@@ -448,6 +526,22 @@ jobs:
           create-storage-record: false
 
       - name: Attest ClamAV CycloneDX SBOM
+        id: attest_clamav_sbom
+        continue-on-error: true
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/perseus37/avinya-clamav
+          subject-digest: ${{ steps.publish.outputs.clamav_digest }}
+          sbom-path: release-sbom/avinya-clamav.cdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Wait before retrying attest clamav cyclonedx sbom
+        if: ${{ steps.attest_clamav_sbom.outcome == 'failure' }}
+        run: sleep 10
+
+      - name: Retry attest clamav cyclonedx sbom
+        if: ${{ steps.attest_clamav_sbom.outcome == 'failure' }}
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/perseus37/avinya-clamav

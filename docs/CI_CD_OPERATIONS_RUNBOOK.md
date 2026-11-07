@@ -67,7 +67,7 @@ Do not merge solely because a feature-branch or manual run passed. Verify that t
 ## Dependency and image security
 
 - Python dependencies are pinned and audited with `pip-audit` for the configured requirement sets.
-- The onboarding UI runs `npm audit`; the hospital UI currently has a build gate but no equivalent explicit `npm audit` step in the release workflow.
+- The onboarding UI runs `npm audit`; the hospital UI has a build and role-mapping regression-test gate but no equivalent explicit `npm audit` step in the release workflow.
 - Production API, Hospital UI, and ClamAV images are scanned by Trivy for fixable HIGH/CRITICAL vulnerabilities. The configured gate fails on findings meeting that policy; do not add suppressions simply to make CI green.
 - SBOMs are generated for the exact scanned images in CycloneDX format. The verifier checks the SBOM format and reloads/inspects the scanned image bundle before publication.
 - Third-party GitHub Actions in the release workflow are pinned to commit SHAs.
@@ -93,7 +93,7 @@ A green PostgreSQL migration parity test is necessary but does not replace stage
 
 The release workflow publishes the already-scanned image artifacts to GHCR only on pushes to `main` or `release/**`; pull-request runs build, scan, and verify artifacts but do not publish. It publishes API, Hospital UI, and ClamAV images under `ghcr.io/perseus37/` with an immutable source-commit SHA tag and a channel tag. The publish job uses `GITHUB_TOKEN` with `packages: write`; package-level Actions access must also grant this repository write access. Keep packages private and verify visibility in GHCR package settings.
 
-The publish job records image digests, creates signed SLSA provenance and CycloneDX SBOM attestations for each image digest, and runs `gh attestation verify` against the source repository. A successful build/scan alone is not evidence that publishing or attestation verification succeeded; inspect the publisher job and digest summary.
+The publish job records image digests, creates signed SLSA provenance and CycloneDX SBOM attestations for each image digest, and runs `gh attestation verify` against the source repository. Each of the six attestation operations has one retry after a 10-second delay for transient transparency-log failures; a second failure remains fatal because verification cannot complete. A successful build/scan alone is not evidence that publishing or attestation verification succeeded; inspect the publisher job and digest summary.
 
 These release artifacts do not constitute a complete production deployment pipeline. Production deployment must remain a separate, explicitly approved operation until environment protection, deployment credentials, digest-based artifact promotion, health verification, and rollback are implemented and tested.
 
@@ -129,3 +129,21 @@ As of 2026-11-07:
 - A later image scan identified two HIGH zlib findings in the Debian 13.7 API image (`CVE-2026-76844`, `CVE-2026-85091`). PR #13 updates inherited Debian packages; its full release-gates validation must pass before that remediation is considered complete.
 
 This is a verified CI/release-artifact baseline, not evidence that repository branch protection, GHCR private visibility, production deployment approvals, backup restoration, or regulatory compliance are configured or proven.
+
+
+## Updated verified baseline (2026-11-07)
+
+The following changes have since been merged and validated:
+
+- PR #10: Hospital UI role resolution now uses exact backend role-code mappings and fails closed to a restricted workspace for unknown or unsupported roles.
+- PR #11: Pharmacy workspace is connected to live APIs. Dispensing uses FEFO-first batch selection and quantity checks; simulated walk-in prescriptions and fake barcode-success behavior were removed.
+- PR #12: Diagnostics/LIS workspace is connected to live APIs, including privacy-gated worklists, result workflows, specimen rejection, critical alerts, and CSV export privacy preflight.
+- PR #13: inherited Debian packages are upgraded during image build to remediate HIGH zlib findings CVE-2026-76844 and CVE-2026-85091.
+- PR #14: each of the six signed provenance/SBOM attestation operations retries once after a 10-second delay to tolerate transient transparency-log failures.
+- Main run [#42383434399](https://github.com/Perseus37/avinya_hms_v2/actions/runs/42383434399) passed publication, all six attestations, and verification for all three immutable image references after the retry fix.
+- Main run [#42386067777](https://github.com/Perseus37/avinya_hms_v2/actions/runs/42386067777) passed after the Pharmacy integration merge.
+- Main run [#42387177009](https://github.com/Perseus37/avinya_hms_v2/actions/runs/42387177009) passed all seven jobs after the Diagnostics/LIS integration merge.
+
+The repository ruleset MainRuleSet is active for main and release/**. It requires one approval, dismisses stale approvals, blocks branch deletion and non-fast-forward updates, and requires six PR checks: Python/PostgreSQL, onboarding UI build, Hospital UI build, Compose validation, production image build/scan, and scanned-artifact handoff. Review-thread resolution still needs to be enabled. GHCR publication and attestation verification have succeeded, but package-private visibility has not been independently confirmed.
+
+This is verified CI and release-artifact evidence, not proof of production deployment readiness, restorable backups, tenant-safe fleet migration, or regulatory compliance. No production deployment has been started.
