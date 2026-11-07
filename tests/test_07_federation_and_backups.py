@@ -145,7 +145,7 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
     )
 
     merged = client.get(
-        "/v1/api/federation/patients/discover?abha_number=ABHA-MULTIHOP-01&purpose=EMERGENCY_ADMISSION",
+        "/v1/api/federation/patients/discover?abha_number=ABHA-MULTIHOP-01&purpose=CONTINUITY_OF_CARE",
         headers=fed_headers,
     )
     assert merged.status_code == 200
@@ -374,6 +374,25 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
             headers=fed_headers,
         )
         assert resp_grant.status_code == 200
+
+        # Emergency-purpose access is grant-gated even when the source branch
+        # otherwise permits FULL_MESH sharing.
+        with Session(apollo_engine) as db:
+            pol = db.query(HospitalPolicySetting).first()
+            pol.federation_sharing_mode = FederationPolicyEnum.FULL_MESH
+            db.commit()
+
+        resp_full_mesh_without_grant = client.get(
+            "/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY",
+            headers=fed_headers,
+        )
+        assert resp_full_mesh_without_grant.status_code == 404
+
+        resp_full_mesh_with_grant = client.get(
+            f"/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY&break_glass_grant_id={grant_id}",
+            headers=fed_headers,
+        )
+        assert resp_full_mesh_with_grant.status_code == 200
     finally:
         with Session(apollo_engine) as db:
             pol = db.query(HospitalPolicySetting).first()
