@@ -142,6 +142,10 @@ jobs:
         working-directory: hospital-ui
         run: npm ci --no-audit --no-fund
 
+      - name: Test Hospital UI role mapping
+        working-directory: hospital-ui
+        run: npm test
+
       - name: Build Hospital UI
         working-directory: hospital-ui
         run: npm run build
