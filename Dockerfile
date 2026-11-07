@@ -23,9 +23,14 @@ WORKDIR /app
 
 RUN groupadd --system avinya && useradd --system --gid avinya --create-home avinya
 
-RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
-    curl \
-    postgresql-client \
+# Apply current Debian security updates to packages inherited from the base image
+# before installing runtime dependencies; the image scanner enforces the release threshold.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
+        poppler-utils \
+        curl \
+        postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements-integrations.txt ./
@@ -58,6 +63,7 @@ CMD ["pytest", "-v", "--durations=10"]
 # STAGE 4: STANDARD PRODUCTION TARGET (Locked Non-Root Gunicorn)
 # =====================================================================
 FROM base AS production
+LABEL org.opencontainers.image.source="https://github.com/Perseus37/avinya_hms_v2"
 COPY --chown=avinya:avinya . .
 COPY --from=ui-builder --chown=avinya:avinya /ui/dist /app/onboarding-ui/dist
 RUN mkdir -p /app/backups /vault && chown -R avinya:avinya /app /vault
