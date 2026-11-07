@@ -314,3 +314,35 @@ def test_12_payment_reversal_restores_balance_and_allows_voiding(client, superus
     # Now voiding succeeds
     void_res = client.delete(f"/v1/api/billing/invoices/{inv['id']}/void", headers=superuser_headers)
     assert void_res.status_code == 200
+
+
+def test_13_pharmacy_queue_includes_patient_identity_after_privacy_gate(client, doctor_headers, pharmacist_headers):
+    """The pharmacy queue exposes the real patient name and MRN only through the privacy-gated read endpoint."""
+    med, _ = _setup_med_and_batch(client, pharmacist_headers)
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={"full_name": "Pharmacy Queue Identity", "date_of_birth": "1991-04-12T00:00:00Z", "gender": "FEMALE"},
+    ).json()
+    encounter = client.post(
+        "/v1/api/adt/encounters",
+        headers=doctor_headers,
+        json={"patient_id": patient["id"], "encounter_type": "OPD", "primary_doctor_id": 2, "department_id": 1},
+    ).json()
+    prescription = client.post(
+        "/v1/api/pharmacy/prescriptions",
+        headers=doctor_headers,
+        json={
+            "encounter_id": encounter["id"],
+            "items": [{"medication_id": med["id"], "dosage_instruction": "1 tab PO OD", "requested_quantity": 4}],
+        },
+    ).json()
+
+    queue = client.get(
+        "/v1/api/pharmacy/prescriptions?status_filter=ACTIVE",
+        headers=pharmacist_headers,
+    )
+    assert queue.status_code == 200
+    row = next(item for item in queue.json()["items"] if item["id"] == prescription["id"])
+    assert row["patient_name"] == patient["full_name"]
+    assert row["patient_mrn"] == patient["mrn"]

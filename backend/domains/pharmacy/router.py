@@ -402,6 +402,15 @@ def precheck_drug_interactions(
     }
 
 
+def _prescription_response_with_patient_identity(prescription: Prescription) -> dict:
+    """Builds the pharmacy queue projection after the caller's patient privacy check."""
+    response = PrescriptionResponse.model_validate(prescription).model_dump()
+    patient = prescription.encounter.patient if prescription.encounter else None
+    response["patient_name"] = patient.full_name if patient else None
+    response["patient_mrn"] = patient.mrn if patient else None
+    return response
+
+
 @router.get(
     "/prescriptions",
     response_model=PaginatedResponse[PrescriptionResponse],
@@ -419,7 +428,10 @@ def list_prescriptions(
 ):
     page, page_size = validate_pagination(page, page_size)
     start_at, end_at = resolve_record_date_window(start_date, end_date)
-    query = db.query(Prescription).options(joinedload(Prescription.items).joinedload(PrescriptionItem.medication))
+    query = db.query(Prescription).options(
+        joinedload(Prescription.items).joinedload(PrescriptionItem.medication),
+        joinedload(Prescription.encounter).joinedload(PatientEncounter.patient),
+    )
     if encounter_id:
         query = query.filter(Prescription.encounter_id == encounter_id)
     if status_filter:
@@ -445,7 +457,8 @@ def list_prescriptions(
     )
     if any(not decision.allowed for decision in decisions):
         raise HTTPException(status_code=403, detail="Privacy policy does not permit one or more patient disclosures.")
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    safe_items = [_prescription_response_with_patient_identity(item) for item in items]
+    return {"items": safe_items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get(
@@ -460,7 +473,10 @@ def get_prescription(
 ):
     rx = (
         db.query(Prescription)
-        .options(joinedload(Prescription.items).joinedload(PrescriptionItem.medication))
+        .options(
+            joinedload(Prescription.items).joinedload(PrescriptionItem.medication),
+            joinedload(Prescription.encounter).joinedload(PatientEncounter.patient),
+        )
         .filter(Prescription.id == prescription_id)
         .first()
     )
@@ -474,7 +490,7 @@ def get_prescription(
     )
     if any(not decision.allowed for decision in decisions):
         raise HTTPException(status_code=403, detail="Privacy policy does not permit this patient disclosure.")
-    return rx
+    return _prescription_response_with_patient_identity(rx)
 
 
 @router.put("/prescriptions/{prescription_id}", response_model=PrescriptionResponse)

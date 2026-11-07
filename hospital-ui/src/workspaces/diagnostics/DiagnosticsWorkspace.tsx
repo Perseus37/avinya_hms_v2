@@ -1,941 +1,382 @@
-import React, { useState } from "react";
-import { Microscope, AlertCircle, PhoneCall, CheckCircle2, FileCheck, Barcode, Printer, PlusCircle, AlertTriangle, XCircle, RotateCcw } from "lucide-react";
-import { Card } from "../../components/ui/Card";
-import { Badge } from "../../components/ui/Badge";
-import { Button } from "../../components/ui/Button";
-import { Modal } from "../../components/ui/Modal";
-import { useHospitalConfig } from "../../core/context/HospitalConfigContext";
-import { printDocument } from "../../utils/printDocument";
+import React, { useCallback, useEffect, useState } from "react";
+import { AlertTriangle, FlaskConical, Plus, RefreshCw, ShieldCheck } from "lucide-react";
+import { apiClient } from "../../api/client";
+import { patientApi, type PatientCreatedResponse } from "../../api/patientApi";
 
-interface LabOrder {
-  id: number;
-  orderNumber: string;
-  patientName: string;
-  mrn: string;
-  sampleType: string;
-  status: "COLLECTED" | "IN_ANALYSIS" | "AUTHORIZED" | "SPECIMEN_REJECTED";
-  rejectionReason?: string;
-  tests: Array<{
-    name: string;
-    barcode: string;
-    result?: string;
-    unit?: string;
-    referenceRange?: string;
-    flag?: "NORMAL" | "HIGH" | "PANIC";
-  }>;
+type TaskStatus =
+  | "PENDING"
+  | "SAMPLE_COLLECTED"
+  | "SAMPLE_REJECTED"
+  | "IN_PROGRESS"
+  | "RESULT_ENTERED"
+  | "VERIFIED"
+  | "CANCELLED";
+
+interface Page<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
+interface DiagnosticTask {
+  id: number;
+  order_id: number;
+  service_id: number;
+  status: TaskStatus;
+  result_value?: string | null;
+  result_notes?: string | null;
+  is_critical_panic: boolean;
+  rejection_reason?: string | null;
+  delta_check_flag?: string | null;
+  previous_result_value?: string | null;
+  delta_percentage?: number | null;
+  service_name?: string | null;
+  service_code?: string | null;
+  patient_name?: string | null;
+  patient_mrn?: string | null;
+  order_status?: string | null;
+}
+
+interface ServiceCatalogItem {
+  id: number;
+  code: string;
+  name: string;
+  service_type: string;
+  base_price_paise: number;
+  is_order_set: boolean;
+  is_active: boolean;
+}
+
+interface DiagnosticOrderCreated {
+  id: number;
+  status: string;
+  tasks: Array<{ id: number; service_id: number; status: TaskStatus }>;
+}
+
+const statusLabel: Record<TaskStatus, string> = {
+  PENDING: "Awaiting sample",
+  SAMPLE_COLLECTED: "Sample collected",
+  SAMPLE_REJECTED: "Sample rejected",
+  IN_PROGRESS: "In analysis",
+  RESULT_ENTERED: "Result entered",
+  VERIFIED: "Verified",
+  CANCELLED: "Cancelled",
+};
+
+const statusStyle: Record<TaskStatus, string> = {
+  PENDING: "bg-amber-50 text-amber-800",
+  SAMPLE_COLLECTED: "bg-sky-50 text-sky-800",
+  SAMPLE_REJECTED: "bg-rose-50 text-rose-800",
+  IN_PROGRESS: "bg-indigo-50 text-indigo-800",
+  RESULT_ENTERED: "bg-violet-50 text-violet-800",
+  VERIFIED: "bg-emerald-50 text-emerald-800",
+  CANCELLED: "bg-slate-100 text-slate-600",
+};
+
 export const DiagnosticsWorkspace: React.FC = () => {
-  const { hospitalProfile, getPrinterForCategory } = useHospitalConfig();
-  const [orders, setOrders] = useState<LabOrder[]>([
-    {
-      id: 1,
-      orderNumber: "LAB-4029",
-      patientName: "Siddharth Verma",
-      mrn: "MRN-2026-0001",
-      sampleType: "EDTA Whole Blood",
-      status: "COLLECTED",
-      tests: [
-        { name: "Complete Blood Count (CBC) - Hemoglobin", barcode: "SMP-88219", result: "14.2", unit: "g/dL", referenceRange: "13.0 - 17.0", flag: "NORMAL" },
-        { name: "Total White Blood Cell Count (WBC)", barcode: "SMP-88219", result: "7800", unit: "/cumm", referenceRange: "4000 - 11000", flag: "NORMAL" },
-        { name: "Platelet Count", barcode: "SMP-88219", result: "245000", unit: "/cumm", referenceRange: "150000 - 450000", flag: "NORMAL" },
-      ],
-    },
-    {
-      id: 2,
-      orderNumber: "LAB-4031",
-      patientName: "Harish Rao",
-      mrn: "ER-0915",
-      sampleType: "Serum Gel Tube",
-      status: "IN_ANALYSIS",
-      tests: [
-        { name: "C-Reactive Protein (CRP) Quantitative", barcode: "SMP-88225", result: "42.0", unit: "mg/L", referenceRange: "< 5.0", flag: "HIGH" },
-        { name: "Serum Creatinine", barcode: "SMP-88226", result: "1.1", unit: "mg/dL", referenceRange: "0.7 - 1.3", flag: "NORMAL" },
-      ],
-    },
-  ]);
+  const [tasks, setTasks] = useState<DiagnosticTask[]>([]);
+  const [panicAlerts, setPanicAlerts] = useState<DiagnosticTask[]>([]);
+  const [catalog, setCatalog] = useState<ServiceCatalogItem[]>([]);
+  const [patients, setPatients] = useState<PatientCreatedResponse[]>([]);
+  const [patientSearch, setPatientSearch] = useState("");
+  const [selectedPatientId, setSelectedPatientId] = useState<number | "">("");
+  const [selectedServiceIds, setSelectedServiceIds] = useState<number[]>([]);
+  const [clinicalNotes, setClinicalNotes] = useState("");
+  const [showOrderForm, setShowOrderForm] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<DiagnosticTask | null>(null);
+  const [resultValue, setResultValue] = useState("");
+  const [resultNotes, setResultNotes] = useState("");
+  const [criticalPanic, setCriticalPanic] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  const [activePanicCallout, setActivePanicCallout] = useState<{
-    analyte: string;
-    value: string;
-    patient: string;
-    mrn: string;
-    calloutDone: boolean;
-  } | null>({
-    analyte: "Potassium (K+) Serum",
-    value: "6.8 mmol/L (CRITICAL HIGH)",
-    patient: "Ananya Deshmukh",
-    mrn: "ER-0914",
-    calloutDone: false,
-  });
+  const loadWorklists = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [worklist, alerts] = await Promise.all([
+        apiClient<Page<DiagnosticTask>>("/api/diagnostics/tasks/worklist", {
+          params: { page: 1, page_size: 100 },
+        }),
+        apiClient<DiagnosticTask[]>("/api/diagnostics/tasks/panic-alerts"),
+      ]);
+      setTasks(worklist.items);
+      setPanicAlerts(alerts);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load laboratory worklists.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  const [isResultModalOpen, setIsResultModalOpen] = useState(false);
-  const [selectedOrder, setSelectedOrder] = useState<LabOrder | null>(null);
+  useEffect(() => {
+    void loadWorklists();
+    apiClient<Page<ServiceCatalogItem>>("/api/diagnostics/catalog", {
+      params: { page: 1, page_size: 100 },
+    })
+      .then((response) => setCatalog(response.items.filter((item) => item.is_active)))
+      .catch((err) => setError(err instanceof Error ? err.message : "Unable to load the diagnostic catalog."));
+  }, [loadWorklists]);
 
-  // Form values for result entry
-  const [testResults, setTestResults] = useState<Record<string, string>>({});
-
-  // New Walk-in Lab Order Intake State
-  const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
-  const [newPatientName, setNewPatientName] = useState("Vijay Sharma");
-  const [newMrn, setNewMrn] = useState("MRN-2026-0009");
-  const [newSampleType, setNewSampleType] = useState("Serum Gel Tube (Yellow)");
-  const [newTestCategory, setNewTestCategory] = useState("Biochemistry");
-  const [newTestName, setNewTestName] = useState("Lipid Profile (Total Cholesterol, HDL, LDL, Triglycerides)");
-  const [newRefRange, setNewRefRange] = useState("< 200");
-  const [newUnit, setNewUnit] = useState("mg/dL");
-
-  // Print Lab Report State
-  const [isPrintReportModalOpen, setIsPrintReportModalOpen] = useState(false);
-  const [reportOrder, setReportOrder] = useState<LabOrder | null>(null);
-
-  // Specimen Rejection & STAT Recollection State
-  const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
-  const [orderToReject, setOrderToReject] = useState<LabOrder | null>(null);
-  const [rejectionReason, setRejectionReason] = useState<
-    "HEMOLYZED_SAMPLE" | "CLOTTED_EDTA_SPECIMEN" | "INSUFFICIENT_VOLUME_QNS" | "WRONG_TUBE_TYPE"
-  >("HEMOLYZED_SAMPLE");
-  const [rejectionNotes, setRejectionNotes] = useState(
-    "Gross hemolysis observed post-centrifugation. Potassium, AST, and LDH cannot be reported accurately."
-  );
-
-  const handleExecuteRejection = () => {
-    if (!orderToReject) return;
-    const reasonLabelMap = {
-      HEMOLYZED_SAMPLE: "Hemolyzed Sample (In vitro RBC lysis)",
-      CLOTTED_EDTA_SPECIMEN: "Clotted Specimen (Microclots in EDTA tube)",
-      INSUFFICIENT_VOLUME_QNS: "Quantity Not Sufficient (QNS)",
-      WRONG_TUBE_TYPE: "Mismatched Container / Wrong Anticoagulant",
-    };
-    const fullReason = `${reasonLabelMap[rejectionReason]} • ${rejectionNotes}`;
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.id === orderToReject.id
-          ? { ...o, status: "SPECIMEN_REJECTED", rejectionReason: fullReason }
-          : o
-      )
-    );
-    setIsRejectModalOpen(false);
-    setOrderToReject(null);
-  };
-
-  const handleCreateLabOrder = (e: React.FormEvent) => {
-    e.preventDefault();
-    const newId = Date.now();
-    const barcodeNum = `SMP-${Math.floor(10000 + Math.random() * 90000)}`;
-    const newOrder: LabOrder = {
-      id: newId,
-      orderNumber: `LAB-${Math.floor(4100 + Math.random() * 900)}`,
-      patientName: newPatientName,
-      mrn: newMrn,
-      sampleType: `${newSampleType} [${newTestCategory}]`,
-      status: "COLLECTED",
-      tests: [
-        {
-          name: newTestName,
-          barcode: barcodeNum,
-          result: "",
-          unit: newUnit,
-          referenceRange: newRefRange,
-          flag: "NORMAL",
-        },
-      ],
-    };
-
-    setOrders([newOrder, ...orders]);
-    setIsNewOrderModalOpen(false);
-  };
-
-  const handleOpenPrintReport = (order: LabOrder) => {
-    setReportOrder(order);
-    setIsPrintReportModalOpen(true);
-  };
-
-  const [isCalloutModalOpen, setIsCalloutModalOpen] = useState(false);
-  const [doctorContacted, setDoctorContacted] = useState("Dr. Sameer Joshi (Emergency Physician)");
-  const [readbackConfirmed, setReadbackConfirmed] = useState(false);
-
-  const handleOpenResultModal = (order: LabOrder) => {
-    setSelectedOrder(order);
-    const initial: Record<string, string> = {};
-    order.tests.forEach((t) => {
-      initial[t.name] = t.result || "";
-    });
-    setTestResults(initial);
-    setIsResultModalOpen(true);
-  };
-
-  const handleSaveResults = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedOrder) return;
-
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.id === selectedOrder.id
-          ? {
-              ...o,
-              status: "AUTHORIZED",
-              tests: o.tests.map((t) => ({
-                ...t,
-                result: testResults[t.name] || t.result,
-              })),
-            }
-          : o
-      )
-    );
-
-    setIsResultModalOpen(false);
-    alert(`Results for order ${selectedOrder.orderNumber} authorized and pushed to EMR.`);
-  };
-
-  const advanceOrderStatus = (orderId: number) => {
-    setOrders((prev) =>
-      prev.map((o) => {
-        if (o.id !== orderId) return o;
-        const nextStatus =
-          o.status === "COLLECTED"
-            ? "IN_ANALYSIS"
-            : o.status === "IN_ANALYSIS"
-            ? "AUTHORIZED"
-            : "AUTHORIZED";
-        return { ...o, status: nextStatus };
-      })
-    );
-  };
-
-  const handleConfirmCallout = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!readbackConfirmed) {
-      alert("Please check the verbal read-back confirmation box.");
+  const searchPatients = async (value: string) => {
+    setPatientSearch(value);
+    setSelectedPatientId("");
+    if (value.trim().length < 2) {
+      setPatients([]);
       return;
     }
-
-    if (activePanicCallout) {
-      setActivePanicCallout({ ...activePanicCallout, calloutDone: true });
+    try {
+      const response = await patientApi.listPatients(value.trim(), 1);
+      setPatients(response.items);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Patient search failed.");
     }
-    setIsCalloutModalOpen(false);
-    alert("Critical panic delta verbal callout successfully recorded in audit log.");
   };
 
-  const handlePrintLabReport = (order: LabOrder) => {
-    const html = `
-      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 750px; margin: 0 auto; border: 1px solid #333; padding: 24px;">
-        <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
-          <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
-          <div style="font-size: 12px; font-weight: bold; color: #0284c7; margin-top: 2px;">NABL ACCREDITED CENTRAL CLINICAL LABORATORY REPORT</div>
-          <div style="font-size: 10px; color: #555;">${hospitalProfile.accreditation} • Phone: ${hospitalProfile.phone}</div>
-        </div>
-        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 14px;">
-          <div><b>Patient:</b> ${order.patientName.toUpperCase()}</div>
-          <div><b>UHID / MRN:</b> ${order.mrn}</div>
-          <div><b>Lab Order No:</b> ${order.orderNumber}</div>
-        </div>
-        <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 11px; margin-bottom: 16px;">
-          <div><b>Specimen Type:</b> ${order.sampleType}</div>
-          <div><b>Status:</b> ${order.status}</div>
-          <div><b>Date:</b> ${new Date().toLocaleDateString()}</div>
-        </div>
-        <table style="width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 20px;">
-          <thead>
-            <tr style="background: #f1f5f9; border-bottom: 2px solid #cbd5e1; text-align: left;">
-              <th style="padding: 8px;">Investigation / Analyte</th>
-              <th style="padding: 8px;">Result Value</th>
-              <th style="padding: 8px;">Reference Range</th>
-              <th style="padding: 8px;">Unit</th>
-              <th style="padding: 8px;">Barcode</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${order.tests.map((t) => `
-              <tr style="border-bottom: 1px solid #e2e8f0;">
-                <td style="padding: 8px; font-weight: bold;">${t.name}</td>
-                <td style="padding: 8px; font-family: monospace; font-weight: bold; color: ${t.flag === "PANIC" ? "#dc2626" : t.flag === "HIGH" ? "#ea580c" : "#0f172a"};">
-                  ${t.result || "Verified Normal"}
-                </td>
-                <td style="padding: 8px; color: #64748b;">${t.referenceRange || "--"}</td>
-                <td style="padding: 8px; color: #64748b;">${t.unit || "--"}</td>
-                <td style="padding: 8px; font-family: monospace; font-size: 10px;">${t.barcode}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-        <div style="margin-top: 50px; display: flex; justify-content: space-between; font-size: 11px;">
-          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Medical Laboratory Technologist</div>
-          <div style="border-top: 1px solid #000; width: 220px; text-align: center; padding-top: 4px;">Dr. Anjali Mehta, MD (Pathology)<br/><span style="font-size: 9px; color: #64748b;">Authorized Pathologist • Reg #MC-44910</span></div>
-        </div>
-      </div>
-    `;
-    const a4Printer = getPrinterForCategory("CLINICAL_A4");
-    printDocument(html, {
-      title: `Lab_Report_${order.orderNumber}`,
-      docType: "CLINICAL_SUMMARY",
-      printerDevice: a4Printer,
+  const createOrder = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (selectedPatientId === "" || selectedServiceIds.length === 0) {
+      setError("Select a patient and at least one diagnostic service.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      await apiClient<DiagnosticOrderCreated>("/api/diagnostics/orders", {
+        method: "POST",
+        body: JSON.stringify({
+          patient_id: selectedPatientId,
+          ordered_service_ids: selectedServiceIds,
+          clinical_notes: clinicalNotes.trim() || null,
+        }),
+      });
+      setShowOrderForm(false);
+      setPatientSearch("");
+      setPatients([]);
+      setSelectedPatientId("");
+      setSelectedServiceIds([]);
+      setClinicalNotes("");
+      await loadWorklists();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to place diagnostic order.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateTask = async (
+    task: DiagnosticTask,
+    payload: {
+      status: TaskStatus;
+      result_value?: string;
+      result_notes?: string;
+      is_critical_panic?: boolean;
+      rejection_reason?: string;
+    },
+  ) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await apiClient(`/api/diagnostics/tasks/${task.id}/result`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      setSelectedTask(null);
+      setResultValue("");
+      setResultNotes("");
+      setCriticalPanic(false);
+      await loadWorklists();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update laboratory task.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openResultEntry = (task: DiagnosticTask) => {
+    setSelectedTask(task);
+    setResultValue(task.result_value ?? "");
+    setResultNotes(task.result_notes ?? "");
+    setCriticalPanic(task.is_critical_panic);
+  };
+
+  const submitResult = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedTask || !resultValue.trim()) return;
+    await updateTask(selectedTask, {
+      status: "RESULT_ENTERED",
+      result_value: resultValue.trim(),
+      result_notes: resultNotes.trim() || undefined,
+      is_critical_panic: criticalPanic,
     });
   };
 
-  const handlePrintSpecimenTubeLabel = (order: LabOrder) => {
-    const labPrinter = getPrinterForCategory("LAB_LABEL");
-    const barcodeCode = order.tests[0]?.barcode || `SMP-${order.orderNumber}`;
-    const testNames = order.tests.map((t) => t.name.replace(/\(.*\)/g, "").trim()).join(", ");
-
-    const html = `
-      <div style="width: 100%; height: 100%; padding: 1mm 2mm; box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; justify-content: space-between;">
-        <div style="display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #000; padding-bottom: 1px;">
-          <span style="font-weight: 900; font-size: 9px; text-transform: uppercase;">${hospitalProfile.name.slice(0, 18)}</span>
-          <span style="font-size: 8px; font-weight: bold; font-family: monospace;">${order.mrn}</span>
-        </div>
-        <div>
-          <div style="font-weight: 900; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${order.patientName.toUpperCase()}</div>
-          <div style="font-size: 8px; font-weight: bold; color: #333;">${order.sampleType}</div>
-          <div style="font-size: 7.5px; color: #555; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${testNames}</div>
-        </div>
-        <div style="text-align: center; border-top: 1px dashed #666; padding-top: 1px;">
-          <div style="font-family: monospace; font-size: 11px; font-weight: 900; letter-spacing: 2px;">||| | |||| || |||</div>
-          <div style="font-family: monospace; font-size: 8.5px; font-weight: bold;">*${barcodeCode}*</div>
-        </div>
-      </div>
-    `;
-
-    printDocument(html, {
-      title: `TubeLabel_${barcodeCode}`,
-      docType: "LAB_REPORT",
-      printerDevice: labPrinter,
-    });
+  const rejectSample = async (task: DiagnosticTask) => {
+    const reason = window.prompt("Enter specimen rejection reason (minimum 3 characters):");
+    if (reason === null) return;
+    if (reason.trim().length < 3) {
+      setError("A specimen rejection reason is required (minimum 3 characters).");
+      return;
+    }
+    await updateTask(task, { status: "SAMPLE_REJECTED", rejection_reason: reason.trim() });
   };
+
+  const pendingCount = tasks.filter((task) => task.status !== "VERIFIED" && task.status !== "CANCELLED").length;
 
   return (
-    <div className="flex-1 flex flex-col bg-slate-950 p-6 overflow-y-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between pb-6 border-b border-slate-800">
+    <div className="space-y-6 p-4 md:p-6">
+      <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-            <Microscope className="text-sky-400" />
-            Diagnostics & Clinical Laboratory Information System (LIS)
-          </h1>
-          <p className="text-xs text-slate-400 mt-1 font-mono">
-            Specimen Accessioning • Auto-Analyzer HL7 Feeds • Panic Critical Delta Callout Documentation
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <Badge variant="neutral" size="sm" className="font-mono">
-            HL7 ASTM Analyzer Feed: Connected (Port 5001)
-          </Badge>
-        </div>
-      </div>
-
-      {/* Main Grid */}
-      <div className="grid grid-cols-3 gap-6 mt-6">
-        {/* Laboratory Tasks Grid */}
-        <div className="col-span-2 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-slate-200 uppercase tracking-wider">
-              Accessioning & Processing Queue ({orders.length})
-            </h2>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => setIsNewOrderModalOpen(true)}
-              className="flex items-center gap-1.5 text-xs font-semibold"
-            >
-              <PlusCircle size={14} /> Intake Walk-in Specimen
-            </Button>
+          <div className="flex items-center gap-2 text-xl font-semibold text-slate-900">
+            <FlaskConical className="h-6 w-6 text-sky-700" />
+            Diagnostics & Laboratory
           </div>
+          <p className="mt-1 text-sm text-slate-500">Live diagnostic orders, specimen workflow and result lifecycle</p>
+        </div>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => void loadWorklists()} disabled={loading} className="inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium disabled:opacity-50">
+            <RefreshCw className="h-4 w-4" /> Refresh
+          </button>
+          <button type="button" onClick={() => setShowOrderForm((value) => !value)} className="inline-flex items-center gap-2 rounded-lg bg-sky-700 px-3 py-2 text-sm font-medium text-white">
+            <Plus className="h-4 w-4" /> New diagnostic order
+          </button>
+        </div>
+      </header>
 
-          <div className="space-y-3">
-            {orders.map((order) => (
-              <Card key={order.id} className="p-4 bg-slate-900 border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="font-semibold text-sm text-slate-100">
-                      Order #{order.orderNumber} — {order.patientName}
-                    </span>
-                    <span className="text-xs text-slate-400 ml-2 font-mono">
-                      Sample: {order.sampleType} • {order.mrn}
-                    </span>
-                  </div>
-                  <Badge
-                    variant={
-                      order.status === "AUTHORIZED"
-                        ? "success"
-                        : order.status === "IN_ANALYSIS"
-                        ? "warning"
-                        : order.status === "SPECIMEN_REJECTED"
-                        ? "danger"
-                        : "info"
-                    }
-                    size="sm"
-                  >
-                    {order.status === "COLLECTED"
-                      ? "Specimen Collected"
-                      : order.status === "IN_ANALYSIS"
-                      ? "In Analyzer"
-                      : order.status === "SPECIMEN_REJECTED"
-                      ? "Specimen Rejected (Recollect STAT)"
-                      : "Verified & Released"}
-                  </Badge>
-                </div>
+      {error && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{error}</div>}
 
-                {order.status === "SPECIMEN_REJECTED" && (
-                  <div className="p-2.5 rounded bg-rose-950/60 border border-rose-800 text-xs text-rose-200 flex items-start justify-between gap-2">
-                    <div>
-                      <div className="font-bold flex items-center gap-1.5 text-rose-400">
-                        <AlertTriangle size={13} /> Laboratory Specimen Rejected:
-                      </div>
-                      <div className="text-[11px] text-rose-300/90 mt-0.5">{order.rejectionReason}</div>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handlePrintSpecimenTubeLabel(order)}
-                      className="text-[10px] text-rose-300 border-rose-700 hover:bg-rose-900/60 flex items-center gap-1"
-                    >
-                      <RotateCcw size={11} /> Print STAT Recollect Label
-                    </Button>
-                  </div>
-                )}
-
-                <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-2">
-                  {order.tests.map((t, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center justify-between text-xs pb-1.5 border-b border-slate-900 last:border-0 last:pb-0"
-                    >
-                      <div>
-                        <span className="text-slate-300 font-medium">{t.name}</span>
-                        <span className="text-[10px] text-slate-500 font-mono ml-2">
-                          (Ref: {t.referenceRange} {t.unit})
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {t.result ? (
-                          <span
-                            className={`font-mono font-bold ${
-                              t.flag === "HIGH"
-                                ? "text-amber-400"
-                                : t.flag === "PANIC"
-                                ? "text-rose-400"
-                                : "text-emerald-400"
-                            }`}
-                          >
-                            {t.result} {t.unit}
-                          </span>
-                        ) : (
-                          <span className="text-slate-500 italic">Pending</span>
-                        )}
-                        <span className="font-mono text-[10px] text-sky-400">
-                          #{t.barcode}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex items-center justify-end gap-2 pt-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handlePrintSpecimenTubeLabel(order)}
-                    className="text-xs flex items-center gap-1 text-sky-400 hover:text-sky-300 border-sky-800/80"
-                    title="Print Barcode Specimen Tube Label (50x25mm Labeler)"
-                  >
-                    <Barcode size={13} /> Tube Label
-                  </Button>
-
-                  {order.status !== "AUTHORIZED" && order.status !== "SPECIMEN_REJECTED" && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setOrderToReject(order);
-                        setIsRejectModalOpen(true);
-                      }}
-                      className="text-xs flex items-center gap-1 text-rose-400 hover:text-rose-200 border-rose-900/80 hover:bg-rose-950/40"
-                      title="Reject specimen due to Hemolysis, Microclots, or QNS"
-                    >
-                      <XCircle size={13} /> Reject Specimen
-                    </Button>
-                  )}
-
-                  {order.status === "COLLECTED" && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => advanceOrderStatus(order.id)}
-                      className="text-xs flex items-center gap-1"
-                    >
-                      <Barcode size={13} /> Receive & Load to Analyzer
-                    </Button>
-                  )}
-
-                  {order.status === "AUTHORIZED" && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleOpenPrintReport(order)}
-                      className="text-xs flex items-center gap-1 text-slate-300 hover:text-white"
-                    >
-                      <Printer size={13} /> Print Lab Report
-                    </Button>
-                  )}
-
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => handleOpenResultModal(order)}
-                    className="text-xs flex items-center gap-1"
-                  >
-                    <FileCheck size={13} /> {order.status === "AUTHORIZED" ? "View / Edit Results" : "Enter Results & Release"}
-                  </Button>
-                </div>
-              </Card>
+      {panicAlerts.length > 0 && (
+        <section className="rounded-xl border border-rose-300 bg-rose-50 p-4" aria-label="Critical laboratory alerts">
+          <div className="flex items-center gap-2 font-semibold text-rose-900">
+            <AlertTriangle className="h-5 w-5" /> Critical / panic laboratory alerts ({panicAlerts.length})
+          </div>
+          <p className="mt-1 text-sm text-rose-800">Escalate critical values immediately using the hospital's approved clinical communication process. This workspace does not record a verbal read-back acknowledgement.</p>
+          <ul className="mt-3 space-y-2">
+            {panicAlerts.map((task) => (
+              <li key={task.id} className="rounded-lg bg-white/80 p-3 text-sm">
+                <strong>{task.patient_name || "Patient identity unavailable"}</strong>
+                <span className="mx-2 text-slate-500">{task.patient_mrn || "MRN unavailable"}</span>
+                <span>{task.service_name || `Service #${task.service_id}`}</span>
+                <span className="ml-2 font-semibold text-rose-700">{task.result_value || "Critical result"}</span>
+              </li>
             ))}
-          </div>
-        </div>
+          </ul>
+        </section>
+      )}
 
-        {/* Critical Panic Delta Watch */}
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
-              <AlertCircle size={16} /> Panic Critical Delta Callouts
-            </h2>
-            <Badge variant="danger" size="sm">
-              Urgent (15m SLA)
-            </Badge>
-          </div>
-
-          {activePanicCallout && (
-            <Card
-              className={`p-4 border space-y-3 ${
-                activePanicCallout.calloutDone
-                  ? "bg-slate-900 border-slate-800"
-                  : "bg-rose-950/20 border-rose-900/60"
-              }`}
-            >
-              <div className="text-xs text-rose-300 leading-relaxed">
-                Values exceeding critical life-threatening thresholds require immediate verbal read-back to attending physician under NABH standards.
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-900 border border-rose-900/50 space-y-1.5">
-                <div className="flex items-center justify-between text-xs font-bold text-rose-400">
-                  <span>{activePanicCallout.analyte}</span>
-                  <span className="font-mono">{activePanicCallout.value}</span>
-                </div>
-                <div className="text-[11px] text-slate-400">
-                  Patient: {activePanicCallout.patient} ({activePanicCallout.mrn})
-                </div>
-                <div className="text-[10px] text-slate-500 font-mono">
-                  Reported: 6 mins ago • Specimen: Heparinized Plasma
-                </div>
-
-                {activePanicCallout.calloutDone ? (
-                  <div className="mt-3 p-2 rounded bg-emerald-950 border border-emerald-800 text-emerald-300 text-xs flex items-center gap-2">
-                    <CheckCircle2 size={14} /> Verbal Read-Back Confirmed & Documented
-                  </div>
-                ) : (
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => setIsCalloutModalOpen(true)}
-                    className="w-full text-xs mt-2 flex items-center justify-center gap-1.5"
-                  >
-                    <PhoneCall size={13} /> Document Doctor Verbal Callout
-                  </Button>
-                )}
-              </div>
-            </Card>
+      {showOrderForm && (
+        <form onSubmit={createOrder} className="space-y-4 rounded-xl border bg-white p-4 shadow-sm">
+          <div className="font-semibold text-slate-900">Place diagnostic order</div>
+          <label className="block text-sm font-medium text-slate-700">
+            Find patient
+            <input value={patientSearch} onChange={(event) => void searchPatients(event.target.value)} placeholder="Search by name or MRN" className="mt-1 w-full rounded-lg border px-3 py-2 font-normal" />
+          </label>
+          {patients.length > 0 && (
+            <label className="block text-sm font-medium text-slate-700">
+              Patient
+              <select value={selectedPatientId} onChange={(event) => setSelectedPatientId(event.target.value ? Number(event.target.value) : "")} className="mt-1 w-full rounded-lg border px-3 py-2 font-normal">
+                <option value="">Select patient</option>
+                {patients.map((patient) => <option key={patient.id} value={patient.id}>{patient.full_name} — {patient.mrn}</option>)}
+              </select>
+            </label>
           )}
-        </div>
-      </div>
-
-      {/* Modal: Enter Results */}
-      {selectedOrder && (
-        <Modal
-          isOpen={isResultModalOpen}
-          onClose={() => setIsResultModalOpen(false)}
-          title={`Enter / Verify Laboratory Analyte Results — ${selectedOrder.orderNumber}`}
-        >
-          <form onSubmit={handleSaveResults} className="space-y-4">
-            <div className="text-xs text-slate-400">
-              Patient: <strong className="text-slate-200">{selectedOrder.patientName}</strong> ({selectedOrder.mrn})
-            </div>
-
-            <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
-              {selectedOrder.tests.map((t, idx) => (
-                <div key={idx} className="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5">
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-200">
-                    <span>{t.name}</span>
-                    <span className="font-mono text-slate-500 text-[11px]">
-                      Ref: {t.referenceRange} {t.unit}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      required
-                      value={testResults[t.name] || ""}
-                      onChange={(e) =>
-                        setTestResults({ ...testResults, [t.name]: e.target.value })
-                      }
-                      className="flex-1 bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
-                    />
-                    <span className="text-xs font-mono text-slate-400">{t.unit}</span>
-                  </div>
-                </div>
+          <fieldset>
+            <legend className="mb-2 text-sm font-medium text-slate-700">Diagnostic services</legend>
+            <div className="grid gap-2 md:grid-cols-2">
+              {catalog.map((item) => (
+                <label key={item.id} className="flex items-center gap-2 rounded-lg border p-3 text-sm">
+                  <input type="checkbox" checked={selectedServiceIds.includes(item.id)} onChange={(event) => setSelectedServiceIds((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))} />
+                  <span className="min-w-0 flex-1">{item.name} <span className="text-xs text-slate-500">({item.code})</span></span>
+                  <span className="text-xs text-slate-500">{(item.base_price_paise / 100).toFixed(2)}</span>
+                </label>
               ))}
             </div>
+            {catalog.length === 0 && <p className="text-sm text-slate-500">No active diagnostic catalog items are available.</p>}
+          </fieldset>
+          <label className="block text-sm font-medium text-slate-700">
+            Clinical notes (optional)
+            <textarea value={clinicalNotes} onChange={(event) => setClinicalNotes(event.target.value)} rows={2} className="mt-1 w-full rounded-lg border px-3 py-2 font-normal" />
+          </label>
+          <div className="flex gap-2">
+            <button disabled={saving} className="rounded-lg bg-sky-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{saving ? "Placing…" : "Place order"}</button>
+            <button type="button" onClick={() => setShowOrderForm(false)} className="rounded-lg border px-4 py-2 text-sm">Cancel</button>
+          </div>
+        </form>
+      )}
 
-            <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setIsResultModalOpen(false)}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" variant="primary" size="sm">
-                Verify & Authorize Report
-              </Button>
+      <section className="rounded-xl border bg-white shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b p-4">
+          <div>
+            <h2 className="font-semibold text-slate-900">Laboratory worklist</h2>
+            <p className="text-sm text-slate-500">{pendingCount} active task(s) in the current page</p>
+          </div>
+          <span className="text-xs text-slate-500">Showing up to 100 tasks</span>
+        </div>
+        {loading ? (
+          <p className="p-6 text-sm text-slate-500">Loading live worklist…</p>
+        ) : tasks.length === 0 ? (
+          <p className="p-6 text-sm text-slate-500">No active laboratory tasks.</p>
+        ) : (
+          <div className="divide-y">
+            {tasks.map((task) => (
+              <article key={task.id} className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong className="text-slate-900">{task.service_name || `Service #${task.service_id}`}</strong>
+                    <span className={`rounded-full px-2 py-1 text-xs font-medium ${statusStyle[task.status]}`}>{statusLabel[task.status]}</span>
+                    {task.is_critical_panic && <span className="rounded-full bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-800">PANIC</span>}
+                  </div>
+                  <p className="mt-1 text-sm text-slate-600">{task.patient_name || "Patient identity unavailable"} · {task.patient_mrn || "MRN unavailable"} · Order #{task.order_id} · Task #{task.id}</p>
+                  {task.result_value && <p className="mt-1 text-sm"><span className="font-medium">Result:</span> {task.result_value} {task.delta_check_flag && <span className="ml-2 text-amber-700">Delta: {task.delta_check_flag}</span>}</p>}
+                  {task.rejection_reason && <p className="mt-1 text-sm text-rose-700">Rejection: {task.rejection_reason}</p>}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {task.status === "PENDING" && <button disabled={saving} onClick={() => void updateTask(task, { status: "SAMPLE_COLLECTED" })} className="rounded-lg border px-3 py-2 text-xs font-medium">Mark collected</button>}
+                  {task.status === "SAMPLE_COLLECTED" && <button disabled={saving} onClick={() => void updateTask(task, { status: "IN_PROGRESS" })} className="rounded-lg border px-3 py-2 text-xs font-medium">Start analysis</button>}
+                  {task.status === "SAMPLE_REJECTED" && <button disabled={saving} onClick={() => void updateTask(task, { status: "SAMPLE_COLLECTED" })} className="rounded-lg border px-3 py-2 text-xs font-medium">Recollect</button>}
+                  {(task.status === "PENDING" || task.status === "SAMPLE_COLLECTED" || task.status === "IN_PROGRESS") && (
+                    <button disabled={saving} onClick={() => openResultEntry(task)} className="rounded-lg bg-sky-700 px-3 py-2 text-xs font-medium text-white">Enter result</button>
+                  )}
+                  {(task.status === "PENDING" || task.status === "SAMPLE_COLLECTED" || task.status === "IN_PROGRESS") && (
+                    <button disabled={saving} onClick={() => void rejectSample(task)} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-medium text-rose-700">Reject sample</button>
+                  )}
+                  {task.status === "RESULT_ENTERED" && <button disabled={saving} onClick={() => void updateTask(task, { status: "VERIFIED" })} className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-medium text-white"><ShieldCheck className="h-3.5 w-3.5" /> Verify result</button>}
+                  {task.status === "VERIFIED" && <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700"><ShieldCheck className="h-4 w-4" /> Verified</span>}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {selectedTask && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <form onSubmit={submitResult} className="w-full max-w-lg space-y-4 rounded-xl bg-white p-5 shadow-xl">
+            <div>
+              <h3 className="font-semibold text-slate-900">Enter laboratory result</h3>
+              <p className="text-sm text-slate-500">{selectedTask.service_name || `Task #${selectedTask.id}`} · {selectedTask.patient_name || "Patient identity unavailable"}</p>
+            </div>
+            <label className="block text-sm font-medium">Result value
+              <input required value={resultValue} onChange={(event) => setResultValue(event.target.value)} className="mt-1 w-full rounded-lg border px-3 py-2" />
+            </label>
+            <label className="block text-sm font-medium">Result notes
+              <textarea value={resultNotes} onChange={(event) => setResultNotes(event.target.value)} rows={3} className="mt-1 w-full rounded-lg border px-3 py-2" />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-rose-800">
+              <input type="checkbox" checked={criticalPanic} onChange={(event) => setCriticalPanic(event.target.checked)} />
+              Mark as critical / panic value
+            </label>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setSelectedTask(null)} className="rounded-lg border px-4 py-2 text-sm">Cancel</button>
+              <button disabled={saving || !resultValue.trim()} className="rounded-lg bg-sky-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{saving ? "Saving…" : "Submit result"}</button>
             </div>
           </form>
-        </Modal>
+        </div>
       )}
 
-      {/* Modal: Doctor Callout Documentation */}
-      <Modal
-        isOpen={isCalloutModalOpen}
-        onClose={() => setIsCalloutModalOpen(false)}
-        title="Document Critical Panic Delta Verbal Callout"
-      >
-        <form onSubmit={handleConfirmCallout} className="space-y-4">
-          <div className="p-3 rounded-lg bg-rose-950/30 border border-rose-900 text-xs text-rose-300 font-mono">
-            Analyte: <strong>{activePanicCallout?.analyte} = {activePanicCallout?.value}</strong>
-            <br />
-            Patient: {activePanicCallout?.patient} ({activePanicCallout?.mrn})
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">
-              Physician / Resident Contacted
-            </label>
-            <input
-              type="text"
-              required
-              value={doctorContacted}
-              onChange={(e) => setDoctorContacted(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-rose-500"
-            />
-          </div>
-
-          <div className="flex items-center gap-2 p-2.5 rounded bg-slate-950 border border-slate-800">
-            <input
-              type="checkbox"
-              id="readback"
-              checked={readbackConfirmed}
-              onChange={(e) => setReadbackConfirmed(e.target.checked)}
-              className="rounded bg-slate-900 border-slate-700 text-rose-500 focus:ring-rose-500"
-            />
-            <label htmlFor="readback" className="text-xs text-slate-300 cursor-pointer">
-              I certify that the physician repeated back the critical value verbally and acknowledged immediate intervention.
-            </label>
-          </div>
-
-          <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setIsCalloutModalOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button type="submit" variant="danger" size="sm">
-              Save Verbal Callout Log
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* Modal: Intake Walk-in Lab Specimen */}
-      <Modal
-        isOpen={isNewOrderModalOpen}
-        onClose={() => setIsNewOrderModalOpen(false)}
-        title="Intake Walk-in Laboratory Specimen & Order Investigation"
-      >
-        <form onSubmit={handleCreateLabOrder} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Patient Full Name</label>
-              <input
-                type="text"
-                required
-                value={newPatientName}
-                onChange={(e) => setNewPatientName(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500 font-semibold"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">MRN / UHID</label>
-              <input
-                type="text"
-                required
-                value={newMrn}
-                onChange={(e) => setNewMrn(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Laboratory Discipline</label>
-              <select
-                value={newTestCategory}
-                onChange={(e) => setNewTestCategory(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
-              >
-                <option value="Biochemistry">Clinical Biochemistry</option>
-                <option value="Hematology">Hematology & Coagulation</option>
-                <option value="Microbiology">Microbiology & Serology</option>
-                <option value="Histopathology">Histopathology / Cytology</option>
-                <option value="Immunology">Clinical Immunology</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Specimen Collection Tube</label>
-              <select
-                value={newSampleType}
-                onChange={(e) => setNewSampleType(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200"
-              >
-                <option value="Serum Gel Tube (Yellow)">SST / Serum Gel Tube (Yellow Top)</option>
-                <option value="EDTA Whole Blood (Lavender)">EDTA K2/K3 Whole Blood (Lavender Top)</option>
-                <option value="Sodium Citrate 3.2% (Light Blue)">Sodium Citrate Coagulation (Light Blue)</option>
-                <option value="Sodium Fluoride (Grey)">Fluoride Glycolysis Inhibitor (Grey Top)</option>
-                <option value="Sterile Urine Container">Sterile Mid-Stream Urine Container</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">Investigation Name / Test Panel</label>
-            <input
-              type="text"
-              required
-              value={newTestName}
-              onChange={(e) => setNewTestName(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-sky-500 font-semibold"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Standard Reference Range</label>
-              <input
-                type="text"
-                required
-                value={newRefRange}
-                onChange={(e) => setNewRefRange(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">Measurement Unit</label>
-              <input
-                type="text"
-                required
-                value={newUnit}
-                onChange={(e) => setNewUnit(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 font-mono"
-              />
-            </div>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
-            <Button type="button" variant="outline" size="sm" onClick={() => setIsNewOrderModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" size="sm" className="flex items-center gap-1.5 font-semibold">
-              <Barcode size={13} /> Accession & Generate Barcode
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* Modal: Printable Laboratory Report Slip */}
-      {reportOrder && (
-        <Modal
-          isOpen={isPrintReportModalOpen}
-          onClose={() => setIsPrintReportModalOpen(false)}
-          title={`Clinical Diagnostic Report — ${reportOrder.orderNumber}`}
-        >
-          <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3 font-mono text-xs">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                <div>
-                  <span className="text-slate-400 text-[10px] uppercase block">Department of Pathology & LIS</span>
-                  <span className="font-bold text-emerald-400 text-sm">ACCESSION #{reportOrder.orderNumber}</span>
-                </div>
-                <div className="text-right">
-                  <span className="text-slate-400 text-[10px] uppercase block">Status</span>
-                  <Badge variant="success" size="sm">NABL Authorized</Badge>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <span className="text-slate-500 text-[10px] block">Patient Name</span>
-                  <span className="text-slate-200 font-semibold">{reportOrder.patientName}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 text-[10px] block">UHID / MRN</span>
-                  <span className="text-slate-200">{reportOrder.mrn}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 text-[10px] block">Specimen Type</span>
-                  <span className="text-slate-200">{reportOrder.sampleType}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 text-[10px] block">Report Date</span>
-                  <span className="text-slate-200">{new Date().toISOString().substring(0, 10)}</span>
-                </div>
-              </div>
-
-              <div className="pt-2 border-t border-slate-800 space-y-2">
-                <div className="text-[10px] text-slate-400 uppercase font-bold">Investigation Results</div>
-                <div className="bg-slate-900 rounded-lg p-2.5 space-y-2">
-                  {reportOrder.tests.map((t, idx) => (
-                    <div key={idx} className="flex items-center justify-between text-xs pb-1 border-b border-slate-800 last:border-0 last:pb-0">
-                      <div>
-                        <div className="text-slate-200 font-medium">{t.name}</div>
-                        <div className="text-[10px] text-slate-500">Ref: {t.referenceRange} {t.unit}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="font-bold text-sky-400 font-mono">{t.result || "Normal"} {t.unit}</div>
-                        <div className="text-[9px] text-slate-500 font-mono">Barcode: {t.barcode}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-500">
-                <span>Verified by: Dr. Anjali Mehta, MD (Pathology)</span>
-                <span>Reg #MC-44910</span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between pt-2">
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => reportOrder && handlePrintLabReport(reportOrder)}
-                  className="flex items-center gap-1.5"
-                >
-                  <Printer size={13} /> Print Laboratory Report
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => reportOrder && handlePrintSpecimenTubeLabel(reportOrder)}
-                  className="flex items-center gap-1.5 text-sky-400 hover:text-sky-300 border-sky-800/80"
-                >
-                  <Barcode size={13} /> Print Specimen Tube Label
-                </Button>
-              </div>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setIsPrintReportModalOpen(false)}
-              >
-                Close
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* Modal: Specimen Rejection & STAT Recollection */}
-      {isRejectModalOpen && orderToReject && (
-        <Modal
-          isOpen={isRejectModalOpen}
-          onClose={() => {
-            setIsRejectModalOpen(false);
-            setOrderToReject(null);
-          }}
-          title="Laboratory Specimen Rejection &amp; STAT Recollection Notice"
-        >
-          <div className="space-y-4">
-            <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-700/80 text-rose-200 text-xs flex items-start gap-2.5">
-              <AlertTriangle size={18} className="text-rose-400 shrink-0 mt-0.5" />
-              <div>
-                <strong>NABL PRE-ANALYTICAL ERROR:</strong> The submitted sample fails clinical analytical integrity standards. Tests will be suspended and an urgent recollection task will be dispatched to Phlebotomy / Nursing.
-              </div>
-            </div>
-
-            <div className="p-3 rounded bg-slate-900 border border-slate-800 text-xs space-y-1 font-mono">
-              <div><strong>Patient:</strong> {orderToReject.patientName} ({orderToReject.mrn})</div>
-              <div><strong>Order Number:</strong> {orderToReject.orderNumber} • <strong>Container:</strong> {orderToReject.sampleType}</div>
-              <div><strong>Tests Ordered:</strong> {orderToReject.tests.map((t) => t.name).join(", ")}</div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">
-                Codified Pre-Analytical Rejection Reason:
-              </label>
-              <select
-                value={rejectionReason}
-                onChange={(e) => setRejectionReason(e.target.value as any)}
-                className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200"
-              >
-                <option value="HEMOLYZED_SAMPLE">Gross Hemolysis (In vitro RBC lysis invalidating Potassium/LDH)</option>
-                <option value="CLOTTED_EDTA_SPECIMEN">Clotted Specimen (Microclots in EDTA invalidating CBC/Platelets)</option>
-                <option value="INSUFFICIENT_VOLUME_QNS">Quantity Not Sufficient (QNS for complete test profile)</option>
-                <option value="WRONG_TUBE_TYPE">Mismatched Container / Wrong Anticoagulant</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 mb-1">
-                Technologist Analytical Notes / Phlebotomy Instructions:
-              </label>
-              <textarea
-                rows={3}
-                value={rejectionNotes}
-                onChange={(e) => setRejectionNotes(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-rose-500"
-              />
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-800">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setIsRejectModalOpen(false);
-                  setOrderToReject(null);
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleExecuteRejection}
-                className="bg-rose-600 hover:bg-rose-500 text-white font-bold flex items-center gap-1.5"
-              >
-                <XCircle size={13} /> Confirm Rejection &amp; Request Recollection
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
+      <p className="text-xs text-slate-500">Result verification is enforced by the backend, including permission checks and separation of duties. Critical-value communication acknowledgement and report printing are not represented as completed workflows here.</p>
     </div>
   );
 };
