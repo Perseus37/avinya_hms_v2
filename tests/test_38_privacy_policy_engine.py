@@ -152,6 +152,8 @@ NON_PATIENT_OR_DEFERRED_GET_ROUTES = {
     "/api/ui/patients/{patient_id}/summary-card",
     "/api/ui/patients/{patient_id}/timeline",
     "/api/ui/tasks/my-work",
+    "/api/ui/tenant-branding",
+    "/api/ui/tenant-branding/assets/{asset_id}",
     "/api/ui/wards/{ward_id}/bed-map-detailed",
     "/health",
     "/health/ready",

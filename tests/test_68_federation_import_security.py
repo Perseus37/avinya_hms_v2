@@ -8,7 +8,7 @@ def test_federated_import_rejects_tampered_discovery_payload(
     sun_client = client.post(
         "/v1/api/federation/clients",
         headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-IMPORT-SEC-01", "name": "Sunrise Import Security"},
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Import Security"},
     ).json()
 
     client.post(
@@ -38,7 +38,7 @@ def test_federated_import_rejects_tampered_discovery_payload(
         json=payload,
     )
     assert imported.status_code == 409
-    assert "changed since discovery" in imported.json()["detail"]
+    assert "changed since discovery" in imported.json()["message"]
 
 
 def test_federated_import_requires_indexed_source_mrn(client, superuser_headers):
@@ -64,4 +64,4 @@ def test_federated_import_requires_indexed_source_mrn(client, superuser_headers)
         json=payload,
     )
     assert response.status_code == 404
-    assert "not currently indexed" in response.json()["detail"]
+    assert "not currently indexed" in response.json()["message"]

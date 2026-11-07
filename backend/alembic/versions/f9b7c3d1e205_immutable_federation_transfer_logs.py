@@ -44,39 +44,40 @@ def upgrade() -> None:
     # The baseline used ON DELETE CASCADE, which could silently erase the audit
     # history when a patient was hard-deleted. Federation transfer history is an
     # audit record, so preserve it and make patient deletion fail instead.
-    op.drop_constraint(
-        "federation_transfer_logs_patient_id_fkey",
-        "federation_transfer_logs",
-        type_="foreignkey",
-    )
-    op.create_foreign_key(
-        "federation_transfer_logs_patient_id_fkey",
-        "federation_transfer_logs",
-        "patients",
-        ["patient_id"],
-        ["id"],
-        ondelete="RESTRICT",
-    )
+    # Batch mode uses SQLite's copy-and-move strategy in parity tests and emits
+    # native ALTER TABLE statements on PostgreSQL.
+    with op.batch_alter_table("federation_transfer_logs") as batch_op:
+        batch_op.drop_constraint(
+            "federation_transfer_logs_patient_id_fkey",
+            type_="foreignkey",
+        )
+        batch_op.create_foreign_key(
+            "federation_transfer_logs_patient_id_fkey",
+            "patients",
+            ["patient_id"],
+            ["id"],
+            ondelete="RESTRICT",
+        )
 
-    # PostgreSQL is the production database. The trigger closes the direct SQL
-    # UPDATE/DELETE path as well as ORM mutation/bulk-operation bypasses.
-    op.execute(_TRIGGER_FUNCTION)
-    op.execute(_TRIGGER)
+    # The immutable-row trigger is PostgreSQL-specific (production database).
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(_TRIGGER_FUNCTION)
+        op.execute(_TRIGGER)
 
 
 def downgrade() -> None:
-    op.execute(_DROP_TRIGGER)
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(_DROP_TRIGGER)
 
-    op.drop_constraint(
-        "federation_transfer_logs_patient_id_fkey",
-        "federation_transfer_logs",
-        type_="foreignkey",
-    )
-    op.create_foreign_key(
-        "federation_transfer_logs_patient_id_fkey",
-        "federation_transfer_logs",
-        "patients",
-        ["patient_id"],
-        ["id"],
-        ondelete="CASCADE",
-    )
+    with op.batch_alter_table("federation_transfer_logs") as batch_op:
+        batch_op.drop_constraint(
+            "federation_transfer_logs_patient_id_fkey",
+            type_="foreignkey",
+        )
+        batch_op.create_foreign_key(
+            "federation_transfer_logs_patient_id_fkey",
+            "patients",
+            ["patient_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )

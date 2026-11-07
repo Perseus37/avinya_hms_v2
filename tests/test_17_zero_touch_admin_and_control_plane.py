@@ -229,7 +229,7 @@ def test_07_federation_privacy_sovereignty_patient_opt_out_and_hospital_isolated
     sun_client = client.post(
         "/v1/api/federation/clients",
         headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-PRIV-01", "name": "Sunrise Privacy Test Node"},
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Privacy Test Node"},
     ).json()
     fed_headers = {"X-Federation-API-Key": sun_client["raw_api_key"]}
 

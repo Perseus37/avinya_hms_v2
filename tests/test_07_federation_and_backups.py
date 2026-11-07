@@ -37,7 +37,7 @@ def test_01b_federation_registration_cannot_mint_an_arbitrary_branch_identity(cl
         json={"branch_code": "PARTNER-MUM-01", "name": "Mumbai Partner Hospital"},
     )
     assert reg_res.status_code == 403
-    assert "current tenant branch" in reg_res.json()["detail"].lower()
+    assert "current tenant branch" in reg_res.json()["message"].lower()
 
 
 def test_02_invalid_federation_api_key_format_returns_401(client):
@@ -454,7 +454,7 @@ def test_09_federation_import_enforces_corporate_group_policy(
             json=discovered.json(),
         )
         assert imported.status_code == 403
-        assert "cross-group" in imported.json()["detail"].lower()
+        assert "cross-group" in imported.json()["message"].lower()
     finally:
         with Session(apollo_engine) as db:
             policy = db.query(HospitalPolicySetting).first()
