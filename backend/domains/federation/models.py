@@ -68,7 +68,9 @@ def _sanitize_federation_identifier(identifier: str) -> str:
     if marker not in identifier.lower():
         return identifier
 
-    prefix, value = identifier.split(marker, 1)
+    marker_index = identifier.lower().find(marker)
+    prefix = identifier[:marker_index]
+    value = identifier[marker_index + len(marker):]
     if not value:
         return identifier
     fingerprint = hashlib.sha256(value.encode("utf-8")).hexdigest()
