@@ -26,6 +26,7 @@ RUN npm run build
 # STAGE 4: PRODUCTION TARGET (Hardened Nginx Alpine Serving Static SPA)
 # =====================================================================
 FROM nginx:1.27-alpine AS production
+LABEL org.opencontainers.image.source="https://github.com/Perseus37/avinya_hms_v2"
 RUN apk upgrade --no-cache
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
