@@ -372,7 +372,8 @@ def list_diagnostic_orders(
     if export_format and export_format.lower() == "csv":
         # CSV is a PHI disclosure too: preflight every patient before streaming headers/body.
         patient_rows = (
-            query.enable_eagerloads(False)
+            query.order_by(None)
+            .enable_eagerloads(False)
             .with_entities(DiagnosticOrder.patient_id)
             .distinct()
             .all()
