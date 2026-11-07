@@ -17,7 +17,7 @@ The Release gates workflow publishes only after all required validation jobs and
 - `main`
 - `release/**`
 
-Pull requests, scheduled scans, and manual workflow dispatches validate but do not publish. Publishing uses the workflow's short-lived `GITHUB_TOKEN` with job-scoped `packages: write`; no personal access token or long-lived registry password is required.
+Pull requests, scheduled scans, and manual workflow dispatches validate but do not publish. The build-and-scan job has only `contents: read` and exports the exact scanned images as a short-retention workflow artifact. A separate push-only publishing job downloads those images and receives the short-lived `GITHUB_TOKEN` with job-scoped `packages: write`. Pull-request, scheduled, and manual validation jobs never receive registry write permission. No personal access token or long-lived registry password is required.
 
 ## Tags and identity
 
@@ -36,7 +36,7 @@ All three digests must be recorded together as one release set, alongside the so
 
 ## Package visibility and access
 
-The first successful publish creates or updates the three GHCR packages. Verify package visibility and access in GitHub Packages before any deployment:
+The first successful publish creates or updates the three GHCR packages. The validated image set is handed from the scan job to the publish job as a workflow artifact retained for three days; the publisher loads and tags those same image contents rather than rebuilding them after the scans. Verify package visibility and access in GitHub Packages before any deployment:
 
 - Keep packages private unless public distribution is an explicit product decision.
 - Grant the production pull identity read-only access.
