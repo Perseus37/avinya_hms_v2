@@ -7,14 +7,28 @@ and clinical cockpit summaries to eliminate frontend waterfall requests.
 
 from datetime import date, datetime, timezone
 import json
+import logging
+import re
+import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from backend.core.database import get_db, resolve_tenant_context
+from backend.core.config import settings
+from backend.core.storage import (
+    StoragePathError,
+    UploadContentError,
+    UploadTooLargeError,
+    resolve_tenant_storage_file,
+    stage_and_publish_upload,
+    tenant_storage_directory,
+)
+from backend.core.database import get_control_db, get_db, resolve_tenant_context
 from backend.core.dependencies import RequirePermission, get_current_user, get_redis
 from backend.domains.clinical.models import (
     ClinicalEarlyWarningScore,
@@ -34,8 +48,348 @@ from backend.domains.patients.models import Patient, PatientAllergy
 from backend.domains.billing.models import PaymentReceipt, PaymentMethodEnum
 from backend.domains.pharmacy.models import Prescription
 from backend.domains.diagnostics.models import DiagnosticOrder
+from backend.control_plane.models import ControlPlaneAuditLog, TenantRegistry
+from backend.domains.procurement.documents import scan_file_with_clamav
 
 router = APIRouter(prefix="/api/ui", tags=["Clinical & Operational UI Aggregates"])
+logger = logging.getLogger(__name__)
+
+
+class TenantBrandingUpdate(BaseModel):
+    display_name: str = Field(min_length=2, max_length=150)
+    logo_url: Optional[str] = Field(default=None, max_length=2048)
+    favicon_url: Optional[str] = Field(default=None, max_length=2048)
+    primary_color: str = Field(default="#2563EB", pattern=r"^#[0-9a-fA-F]{6}$")
+    secondary_color: str = Field(default="#0F172A", pattern=r"^#[0-9a-fA-F]{6}$")
+    accent_color: str = Field(default="#0D9488", pattern=r"^#[0-9a-fA-F]{6}$")
+    tagline: Optional[str] = Field(default=None, max_length=160)
+
+
+class TenantBrandingResponse(BaseModel):
+    tenant_slug: str
+    hospital_name: str
+    display_name: str
+    logo_url: Optional[str] = None
+    favicon_url: Optional[str] = None
+    primary_color: str = "#2563EB"
+    secondary_color: str = "#0F172A"
+    accent_color: str = "#0D9488"
+    tagline: Optional[str] = None
+
+
+@router.get("/tenant-branding", response_model=TenantBrandingResponse)
+def get_tenant_branding(
+    request: Request,
+    control_db: Session = Depends(get_control_db),
+):
+    """Public, read-only branding bootstrap. Returns an allowlisted view of the resolved tenant's configuration."""
+    tenant_context = resolve_tenant_context(request)
+    tenant = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.subdomain_slug == tenant_context.subdomain_slug,
+            TenantRegistry.is_active == True,
+        )
+    ).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant configuration not found.")
+
+    try:
+        raw = json.loads(tenant.ui_branding_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def safe_text(key: str, fallback: Optional[str] = None) -> Optional[str]:
+        value = raw.get(key)
+        return value.strip()[:160] if isinstance(value, str) and value.strip() else fallback
+
+    def safe_color(key: str, fallback: str) -> str:
+        value = raw.get(key)
+        if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value.strip()):
+            return value.strip()
+        return fallback
+
+    def safe_asset_url(key: str) -> Optional[str]:
+        value = raw.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        candidate = value.strip()
+        if candidate.startswith("/") and not candidate.startswith("//"):
+            return candidate
+        if candidate.startswith("https://"):
+            return candidate
+        return None
+
+    hospital_name = tenant_context.hospital_name
+    return TenantBrandingResponse(
+        tenant_slug=tenant_context.subdomain_slug,
+        hospital_name=hospital_name,
+        display_name=safe_text("display_name", hospital_name) or hospital_name,
+        logo_url=safe_asset_url("logo_url"),
+        favicon_url=safe_asset_url("favicon_url"),
+        primary_color=safe_color("primary_color", "#2563EB"),
+        secondary_color=safe_color("secondary_color", "#0F172A"),
+        accent_color=safe_color("accent_color", "#0D9488"),
+        tagline=safe_text("tagline"),
+    )
+
+
+@router.put(
+    "/tenant-branding",
+    response_model=TenantBrandingResponse,
+    dependencies=[Depends(RequirePermission("config:write"))],
+)
+def update_tenant_branding(
+    payload: TenantBrandingUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    control_db: Session = Depends(get_control_db),
+):
+    """Update the allowlisted branding configuration for the resolved tenant."""
+    tenant_context = resolve_tenant_context(request)
+    tenant = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.subdomain_slug == tenant_context.subdomain_slug,
+            TenantRegistry.is_active == True,
+        )
+    ).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant configuration not found.")
+
+    for asset_url in (payload.logo_url, payload.favicon_url):
+        if asset_url and not (
+            (asset_url.startswith("/") and not asset_url.startswith("//"))
+            or asset_url.startswith("https://")
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Brand assets must use HTTPS URLs or same-origin absolute paths.",
+            )
+
+    try:
+        branding = json.loads(tenant.ui_branding_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        branding = {}
+    if not isinstance(branding, dict):
+        branding = {}
+
+    updates = payload.model_dump()
+    updates["display_name"] = updates["display_name"].strip()
+    if len(updates["display_name"]) < 2:
+        raise HTTPException(status_code=422, detail="Display name must contain at least two characters.")
+    if updates["tagline"] is not None:
+        updates["tagline"] = updates["tagline"].strip() or None
+    branding.update(updates)
+
+    tenant.ui_branding_json = json.dumps(branding)
+    control_db.add(tenant)
+    control_db.add(
+        ControlPlaneAuditLog(
+            action="TENANT_BRANDING_UPDATED",
+            target_slug=tenant.subdomain_slug,
+            actor=current_user.email,
+            details="Updated tenant display identity, logo, favicon, and theme configuration.",
+        )
+    )
+    control_db.commit()
+    control_db.refresh(tenant)
+
+    return TenantBrandingResponse(
+        tenant_slug=tenant.subdomain_slug,
+        hospital_name=tenant.hospital_name,
+        display_name=branding.get("display_name") or tenant.hospital_name,
+        logo_url=branding.get("logo_url"),
+        favicon_url=branding.get("favicon_url"),
+        primary_color=branding.get("primary_color", "#2563EB"),
+        secondary_color=branding.get("secondary_color", "#0F172A"),
+        accent_color=branding.get("accent_color", "#0D9488"),
+        tagline=branding.get("tagline"),
+    )
+
+
+_BRAND_ASSET_SIGNATURES = {
+    ".png": (b"\x89PNG\r\n\x1a\n", "image/png"),
+    ".jpg": (b"\xff\xd8\xff", "image/jpeg"),
+    ".jpeg": (b"\xff\xd8\xff", "image/jpeg"),
+    ".webp": (b"RIFF", "image/webp"),
+}
+_BRAND_ASSET_ID = re.compile(r"^[0-9a-f]{32}\.(png|jpg|jpeg|webp)$")
+_BRAND_ASSET_URL_PREFIX = "/api/ui/tenant-branding/assets/"
+
+
+def _local_brand_asset_id(asset_url: Any) -> Optional[str]:
+    """Return an asset ID only for URLs owned by this branding endpoint."""
+    if not isinstance(asset_url, str) or not asset_url.startswith(_BRAND_ASSET_URL_PREFIX):
+        return None
+    asset_id = asset_url[len(_BRAND_ASSET_URL_PREFIX):]
+    return asset_id if _BRAND_ASSET_ID.fullmatch(asset_id) else None
+
+
+def _delete_tenant_brand_asset(tenant_slug: str, asset_id: str) -> None:
+    """Delete one validated asset inside its tenant directory; never follow path escapes."""
+    if not _BRAND_ASSET_ID.fullmatch(asset_id):
+        return
+    try:
+        tenant_root = tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_slug,
+            "branding-assets",
+            create=False,
+        )
+        asset_path = resolve_tenant_storage_file(tenant_root, asset_id)
+    except StoragePathError:
+        return
+    try:
+        if asset_path.is_file():
+            asset_path.unlink()
+    except OSError:
+        # Branding has already committed; cleanup is best-effort and must not
+        # turn a successful configuration update into a failed upload response.
+        logger.warning("Unable to remove replaced tenant brand asset: %s", asset_path, exc_info=True)
+
+
+
+
+@router.post(
+    "/tenant-branding/assets",
+    dependencies=[Depends(RequirePermission("config:write"))],
+)
+def upload_tenant_brand_asset(
+    request: Request,
+    kind: str = Query(..., pattern=r"^(logo|favicon)$"),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    control_db: Session = Depends(get_control_db),
+):
+    """Store a tenant-isolated raster brand asset after signature and malware checks."""
+    tenant_context = resolve_tenant_context(request)
+    tenant = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.subdomain_slug == tenant_context.subdomain_slug,
+            TenantRegistry.is_active == True,
+        )
+    ).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant configuration not found.")
+
+    suffix = Path(file.filename or "").suffix.lower()
+    signature_info = _BRAND_ASSET_SIGNATURES.get(suffix)
+    if signature_info is None:
+        raise HTTPException(status_code=415, detail="Brand assets must be PNG, JPEG, or WebP images.")
+
+    signature, media_type = signature_info
+    if not re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}$", tenant_context.subdomain_slug):
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    try:
+        tenant_root = tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_context.subdomain_slug,
+            "branding-assets",
+            create=True,
+        )
+    except StoragePathError as exc:
+        logger.error("Unable to prepare tenant brand asset storage.", exc_info=True)
+        raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
+
+    asset_id = f"{uuid.uuid4().hex}{suffix}"
+
+    def validate_staged_asset(staged_path: Path) -> None:
+        if suffix == ".webp":
+            with staged_path.open("rb") as image_file:
+                image_file.seek(8)
+                if image_file.read(4) != b"WEBP":
+                    raise UploadContentError("Image content does not match its file type.")
+
+    try:
+        stage_and_publish_upload(
+            tenant_root,
+            asset_id,
+            f".{asset_id}.part",
+            file.file,
+            max_bytes=settings.MAX_ATTACHMENT_UPLOAD_BYTES,
+            signature=signature,
+            scanner=scan_file_with_clamav,
+            validate_staged=validate_staged_asset,
+        )
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=413, detail="Brand asset exceeds the configured upload limit.") from exc
+    except UploadContentError as exc:
+        raise HTTPException(status_code=415, detail="Image content does not match its file type.") from exc
+    except OSError as exc:
+        logger.error("Tenant brand asset write failed.", exc_info=True)
+        raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
+    finally:
+        file.file.close()
+
+    asset_url = f"/api/ui/tenant-branding/assets/{asset_id}"
+    try:
+        try:
+            branding = json.loads(tenant.ui_branding_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            branding = {}
+        if not isinstance(branding, dict):
+            branding = {}
+        branding_key = "logo_url" if kind == "logo" else "favicon_url"
+        previous_asset_id = _local_brand_asset_id(branding.get(branding_key))
+        branding[branding_key] = asset_url
+        tenant.ui_branding_json = json.dumps(branding)
+        control_db.add(tenant)
+        control_db.add(ControlPlaneAuditLog(
+            action="TENANT_BRAND_ASSET_UPLOADED",
+            target_slug=tenant.subdomain_slug,
+            actor=current_user.email,
+            details=f"Uploaded tenant {kind} image ({media_type}, {total_bytes} bytes).",
+        ))
+        control_db.commit()
+    except Exception:
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            # Preserve the DB rollback even if cleanup cannot reach the mount;
+            # the resulting unreferenced file can be removed by storage maintenance.
+            logger.warning("Unable to remove uncommitted tenant brand asset: %s", destination, exc_info=True)
+        control_db.rollback()
+        raise
+
+    # Remove only the replaced local asset, and only when neither branding slot
+    # still references it. External URLs and unrelated files are never touched.
+    still_referenced = previous_asset_id and any(
+        _local_brand_asset_id(branding.get(key)) == previous_asset_id
+        for key in ("logo_url", "favicon_url")
+    )
+    if previous_asset_id and previous_asset_id != asset_id and not still_referenced:
+        _delete_tenant_brand_asset(tenant.subdomain_slug, previous_asset_id)
+
+    return {"asset_url": asset_url, "kind": kind, "size_bytes": total_bytes}
+
+
+@router.get("/tenant-branding/assets/{asset_id}")
+def get_tenant_brand_asset(request: Request, asset_id: str):
+    """Serve only a tenant's own validated brand asset; no shared static path is exposed."""
+    if not _BRAND_ASSET_ID.fullmatch(asset_id):
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    tenant_context = resolve_tenant_context(request)
+    if not re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}$", tenant_context.subdomain_slug):
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    try:
+        tenant_root = tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_context.subdomain_slug,
+            "branding-assets",
+            create=False,
+        )
+        asset_path = resolve_tenant_storage_file(tenant_root, asset_id)
+    except StoragePathError as exc:
+        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
+    if not asset_path.is_file():
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    media_type = _BRAND_ASSET_SIGNATURES[asset_path.suffix.lower()][1]
+    return FileResponse(
+        asset_path,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 # ---------------------------------------------------------------------------

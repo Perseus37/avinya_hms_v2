@@ -212,6 +212,7 @@ def _decode_mfa_token(token: str, tenant, purpose: str) -> int:
     if (
         payload.get("purpose") != purpose
         or payload.get("tenant_slug") != tenant.subdomain_slug
+        or payload.get("branch_code") != tenant.branch_code
         or not isinstance(subject, str)
         or not subject.isdecimal()
     ):
@@ -249,6 +250,7 @@ def _decode_unlock_token(token: str, tenant) -> int:
     if (
         payload.get("purpose") != "account_unlock"
         or payload.get("tenant_slug") != tenant.subdomain_slug
+        or payload.get("branch_code") != tenant.branch_code
         or not isinstance(subject, str)
         or not subject.isdecimal()
     ):

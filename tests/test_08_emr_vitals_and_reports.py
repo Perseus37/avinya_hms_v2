@@ -739,3 +739,22 @@ def test_16_expanded_variable_catalog_covers_all_7_report_types_and_renders_invo
     assert print_res.status_code == 200
     assert "Staff Family 25% Waiver" in print_res.text
     assert "₹1,500.00" in print_res.text
+
+
+def test_report_preview_sample_context_uses_neutral_branding_defaults():
+    from backend.domains.reports.router import _build_sample_context
+
+    context = _build_sample_context()
+    assert context["tenant"]["hospital_name"] == "Hospital"
+    assert context["tenant"]["branch_code"] == "MAIN"
+
+def test_report_template_branding_catalog_uses_neutral_tenant_samples():
+    from backend.domains.reports.templates import COMMON_GROUPS
+
+    branding = next(group for group in COMMON_GROUPS if group["group_name"] == "Hospital Branding")
+    samples = {item["label"]: item["sample"] for item in branding["variables"]}
+
+    assert samples["Hospital Name"] == "Sample Hospital"
+    assert samples["Branch Code"] == "SAMPLE-01"
+    assert "Apollo" not in " ".join(samples.values())
+

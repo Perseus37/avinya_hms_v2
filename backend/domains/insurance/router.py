@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from backend.core.database import get_db, resolve_tenant_context
+from backend.core.document_responses import pdf_attachment_response
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, validate_pagination
 from backend.core.export import stream_csv_response, chunked_query_fetcher
@@ -49,12 +50,7 @@ def _insurance_document_response(html: str, document_number: str) -> Response:
         content = render_html_pdf(html)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    filename = re.sub(r"[^A-Za-z0-9._-]", "_", f"{document_number}.pdf")
-    return Response(
-        content=content,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return pdf_attachment_response(content, f"{document_number}.pdf")
 
 
 # -----------------------------------------------------------------------------

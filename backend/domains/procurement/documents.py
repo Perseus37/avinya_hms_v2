@@ -9,6 +9,15 @@ from typing import BinaryIO
 from fastapi import HTTPException, status
 
 from backend.core.config import settings
+from backend.core.storage import (
+    StoragePathError,
+    UploadContentError,
+    UploadEmptyError,
+    UploadTooLargeError,
+    resolve_tenant_storage_file,
+    stage_and_publish_upload,
+    tenant_storage_directory,
+)
 
 _ALLOWED_SIGNATURES = {
     ".pdf": b"%PDF-",
@@ -17,7 +26,6 @@ _ALLOWED_SIGNATURES = {
     ".jpeg": b"\xff\xd8\xff",
 }
 _TENANT_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-_CHUNK_SIZE = 1024 * 1024
 _CLAMD_CHUNK_SIZE = 64 * 1024
 _CLAMD_MAX_RESPONSE_BYTES = 4096
 
@@ -71,6 +79,22 @@ def scan_file_with_clamav(document_path: Path) -> None:
     )
 
 
+def _invoice_storage_directory(tenant_slug: str, *, create: bool) -> Path:
+    """Return the shared tenant-safe procurement storage namespace."""
+    try:
+        return tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_slug,
+            "procurement-invoices",
+            create=create,
+        )
+    except StoragePathError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Invoice document storage is unavailable.",
+        ) from exc
+
+
 def store_vendor_invoice_document(
     tenant_slug: str, filename: str | None, source: BinaryIO
 ) -> tuple[str, Path]:
@@ -86,70 +110,64 @@ def store_vendor_invoice_document(
             detail="Invoice documents must be PDF, PNG, or JPEG files.",
         )
 
-    root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-    tenant_root = root / tenant_slug
-    tenant_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(tenant_root, 0o700)
-    tenant_dir = tenant_root / "procurement-invoices"
-    tenant_dir.mkdir(exist_ok=True, mode=0o700)
-    os.chmod(tenant_dir, 0o700)
+    tenant_dir = _invoice_storage_directory(tenant_slug, create=True)
     document_id = uuid.uuid4().hex
-    destination = tenant_dir / f"{document_id}{suffix}"
-    temporary = tenant_dir / f".{document_id}.part"
-    total_bytes = 0
-    header = bytearray()
+    destination_name = f"{document_id}{suffix}"
+    temporary_name = f".{document_id}.part"
 
     try:
-        with temporary.open("xb") as output:
-            os.chmod(temporary, 0o600)
-            while chunk := source.read(_CHUNK_SIZE):
-                total_bytes += len(chunk)
-                if total_bytes > settings.MAX_ATTACHMENT_UPLOAD_BYTES:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                        detail="Invoice document exceeds the configured upload limit.",
-                    )
-                if len(header) < len(signature):
-                    header.extend(chunk[: len(signature) - len(header)])
-                output.write(chunk)
+        stage_and_publish_upload(
+            tenant_dir,
+            destination_name,
+            temporary_name,
+            source,
+            max_bytes=settings.MAX_ATTACHMENT_UPLOAD_BYTES,
+            signature=signature,
+            scanner=scan_file_with_clamav,
+        )
+    except UploadTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Invoice document exceeds the configured upload limit.",
+        ) from exc
+    except UploadEmptyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invoice document cannot be empty.",
+        ) from exc
+    except UploadContentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Invoice document content does not match its file type.",
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Invoice document storage is unavailable.",
+        ) from exc
 
-        if not header.startswith(signature):
-            raise HTTPException(
-                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail="Invoice document content does not match its file type.",
-            )
-        if total_bytes == 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invoice document cannot be empty.",
-            )
-
-        scan_file_with_clamav(temporary)
-        os.replace(temporary, destination)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-
+    destination = tenant_dir / destination_name
     key = PurePosixPath(tenant_slug, "procurement-invoices", destination.name).as_posix()
     return key, destination
-
-
 def resolve_vendor_invoice_document(tenant_slug: str, document_key: str) -> Path:
-    """Resolve a stored invoice key while enforcing its tenant directory boundary."""
+    """Resolve a stored invoice key while enforcing tenant and symlink boundaries."""
     if not _TENANT_SLUG.fullmatch(tenant_slug):
         raise RuntimeError("Tenant slug is not a safe storage path component.")
 
     key = PurePosixPath(document_key)
     expected_prefix = PurePosixPath(tenant_slug, "procurement-invoices")
-    if key.is_absolute() or key.parts[:2] != expected_prefix.parts or len(key.parts) != 3:
+    if (
+        key.is_absolute()
+        or key.parts[:2] != expected_prefix.parts
+        or len(key.parts) != 3
+        or not re.fullmatch(r"[0-9a-f]{32}\.(?:pdf|png|jpg|jpeg)", key.name)
+    ):
         raise HTTPException(status_code=404, detail="Invoice document not found.")
 
-    root = Path(settings.ATTACHMENTS_STORAGE_DIR).resolve()
-    tenant_root = (root / tenant_slug / "procurement-invoices").resolve()
-    document_path = (root.joinpath(*key.parts)).resolve()
+    tenant_dir = _invoice_storage_directory(tenant_slug, create=False)
     try:
-        document_path.relative_to(tenant_root)
-    except ValueError as exc:
+        document_path = resolve_tenant_storage_file(tenant_dir, key.name)
+    except StoragePathError as exc:
         raise HTTPException(status_code=404, detail="Invoice document not found.") from exc
 
     if document_path.suffix.lower() not in _ALLOWED_SIGNATURES or not document_path.is_file():

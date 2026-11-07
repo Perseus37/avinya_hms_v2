@@ -261,7 +261,7 @@ export const PatientRecordWorkspace: React.FC = () => {
         </div>
         <div style="margin-top: 30px; font-size: 11px; border-top: 1px solid #ccc; padding-top: 8px; display: flex; justify-content: space-between;">
           <div>Generated on: ${new Date().toLocaleString()}</div>
-          <div>Avinya Clinical OS Record</div>
+          <div>Clinical record</div>
         </div>
       </div>
     `;

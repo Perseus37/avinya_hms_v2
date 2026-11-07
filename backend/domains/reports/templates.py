@@ -140,8 +140,8 @@ COMMON_GROUPS: List[Dict[str, Any]] = [
     {
         "group_name": "Hospital Branding",
         "variables": [
-            {"label": "Hospital Name", "token": "{{ tenant.hospital_name }}", "sample": "Apollo Hospital"},
-            {"label": "Branch Code", "token": "{{ tenant.branch_code }}", "sample": "APOLLO-HYD-01"},
+            {"label": "Hospital Name", "token": "{{ tenant.hospital_name }}", "sample": "Sample Hospital"},
+            {"label": "Branch Code", "token": "{{ tenant.branch_code }}", "sample": "SAMPLE-01"},
             {"label": "Printed Timestamp", "token": "{{ tenant.printed_at }}", "sample": "2026-10-02 14:45 IST"},
         ],
     },

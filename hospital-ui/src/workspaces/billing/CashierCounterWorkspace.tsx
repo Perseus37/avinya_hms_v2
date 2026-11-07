@@ -254,7 +254,7 @@ export const CashierCounterWorkspace: React.FC = () => {
         <div style="text-align: center; border-bottom: 2px solid #000; padding-bottom: 12px; margin-bottom: 16px;">
           <h2 style="margin: 0; font-size: 20px; text-transform: uppercase;">${hospitalProfile.name}</h2>
           <div style="font-size: 12px; font-weight: bold; color: #333; margin-top: 2px;">STATUTORY GST TAX INVOICE & CASHIER SETTLEMENT RECEIPT</div>
-          <div style="font-size: 10px; color: #555;">${hospitalProfile.address} • GSTIN: ${hospitalProfile.taxGstin || "36AABCA1234D1Z5"}</div>
+          ${hospitalProfile.address || hospitalProfile.taxGstin ? `<div style="font-size: 10px; color: #555;">${hospitalProfile.address}${hospitalProfile.address && hospitalProfile.taxGstin ? " • " : ""}${hospitalProfile.taxGstin ? `GSTIN: ${hospitalProfile.taxGstin}` : ""}</div>` : ""}
         </div>
         <div style="display: flex; justify-content: space-between; border-bottom: 1px solid #ccc; padding-bottom: 8px; font-size: 12px; margin-bottom: 12px;">
           <div><b>Patient Legal Name:</b> ${lastSettledInvoice.patientName.toUpperCase()}</div>
@@ -926,8 +926,14 @@ export const CashierCounterWorkspace: React.FC = () => {
             <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-3 font-mono text-xs">
               <div className="flex justify-between border-b border-slate-800 pb-2">
                 <div>
-                  <span className="font-bold text-slate-100 text-sm">AVINYA HEALTHCARE LTD.</span>
-                  <div className="text-[10px] text-slate-400">GSTIN: 36AAAAA0000A1Z5 • NABH Accredited</div>
+                  <span className="font-bold text-slate-100 text-sm">{hospitalProfile.name || "HEALTHCARE FACILITY"}</span>
+                  {(hospitalProfile.taxGstin || hospitalProfile.accreditation) && (
+                    <div className="text-[10px] text-slate-400">
+                      {hospitalProfile.taxGstin ? `GSTIN: ${hospitalProfile.taxGstin}` : ""}
+                      {hospitalProfile.taxGstin && hospitalProfile.accreditation ? " • " : ""}
+                      {hospitalProfile.accreditation || ""}
+                    </div>
+                  )}
                 </div>
                 <div className="text-right">
                   <div className="text-emerald-400 font-bold">{lastSettledInvoice.invoiceNumber}</div>
