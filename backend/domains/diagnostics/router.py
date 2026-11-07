@@ -49,6 +49,21 @@ from backend.domains.privacy.runtime import evaluate_tenant_patient_data_uses
 router = APIRouter(prefix="/api/diagnostics", tags=["Diagnostic Services & LIS"])
 
 
+def _diagnostic_task_response_with_context(task: DiagnosticTask) -> dict:
+    """Build a worklist projection; callers must complete patient privacy checks first."""
+    response = DiagnosticTaskResponse.model_validate(task).model_dump()
+    service = task.service
+    patient = task.order.patient if task.order else None
+    response.update({
+        "service_name": service.name if service else None,
+        "service_code": service.code if service else None,
+        "patient_name": patient.full_name if patient else None,
+        "patient_mrn": patient.mrn if patient else None,
+        "order_status": task.order.status if task.order else None,
+    })
+    return response
+
+
 # -----------------------------------------------------------------------------
 # Service Master Data Domain (Catalog & Bundles)
 # -----------------------------------------------------------------------------
@@ -355,6 +370,22 @@ def list_diagnostic_orders(
     query = query.order_by(DiagnosticOrder.id.desc())
 
     if export_format and export_format.lower() == "csv":
+        # CSV is a PHI disclosure too: preflight every patient before streaming headers/body.
+        patient_rows = (
+            query.enable_eagerloads(False)
+            .with_entities(DiagnosticOrder.patient_id)
+            .distinct()
+            .all()
+        )
+        decisions = evaluate_tenant_patient_data_uses(
+            db,
+            data_use_point="diagnostics.orders.search",
+            patient_ids=[row[0] for row in patient_rows],
+            actor_user_id=actor.id,
+        )
+        if any(not decision.allowed for decision in decisions):
+            raise HTTPException(status_code=403, detail="Privacy policy does not permit one or more patient disclosures.")
+
         fieldnames = [
             "id",
             "patient_mrn",
@@ -487,7 +518,15 @@ def list_order_tasks(
     actor: User = Depends(RequirePermission("diagnostics:read")),
 ):
     page, page_size = validate_pagination(page, page_size)
-    query = db.query(DiagnosticTask).filter(DiagnosticTask.order_id == order_id).order_by(DiagnosticTask.id.asc())
+    query = (
+        db.query(DiagnosticTask)
+        .options(
+            joinedload(DiagnosticTask.order).joinedload(DiagnosticOrder.patient),
+            joinedload(DiagnosticTask.service),
+        )
+        .filter(DiagnosticTask.order_id == order_id)
+        .order_by(DiagnosticTask.id.asc())
+    )
     total = query.count()
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     order = db.get(DiagnosticOrder, order_id)
@@ -500,7 +539,7 @@ def list_order_tasks(
         )
         if any(not decision.allowed for decision in decisions):
             raise HTTPException(status_code=403, detail="Privacy policy does not permit this patient disclosure.")
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    return {"items": [_diagnostic_task_response_with_context(item) for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.get(
@@ -516,7 +555,10 @@ def get_department_task_queue(
     actor: User = Depends(RequirePermission("diagnostics:read")),
 ):
     page, page_size = validate_pagination(page, page_size)
-    query = db.query(DiagnosticTask)
+    query = db.query(DiagnosticTask).options(
+        joinedload(DiagnosticTask.order).joinedload(DiagnosticOrder.patient),
+        joinedload(DiagnosticTask.service),
+    )
     if status is not None:
         query = query.filter(DiagnosticTask.status == status)
     else:
@@ -533,7 +575,7 @@ def get_department_task_queue(
     )
     if any(not decision.allowed for decision in decisions):
         raise HTTPException(status_code=403, detail="Privacy policy does not permit one or more patient disclosures.")
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    return {"items": [_diagnostic_task_response_with_context(item) for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.get(
@@ -553,7 +595,10 @@ def get_laboratory_worklist(
     in-progress tests, and rejected specimens requiring re-collection.
     """
     page, page_size = validate_pagination(page, page_size)
-    query = db.query(DiagnosticTask)
+    query = db.query(DiagnosticTask).options(
+        joinedload(DiagnosticTask.order).joinedload(DiagnosticOrder.patient),
+        joinedload(DiagnosticTask.service),
+    )
     if status_filter is not None:
         query = query.filter(DiagnosticTask.status == status_filter)
     else:
@@ -577,7 +622,7 @@ def get_laboratory_worklist(
     )
     if any(not decision.allowed for decision in decisions):
         raise HTTPException(status_code=403, detail="Privacy policy does not permit one or more patient disclosures.")
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    return {"items": [_diagnostic_task_response_with_context(item) for item in items], "total": total, "page": page, "page_size": page_size}
 
 
 @router.patch("/tasks/{task_id}/result", status_code=200)
@@ -758,6 +803,10 @@ def list_critical_panic_lab_alerts(
     """Returns all diagnostic tasks flagged with critical life-threatening panic values."""
     stmt = (
         select(DiagnosticTask)
+        .options(
+            joinedload(DiagnosticTask.order).joinedload(DiagnosticOrder.patient),
+            joinedload(DiagnosticTask.service),
+        )
         .where(DiagnosticTask.is_critical_panic == True)
         .order_by(DiagnosticTask.id.desc())
     )
@@ -770,7 +819,7 @@ def list_critical_panic_lab_alerts(
     )
     if any(not decision.allowed for decision in decisions):
         raise HTTPException(status_code=403, detail="Privacy policy does not permit one or more patient disclosures.")
-    return tasks
+    return [_diagnostic_task_response_with_context(task) for task in tasks]
 
 
 # -----------------------------------------------------------------------------
