@@ -238,6 +238,42 @@ jobs:
           vuln-type: os,library
           severity: HIGH,CRITICAL
           trivyignores: .trivyignore
+      # Generate machine-readable SBOMs from the exact images that passed the scans.
+      - name: Generate API CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: avinya-hms-api:ci
+          format: cyclonedx
+          output: avinya-hms-api.cdx.json
+          exit-code: "0"
+
+      - name: Generate Hospital UI CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: avinya-hospital-ui:ci
+          format: cyclonedx
+          output: avinya-hospital-ui.cdx.json
+          exit-code: "0"
+
+      - name: Generate ClamAV CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: avinya-clamav:1.4.6-patched
+          format: cyclonedx
+          output: avinya-clamav.cdx.json
+          exit-code: "0"
+
+      - name: Upload release SBOMs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-sbom-${{ github.sha }}
+          path: |
+            avinya-hms-api.cdx.json
+            avinya-hospital-ui.cdx.json
+            avinya-clamav.cdx.json
+          retention-days: 90
+          if-no-files-found: error
+
       # Preserve the exact scanned images for a separately permissioned publish job.
       - name: Export scanned release images
         run: |
@@ -266,6 +302,19 @@ jobs:
         with:
           name: release-images-${{ github.sha }}
           path: release-images
+
+      - name: Download release SBOMs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-sbom-${{ github.sha }}
+          path: release-sbom
+
+      - name: Verify CycloneDX SBOM set
+        run: |
+          set -euo pipefail
+          for file in avinya-hms-api.cdx.json avinya-hospital-ui.cdx.json avinya-clamav.cdx.json; do
+            jq -e '.bomFormat == "CycloneDX"' "release-sbom/$file" >/dev/null
+          done
 
       - name: Load scanned release images
         run: gzip -dc release-images/release-images.tar.gz | docker load
