@@ -6,7 +6,8 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
-from backend.security.totp import totp_code as _totp_code
+from backend.domains.identity import auth_router
+from backend.security.totp import matching_totp_counter, totp_code as _totp_code
 from backend.domains.identity.models import AuthSession
 
 
@@ -146,12 +147,34 @@ def test_privileged_login_requires_mfa_then_challenges_for_each_login(
         },
     )
     assert replayed_enrollment.status_code == 401
+    verification_time = [datetime.now(timezone.utc)]
+    monkeypatch.setattr(
+        auth_router,
+        "_matching_totp_counter",
+        lambda secret, code: matching_totp_counter(
+            secret, code, at=verification_time[0]
+        ),
+    )
+    enrollment_totp_code = _totp_code(secret, verification_time[0])
     enrolled = client.post(
         "/v1/api/auth/mfa/confirm",
         headers={"X-Hospital-Subdomain": "default"},
-        json={"mfa_token": challenge["mfa_token"], "code": _totp_code(secret)},
+        json={
+            "mfa_token": challenge["mfa_token"],
+            "code": enrollment_totp_code,
+        },
     )
     assert enrolled.status_code == 200, enrolled.text
+
+    # Verify replay state survived the confirmation transaction before testing
+    # the same code through a fresh login request/session.
+    from backend.domains.identity.models import User
+
+    with Session(multi_tenant_env["tenant_engines"]["hms_default"]) as db:
+        persisted_user = db.query(User).filter_by(email="admin@default.com").one()
+        assert persisted_user.mfa_last_used_counter == matching_totp_counter(
+            secret, enrollment_totp_code, at=verification_time[0]
+        )
     access_token = enrolled.json()["access_token"]
     assert len(enrolled.json()["recovery_codes"]) == 10
     assert client.get(
@@ -166,7 +189,7 @@ def test_privileged_login_requires_mfa_then_challenges_for_each_login(
         headers={"X-Hospital-Subdomain": "default"},
         json={
             "mfa_token": next_login.json()["mfa_token"],
-            "code": _totp_code(secret),
+            "code": _totp_code(secret, verification_time[0]),
         },
     )
     assert same_counter.status_code == 401
@@ -191,12 +214,13 @@ def test_privileged_login_requires_mfa_then_challenges_for_each_login(
         },
     )
     assert rejected_recovery.status_code == 401
+    verification_time[0] += timedelta(seconds=30)
     verified_with_totp = client.post(
         "/v1/api/auth/mfa/verify-login",
         headers={"X-Hospital-Subdomain": "default"},
         json={
             "mfa_token": replay.json()["mfa_token"],
-            "code": _totp_code(secret, datetime.now(timezone.utc) + timedelta(seconds=30)),
+            "code": _totp_code(secret, verification_time[0]),
         },
     )
     assert verified_with_totp.status_code == 200

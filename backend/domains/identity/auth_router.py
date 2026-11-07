@@ -160,10 +160,22 @@ def _verify_mfa_code(db: Session, user: User, code: str) -> bool:
     secret = decrypt_tenant_secret(user.mfa_secret)
     counter = _matching_totp_counter(secret, code)
     if counter is not None:
-        if (
-            user.mfa_last_used_counter is not None
-            and counter <= user.mfa_last_used_counter
-        ):
+        # Consume the TOTP counter with a compare-and-swap update. The row lock
+        # above serializes normal verification requests; this conditional write
+        # also makes replay rejection explicit at the database boundary.
+        consumed = db.execute(
+            update(User)
+            .where(
+                User.id == user.id,
+                (
+                    User.mfa_last_used_counter.is_(None)
+                    | (User.mfa_last_used_counter < counter)
+                ),
+            )
+            .values(mfa_last_used_counter=counter)
+            .execution_options(synchronize_session=False)
+        )
+        if consumed.rowcount != 1:
             return False
         user.mfa_last_used_counter = counter
         return True

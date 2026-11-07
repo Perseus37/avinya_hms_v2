@@ -176,9 +176,12 @@ jobs:
           docker run --rm --entrypoint /bin/amtool -v "$(pwd)/deployments:/deployments:ro" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /deployments/alertmanager.yml
 
   production-image:
-    name: Build production API image
+    name: Build and scan production images
+    needs: [python-tests, onboarding-ui, hospital-ui, compose-config]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    permissions:
+      contents: read
     # Heavy image build and Trivy CVE scans run for main/release branches and dispatches,
     # keeping dev pull requests fast and lightweight.
     if: >-
@@ -208,6 +211,20 @@ jobs:
           severity: HIGH,CRITICAL
           trivyignores: .trivyignore
 
+      - name: Build production Hospital UI image
+        run: docker build --file hospital-ui/Dockerfile --target production --tag avinya-hospital-ui:ci hospital-ui
+
+      - name: Scan Hospital UI image for fixable high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: avinya-hospital-ui:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          trivyignores: .trivyignore
+
       - name: Build patched ClamAV image
         run: docker build --file Dockerfile.clamav --tag avinya-clamav:1.4.6-patched .
 
@@ -221,3 +238,151 @@ jobs:
           vuln-type: os,library
           severity: HIGH,CRITICAL
           trivyignores: .trivyignore
+      # Generate machine-readable SBOMs from the exact images that passed the scans.
+      - name: Generate API CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: avinya-hms-api:ci
+          format: cyclonedx
+          output: avinya-hms-api.cdx.json
+          exit-code: "0"
+
+      - name: Generate Hospital UI CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: avinya-hospital-ui:ci
+          format: cyclonedx
+          output: avinya-hospital-ui.cdx.json
+          exit-code: "0"
+
+      - name: Generate ClamAV CycloneDX SBOM
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: avinya-clamav:1.4.6-patched
+          format: cyclonedx
+          output: avinya-clamav.cdx.json
+          exit-code: "0"
+
+      - name: Upload release SBOMs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-sbom-${{ github.sha }}
+          path: |
+            avinya-hms-api.cdx.json
+            avinya-hospital-ui.cdx.json
+            avinya-clamav.cdx.json
+          retention-days: 90
+          if-no-files-found: error
+
+      # Preserve the exact scanned images for a separately permissioned publish job.
+      - name: Export scanned release images
+        run: |
+          set -euo pipefail
+          docker save avinya-hms-api:ci avinya-hospital-ui:ci avinya-clamav:1.4.6-patched | gzip -1 > release-images.tar.gz
+
+      - name: Upload scanned release images
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-images-${{ github.sha }}
+          path: release-images.tar.gz
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+
+  verify-image-artifact:
+    name: Verify scanned image artifact handoff
+    needs: [production-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Download scanned release images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-images-${{ github.sha }}
+          path: release-images
+
+      - name: Download release SBOMs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-sbom-${{ github.sha }}
+          path: release-sbom
+
+      - name: Verify CycloneDX SBOM set
+        run: |
+          set -euo pipefail
+          for file in avinya-hms-api.cdx.json avinya-hospital-ui.cdx.json avinya-clamav.cdx.json; do
+            jq -e '.bomFormat == "CycloneDX"' "release-sbom/$file" >/dev/null
+          done
+
+      - name: Load scanned release images
+        run: gzip -dc release-images/release-images.tar.gz | docker load
+
+      - name: Verify all scanned image tags are present
+        run: |
+          docker image inspect avinya-hms-api:ci avinya-hospital-ui:ci avinya-clamav:1.4.6-patched >/dev/null
+
+  publish-images:
+    name: Publish scanned images to GHCR
+    needs: [production-image, verify-image-artifact]
+    if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download scanned release images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-images-${{ github.sha }}
+          path: release-images
+
+      - name: Load scanned release images
+        run: gzip -dc release-images/release-images.tar.gz | docker load
+
+      - name: Log in to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Tag and publish scanned images
+        env:
+          IMAGE_OWNER: ${{ github.repository_owner }}
+          IMAGE_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          IMAGE_NAMESPACE="ghcr.io/$(printf '%s' "$IMAGE_OWNER" | tr '[:upper:]' '[:lower:]')"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            CHANNEL_TAG="main"
+          else
+            CHANNEL_TAG="$(printf '%s' "${GITHUB_REF#refs/heads/}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
+          fi
+
+          declare -A IMAGES=(
+            [avinya-hms-api]="avinya-hms-api:ci"
+            [avinya-hospital-ui]="avinya-hospital-ui:ci"
+            [avinya-clamav]="avinya-clamav:1.4.6-patched"
+          )
+
+          : > image-digests.txt
+          for name in "${!IMAGES[@]}"; do
+            target="$IMAGE_NAMESPACE/$name"
+            docker tag "${IMAGES[$name]}" "$target:$IMAGE_REVISION"
+            docker tag "${IMAGES[$name]}" "$target:$CHANNEL_TAG"
+            docker push "$target:$IMAGE_REVISION"
+            docker push "$target:$CHANNEL_TAG"
+            digest="$(docker buildx imagetools inspect "$target:$IMAGE_REVISION" --format '{{json .Manifest}}' | jq -r '.digest')"
+            test -n "$digest" && [ "$digest" != "null" ]
+            printf '%s\n' "$target@$digest" | tee -a image-digests.txt
+          done
+
+          {
+            echo "### GHCR image digests"
+            echo
+            echo "Source commit: $IMAGE_REVISION"
+            echo
+            cat image-digests.txt
+          } >> "$GITHUB_STEP_SUMMARY"
