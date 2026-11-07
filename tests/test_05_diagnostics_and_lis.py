@@ -439,4 +439,5 @@ def test_diagnostic_csv_export_is_blocked_when_patient_privacy_denies(
         "/v1/api/diagnostics/orders?format=csv", headers=doctor_headers
     )
     assert response.status_code == 403
-    assert "privacy policy" in response.json()["message"].lower()
+    detail = response.json().get("message", response.json().get("detail", ""))
+    assert "privacy policy" in detail.lower()
