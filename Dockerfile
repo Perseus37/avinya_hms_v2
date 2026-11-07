@@ -58,6 +58,7 @@ CMD ["pytest", "-v", "--durations=10"]
 # STAGE 4: STANDARD PRODUCTION TARGET (Locked Non-Root Gunicorn)
 # =====================================================================
 FROM base AS production
+LABEL org.opencontainers.image.source="https://github.com/Perseus37/avinya_hms_v2"
 COPY --chown=avinya:avinya . .
 COPY --from=ui-builder --chown=avinya:avinya /ui/dist /app/onboarding-ui/dist
 RUN mkdir -p /app/backups /vault && chown -R avinya:avinya /app /vault
