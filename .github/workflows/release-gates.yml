@@ -403,7 +403,7 @@ jobs:
       - name: Attest API image provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/avinya-hms-api
+          subject-name: ghcr.io/perseus37/avinya-hms-api
           subject-digest: ${{ steps.publish.outputs.api_digest }}
           push-to-registry: true
           create-storage-record: false
@@ -411,7 +411,7 @@ jobs:
       - name: Attest Hospital UI image provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/avinya-hospital-ui
+          subject-name: ghcr.io/perseus37/avinya-hospital-ui
           subject-digest: ${{ steps.publish.outputs.hospital_ui_digest }}
           push-to-registry: true
           create-storage-record: false
@@ -419,7 +419,7 @@ jobs:
       - name: Attest ClamAV image provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/avinya-clamav
+          subject-name: ghcr.io/perseus37/avinya-clamav
           subject-digest: ${{ steps.publish.outputs.clamav_digest }}
           push-to-registry: true
           create-storage-record: false
@@ -428,7 +428,7 @@ jobs:
       - name: Attest API CycloneDX SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/avinya-hms-api
+          subject-name: ghcr.io/perseus37/avinya-hms-api
           subject-digest: ${{ steps.publish.outputs.api_digest }}
           sbom-path: release-sbom/avinya-hms-api.cdx.json
           push-to-registry: true
@@ -437,7 +437,7 @@ jobs:
       - name: Attest Hospital UI CycloneDX SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/avinya-hospital-ui
+          subject-name: ghcr.io/perseus37/avinya-hospital-ui
           subject-digest: ${{ steps.publish.outputs.hospital_ui_digest }}
           sbom-path: release-sbom/avinya-hospital-ui.cdx.json
           push-to-registry: true
@@ -446,7 +446,7 @@ jobs:
       - name: Attest ClamAV CycloneDX SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/avinya-clamav
+          subject-name: ghcr.io/perseus37/avinya-clamav
           subject-digest: ${{ steps.publish.outputs.clamav_digest }}
           sbom-path: release-sbom/avinya-clamav.cdx.json
           push-to-registry: true
