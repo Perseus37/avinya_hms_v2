@@ -6,7 +6,8 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
-from backend.security.totp import totp_code as _totp_code
+from backend.domains.identity import auth_router
+from backend.security.totp import matching_totp_counter, totp_code as _totp_code
 from backend.domains.identity.models import AuthSession
 
 
@@ -146,10 +147,21 @@ def test_privileged_login_requires_mfa_then_challenges_for_each_login(
         },
     )
     assert replayed_enrollment.status_code == 401
+    verification_time = [datetime.now(timezone.utc)]
+    monkeypatch.setattr(
+        auth_router,
+        "_matching_totp_counter",
+        lambda secret, code: matching_totp_counter(
+            secret, code, at=verification_time[0]
+        ),
+    )
     enrolled = client.post(
         "/v1/api/auth/mfa/confirm",
         headers={"X-Hospital-Subdomain": "default"},
-        json={"mfa_token": challenge["mfa_token"], "code": _totp_code(secret)},
+        json={
+            "mfa_token": challenge["mfa_token"],
+            "code": _totp_code(secret, verification_time[0]),
+        },
     )
     assert enrolled.status_code == 200, enrolled.text
     access_token = enrolled.json()["access_token"]
@@ -166,7 +178,7 @@ def test_privileged_login_requires_mfa_then_challenges_for_each_login(
         headers={"X-Hospital-Subdomain": "default"},
         json={
             "mfa_token": next_login.json()["mfa_token"],
-            "code": _totp_code(secret),
+            "code": _totp_code(secret, verification_time[0]),
         },
     )
     assert same_counter.status_code == 401
@@ -191,12 +203,13 @@ def test_privileged_login_requires_mfa_then_challenges_for_each_login(
         },
     )
     assert rejected_recovery.status_code == 401
+    verification_time[0] += timedelta(seconds=30)
     verified_with_totp = client.post(
         "/v1/api/auth/mfa/verify-login",
         headers={"X-Hospital-Subdomain": "default"},
         json={
             "mfa_token": replay.json()["mfa_token"],
-            "code": _totp_code(secret, datetime.now(timezone.utc) + timedelta(seconds=30)),
+            "code": _totp_code(secret, verification_time[0]),
         },
     )
     assert verified_with_totp.status_code == 200
