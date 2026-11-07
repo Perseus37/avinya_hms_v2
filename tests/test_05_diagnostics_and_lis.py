@@ -386,3 +386,58 @@ def test_hl7_secret_is_tenant_scoped_and_redacted_from_result_logs(
     )
     assert mismatch_success is False
     assert "No eligible" in mismatch_error
+
+
+def test_laboratory_worklist_returns_patient_and_service_context(
+    client, superuser_headers, doctor_headers
+):
+    items = _setup_cbc_bundle(client, superuser_headers)
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={"full_name": "LIS Worklist Patient", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "OTHER"},
+    ).json()
+    order = client.post(
+        "/v1/api/diagnostics/orders",
+        headers=doctor_headers,
+        json={"patient_id": patient["id"], "ordered_service_ids": [items["rbc"]["id"]]},
+    ).json()
+
+    response = client.get("/v1/api/diagnostics/tasks/worklist", headers=doctor_headers)
+    assert response.status_code == 200, response.text
+    task = next(item for item in response.json()["items"] if item["order_id"] == order["id"])
+    assert task["patient_name"] == "LIS Worklist Patient"
+    assert task["patient_mrn"] == patient["mrn"]
+    assert task["service_name"] == "RBC Count"
+    assert task["service_code"] == "LAB_RBC"
+
+
+def test_diagnostic_csv_export_is_blocked_when_patient_privacy_denies(
+    client, superuser_headers, doctor_headers, monkeypatch
+):
+    from types import SimpleNamespace
+    from backend.domains.diagnostics import router as diagnostics_router
+
+    items = _setup_cbc_bundle(client, superuser_headers)
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={"full_name": "Private CSV Patient", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "OTHER"},
+    ).json()
+    client.post(
+        "/v1/api/diagnostics/orders",
+        headers=doctor_headers,
+        json={"patient_id": patient["id"], "ordered_service_ids": [items["rbc"]["id"]]},
+    )
+    monkeypatch.setattr(
+        diagnostics_router,
+        "evaluate_tenant_patient_data_uses",
+        lambda *args, **kwargs: [SimpleNamespace(allowed=False)],
+    )
+
+    response = client.get(
+        "/v1/api/diagnostics/orders?format=csv", headers=doctor_headers
+    )
+    assert response.status_code == 403
+    detail = response.json().get("message", response.json().get("detail", ""))
+    assert "privacy policy" in detail.lower()
