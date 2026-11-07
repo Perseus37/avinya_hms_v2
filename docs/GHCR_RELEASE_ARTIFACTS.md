@@ -17,7 +17,7 @@ The Release gates workflow publishes only after all required validation jobs and
 - `main`
 - `release/**`
 
-Pull requests, scheduled scans, and manual workflow dispatches validate but do not publish. The build-and-scan job has only `contents: read` and exports the exact scanned images as a short-retention workflow artifact. A separate push-only publishing job downloads those images and receives the short-lived `GITHUB_TOKEN` with job-scoped `packages: write`. Pull-request, scheduled, and manual validation jobs never receive registry write permission. No personal access token or long-lived registry password is required.
+Pull requests, scheduled scans, and manual workflow dispatches validate but do not publish. The build-and-scan job has only `contents: read` and exports the exact scanned images as a short-retention workflow artifact. A separate push-only publishing job downloads those images and receives the short-lived `GITHUB_TOKEN` with job-scoped `packages: write`. Pull-request, scheduled, and manual validation jobs never receive registry write permission. The push-only publisher also receives `id-token: write` and `attestations: write` solely to create signed supply-chain evidence. No personal access token or long-lived registry password is required.
 
 ## Tags and identity
 
@@ -36,7 +36,7 @@ All three digests must be recorded together as one release set, alongside the so
 
 ## Package visibility and access
 
-The first successful publish creates or updates the three GHCR packages. The validated image set is handed from the scan job to the publish job as a workflow artifact retained for three days; the publisher loads and tags those same image contents rather than rebuilding them after the scans. The workflow also generates one CycloneDX SBOM per scanned image and retains the three-file SBOM artifact for 90 days. A downstream verification job checks that all three files are valid CycloneDX documents before the publish job can run. Verify package visibility and access in GitHub Packages before any deployment:
+The first successful publish creates or updates the three GHCR packages. The validated image set is handed from the scan job to the publish job as a workflow artifact retained for three days; the publisher loads and tags those same image contents rather than rebuilding them after the scans. The workflow also generates one CycloneDX SBOM per scanned image and retains the three-file SBOM artifact for 90 days. A downstream verification job checks that all three files are valid CycloneDX documents before the publish job can run. After publishing, the workflow creates signed SLSA build-provenance attestations and signed CycloneDX SBOM attestations for each exact image digest using GitHub Artifact Attestations/Sigstore. It then verifies the image provenance attestations with `gh attestation verify`. These steps run only in the push-only publisher; they are not exercised by pull-request validation. Verify package visibility and access in GitHub Packages before any deployment:
 
 - Keep packages private unless public distribution is an explicit product decision.
 - Grant the production pull identity read-only access.
@@ -60,7 +60,8 @@ For every release candidate, retain:
 3. API, Hospital UI, and ClamAV image digests.
 4. Trivy scan results from that run.
 5. The API, Hospital UI, and ClamAV CycloneDX SBOM artifact from that run.
-6. The release/change approval and deployment record, when deployment is separately authorized.
+6. Verified provenance and SBOM attestation evidence for each image digest.
+7. The release/change approval and deployment record, when deployment is separately authorized.
 
 
-SBOMs describe the components detected in each image at build time. They improve inventory and vulnerability triage but do not prove that an image is vulnerability-free, signed, or independently attested. The current workflow does not yet create cryptographic image signatures or SLSA provenance attestations.
+SBOMs describe the components detected in each image at build time. Signed SBOM attestations bind each CycloneDX document to the corresponding image digest; SLSA provenance attestations bind the image digest to its GitHub Actions build identity. These attestations provide verifiable supply-chain evidence, not a claim that an image is vulnerability-free or that the application has been independently security-certified. Verification depends on access to the GitHub attestation service and, for registry referrers, the private GHCR package.
