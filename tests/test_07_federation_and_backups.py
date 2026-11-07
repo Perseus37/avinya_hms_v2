@@ -462,3 +462,12 @@ def test_09_federation_import_enforces_corporate_group_policy(
                 policy.federation_sharing_mode = FederationPolicyEnum.FULL_MESH
                 db.commit()
 
+def test_federation_identifier_sanitizer_handles_mixed_case_abha_marker():
+    from backend.domains.federation.models import _sanitize_federation_identifier
+
+    raw_abha = "ABHA:Sensitive-Value"
+    sanitized = _sanitize_federation_identifier(f"branch->{raw_abha}")
+    expected = hashlib.sha256("Sensitive-Value".encode("utf-8")).hexdigest()
+    assert sanitized == f"branch->abha_sha256:{expected}"
+    assert "Sensitive-Value" not in sanitized
+
