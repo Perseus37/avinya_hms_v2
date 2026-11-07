@@ -52,6 +52,7 @@ canonical `backend.control_plane.api.routers` and
 - [Operations Runbook](docs/OPERATIONS_RUNBOOK.md) covers startup, health
   checks, releases, migrations, backups, restores, troubleshooting, and release
   readiness.
+- [CI/CD Operations Runbook](docs/CI_CD_OPERATIONS_RUNBOOK.md) explains release gates, on-demand validation, failure handling, dependency/image security, migration release controls, and repository protection requirements.
 - [Migration Studio Guide](docs/MIGRATION_STUDIO.md) documents CSV imports,
   ETL operations, duplicate policies, and known limitations.
 - [Production Deployment Guide](docs/PRODUCTION_DEPLOYMENT.md) covers VM/cloud
