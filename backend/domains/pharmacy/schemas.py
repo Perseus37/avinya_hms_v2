@@ -110,6 +110,9 @@ class PrescriptionResponse(BaseModel):
     status: PrescriptionStatusEnum
     clinical_notes: Optional[str]
     items: List[PrescriptionItemResponse]
+    # Populated only by privacy-gated read endpoints; create responses may omit them.
+    patient_name: Optional[str] = None
+    patient_mrn: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 class DispenseItem(BaseModel):
