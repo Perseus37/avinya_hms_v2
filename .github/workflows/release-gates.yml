@@ -325,7 +325,8 @@ jobs:
             docker tag "${IMAGES[$name]}" "$target:$CHANNEL_TAG"
             docker push "$target:$IMAGE_REVISION"
             docker push "$target:$CHANNEL_TAG"
-            digest="$(docker buildx imagetools inspect "$target:$IMAGE_REVISION" --format '{{.Manifest.Digest}}')"
+            digest="$(docker buildx imagetools inspect "$target:$IMAGE_REVISION" --format '{{json .Manifest}}' | jq -r '.digest')"
+            test -n "$digest" && [ "$digest" != "null" ]
             printf '%s\n' "$target@$digest" | tee -a image-digests.txt
           done
 
