@@ -88,7 +88,6 @@ export const DiagnosticsWorkspace: React.FC = () => {
   const [resultValue, setResultValue] = useState("");
   const [resultNotes, setResultNotes] = useState("");
   const [criticalPanic, setCriticalPanic] = useState(false);
-  const [rejectionReason, setRejectionReason] = useState("HEMOLYZED_SAMPLE");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -215,12 +214,13 @@ export const DiagnosticsWorkspace: React.FC = () => {
   };
 
   const rejectSample = async (task: DiagnosticTask) => {
-    const reason = rejectionReason.trim();
-    if (!reason) {
-      setError("A specimen rejection reason is required.");
+    const reason = window.prompt("Enter specimen rejection reason (minimum 3 characters):");
+    if (reason === null) return;
+    if (reason.trim().length < 3) {
+      setError("A specimen rejection reason is required (minimum 3 characters).");
       return;
     }
-    await updateTask(task, { status: "SAMPLE_REJECTED", rejection_reason: reason });
+    await updateTask(task, { status: "SAMPLE_REJECTED", rejection_reason: reason.trim() });
   };
 
   const pendingCount = tasks.filter((task) => task.status !== "VERIFIED" && task.status !== "CANCELLED").length;
