@@ -36,7 +36,7 @@ All three digests must be recorded together as one release set, alongside the so
 
 ## Package visibility and access
 
-The first successful publish creates or updates the three GHCR packages. The validated image set is handed from the scan job to the publish job as a workflow artifact retained for three days; the publisher loads and tags those same image contents rather than rebuilding them after the scans. Verify package visibility and access in GitHub Packages before any deployment:
+The first successful publish creates or updates the three GHCR packages. The validated image set is handed from the scan job to the publish job as a workflow artifact retained for three days; the publisher loads and tags those same image contents rather than rebuilding them after the scans. The workflow also generates one CycloneDX SBOM per scanned image and retains the three-file SBOM artifact for 90 days. A downstream verification job checks that all three files are valid CycloneDX documents before the publish job can run. Verify package visibility and access in GitHub Packages before any deployment:
 
 - Keep packages private unless public distribution is an explicit product decision.
 - Grant the production pull identity read-only access.
@@ -59,4 +59,8 @@ For every release candidate, retain:
 2. Successful release-gates workflow run URL.
 3. API, Hospital UI, and ClamAV image digests.
 4. Trivy scan results from that run.
-5. The release/change approval and deployment record, when deployment is separately authorized.
+5. The API, Hospital UI, and ClamAV CycloneDX SBOM artifact from that run.
+6. The release/change approval and deployment record, when deployment is separately authorized.
+
+
+SBOMs describe the components detected in each image at build time. They improve inventory and vulnerability triage but do not prove that an image is vulnerability-free, signed, or independently attested. The current workflow does not yet create cryptographic image signatures or SLSA provenance attestations.
