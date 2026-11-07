@@ -24,9 +24,10 @@ A successful CI run proves only that the configured automated checks passed for 
 The workflow currently validates:
 1. Python tests, dependency audits, and PostgreSQL 17 migration integration.
 2. Onboarding UI dependency audit, utility tests, and production build.
-3. Hospital UI production build.
+3. Hospital UI role-mapping regression tests and production build.
 4. Development/production Compose and Prometheus/Alertmanager configuration.
-5. Production API and patched ClamAV image builds and Trivy scans for fixable HIGH/CRITICAL vulnerabilities.
+5. Production API, Hospital UI, and patched ClamAV image builds and Trivy scans for fixable HIGH/CRITICAL vulnerabilities.
+6. CycloneDX SBOM generation for all three images, upload of the scanned image/SBOM artifacts, and a separate artifact-handoff verification job.
 
 ### On-demand validation
 
@@ -67,7 +68,8 @@ Do not merge solely because a feature-branch or manual run passed. Verify that t
 
 - Python dependencies are pinned and audited with `pip-audit` for the configured requirement sets.
 - The onboarding UI runs `npm audit`; the hospital UI currently has a build gate but no equivalent explicit `npm audit` step in the release workflow.
-- Production API and ClamAV images are scanned by Trivy for fixable HIGH/CRITICAL vulnerabilities; unfixed findings are not made release blockers by the current configuration.
+- Production API, Hospital UI, and ClamAV images are scanned by Trivy for fixable HIGH/CRITICAL vulnerabilities. The configured gate fails on findings meeting that policy; do not add suppressions simply to make CI green.
+- SBOMs are generated for the exact scanned images in CycloneDX format. The verifier checks the SBOM format and reloads/inspects the scanned image bundle before publication.
 - Third-party GitHub Actions in the release workflow are pinned to commit SHAs.
 - Review dependency and base-image updates through pull requests. Do not silently float production image tags or remove digest pins without a documented reason.
 
@@ -89,7 +91,11 @@ A green PostgreSQL migration parity test is necessary but does not replace stage
 
 ## Production release and deployment
 
-The current workflows build and scan images; they do not constitute a complete production deployment pipeline. Production deployment must remain a separate, explicitly approved operation until environment protection, deployment credentials, artifact promotion, health verification, and rollback are implemented and tested.
+The release workflow publishes the already-scanned image artifacts to GHCR only on pushes to `main` or `release/**`; pull-request runs build, scan, and verify artifacts but do not publish. It publishes API, Hospital UI, and ClamAV images under `ghcr.io/perseus37/` with an immutable source-commit SHA tag and a channel tag. The publish job uses `GITHUB_TOKEN` with `packages: write`; package-level Actions access must also grant this repository write access. Keep packages private and verify visibility in GHCR package settings.
+
+The publish job records image digests, creates signed SLSA provenance and CycloneDX SBOM attestations for each image digest, and runs `gh attestation verify` against the source repository. A successful build/scan alone is not evidence that publishing or attestation verification succeeded; inspect the publisher job and digest summary.
+
+These release artifacts do not constitute a complete production deployment pipeline. Production deployment must remain a separate, explicitly approved operation until environment protection, deployment credentials, digest-based artifact promotion, health verification, and rollback are implemented and tested.
 
 For each production release, record:
 - source commit and release identifier;
@@ -116,8 +122,10 @@ Required check names must be selected from actual checks on representative PRs. 
 
 ## Current verified baseline
 
-As of 2026-11-06:
-- PR #4 was merged into `main` at `e2bd416472b9b32911f302d32860cdd40ad624fc`.
-- Post-merge Release gates run [#42261887116](https://github.com/Perseus37/avinya_hms_v2/actions/runs/42261887116) completed successfully with all five jobs passing.
+As of 2026-11-07:
+- PR #4 was merged into `main` at `e2bd416472b9b32911f302d32860cdd40ad624fc`; post-merge run [#42261887116](https://github.com/Perseus37/avinya_hms_v2/actions/runs/42261887116) passed the then-current five jobs.
+- PR #7 introduced GHCR publication and scanned artifact handoff; PR #9 added signed provenance and SBOM attestations; PR #8 added OCI source-repository labels.
+- Main run [#42376894583](https://github.com/Perseus37/avinya_hms_v2/actions/runs/42376894583) successfully published and verified all three release images and their attestations.
+- A later image scan identified two HIGH zlib findings in the Debian 13.7 API image (`CVE-2026-76844`, `CVE-2026-85091`). PR #13 updates inherited Debian packages; its full release-gates validation must pass before that remediation is considered complete.
 
-This is a verified CI baseline, not evidence that repository branch protection or production deployment approvals are configured.
+This is a verified CI/release-artifact baseline, not evidence that repository branch protection, GHCR private visibility, production deployment approvals, backup restoration, or regulatory compliance are configured or proven.
