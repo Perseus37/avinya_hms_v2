@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
-import { WorkspaceId, UserProfile } from "../../types";
+import { WorkspaceId } from "../../types";
 import { useAuth } from "./AuthContext";
+import { resolveRoleFromUser } from "./roleMapping.js";
+export { resolveRoleFromUser } from "./roleMapping.js";
 
 export type RoleCode =
   | "HOSPITAL_ADMIN"
@@ -9,7 +11,9 @@ export type RoleCode =
   | "ADT_OFFICER"
   | "WARD_NURSE"
   | "TRIAGE_NURSE"
-  | "BILLING_CLERK";
+  | "BILLING_CLERK"
+  | "PHARMACIST"
+  | "RESTRICTED";
 
 export type PermissionCode =
   | "patient.register"
@@ -40,6 +44,12 @@ export type PermissionCode =
   | "billing.collect_fee"
   | "billing.tpa_approve"
   | "billing.override_discount"
+  // Pharmacy
+  | "pharmacy.view_queue"
+  | "pharmacy.dispense"
+  | "pharmacy.view_inventory"
+  | "pharmacy.view_controlled_ledger"
+  // Admin & System Configuration
   | "config.facility_manage"
   | "config.roster_manage"
   | "config.policies_manage"
@@ -169,21 +179,27 @@ export const ROLE_DEFINITIONS: Record<RoleCode, RoleDefinition> = {
     allowedWorkspaces: ["billing", "patient-record", "registration", "adt"],
     permissions: ["billing.view_counter", "billing.collect_fee", "billing.tpa_approve", "billing.override_discount", "patient.view_mpi", "bed.view_matrix"],
   },
+  PHARMACIST: {
+    code: "PHARMACIST",
+    label: "Pharmacist",
+    badge: "Pharmacy",
+    description: "Prescription dispensing, formulary and inventory visibility, and controlled-substance ledger review. Backend permissions remain authoritative for every operation.",
+    defaultWorkspace: "pharmacy",
+    allowedWorkspaces: ["pharmacy"],
+    permissions: ["pharmacy.view_queue", "pharmacy.dispense", "pharmacy.view_inventory", "pharmacy.view_controlled_ledger"],
+  },
+  RESTRICTED: {
+    code: "RESTRICTED",
+    label: "Restricted Access",
+    badge: "Access Pending",
+    description: "This account role has no mapped Hospital UI workspace. An administrator must configure and validate its access before use.",
+    defaultWorkspace: "registration",
+    allowedWorkspaces: [],
+    permissions: [],
+  },
 };
 
-export function resolveRoleFromUser(user: UserProfile | null): RoleCode {
-  if (!user) return "FRONT_DESK";
-  if (user.is_superuser) return "HOSPITAL_ADMIN";
-  const roleCodes = (user.roles || []).map((r) => (r.code || "").toUpperCase());
-  if (roleCodes.some((c) => c.includes("ADMIN") || c.includes("DIRECTOR"))) return "HOSPITAL_ADMIN";
-  if (roleCodes.some((c) => c.includes("DOCTOR") || c.includes("PHYSICIAN") || c.includes("CLINICIAN"))) return "ATTENDING_PHYSICIAN";
-  if (roleCodes.some((c) => c.includes("TRIAGE") || c.includes("EMERGENCY"))) return "TRIAGE_NURSE";
-  if (roleCodes.some((c) => c.includes("NURSE") || c.includes("SISTER"))) return "WARD_NURSE";
-  if (roleCodes.some((c) => c.includes("ADT") || c.includes("ADMISSION"))) return "ADT_OFFICER";
-  if (roleCodes.some((c) => c.includes("BILLING") || c.includes("CASHIER") || c.includes("FINANCE"))) return "BILLING_CLERK";
-  if (roleCodes.some((c) => c.includes("FRONT_DESK") || c.includes("RECEPTION"))) return "FRONT_DESK";
-  return "HOSPITAL_ADMIN";
-}
+
 
 interface PermissionsContextType {
   activeRole: RoleCode;
@@ -229,7 +245,7 @@ export const PermissionsProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
   const activeRole = isDev && simulatedRole ? simulatedRole : authenticatedRole;
   const isSimulating = Boolean(isDev && simulatedRole && simulatedRole !== authenticatedRole);
-  const roleDefinition = ROLE_DEFINITIONS[activeRole] || ROLE_DEFINITIONS.HOSPITAL_ADMIN;
+  const roleDefinition = ROLE_DEFINITIONS[activeRole] || ROLE_DEFINITIONS.RESTRICTED;
   const hasPermission = (permission: PermissionCode) => roleDefinition.permissions.includes(permission);
   const hasAnyPermission = (permissions: PermissionCode[]) => permissions.some((p) => roleDefinition.permissions.includes(p));
   const hasAllPermissions = (permissions: PermissionCode[]) => permissions.every((p) => roleDefinition.permissions.includes(p));

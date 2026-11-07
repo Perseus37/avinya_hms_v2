@@ -1,6 +1,7 @@
 import React, { useState, useEffect, Suspense, lazy } from "react";
 import { WorkspaceId } from "../../types";
 import { usePermissions } from "../../core/context/PermissionsContext";
+import { useAuth } from "../../core/context/AuthContext";
 import { TopNavbar } from "./TopNavbar";
 import { Sidebar } from "./Sidebar";
 import { PatientSafetyBanner } from "../clinical/PatientSafetyBanner";
@@ -29,12 +30,13 @@ const WorkspaceSkeleton: React.FC<{ activeWorkspace: WorkspaceId }> = ({ activeW
   <div className="flex flex-1 flex-col items-center justify-center bg-[#f5f7fa] text-slate-500">
     <div className="mb-3 h-7 w-7 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700" />
     <span className="text-sm font-medium text-slate-700">Loading workspace</span>
-    <span className="mt-1 text-[11px] text-slate-400">{activeWorkspace.replaceAll("-", " ")}</span>
+    <span className="mt-1 text-[11px] text-slate-400">{activeWorkspace.replace(/-/g, " ")}</span>
   </div>
 );
 
 export const AppShell: React.FC = () => {
   const { isWorkspaceAllowed, roleDefinition } = usePermissions();
+  const { logout } = useAuth();
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceId>(roleDefinition.defaultWorkspace);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isTasksOpen, setIsTasksOpen] = useState(false);
@@ -53,6 +55,30 @@ export const AppShell: React.FC = () => {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
+
+  if (roleDefinition.allowedWorkspaces.length === 0) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-slate-950 p-6">
+        <section
+          role="alert"
+          className="w-full max-w-lg rounded-xl border border-amber-700/50 bg-slate-900 p-8 text-center"
+        >
+          <h1 className="text-lg font-semibold text-slate-100">Hospital access is not configured</h1>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            Your account role ({roleDefinition.label}) does not have an approved Hospital UI workspace.
+            Contact your hospital administrator to review your role and permissions.
+          </p>
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className="mt-6 rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+          >
+            Sign out
+          </button>
+        </section>
+      </div>
+    );
+  }
 
   const renderActiveWorkspace = () => {
     switch (activeWorkspace) {

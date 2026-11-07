@@ -78,6 +78,11 @@ class DiagnosticTaskResponse(BaseModel):
     delta_check_flag: Optional[str] = None
     previous_result_value: Optional[str] = None
     delta_percentage: Optional[float] = None
+    service_name: Optional[str] = None
+    service_code: Optional[str] = None
+    patient_name: Optional[str] = None
+    patient_mrn: Optional[str] = None
+    order_status: Optional[OrderStatusEnum] = None
     model_config = ConfigDict(from_attributes=True)
 
     @computed_field

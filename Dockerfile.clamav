@@ -1,0 +1,9 @@
+# Keep the ClamAV engine release pinned while applying current Debian security updates.
+FROM clamav/clamav:1.4.6-debian13-slim@sha256:c7df83a4c9794aeb43b7cff296fc9f42a0f47cbf0e96704510e7e5b57b2f4913
+LABEL org.opencontainers.image.source="https://github.com/Perseus37/avinya_hms_v2"
+
+USER root
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
