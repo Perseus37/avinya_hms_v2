@@ -176,7 +176,7 @@ jobs:
           docker run --rm --entrypoint /bin/amtool -v "$(pwd)/deployments:/deployments:ro" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /deployments/alertmanager.yml
 
   production-image:
-    name: Build, scan, and publish production images
+    name: Build and scan production images
     needs: [python-tests, onboarding-ui, hospital-ui, compose-config]
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -253,6 +253,27 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
+  verify-image-artifact:
+    name: Verify scanned image artifact handoff
+    needs: [production-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Download scanned release images
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-images-${{ github.sha }}
+          path: release-images
+
+      - name: Load scanned release images
+        run: gzip -dc release-images/release-images.tar.gz | docker load
+
+      - name: Verify all scanned image tags are present
+        run: |
+          docker image inspect avinya-hms-api:ci avinya-hospital-ui:ci avinya-clamav:1.4.6-patched >/dev/null
+
   publish-images:
     name: Publish scanned images to GHCR
     needs: [production-image]
@@ -305,7 +326,7 @@ jobs:
             docker push "$target:$IMAGE_REVISION"
             docker push "$target:$CHANNEL_TAG"
             digest="$(docker buildx imagetools inspect "$target:$IMAGE_REVISION" --format '{{.Manifest.Digest}}')"
-            printf '%s\\n' "$target@$digest" | tee -a image-digests.txt
+            printf '%s\n' "$target@$digest" | tee -a image-digests.txt
           done
 
           {
@@ -313,7 +334,5 @@ jobs:
             echo
             echo "Source commit: $IMAGE_REVISION"
             echo
-            echo '\`\`\`text'
             cat image-digests.txt
-            echo '\`\`\`'
           } >> "$GITHUB_STEP_SUMMARY"
