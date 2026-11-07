@@ -23,9 +23,14 @@ WORKDIR /app
 
 RUN groupadd --system avinya && useradd --system --gid avinya --create-home avinya
 
-RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
-    curl \
-    postgresql-client \
+# Apply current Debian security updates to packages inherited from the base image
+# before installing runtime dependencies; the image scanner enforces the release threshold.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
+        poppler-utils \
+        curl \
+        postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements-integrations.txt ./
