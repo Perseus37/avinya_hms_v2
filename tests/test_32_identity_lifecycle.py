@@ -155,15 +155,26 @@ def test_privileged_login_requires_mfa_then_challenges_for_each_login(
             secret, code, at=verification_time[0]
         ),
     )
+    enrollment_totp_code = _totp_code(secret, verification_time[0])
     enrolled = client.post(
         "/v1/api/auth/mfa/confirm",
         headers={"X-Hospital-Subdomain": "default"},
         json={
             "mfa_token": challenge["mfa_token"],
-            "code": _totp_code(secret, verification_time[0]),
+            "code": enrollment_totp_code,
         },
     )
     assert enrolled.status_code == 200, enrolled.text
+
+    # Verify replay state survived the confirmation transaction before testing
+    # the same code through a fresh login request/session.
+    from backend.domains.identity.models import User
+
+    with Session(multi_tenant_env["tenant_engines"]["hms_default"]) as db:
+        persisted_user = db.query(User).filter_by(email="admin@default.com").one()
+        assert persisted_user.mfa_last_used_counter == matching_totp_counter(
+            secret, enrollment_totp_code, at=verification_time[0]
+        )
     access_token = enrolled.json()["access_token"]
     assert len(enrolled.json()["recovery_codes"]) == 10
     assert client.get(
