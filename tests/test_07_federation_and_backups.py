@@ -399,3 +399,66 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
             if pol:
                 pol.federation_sharing_mode = FederationPolicyEnum.FULL_MESH
                 db.commit()
+
+def test_09_federation_import_enforces_corporate_group_policy(
+    client,
+    multi_tenant_env,
+    superuser_headers,
+    apollo_admin_headers,
+):
+    """Direct import cannot bypass a source branch's CORPORATE_GROUP_ONLY restriction."""
+    from sqlalchemy.orm import Session
+    from backend.domains.policies.models import FederationPolicyEnum, HospitalPolicySetting
+
+    # Authenticate a discovery request as the destination tenant's own federation node.
+    registered = client.post(
+        "/v1/api/federation/clients",
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "HQ Federation Node"},
+    )
+    assert registered.status_code == 201
+    fed_headers = {"X-Federation-API-Key": registered.json()["raw_api_key"]}
+
+    patient = client.post(
+        "/v1/api/patients",
+        headers=apollo_admin_headers,
+        json={
+            "full_name": "Corporate Policy Import Patient",
+            "date_of_birth": "1988-03-14T00:00:00Z",
+            "gender": "FEMALE",
+            "phone_number": "9555512345",
+            "abha_number": "ABHA-CORP-IMPORT-01",
+        },
+    )
+    assert patient.status_code == 201
+
+    discovered = client.get(
+        "/v1/api/federation/patients/discover?abha_number=ABHA-CORP-IMPORT-01&purpose=CONTINUITY_OF_CARE",
+        headers=fed_headers,
+    )
+    assert discovered.status_code == 200
+
+    apollo_engine = multi_tenant_env["tenant_engines"]["hms_apollo"]
+    with Session(apollo_engine) as db:
+        policy = db.query(HospitalPolicySetting).first()
+        if policy is None:
+            policy = HospitalPolicySetting()
+            db.add(policy)
+        policy.federation_sharing_mode = FederationPolicyEnum.CORPORATE_GROUP_ONLY
+        db.commit()
+
+    try:
+        imported = client.post(
+            "/v1/api/federation/patients/import",
+            headers=superuser_headers,
+            json=discovered.json(),
+        )
+        assert imported.status_code == 403
+        assert "cross-group" in imported.json()["detail"].lower()
+    finally:
+        with Session(apollo_engine) as db:
+            policy = db.query(HospitalPolicySetting).first()
+            if policy:
+                policy.federation_sharing_mode = FederationPolicyEnum.FULL_MESH
+                db.commit()
+
