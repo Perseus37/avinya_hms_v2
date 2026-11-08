@@ -31,6 +31,20 @@ Allowed transitions:
 
 A resolution note is mandatory for RESOLVED; a reason is mandatory for DISMISSED. A case's version increments on every mutation; stale writes return HTTP 409. Assignment and transition changes append an actor/time event in the same transaction.
 
+
+## Severity-based SLA policy foundation
+
+- `POST /api/procurement/reconciliation/sla-policies` creates a new policy version for a severity (`finance:approve`).
+- `GET /api/procurement/reconciliation/sla-policies` lists policy history; `active_only=true` returns the currently active policy per severity (`finance:read`).
+- `GET /api/procurement/reconciliation/sla-summary` reports open cases with/without an SLA and overdue counts by severity (`finance:read`).
+- Policy versions are retained. A new policy deactivates the previous version for that severity and increments the version number.
+- New investigations snapshot the active policy ID, version, target minutes, warning percentage, start time and due time. Later policy changes do not rewrite existing case deadlines.
+- Case payloads expose `sla_state`: `NOT_CONFIGURED`, `ON_TRACK`, `WARNING`, `BREACHED`, `CLOSED_ON_TIME` or `CLOSED_LATE`.
+- The initial clock measures elapsed wall-clock minutes. It does not pause for weekends, holidays, reassignment, customer/vendor response or other workflow states. No background worker or automatic escalation is implied; overdue state is calculated when read.
+- Cases opened before an active policy exists retain `NOT_CONFIGURED`; policy creation does not retroactively assign deadlines.
+
+Migration `e7b4c2d9a610` adds the versioned policy table and nullable per-case snapshot fields. The foreign key is restrictive so a policy referenced by a case cannot be deleted.
+
 ## Limitations and follow-up gates
 
 - Candidate discovery remains read-only. Case creation is an explicit human action; this slice does not auto-create cases or infer severity/root cause.
