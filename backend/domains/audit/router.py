@@ -7,11 +7,12 @@ access decisions, emergency overrides, data breaches, and retention operations.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 from typing import Any, AsyncGenerator, Generator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -19,6 +20,7 @@ from sqlalchemy.orm import Session
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission
 from backend.domains.identity.models import User
+from backend.domains.audit.models import SecurityAuditExportRegister
 from backend.domains.patients.models import BreakGlassGrant
 from backend.domains.privacy.models import (
     PatientDataRightsRequest,
@@ -246,6 +248,9 @@ def stream_security_events(
     actor: User = Depends(RequirePermission("privacy:read")),
 ):
     """Streams newline-delimited JSON (NDJSON) security logs for automated SIEM log shippers."""
+    if from_time and to_time and from_time > to_time:
+        raise HTTPException(status_code=400, detail="from_time must not be later than to_time.")
+
     _, events = _collect_security_events(
         db,
         from_time=from_time,
@@ -256,15 +261,124 @@ def stream_security_events(
         offset=0,
     )
 
-    def ndjson_generator() -> Generator[str, None, None]:
-        for event in events:
-            yield event.model_dump_json() + "\n"
+    # Materialize once so the persisted digest is for the exact bytes returned.
+    payload = "".join(event.model_dump_json() + "\n" for event in events).encode("utf-8")
+    def utc_iso(value: Optional[datetime]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+        return normalized.isoformat()
 
-    return StreamingResponse(
-        ndjson_generator(),
+    criteria = {
+        "from_time": utc_iso(from_time),
+        "to_time": utc_iso(to_time),
+        "category": category.strip().upper() if category else None,
+        "severity": severity.strip().upper() if severity else None,
+        "limit": limit,
+    }
+    criteria_json = json.dumps(criteria, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    record = SecurityAuditExportRegister(
+        exported_at=datetime.now(timezone.utc),
+        actor_user_id=actor.id,
+        schema_version=1,
+        category=criteria["category"],
+        severity=criteria["severity"],
+        from_time=from_time,
+        to_time=to_time,
+        event_count=len(events),
+        byte_count=len(payload),
+        criteria_json=criteria_json,
+        payload_sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    try:
+        db.add(record)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Audit export could not be registered; export was not delivered.",
+        ) from exc
+
+    return Response(
+        content=payload,
         media_type="application/x-ndjson",
         headers={"Content-Disposition": "attachment; filename=security-audit-events.ndjson"},
     )
+
+
+@router.get("/exports", summary="List security audit export register entries")
+def list_security_audit_exports(
+    before_id: Optional[int] = Query(None, ge=1),
+    from_time: Optional[datetime] = None,
+    to_time: Optional[datetime] = None,
+    actor_user_id: Optional[int] = Query(None, ge=1),
+    category: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=100),
+    db: Session = Depends(get_db),
+    actor: User = Depends(RequirePermission("privacy:read")),
+):
+    if from_time and to_time and from_time > to_time:
+        raise HTTPException(status_code=400, detail="from_time must not be later than to_time.")
+    stmt = select(SecurityAuditExportRegister)
+    if before_id is not None:
+        stmt = stmt.where(SecurityAuditExportRegister.id < before_id)
+    if from_time:
+        stmt = stmt.where(SecurityAuditExportRegister.exported_at >= from_time)
+    if to_time:
+        stmt = stmt.where(SecurityAuditExportRegister.exported_at <= to_time)
+    if actor_user_id is not None:
+        stmt = stmt.where(SecurityAuditExportRegister.actor_user_id == actor_user_id)
+    if category:
+        stmt = stmt.where(SecurityAuditExportRegister.category == category.strip().upper())
+    rows = db.execute(
+        stmt.order_by(desc(SecurityAuditExportRegister.id)).limit(limit)
+    ).scalars().all()
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "exported_at": row.exported_at,
+                "actor_user_id": row.actor_user_id,
+                "schema_version": row.schema_version,
+                "category": row.category,
+                "severity": row.severity,
+                "from_time": row.from_time,
+                "to_time": row.to_time,
+                "event_count": row.event_count,
+                "byte_count": row.byte_count,
+                "payload_sha256": row.payload_sha256,
+            }
+            for row in rows
+        ],
+        "limit": limit,
+        "next_before_id": rows[-1].id if len(rows) == limit else None,
+    }
+
+
+@router.get("/exports/{export_id}", summary="Read security audit export register metadata")
+def get_security_audit_export(
+    export_id: int,
+    db: Session = Depends(get_db),
+    actor: User = Depends(RequirePermission("privacy:read")),
+):
+    row = db.get(SecurityAuditExportRegister, export_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Audit export register entry not found.")
+    return {
+        "id": row.id,
+        "exported_at": row.exported_at,
+        "actor_user_id": row.actor_user_id,
+        "schema_version": row.schema_version,
+        "category": row.category,
+        "severity": row.severity,
+        "from_time": row.from_time,
+        "to_time": row.to_time,
+        "event_count": row.event_count,
+        "byte_count": row.byte_count,
+        "criteria": json.loads(row.criteria_json),
+        "payload_sha256": row.payload_sha256,
+    }
 
 
 @router.post(

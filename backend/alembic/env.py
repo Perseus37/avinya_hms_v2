@@ -15,6 +15,7 @@ for p in (_REPO_DIR,):
 from backend.core.config import settings
 from backend.core.database import Base
 import backend.domains.abdm.models  # noqa: F401
+import backend.domains.audit.models  # noqa: F401
 import backend.domains.billing.models  # noqa: F401
 import backend.domains.bloodbank.models  # noqa: F401
 import backend.domains.clinical.models  # noqa: F401

@@ -96,6 +96,7 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "break_glass_grants",
     "service_workflow_events",
     "siem_audit_events",
+    "security_audit_export_register",
 })
 
 SCRUBBED_DATA_TABLES: frozenset[str] = frozenset({
