@@ -464,7 +464,7 @@ def test_09_federation_import_enforces_corporate_group_policy(
         destination_registry = control_db.query(TenantRegistry).filter(
             TenantRegistry.branch_code == "HQ-HYD-01"
         ).one()
-        source_registry.corporate_group_id = "GROUP-B"
+        source_registry.corporate_group_id = None
         destination_registry.corporate_group_id = "GROUP-A"
         control_db.commit()
     finally:
@@ -480,6 +480,23 @@ def test_09_federation_import_enforces_corporate_group_policy(
         db.commit()
 
     try:
+        # An unassigned source group must fail closed.
+        denied_unassigned_discovery = client.get(
+            "/v1/api/federation/patients/discover?abha_number=ABHA-CORP-IMPORT-01&purpose=CONTINUITY_OF_CARE",
+            headers=fed_headers,
+        )
+        assert denied_unassigned_discovery.status_code == 404
+
+        control_db = multi_tenant_env["control_session_factory"]()
+        try:
+            source_registry = control_db.query(TenantRegistry).filter(
+                TenantRegistry.branch_code == source_branch_code
+            ).one()
+            source_registry.corporate_group_id = "GROUP-B"
+            control_db.commit()
+        finally:
+            control_db.close()
+
         denied_discovery = client.get(
             "/v1/api/federation/patients/discover?abha_number=ABHA-CORP-IMPORT-01&purpose=CONTINUITY_OF_CARE",
             headers=fed_headers,
