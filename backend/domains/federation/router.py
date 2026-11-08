@@ -297,7 +297,7 @@ def discover_and_aggregate_patient_across_branches(
         raise HTTPException(status_code=404, detail="No records found for this patient in the Central Discovery Index.")
 
     latest_demographics: Optional[Patient] = None
-    redact_address: bool = False
+    allergies_only_source_found: bool = False
     merged_allergies: dict[str, FederatedAllergySummary] = {}
 
     import concurrent.futures
@@ -422,7 +422,7 @@ def discover_and_aggregate_patient_across_branches(
                 "ptr": ptr,
                 "patient": patient,
                 "allergies": local_allergies,
-                "redact_address": policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY,
+                "allergies_only": policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY,
                 "share_demographics": policy.federation_share_demographics
             }
 
@@ -450,10 +450,12 @@ def discover_and_aggregate_patient_across_branches(
         try:
             result = future.result()
             if result:
-                if latest_demographics is None and result["share_demographics"]:
+                # EMERGENCY_ALLERGIES_ONLY may contribute allergy summaries,
+                # never patient demographics.
+                if result["allergies_only"]:
+                    allergies_only_source_found = True
+                elif latest_demographics is None and result["share_demographics"]:
                     latest_demographics = result["patient"]
-                    if result["redact_address"]:
-                        redact_address = True
 
                 # Process the already-extracted safe schemas
                 for alg_data in result["allergies"]:
@@ -462,24 +464,27 @@ def discover_and_aggregate_patient_across_branches(
         except Exception:
             pass  # Node timed out or failed circuit breaker
 
-    if not latest_demographics:
+    if latest_demographics is None and not allergies_only_source_found:
         raise HTTPException(
             status_code=404,
             detail="No shareable patient records found across permitted hospital branches.",
         )
 
+    # If no source authorized demographic sharing but an allergies-only source
+    # did authorize this emergency disclosure, return a fully redacted envelope.
+    demographics = latest_demographics
     return FederatedPatientSummaryResponse(
-        source_mrn=latest_demographics.mrn,
-        abha_number=latest_demographics.abha_number,
-        full_name=latest_demographics.full_name,
-        date_of_birth=latest_demographics.date_of_birth,
-        gender=latest_demographics.gender,
-        blood_group=latest_demographics.blood_group,
-        phone_number=latest_demographics.phone_number,
-        email=latest_demographics.email,
-        address=None if redact_address else latest_demographics.address,
-        emergency_contact_name=latest_demographics.emergency_contact_name,
-        emergency_contact_phone=latest_demographics.emergency_contact_phone,
+        source_mrn=demographics.mrn if demographics else None,
+        abha_number=demographics.abha_number if demographics else None,
+        full_name=demographics.full_name if demographics else None,
+        date_of_birth=demographics.date_of_birth if demographics else None,
+        gender=demographics.gender if demographics else None,
+        blood_group=demographics.blood_group if demographics else None,
+        phone_number=demographics.phone_number if demographics else None,
+        email=demographics.email if demographics else None,
+        address=demographics.address if demographics else None,
+        emergency_contact_name=demographics.emergency_contact_name if demographics else None,
+        emergency_contact_phone=demographics.emergency_contact_phone if demographics else None,
         active_allergies=list(merged_allergies.values()),
     )
 
@@ -494,6 +499,19 @@ def import_federated_patient_locally(
 ):
     """Import an authenticated discovery result without trusting client-supplied clinical fields."""
     tenant = resolve_tenant_context(request)
+
+    # Allergy-only emergency responses deliberately contain no demographic identity
+    # and must never be accepted as patient-import payloads.
+    if (
+        not payload.source_mrn
+        or not payload.full_name
+        or payload.date_of_birth is None
+        or payload.gender is None
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="A demographics-authorized discovery result is required for patient import.",
+        )
 
     # The import is valid only when the supplied source MRN is currently indexed to
     # exactly one other active branch. This prevents this authenticated endpoint from
