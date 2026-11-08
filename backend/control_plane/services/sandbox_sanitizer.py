@@ -77,6 +77,10 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "patient_data_rights_requests",
     "privacy_data_breach_incidents",
     "procurement_document_download_audits",
+    "procurement_supplier_payment_allocations",
+    "procurement_supplier_payment_request_allocations",
+    "procurement_supplier_payment_requests",
+    "procurement_supplier_payments",
     "break_glass_uses",
     "break_glass_grants",
     "service_workflow_events",
@@ -185,7 +189,62 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
         table_names = set(inspector.get_table_names())
 
         # 1. PURGE SENSITIVE LOGS, SESSIONS, AND SECURITY TOKENS
-        for tbl in PURGED_LOG_TABLES:
+        immutable_finance_tables = {
+            "procurement_supplier_payment_allocations",
+            "procurement_supplier_payment_request_allocations",
+            "procurement_supplier_payment_requests",
+            "procurement_supplier_payments",
+        }
+        # Sandbox clones discard financial transaction data. Temporarily remove only
+        # the append-only guards while purging, then restore them before proceeding.
+        if session.bind.dialect.name == "postgresql":
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations"):
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations"):
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+
+        # Delete child rows first; requests reference executed payment ledger rows.
+        for tbl in (
+            "procurement_supplier_payment_allocations",
+            "procurement_supplier_payment_request_allocations",
+            "procurement_supplier_payment_requests",
+            "procurement_supplier_payments",
+        ):
+            if tbl in table_names:
+                session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
+                stats["purged_tables"] += 1
+
+        if session.bind.dialect.name == "postgresql":
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations"):
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable
+                        BEFORE UPDATE OR DELETE ON "{tbl}"
+                        FOR EACH ROW EXECUTE FUNCTION prevent_supplier_payment_mutation()
+                    """))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations"):
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_update
+                        BEFORE UPDATE ON "{tbl}"
+                        BEGIN
+                            SELECT RAISE(ABORT, 'Supplier payment ledger records are append-only');
+                        END
+                    """))
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_delete
+                        BEFORE DELETE ON "{tbl}"
+                        BEGIN
+                            SELECT RAISE(ABORT, 'Supplier payment ledger records are append-only');
+                        END
+                    """))
+
+        for tbl in PURGED_LOG_TABLES - immutable_finance_tables:
             if tbl in table_names:
                 session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
                 stats["purged_tables"] += 1
