@@ -5,7 +5,7 @@ record remains in its owning procurement table; this case stores a stable source
 type/id/reference and never copies patient or bank-account payloads.
 """
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -21,11 +21,18 @@ from backend.domains.procurement.models import (
     BankStatementLine,
     ReconciliationInvestigation,
     ReconciliationInvestigationEvent,
+    ReconciliationSLAPolicy,
     SupplierPayment,
     SupplierPaymentRequest,
 )
 
 router = APIRouter()
+
+
+class SLAPolicyCreate(BaseModel):
+    severity: str = Field(pattern=r"^(LOW|MEDIUM|HIGH|CRITICAL)$")
+    target_minutes: int = Field(gt=0, le=525600)
+    warning_percent: int = Field(default=80, ge=1, le=99)
 
 
 class InvestigationCreate(BaseModel):
@@ -71,6 +78,25 @@ def _source_model(source_type: str):
     }[source_type]
 
 
+def _sla_state(row: ReconciliationInvestigation) -> str:
+    if row.sla_due_at is None:
+        return "NOT_CONFIGURED"
+    now = datetime.now(timezone.utc)
+    due = row.sla_due_at if row.sla_due_at.tzinfo else row.sla_due_at.replace(tzinfo=timezone.utc)
+    if row.status in {"RESOLVED", "DISMISSED"}:
+        closed = row.resolved_at or row.updated_at
+        return "CLOSED_ON_TIME" if closed and closed <= due else "CLOSED_LATE"
+    if now >= due:
+        return "BREACHED"
+    started = row.sla_started_at or row.opened_at
+    if started and row.sla_warning_percent:
+        total = max((due - started).total_seconds(), 1)
+        elapsed = max((now - started).total_seconds(), 0)
+        if elapsed / total * 100 >= row.sla_warning_percent:
+            return "WARNING"
+    return "ON_TRACK"
+
+
 def _case_payload(row: ReconciliationInvestigation) -> dict:
     return {
         "id": row.id,
@@ -96,6 +122,13 @@ def _case_payload(row: ReconciliationInvestigation) -> dict:
         "resolution_quality_reviewed_by_id": row.resolution_quality_reviewed_by_id,
         "resolution_quality_reviewed_at": row.resolution_quality_reviewed_at,
         "resolution_quality_note": row.resolution_quality_note,
+        "sla_policy_id": row.sla_policy_id,
+        "sla_policy_version": row.sla_policy_version,
+        "sla_target_minutes": row.sla_target_minutes,
+        "sla_warning_percent": row.sla_warning_percent,
+        "sla_started_at": row.sla_started_at,
+        "sla_due_at": row.sla_due_at,
+        "sla_state": _sla_state(row),
         "version": row.version,
     }
 
