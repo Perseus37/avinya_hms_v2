@@ -275,3 +275,10 @@ def test_bank_statement_import_route_is_registered(client, superuser_headers):
     )
     assert response.status_code == 200, response.text
     assert {"items", "total", "page", "page_size"} <= set(response.json())
+
+    payments = client.get(
+        "/v1/api/procurement/supplier-payments",
+        headers=superuser_headers,
+    )
+    assert payments.status_code == 200, payments.text
+    assert {"items", "total", "page", "page_size"} <= set(payments.json())
