@@ -374,6 +374,30 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
             headers=fed_headers,
         )
         assert resp_grant.status_code == 200
+        allergy_only_body = resp_grant.json()
+        assert allergy_only_body["active_allergies"]
+        for field in (
+            "source_mrn",
+            "abha_number",
+            "full_name",
+            "date_of_birth",
+            "gender",
+            "blood_group",
+            "phone_number",
+            "email",
+            "address",
+            "emergency_contact_name",
+            "emergency_contact_phone",
+        ):
+            assert allergy_only_body[field] is None, field
+
+        # An allergy-only emergency response is not a patient-import credential.
+        allergy_only_import = client.post(
+            "/v1/api/federation/patients/import",
+            headers=apollo_admin_headers,
+            json=allergy_only_body,
+        )
+        assert allergy_only_import.status_code == 422
 
         # Emergency-purpose access is grant-gated even when the source branch
         # otherwise permits FULL_MESH sharing.
