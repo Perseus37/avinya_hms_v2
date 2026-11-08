@@ -411,6 +411,7 @@ def test_09_federation_import_enforces_corporate_group_policy(
 ):
     """Direct import cannot bypass a source branch's CORPORATE_GROUP_ONLY restriction."""
     from sqlalchemy.orm import Session
+    from backend.control_plane.models import GlobalPatientPointer, TenantRegistry
     from backend.domains.policies.models import FederationPolicyEnum, HospitalPolicySetting
 
     # Authenticate a discovery request as the destination tenant's own federation node.
@@ -441,6 +442,25 @@ def test_09_federation_import_enforces_corporate_group_policy(
     )
     assert discovered.status_code == 200
 
+    # Explicitly assign different trusted groups. The source and destination
+    # branch-code prefixes are not consulted for authorization.
+    control_db = multi_tenant_env["control_session_factory"]()
+    try:
+        source_pointer = control_db.query(GlobalPatientPointer).filter(
+            GlobalPatientPointer.source_mrn == patient.json()["mrn"]
+        ).one()
+        source_registry = control_db.query(TenantRegistry).filter(
+            TenantRegistry.branch_code == source_pointer.branch_code
+        ).one()
+        destination_registry = control_db.query(TenantRegistry).filter(
+            TenantRegistry.branch_code == "HQ-HYD-01"
+        ).one()
+        source_registry.corporate_group_id = "GROUP-B"
+        destination_registry.corporate_group_id = "GROUP-A"
+        control_db.commit()
+    finally:
+        control_db.close()
+
     apollo_engine = multi_tenant_env["tenant_engines"]["hms_apollo"]
     with Session(apollo_engine) as db:
         policy = db.query(HospitalPolicySetting).first()
@@ -458,6 +478,28 @@ def test_09_federation_import_enforces_corporate_group_policy(
         )
         assert imported.status_code == 403
         assert "cross-group" in imported.json()["message"].lower()
+
+        # Matching explicit group IDs permit the same import even though branch
+        # codes have different prefixes (HQ vs APOLLO).
+        control_db = multi_tenant_env["control_session_factory"]()
+        try:
+            source_registry = control_db.query(TenantRegistry).filter(
+                TenantRegistry.branch_code == source_pointer.branch_code
+            ).one()
+            destination_registry = control_db.query(TenantRegistry).filter(
+                TenantRegistry.branch_code == "HQ-HYD-01"
+            ).one()
+            source_registry.corporate_group_id = "GROUP-A"
+            control_db.commit()
+        finally:
+            control_db.close()
+
+        allowed = client.post(
+            "/v1/api/federation/patients/import",
+            headers=superuser_headers,
+            json=discovered.json(),
+        )
+        assert allowed.status_code == 201
     finally:
         with Session(apollo_engine) as db:
             policy = db.query(HospitalPolicySetting).first()
