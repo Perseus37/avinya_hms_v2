@@ -1,7 +1,7 @@
 # Phase 3S — Escalation Rules and Notification Preferences
 
 ## Status
-Design baseline for the next implementation slice. This document does not claim that escalation dispatch is implemented or enabled.
+Stage 1 implementation baseline. Policy and preference configuration APIs are implemented; evaluation, outbox creation, and dispatch are not implemented or enabled.
 
 ## Goals
 1. Configure severity- and SLA-state-based escalation rules without hardcoded recipient identities.
@@ -61,7 +61,7 @@ Exact route paths and permission names must be reconciled with the existing auth
 - privacy route inventory and authorization tests.
 
 ## Delivery stages
-1. Schema + policy/preference APIs + append-only audit.
+1. **Implemented in this branch:** schema, versioned policy APIs, self-service preference APIs, append-only configuration audit, sandbox purge handling. Only IN_APP is currently available; external channels are rejected.
 2. Idempotent evaluator + outbox creation, with no provider delivery.
 3. In-app delivery adapter and read surface.
 4. External provider adapters only after secrets, consent/opt-out, rate limits, retry, and operational ownership are approved.
