@@ -84,6 +84,8 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "procurement_bank_statement_batches",
     "procurement_bank_statement_lines",
     "procurement_supplier_payment_bank_matches",
+    "procurement_reconciliation_investigations",
+    "procurement_reconciliation_investigation_events",
     "break_glass_uses",
     "break_glass_grants",
     "service_workflow_events",
@@ -210,6 +212,19 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
 
+        immutable_investigation_tables = {
+            "procurement_reconciliation_investigation_events",
+        }
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_investigation_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_investigation_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+
         immutable_bank_tables = {
             "procurement_bank_statement_batches",
             "procurement_bank_statement_lines",
@@ -291,7 +306,33 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                         END
                     """))
 
-        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables:
+        # Sandbox clones discard investigation content, but restore append-only protection.
+        for tbl in ("procurement_reconciliation_investigation_events", "procurement_reconciliation_investigations"):
+            if tbl in table_names:
+                session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
+                stats["purged_tables"] += 1
+
+        if session.bind.dialect.name == "postgresql":
+            if "procurement_reconciliation_investigation_events" in table_names:
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_investigation_events_immutable
+                    BEFORE UPDATE OR DELETE ON procurement_reconciliation_investigation_events
+                    FOR EACH ROW EXECUTE FUNCTION prevent_reconciliation_investigation_event_mutation()
+                """))
+        elif session.bind.dialect.name == "sqlite":
+            if "procurement_reconciliation_investigation_events" in table_names:
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_investigation_events_immutable_update
+                    BEFORE UPDATE ON procurement_reconciliation_investigation_events
+                    BEGIN SELECT RAISE(ABORT, 'Reconciliation investigation events are append-only'); END
+                """))
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_investigation_events_immutable_delete
+                    BEFORE DELETE ON procurement_reconciliation_investigation_events
+                    BEGIN SELECT RAISE(ABORT, 'Reconciliation investigation events are append-only'); END
+                """))
+
+        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables:
             if tbl in table_names:
                 session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
                 stats["purged_tables"] += 1
