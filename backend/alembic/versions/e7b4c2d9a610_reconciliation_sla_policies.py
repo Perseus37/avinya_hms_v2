@@ -55,9 +55,11 @@ def upgrade() -> None:
             "(sla_policy_id IS NOT NULL AND sla_policy_version >= 1 AND sla_target_minutes > 0 AND sla_warning_percent BETWEEN 1 AND 99 AND sla_started_at IS NOT NULL AND sla_due_at IS NOT NULL)",
         )
     op.create_index("ix_recon_investigation_sla_due_status", CASE_TABLE, ["status", "sla_due_at"])
+    op.create_index("ix_recon_investigation_sla_policy", CASE_TABLE, ["sla_policy_id"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_recon_investigation_sla_policy", table_name=CASE_TABLE)
     op.drop_index("ix_recon_investigation_sla_due_status", table_name=CASE_TABLE)
     with op.batch_alter_table(CASE_TABLE) as batch:
         batch.drop_constraint("ck_recon_investigation_sla_snapshot", type_="check")
