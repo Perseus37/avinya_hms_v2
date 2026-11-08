@@ -575,6 +575,7 @@ class ReconciliationEscalationPolicy(Base):
         Index("uq_recon_escalation_active", "severity", "trigger", unique=True,
               sqlite_where=text("is_active = 1"),
               postgresql_where=text("is_active = true")),
+        Index("ix_recon_escalation_created_by", "created_by_id"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     severity: Mapped[str] = mapped_column(String(12), nullable=False)
@@ -596,6 +597,7 @@ class ReconciliationNotificationPreference(Base):
         UniqueConstraint("user_id", "event_type", "channel", name="uq_recon_notification_preference"),
         CheckConstraint("event_type IN ('SLA_WARNING','SLA_BREACHED')", name="ck_recon_notification_event"),
         CheckConstraint("channel IN ('IN_APP','EMAIL','SMS','PUSH')", name="ck_recon_notification_channel"),
+        Index("ix_recon_notification_pref_updated_by", "updated_by_id"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
@@ -609,7 +611,10 @@ class ReconciliationNotificationPreference(Base):
 class ReconciliationNotificationConfigEvent(Base):
     """Append-only audit for escalation policy and preference changes."""
     __tablename__ = "procurement_reconciliation_notification_config_events"
-    __table_args__ = (Index("ix_recon_notification_config_actor_time", "actor_user_id", "occurred_at"),)
+    __table_args__ = (
+        Index("ix_recon_notification_config_actor_time", "actor_user_id", "occurred_at"),
+        Index("ix_recon_notification_config_subject", "subject_user_id"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     subject_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
