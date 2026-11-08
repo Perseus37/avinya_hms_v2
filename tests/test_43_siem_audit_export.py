@@ -180,3 +180,38 @@ def test_audit_export_register_is_append_only_on_sqlite_metadata():
     with pytest.raises(DBAPIError):
         with engine.begin() as connection:
             connection.execute(text("DELETE FROM security_audit_export_register WHERE id = 987654"))
+
+
+def test_security_event_total_and_offset_are_global_across_sources(client, superuser_headers):
+    """Total counts are not truncated by page size and offsets apply after merging sources."""
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.privacy.models import PrivacyDecisionAudit
+    from sqlalchemy.orm import Session
+
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(bind=engine) as session:
+        session.add_all([
+            PrivacyDecisionAudit(
+                actor_user_id=1, data_use_point="audit.pagination.test",
+                mode="ENFORCE", result="ALLOW", reason_code="pagination-test-one",
+            ),
+            PrivacyDecisionAudit(
+                actor_user_id=1, data_use_point="audit.pagination.test",
+                mode="ENFORCE", result="ALLOW", reason_code="pagination-test-two",
+            ),
+        ])
+        session.commit()
+
+    first = client.get(
+        "/v1/api/audit/security-events?category=PRIVACY_CONSENT&limit=1&offset=0",
+        headers=superuser_headers,
+    )
+    second = client.get(
+        "/v1/api/audit/security-events?category=PRIVACY_CONSENT&limit=1&offset=1",
+        headers=superuser_headers,
+    )
+    assert first.status_code == second.status_code == 200
+    assert first.json()["total_events"] >= 2
+    assert len(first.json()["events"]) == 1
+    assert len(second.json()["events"]) == 1
+    assert first.json()["events"][0]["event_id"] != second.json()["events"][0]["event_id"]

@@ -14,7 +14,7 @@ from typing import Any, AsyncGenerator, Generator, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel, HttpUrl
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from backend.core.database import get_db
@@ -67,15 +67,52 @@ def _collect_security_events(
 ) -> tuple[int, list[SiemEvent]]:
     """Gathers and normalizes events across multiple security & governance ledgers."""
     events: list[SiemEvent] = []
+    fetch_limit = limit + offset
+    total = 0
+
+    def count_rows(model, timestamp_column, extra_conditions=()):
+        statement = select(func.count()).select_from(model)
+        if from_time:
+            statement = statement.where(timestamp_column >= from_time)
+        if to_time:
+            statement = statement.where(timestamp_column <= to_time)
+        for condition in extra_conditions:
+            statement = statement.where(condition)
+        return int(db.execute(statement).scalar() or 0)
 
     # 1. Privacy Decision Audits
     if not category or category.upper() == "PRIVACY_CONSENT":
+        privacy_conditions = []
+        if severity:
+            requested_severity = severity.upper()
+            severity_results = {
+                "MEDIUM": ("WOULD_DENY",),
+                "HIGH": ("DENY",),
+                "CRITICAL": ("BYPASS_ALLOWED", "EMERGENCY_OVERRIDE"),
+            }
+            if requested_severity == "INFO":
+                privacy_conditions.append(
+                    PrivacyDecisionAudit.result.notin_(
+                        ("WOULD_DENY", "DENY", "BYPASS_ALLOWED", "EMERGENCY_OVERRIDE")
+                    )
+                )
+            else:
+                matching_results = severity_results.get(requested_severity, ())
+                privacy_conditions.append(
+                    PrivacyDecisionAudit.result.in_(matching_results)
+                    if matching_results else PrivacyDecisionAudit.result == "__NO_MATCH__"
+                )
+        total += count_rows(
+            PrivacyDecisionAudit, PrivacyDecisionAudit.occurred_at, privacy_conditions
+        )
         q = select(PrivacyDecisionAudit)
+        if privacy_conditions:
+            q = q.where(*privacy_conditions)
         if from_time:
             q = q.where(PrivacyDecisionAudit.occurred_at >= from_time)
         if to_time:
             q = q.where(PrivacyDecisionAudit.occurred_at <= to_time)
-        p_audits = db.execute(q.order_by(desc(PrivacyDecisionAudit.id)).limit(limit)).scalars().all()
+        p_audits = db.execute(q.order_by(desc(PrivacyDecisionAudit.id)).limit(fetch_limit)).scalars().all()
 
         for pa in p_audits:
             sev = "INFO"
@@ -107,12 +144,14 @@ def _collect_security_events(
 
     # 2. Break-Glass Emergency Overrides
     if not category or category.upper() == "BREAK_GLASS":
+        if not severity or severity.upper() == "CRITICAL":
+            total += count_rows(BreakGlassGrant, BreakGlassGrant.created_at)
         q_bg = select(BreakGlassGrant)
         if from_time:
             q_bg = q_bg.where(BreakGlassGrant.created_at >= from_time)
         if to_time:
             q_bg = q_bg.where(BreakGlassGrant.created_at <= to_time)
-        bg_records = db.execute(q_bg.order_by(desc(BreakGlassGrant.id)).limit(limit)).scalars().all()
+        bg_records = db.execute(q_bg.order_by(desc(BreakGlassGrant.id)).limit(fetch_limit)).scalars().all()
 
         for bg in bg_records:
             sev = "CRITICAL"
@@ -136,12 +175,20 @@ def _collect_security_events(
 
     # 3. Personal Data Breach Incidents
     if not category or category.upper() == "DATA_BREACH":
+        breach_conditions = []
+        if severity:
+            breach_conditions.append(func.upper(PrivacyDataBreachIncident.severity) == severity.upper())
+        total += count_rows(
+            PrivacyDataBreachIncident, PrivacyDataBreachIncident.created_at, breach_conditions
+        )
         q_br = select(PrivacyDataBreachIncident)
+        if breach_conditions:
+            q_br = q_br.where(*breach_conditions)
         if from_time:
             q_br = q_br.where(PrivacyDataBreachIncident.created_at >= from_time)
         if to_time:
             q_br = q_br.where(PrivacyDataBreachIncident.created_at <= to_time)
-        breaches = db.execute(q_br.order_by(desc(PrivacyDataBreachIncident.id)).limit(limit)).scalars().all()
+        breaches = db.execute(q_br.order_by(desc(PrivacyDataBreachIncident.id)).limit(fetch_limit)).scalars().all()
 
         for br in breaches:
             sev = br.severity.value if hasattr(br.severity, "value") else str(br.severity)
@@ -165,12 +212,25 @@ def _collect_security_events(
 
     # 4. Retention Purges
     if not category or category.upper() == "RETENTION_PURGE":
+        retention_conditions = []
+        if severity:
+            if severity.upper() == "INFO":
+                retention_conditions.append(PrivacyRetentionRunLedger.dry_run.is_(True))
+            elif severity.upper() == "MEDIUM":
+                retention_conditions.append(PrivacyRetentionRunLedger.dry_run.is_(False))
+            else:
+                retention_conditions.append(PrivacyRetentionRunLedger.dry_run.is_(None))
+        total += count_rows(
+            PrivacyRetentionRunLedger, PrivacyRetentionRunLedger.executed_at, retention_conditions
+        )
         q_ret = select(PrivacyRetentionRunLedger)
+        if retention_conditions:
+            q_ret = q_ret.where(*retention_conditions)
         if from_time:
             q_ret = q_ret.where(PrivacyRetentionRunLedger.executed_at >= from_time)
         if to_time:
             q_ret = q_ret.where(PrivacyRetentionRunLedger.executed_at <= to_time)
-        runs = db.execute(q_ret.order_by(desc(PrivacyRetentionRunLedger.id)).limit(limit)).scalars().all()
+        runs = db.execute(q_ret.order_by(desc(PrivacyRetentionRunLedger.id)).limit(fetch_limit)).scalars().all()
 
         for ret in runs:
             sev = "INFO" if ret.dry_run else "MEDIUM"
@@ -196,7 +256,6 @@ def _collect_security_events(
 
     # Sort all merged events by timestamp descending
     events.sort(key=lambda e: e.timestamp, reverse=True)
-    total = len(events)
     paginated = events[offset : offset + limit]
     return total, paginated
 
@@ -212,7 +271,7 @@ def get_security_events(
     category: Optional[str] = Query(None, description="Event category: PRIVACY_CONSENT, BREAK_GLASS, DATA_BREACH, RETENTION_PURGE"),
     severity: Optional[str] = Query(None, description="Severity: INFO, LOW, MEDIUM, HIGH, CRITICAL"),
     limit: int = Query(50, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10000),
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("privacy:read")),
 ):
