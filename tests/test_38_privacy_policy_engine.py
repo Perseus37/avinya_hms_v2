@@ -129,6 +129,8 @@ NON_PATIENT_OR_DEFERRED_GET_ROUTES = {
     "/api/procurement/bank-statements/{batch_id}/lines",
     "/api/procurement/bank-statement-lines/{line_id}/matches",
     "/api/procurement/reconciliation/candidates",
+    "/api/procurement/reconciliation/sla-policies",
+    "/api/procurement/reconciliation/sla-summary",
     "/api/procurement/reconciliation/investigations",
     "/api/procurement/reconciliation/investigations/{investigation_id}/events",
     "/api/procurement/reconciliation/investigations/quality-summary",
