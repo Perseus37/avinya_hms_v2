@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission, validate_pagination
-from backend.domains.identity.models import User
+from backend.domains.identity.models import User, UserStatusEnum
 from backend.domains.procurement.models import (
     BankStatementLine,
     ReconciliationInvestigation,
@@ -330,8 +330,11 @@ def assign_reconciliation_investigation(
         raise HTTPException(status_code=409, detail={"message": "Investigation was updated by another user.", "current_version": row.version})
     if row.status in {"RESOLVED", "DISMISSED"}:
         raise HTTPException(status_code=409, detail="Closed investigations cannot be reassigned.")
-    if db.get(User, payload.assigned_to_id) is None:
+    assignee = db.get(User, payload.assigned_to_id)
+    if assignee is None:
         raise HTTPException(status_code=404, detail="Assignee not found.")
+    if assignee.status != UserStatusEnum.ACTIVE:
+        raise HTTPException(status_code=409, detail="Only active users can be assigned to reconciliation investigations.")
     old_status = row.status
     row.assigned_to_id = payload.assigned_to_id
     if row.status == "OPEN":
@@ -403,14 +406,20 @@ def transition_reconciliation_investigation(
 @router.get("/reconciliation/investigations/{investigation_id}/events", response_model=list[dict])
 def list_reconciliation_investigation_events(
     investigation_id: int,
+    before_id: Optional[int] = Query(default=None, gt=0),
+    limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
     if db.get(ReconciliationInvestigation, investigation_id) is None:
         raise HTTPException(status_code=404, detail="Investigation not found.")
-    rows = db.query(ReconciliationInvestigationEvent).filter(
+    query = db.query(ReconciliationInvestigationEvent).filter(
         ReconciliationInvestigationEvent.investigation_id == investigation_id
-    ).order_by(ReconciliationInvestigationEvent.occurred_at, ReconciliationInvestigationEvent.id).all()
+    )
+    if before_id is not None:
+        query = query.filter(ReconciliationInvestigationEvent.id < before_id)
+    # Descending IDs provide a stable keyset cursor without loading full history.
+    rows = query.order_by(ReconciliationInvestigationEvent.id.desc()).limit(limit).all()
     return [{
         "id": row.id,
         "event_type": row.event_type,

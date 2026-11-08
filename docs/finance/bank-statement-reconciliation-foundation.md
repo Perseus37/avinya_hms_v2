@@ -62,3 +62,8 @@ The migration adds unique identities, amount/direction/period constraints, forei
 ## Verification gate
 
 The first source-foundation commit passed the full release-gate workflow on 2026-11-08 (run #42466479589). The subsequent candidate-discovery and import-validation commits still require a fresh full workflow on the final head. The pull request remains draft pending that verification and independent review.
+
+
+## Bounded candidate discovery continuation
+
+Candidate discovery scans source tables in stable order in bounded windows of 1,000 rows. The response includes `next_cursor` when either the current derived-candidate window has more results or additional source windows remain. Pass that cursor back unchanged to continue. The cursor is an opaque position token, not an authorization token; tenant routing and `finance:read` remain enforced on every request. `limit` bounds the number of returned candidates per response. Duplicate-reference indicators are evaluated within each scanned supplier-payment window, so review should continue through all cursors.

@@ -6,6 +6,8 @@ through this JSON endpoint. Credits remain classification work and are never tre
 as income or matched automatically.
 """
 from datetime import date, datetime, timezone
+import base64
+import json
 from typing import List, Optional
 from collections import defaultdict
 import re
@@ -349,6 +351,7 @@ def list_bank_statement_line_matches(
 def list_reconciliation_candidates(
     as_of: Optional[date] = Query(default=None),
     limit: int = Query(default=500, ge=1, le=2000),
+    cursor: Optional[str] = Query(default=None, max_length=2048),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
@@ -359,9 +362,22 @@ def list_reconciliation_candidates(
     """
     as_of = as_of or date.today()
     candidates = []
-    source_cap = 5001
+    source_cap = 1000
+    source_offset = 0
+    candidate_offset = 0
+    if cursor:
+        try:
+            decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+            source_offset = int(decoded["source_offset"])
+            candidate_offset = int(decoded["candidate_offset"])
+            if source_offset < 0 or candidate_offset < 0 or source_offset % source_cap:
+                raise ValueError("Invalid cursor position")
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=422, detail="Invalid reconciliation candidate cursor.") from exc
 
-    lines = db.query(BankStatementLine).order_by(BankStatementLine.id).limit(source_cap).all()
+    lines = db.query(BankStatementLine).order_by(BankStatementLine.id).offset(source_offset).limit(source_cap + 1).all()
+    more_lines = len(lines) > source_cap
+    lines = lines[:source_cap]
     line_matches = dict(
         db.query(
             SupplierPaymentBankMatch.statement_line_id,
@@ -390,7 +406,9 @@ def list_reconciliation_candidates(
                 "reference": line.bank_reference or line.bank_transaction_id,
             })
 
-    payments = db.query(SupplierPayment).order_by(SupplierPayment.id).limit(source_cap).all()
+    payments = db.query(SupplierPayment).order_by(SupplierPayment.id).offset(source_offset).limit(source_cap + 1).all()
+    more_payments = len(payments) > source_cap
+    payments = payments[:source_cap]
     payment_matches = dict(
         db.query(
             SupplierPaymentBankMatch.supplier_payment_id,
@@ -427,7 +445,9 @@ def list_reconciliation_candidates(
         SupplierPaymentRequest.status == "APPROVED",
         SupplierPaymentRequest.scheduled_date < as_of,
         SupplierPaymentRequest.executed_payment_id.is_(None),
-    ).order_by(SupplierPaymentRequest.scheduled_date, SupplierPaymentRequest.id).limit(source_cap).all()
+    ).order_by(SupplierPaymentRequest.scheduled_date, SupplierPaymentRequest.id).offset(source_offset).limit(source_cap + 1).all()
+    more_overdue = len(overdue) > source_cap
+    overdue = overdue[:source_cap]
     for request_row in overdue:
         candidates.append({
             "candidate_type": "OVERDUE_APPROVED_PAYMENT_REQUEST",
@@ -439,11 +459,32 @@ def list_reconciliation_candidates(
         })
 
     candidates.sort(key=lambda row: (row["candidate_type"], row.get("transaction_date", row.get("scheduled_date", "")), row.get("source_id", 0)))
+
+    # Replay a bounded source window until all its derived candidates are returned.
+    if candidate_offset > len(candidates):
+        raise HTTPException(status_code=422, detail="Invalid reconciliation candidate cursor.")
+    page_items = candidates[candidate_offset:candidate_offset + limit]
+    next_candidate_offset = candidate_offset + len(page_items)
+    has_more_sources = more_lines or more_payments or more_overdue
+    if next_candidate_offset < len(candidates):
+        next_position = {"source_offset": source_offset, "candidate_offset": next_candidate_offset}
+    elif has_more_sources:
+        next_position = {"source_offset": source_offset + source_cap, "candidate_offset": 0}
+    else:
+        next_position = None
+    next_cursor = None
+    if next_position is not None:
+        next_cursor = base64.urlsafe_b64encode(
+            json.dumps(next_position, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+
     return {
-        "items": candidates[:limit],
+        "items": page_items,
         "total_candidates": len(candidates),
         "limit": limit,
-        "truncated": len(lines) == source_cap or len(payments) == source_cap or len(overdue) == source_cap or len(candidates) > limit,
+        "truncated": next_cursor is not None,
+        "next_cursor": next_cursor,
+        "source_page_size": source_cap,
         "as_of": as_of.isoformat(),
         "disclaimer": "Candidates are review prompts, not fraud findings or accounting conclusions.",
     }
