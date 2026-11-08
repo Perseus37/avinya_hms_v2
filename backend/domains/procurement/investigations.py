@@ -85,10 +85,14 @@ def _sla_state(row: ReconciliationInvestigation) -> str:
     due = row.sla_due_at if row.sla_due_at.tzinfo else row.sla_due_at.replace(tzinfo=timezone.utc)
     if row.status in {"RESOLVED", "DISMISSED"}:
         closed = row.resolved_at or row.updated_at
+        if closed and closed.tzinfo is None:
+            closed = closed.replace(tzinfo=timezone.utc)
         return "CLOSED_ON_TIME" if closed and closed <= due else "CLOSED_LATE"
     if now >= due:
         return "BREACHED"
     started = row.sla_started_at or row.opened_at
+    if started and started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
     if started and row.sla_warning_percent:
         total = max((due - started).total_seconds(), 1)
         elapsed = max((now - started).total_seconds(), 0)
