@@ -70,7 +70,7 @@ def create_escalation_policy(
     role_ids = sorted(payload.recipient_role_ids)
     roles = db.query(Role).filter(Role.id.in_(role_ids)).all() if role_ids else []
     if len(roles) != len(role_ids):
-        raise HTTPException(status_code=422, detail="One or more recipient roles are invalid or inactive.")
+        raise HTTPException(status_code=422, detail="One or more recipient roles do not exist in this tenant.")
     rows = db.query(ReconciliationEscalationPolicy).filter(
         ReconciliationEscalationPolicy.severity == payload.severity,
         ReconciliationEscalationPolicy.trigger == payload.trigger,
