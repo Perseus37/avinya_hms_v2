@@ -32,6 +32,7 @@ def upgrade() -> None:
         sa.CheckConstraint("schema_version >= 1", name="ck_recon_governance_schema_version"),
     )
     op.create_index("ix_recon_governance_generated_at", TABLE, ["generated_at"])
+    op.create_index("ix_recon_governance_generated_by", TABLE, ["generated_by_id"])
 
     if op.get_bind().dialect.name == "postgresql":
         op.execute("""
@@ -67,5 +68,6 @@ def downgrade() -> None:
     elif op.get_bind().dialect.name == "sqlite":
         op.execute(f"DROP TRIGGER IF EXISTS trg_{TABLE}_immutable_update")
         op.execute(f"DROP TRIGGER IF EXISTS trg_{TABLE}_immutable_delete")
+    op.drop_index("ix_recon_governance_generated_by", table_name=TABLE)
     op.drop_index("ix_recon_governance_generated_at", table_name=TABLE)
     op.drop_table(TABLE)

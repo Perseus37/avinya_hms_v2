@@ -791,7 +791,7 @@ def get_reconciliation_recurrence_summary(
 
 
 class GovernanceReportGenerate(BaseModel):
-    report_month: str = Field(pattern=r"^\\d{4}-(0[1-9]|1[0-2])$")
+    report_month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 def _governance_report_payload(db: Session, *, period_start: datetime,

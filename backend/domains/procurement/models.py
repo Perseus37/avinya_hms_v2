@@ -668,6 +668,7 @@ class ReconciliationGovernanceReport(Base):
         UniqueConstraint("report_month", name="uq_recon_governance_report_month"),
         CheckConstraint("schema_version >= 1", name="ck_recon_governance_schema_version"),
         Index("ix_recon_governance_generated_at", "generated_at"),
+        Index("ix_recon_governance_generated_by", "generated_by_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
