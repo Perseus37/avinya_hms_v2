@@ -491,7 +491,8 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     )
     assert active_policies.status_code == 200
     assert len([item for item in active_policies.json() if item["severity"] == "HIGH"]) == 1
-    assert active_policies.json()[0]["version"] == 2
+    active_high_policy = next(item for item in active_policies.json() if item["severity"] == "HIGH")
+    assert active_high_policy["version"] == 2
     unchanged_case = client.get(
         "/v1/api/procurement/reconciliation/investigations",
         headers=superuser_headers,
