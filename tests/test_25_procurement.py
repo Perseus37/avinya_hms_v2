@@ -318,3 +318,89 @@ def test_reconciliation_candidate_endpoint_is_registered(client, superuser_heade
     body = response.json()
     assert {"items", "total_candidates", "limit", "truncated", "as_of", "disclaimer"} <= set(body)
     assert body["as_of"] == "2026-11-08"
+
+
+def test_reconciliation_candidate_discovery_classifies_all_source_indicators():
+    from datetime import date, datetime, timezone
+    from types import SimpleNamespace
+
+    from backend.domains.procurement.bank_reconciliation import list_reconciliation_candidates
+    from backend.domains.procurement.models import (
+        BankStatementLine,
+        SupplierPayment,
+        SupplierPaymentBankMatch,
+        SupplierPaymentRequest,
+    )
+
+    debit = SimpleNamespace(
+        id=101, direction="DEBIT", amount_paise=1000,
+        transaction_date=date(2026, 11, 2), bank_reference="BANK-DEBIT-101",
+        bank_transaction_id="TXN-101",
+    )
+    credit = SimpleNamespace(
+        id=102, direction="CREDIT", amount_paise=2500,
+        transaction_date=date(2026, 11, 3), bank_reference="BANK-CREDIT-102",
+        bank_transaction_id="TXN-102",
+    )
+    payment_partial = SimpleNamespace(
+        id=201, amount_paise=800, payment_date=datetime(2026, 11, 1, tzinfo=timezone.utc),
+        payment_reference="SUPP-REF 77", vendor_id=9,
+    )
+    payment_duplicate = SimpleNamespace(
+        id=202, amount_paise=100, payment_date=datetime(2026, 11, 1, tzinfo=timezone.utc),
+        payment_reference="supp-ref77", vendor_id=9,
+    )
+    overdue_request = SimpleNamespace(
+        id=301, status="APPROVED", scheduled_date=date(2026, 11, 7),
+        executed_payment_id=None, amount_paise=500, payment_reference="REQ-301",
+        vendor_id=9,
+    )
+
+    class FakeQuery:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def filter(self, *_args):
+            return self
+
+        def group_by(self, *_args):
+            return self
+
+        def all(self):
+            return self.rows
+
+    class FakeDb:
+        def query(self, *entities):
+            first = entities[0]
+            if first is BankStatementLine:
+                return FakeQuery([debit, credit])
+            if first is SupplierPayment:
+                return FakeQuery([payment_partial, payment_duplicate])
+            if first is SupplierPaymentRequest:
+                return FakeQuery([overdue_request])
+            if first is SupplierPaymentBankMatch.statement_line_id:
+                return FakeQuery([(debit.id, 400)])
+            if first is SupplierPaymentBankMatch.supplier_payment_id:
+                return FakeQuery([(payment_partial.id, 300), (payment_duplicate.id, 100)])
+            raise AssertionError(f"Unexpected reconciliation query: {entities!r}")
+
+    result = list_reconciliation_candidates(
+        as_of=date(2026, 11, 8),
+        limit=100,
+        db=FakeDb(),
+    )
+    by_type = {row["candidate_type"]: row for row in result["items"]}
+
+    assert by_type["PARTIALLY_MATCHED_BANK_DEBIT"]["remaining_amount_paise"] == 600
+    assert by_type["UNCLASSIFIED_BANK_CREDIT"]["amount_paise"] == 2500
+    assert by_type["PARTIALLY_RECONCILED_SUPPLIER_PAYMENT"]["remaining_amount_paise"] == 500
+    assert by_type["POSSIBLE_DUPLICATE_PAYMENT_REFERENCE"]["source_ids"] == [201, 202]
+    assert by_type["OVERDUE_APPROVED_PAYMENT_REQUEST"]["source_id"] == 301
+    assert result["truncated"] is False
+    assert "not fraud findings" in result["disclaimer"].lower()
