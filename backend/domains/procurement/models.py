@@ -361,6 +361,7 @@ class SupplierPaymentRequest(AuditMixin, Base):
         CheckConstraint("amount_paise > 0", name="ck_supplier_payment_request_amount_positive"),
         CheckConstraint("status IN ('PENDING','APPROVED','REJECTED','EXECUTED','CANCELLED')", name="ck_supplier_payment_request_status"),
         Index("ix_supplier_payment_request_status_date", "status", "scheduled_date"),
+        UniqueConstraint("executed_payment_id", name="uq_supplier_payment_request_executed_payment"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -377,7 +378,7 @@ class SupplierPaymentRequest(AuditMixin, Base):
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     executed_payment_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=True, unique=True
+        ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=True
     )
     executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     allocations: Mapped[List["SupplierPaymentRequestAllocation"]] = relationship(back_populates="request")
