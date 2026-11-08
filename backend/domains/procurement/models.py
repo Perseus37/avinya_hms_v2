@@ -659,3 +659,23 @@ class ReconciliationNotificationOutbox(Base):
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReconciliationGovernanceReport(Base):
+    """Immutable, tenant-local monthly governance snapshot; payload contains aggregates only."""
+    __tablename__ = "procurement_reconciliation_governance_reports"
+    __table_args__ = (
+        UniqueConstraint("report_month", name="uq_recon_governance_report_month"),
+        CheckConstraint("schema_version >= 1", name="ck_recon_governance_schema_version"),
+        Index("ix_recon_governance_generated_at", "generated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_month: Mapped[str] = mapped_column(String(7), nullable=False)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    generated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)

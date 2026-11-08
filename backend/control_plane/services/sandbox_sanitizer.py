@@ -91,6 +91,7 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "procurement_reconciliation_notification_preferences",
     "procurement_reconciliation_notification_config_events",
     "procurement_reconciliation_notification_outbox",
+    "procurement_reconciliation_governance_reports",
     "break_glass_uses",
     "break_glass_grants",
     "service_workflow_events",
@@ -221,6 +222,16 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
             "procurement_reconciliation_investigation_events",
             "procurement_reconciliation_notification_config_events",
         }
+        immutable_governance_tables = {"procurement_reconciliation_governance_reports"}
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_governance_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_governance_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
         if session.bind.dialect.name == "postgresql":
             for tbl in immutable_investigation_tables:
                 if tbl in table_names:
@@ -362,10 +373,31 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
                 """))
 
-        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables - {"procurement_reconciliation_notification_outbox"}:
+        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables - immutable_governance_tables - {"procurement_reconciliation_notification_outbox"}:
             if tbl in table_names:
                 session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
                 stats["purged_tables"] += 1
+
+        if "procurement_reconciliation_governance_reports" in table_names:
+            session.execute(text('DELETE FROM "procurement_reconciliation_governance_reports"'))  # nosec B608
+            stats["purged_tables"] += 1
+        if session.bind.dialect.name == "postgresql" and "procurement_reconciliation_governance_reports" in table_names:
+            session.execute(text("""
+                CREATE TRIGGER trg_procurement_reconciliation_governance_reports_immutable
+                BEFORE UPDATE OR DELETE ON procurement_reconciliation_governance_reports
+                FOR EACH ROW EXECUTE FUNCTION prevent_reconciliation_governance_report_mutation()
+            """))
+        elif session.bind.dialect.name == "sqlite" and "procurement_reconciliation_governance_reports" in table_names:
+            session.execute(text("""
+                CREATE TRIGGER trg_procurement_reconciliation_governance_reports_immutable_update
+                BEFORE UPDATE ON procurement_reconciliation_governance_reports
+                BEGIN SELECT RAISE(ABORT, 'Monthly reconciliation governance reports are immutable'); END
+            """))
+            session.execute(text("""
+                CREATE TRIGGER trg_procurement_reconciliation_governance_reports_immutable_delete
+                BEFORE DELETE ON procurement_reconciliation_governance_reports
+                BEGIN SELECT RAISE(ABORT, 'Monthly reconciliation governance reports are immutable'); END
+            """))
 
         # 2. WIPE USERS, PASSWORDS, AND MFA (N-37)
         if "users" in table_names:

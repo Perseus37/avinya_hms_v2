@@ -263,3 +263,120 @@ def test_reconciliation_recurrence_summary_groups_repeated_patterns_and_root_cau
                 assert exc.status_code == 422
             else:
                 raise AssertionError("Invalid recurrence query bounds must be rejected")
+
+
+def test_monthly_reconciliation_governance_report_is_immutable_and_tenant_scoped(multi_tenant_env):
+    import hashlib
+    from datetime import datetime, timezone
+    from sqlalchemy import update
+    from sqlalchemy.exc import DBAPIError
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.investigations import (
+        GovernanceReportGenerate,
+        generate_reconciliation_governance_report,
+        get_reconciliation_governance_report,
+        list_reconciliation_governance_reports,
+    )
+    from backend.domains.procurement.models import (
+        ReconciliationGovernanceReport,
+        ReconciliationInvestigation,
+        ReconciliationInvestigationEvent,
+    )
+    from fastapi import HTTPException
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    now = datetime.now(timezone.utc)
+    current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    period_start = (current_month - timedelta(days=1)).replace(day=1)
+    report_month = period_start.strftime("%Y-%m")
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        rows = [
+            ReconciliationInvestigation(
+                external_key=f"monthly-report-resolved-{n}", candidate_type="UNMATCHED_BANK_DEBIT",
+                source_type="BANK_STATEMENT_LINE", source_id=99400+n,
+                title=f"Monthly report resolved {n}", summary="Synthetic monthly report test data.",
+                severity="HIGH", status="RESOLVED", opened_by_id=actor.id,
+                opened_at=period_start + timedelta(days=2+n),
+                updated_at=period_start + timedelta(days=5+n),
+                resolved_at=period_start + timedelta(days=5+n), closed_by_id=actor.id,
+                resolution="Private narrative must not be included in the report.",
+                root_cause="  DUPLICATE   REFERENCE " if n == 1 else "duplicate   reference",
+                resolution_quality_status="REJECTED" if n == 1 else "APPROVED",
+                reopen_count=1 if n == 1 else 0, sla_due_at=period_start + timedelta(days=4+n),
+                version=2,
+            ) for n in (1, 2)
+        ]
+        rows.append(ReconciliationInvestigation(
+            external_key="monthly-report-open", candidate_type="UNMATCHED_BANK_DEBIT",
+            source_type="BANK_STATEMENT_LINE", source_id=99403,
+            title="Open report case", summary="Synthetic open report case.",
+            severity="CRITICAL", status="OPEN", opened_by_id=actor.id,
+            opened_at=period_start + timedelta(days=10), updated_at=now,
+            sla_due_at=period_start + timedelta(days=12), version=1,
+        ))
+        db.add_all(rows)
+        db.flush()
+        db.add(ReconciliationInvestigationEvent(
+            investigation_id=rows[0].id, event_type="REOPENED",
+            from_status="RESOLVED", to_status="IN_REVIEW",
+            actor_user_id=actor.id, details='{"reason":"test"}',
+            occurred_at=period_start + timedelta(days=6),
+        ))
+        db.commit()
+
+        created = generate_reconciliation_governance_report(
+            payload=GovernanceReportGenerate(report_month=report_month), db=db, current_user=actor
+        )
+        assert created["report_month"] == report_month
+        assert created["payload"]["activity"]["opened"] == 3
+        assert created["payload"]["activity"]["resolved"] == 2
+        assert created["payload"]["activity"]["reopened_events"] == 1
+        assert created["payload"]["closure_quality"]["rejected"] == 1
+        assert created["payload"]["closure_quality"]["approved"] == 1
+        assert created["payload"]["sla"]["resolved_with_sla"] == 2
+        assert created["payload"]["recurring_exception_patterns"][0]["investigations"] == 3
+        assert created["payload"]["recurring_recorded_root_causes"][0]["resolved_cases"] == 2
+        assert created["payload"]["backlog_at_generation"]["active"] >= 1
+        canonical = json.dumps(created["payload"], ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        assert created["payload_sha256"] == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        rendered = json.dumps(created["payload"])
+        assert "Private narrative" not in rendered
+        assert "source_id" not in rendered
+        assert "99400" not in rendered
+        assert "opened_by_id" not in rendered
+
+        listing = list_reconciliation_governance_reports(db=db, current_user=actor, limit=10)
+        assert listing["items"][0]["id"] == created["id"]
+        detail = get_reconciliation_governance_report(report_id=created["id"], db=db, current_user=actor)
+        assert detail["payload_sha256"] == created["payload_sha256"]
+        assert detail["payload"] == created["payload"]
+
+        try:
+            generate_reconciliation_governance_report(
+                payload=GovernanceReportGenerate(report_month=report_month), db=db, current_user=actor
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 409
+        else:
+            raise AssertionError("Duplicate monthly report generation must be rejected")
+
+        try:
+            generate_reconciliation_governance_report(
+                payload=GovernanceReportGenerate(report_month=current_month.strftime("%Y-%m")),
+                db=db, current_user=actor,
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 422
+        else:
+            raise AssertionError("Current month must not be finalized")
+
+        try:
+            db.execute(update(ReconciliationGovernanceReport).where(
+                ReconciliationGovernanceReport.id == created["id"]
+            ).values(payload="tampered"))
+            db.commit()
+            raise AssertionError("Governance report UPDATE must be blocked by the database")
+        except DBAPIError:
+            db.rollback()
+

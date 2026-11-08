@@ -4,6 +4,7 @@ Source references are polymorphic and deliberately not foreign keys. The source
 record remains in its owning procurement table; this case stores a stable source
 type/id/reference and never copies patient or bank-account payloads.
 """
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -21,6 +22,7 @@ from backend.domains.procurement.models import (
     BankStatementLine,
     ReconciliationInvestigation,
     ReconciliationInvestigationEvent,
+    ReconciliationGovernanceReport,
     ReconciliationSLAPolicy,
     SupplierPayment,
     SupplierPaymentRequest,
@@ -786,3 +788,228 @@ def get_reconciliation_recurrence_summary(
             "Counts are live tenant-local aggregates, not immutable monthly snapshots.",
         ],
     }
+
+
+class GovernanceReportGenerate(BaseModel):
+    report_month: str = Field(pattern=r"^\\d{4}-(0[1-9]|1[0-2])$")
+
+
+def _governance_report_payload(db: Session, *, period_start: datetime,
+                               period_end: datetime, generated_at: datetime) -> dict:
+    """Build a bounded aggregate-only monthly snapshot; never select narrative/source identifiers."""
+    opened = db.query(func.count(ReconciliationInvestigation.id)).filter(
+        ReconciliationInvestigation.opened_at >= period_start,
+        ReconciliationInvestigation.opened_at < period_end,
+    ).scalar() or 0
+    resolved = db.query(func.count(ReconciliationInvestigation.id)).filter(
+        ReconciliationInvestigation.status == "RESOLVED",
+        ReconciliationInvestigation.resolved_at >= period_start,
+        ReconciliationInvestigation.resolved_at < period_end,
+    ).scalar() or 0
+    reopened = db.query(func.count(ReconciliationInvestigationEvent.id)).filter(
+        ReconciliationInvestigationEvent.event_type == "REOPENED",
+        ReconciliationInvestigationEvent.occurred_at >= period_start,
+        ReconciliationInvestigationEvent.occurred_at < period_end,
+    ).scalar() or 0
+
+    quality_rows = db.query(
+        ReconciliationInvestigation.resolution_quality_status,
+        func.count(ReconciliationInvestigation.id),
+    ).filter(
+        ReconciliationInvestigation.status == "RESOLVED",
+        ReconciliationInvestigation.resolved_at >= period_start,
+        ReconciliationInvestigation.resolved_at < period_end,
+    ).group_by(ReconciliationInvestigation.resolution_quality_status).all()
+    quality = {status: int(count or 0) for status, count in quality_rows}
+
+    sla_rows = db.query(
+        func.sum(case((ReconciliationInvestigation.resolved_at <= ReconciliationInvestigation.sla_due_at, 1), else_=0)),
+        func.sum(case((ReconciliationInvestigation.resolved_at > ReconciliationInvestigation.sla_due_at, 1), else_=0)),
+    ).filter(
+        ReconciliationInvestigation.status == "RESOLVED",
+        ReconciliationInvestigation.resolved_at >= period_start,
+        ReconciliationInvestigation.resolved_at < period_end,
+        ReconciliationInvestigation.sla_due_at.is_not(None),
+    ).one()
+    resolved_with_sla = db.query(func.count(ReconciliationInvestigation.id)).filter(
+        ReconciliationInvestigation.status == "RESOLVED",
+        ReconciliationInvestigation.resolved_at >= period_start,
+        ReconciliationInvestigation.resolved_at < period_end,
+        ReconciliationInvestigation.sla_due_at.is_not(None),
+    ).scalar() or 0
+
+    pattern_rows = db.query(
+        ReconciliationInvestigation.candidate_type,
+        ReconciliationInvestigation.source_type,
+        func.count(ReconciliationInvestigation.id).label("case_count"),
+    ).filter(
+        ReconciliationInvestigation.opened_at >= period_start,
+        ReconciliationInvestigation.opened_at < period_end,
+    ).group_by(
+        ReconciliationInvestigation.candidate_type,
+        ReconciliationInvestigation.source_type,
+    ).having(func.count(ReconciliationInvestigation.id) >= 2).order_by(
+        func.count(ReconciliationInvestigation.id).desc(),
+        ReconciliationInvestigation.candidate_type.asc(),
+        ReconciliationInvestigation.source_type.asc(),
+    ).limit(25).all()
+
+    cause_rows = db.query(
+        func.lower(func.trim(ReconciliationInvestigation.root_cause)).label("root_cause"),
+        func.count(ReconciliationInvestigation.id).label("case_count"),
+    ).filter(
+        ReconciliationInvestigation.status == "RESOLVED",
+        ReconciliationInvestigation.root_cause.is_not(None),
+        func.trim(ReconciliationInvestigation.root_cause) != "",
+        ReconciliationInvestigation.resolved_at >= period_start,
+        ReconciliationInvestigation.resolved_at < period_end,
+    ).group_by(func.lower(func.trim(ReconciliationInvestigation.root_cause))).having(
+        func.count(ReconciliationInvestigation.id) >= 2
+    ).order_by(func.count(ReconciliationInvestigation.id).desc(),
+               func.lower(func.trim(ReconciliationInvestigation.root_cause)).asc()).limit(25).all()
+
+    active_filter = ReconciliationInvestigation.status.in_(("OPEN", "ASSIGNED", "IN_REVIEW"))
+    active_count = db.query(func.count(ReconciliationInvestigation.id)).filter(active_filter).scalar() or 0
+    severity_rows = db.query(
+        ReconciliationInvestigation.severity, func.count(ReconciliationInvestigation.id)
+    ).filter(active_filter).group_by(ReconciliationInvestigation.severity).all()
+    overdue = db.query(func.count(ReconciliationInvestigation.id)).filter(
+        active_filter, ReconciliationInvestigation.sla_due_at.is_not(None),
+        ReconciliationInvestigation.sla_due_at < generated_at,
+    ).scalar() or 0
+    missing_sla = db.query(func.count(ReconciliationInvestigation.id)).filter(
+        active_filter, ReconciliationInvestigation.sla_due_at.is_(None),
+    ).scalar() or 0
+
+    return {
+        "schema_version": 1,
+        "report_month": period_start.strftime("%Y-%m"),
+        "period": {"start_utc": period_start.isoformat(), "end_utc_exclusive": period_end.isoformat()},
+        "generated_at": generated_at.isoformat(),
+        "activity": {"opened": int(opened), "resolved": int(resolved), "reopened_events": int(reopened)},
+        "closure_quality": {
+            "not_reviewed": int(quality.get("NOT_REVIEWED", 0)),
+            "approved": int(quality.get("APPROVED", 0)),
+            "rejected": int(quality.get("REJECTED", 0)),
+        },
+        "sla": {
+            "resolved_with_sla": int(resolved_with_sla),
+            "closed_on_time": int(sla_rows[0] or 0),
+            "closed_late": int(sla_rows[1] or 0),
+            "resolved_without_sla": int(resolved - resolved_with_sla),
+        },
+        "recurring_exception_patterns": [
+            {"candidate_type": row.candidate_type, "source_type": row.source_type,
+             "investigations": int(row.case_count or 0)} for row in pattern_rows
+        ],
+        "recurring_recorded_root_causes": [
+            {"root_cause": row.root_cause, "resolved_cases": int(row.case_count or 0)}
+            for row in cause_rows
+        ],
+        "backlog_at_generation": {
+            "active": int(active_count),
+            "active_by_severity": {severity: int(count or 0) for severity, count in severity_rows},
+            "overdue": int(overdue),
+            "missing_sla": int(missing_sla),
+        },
+        "interpretation_limits": [
+            "Period activity uses UTC timestamps and half-open calendar-month boundaries.",
+            "Closure quality is the state observed at report generation, not necessarily at closure time.",
+            "Backlog is a point-in-time snapshot at generation, not a reconstructed month-end backlog.",
+            "SLA outcomes use stored elapsed-time deadlines and do not apply business calendars or pause windows.",
+            "Recurring patterns and root-cause labels are human-recorded indicators, not proof of shared or verified causes.",
+        ],
+    }
+
+
+def _governance_report_metadata(row: ReconciliationGovernanceReport) -> dict:
+    return {
+        "id": row.id,
+        "report_month": row.report_month,
+        "period_start": row.period_start,
+        "period_end": row.period_end,
+        "generated_at": row.generated_at,
+        "generated_by_id": row.generated_by_id,
+        "schema_version": row.schema_version,
+        "payload_sha256": row.payload_sha256,
+    }
+
+
+@router.post("/reconciliation/governance-reports", status_code=status.HTTP_201_CREATED)
+def generate_reconciliation_governance_report(
+    payload: GovernanceReportGenerate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    try:
+        period_start = datetime.strptime(payload.report_month, "%Y-%m").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="report_month must use YYYY-MM.")
+    next_month_year = period_start.year + (1 if period_start.month == 12 else 0)
+    next_month = 1 if period_start.month == 12 else period_start.month + 1
+    period_end = period_start.replace(year=next_month_year, month=next_month)
+    now = datetime.now(timezone.utc)
+    current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if period_start >= current_month_start:
+        raise HTTPException(status_code=422, detail="Only completed UTC calendar months can be reported.")
+    if db.query(ReconciliationGovernanceReport.id).filter(
+        ReconciliationGovernanceReport.report_month == payload.report_month
+    ).first():
+        raise HTTPException(status_code=409, detail="A governance report already exists for this month.")
+    snapshot = _governance_report_payload(
+        db, period_start=period_start, period_end=period_end, generated_at=now
+    )
+    canonical = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    row = ReconciliationGovernanceReport(
+        report_month=payload.report_month,
+        period_start=period_start,
+        period_end=period_end,
+        generated_at=now,
+        generated_by_id=current_user.id,
+        schema_version=1,
+        payload=canonical,
+        payload_sha256=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    )
+    db.add(row)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A governance report already exists for this month.")
+    db.refresh(row)
+    return {**_governance_report_metadata(row), "payload": snapshot}
+
+
+@router.get("/reconciliation/governance-reports")
+def list_reconciliation_governance_reports(
+    before_id: Optional[int] = None,
+    limit: int = 30,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:read")),
+):
+    if limit < 1 or limit > 100 or (before_id is not None and before_id < 1):
+        raise HTTPException(status_code=422, detail="Invalid governance report pagination.")
+    query = db.query(ReconciliationGovernanceReport)
+    if before_id is not None:
+        query = query.filter(ReconciliationGovernanceReport.id < before_id)
+    rows = query.order_by(ReconciliationGovernanceReport.id.desc()).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    return {
+        "items": [_governance_report_metadata(row) for row in rows],
+        "next_before_id": rows[-1].id if has_more and rows else None,
+    }
+
+
+@router.get("/reconciliation/governance-reports/{report_id}")
+def get_reconciliation_governance_report(
+    report_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:read")),
+):
+    row = db.query(ReconciliationGovernanceReport).filter(
+        ReconciliationGovernanceReport.id == report_id
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Governance report not found.")
+    return {**_governance_report_metadata(row), "payload": json.loads(row.payload)}

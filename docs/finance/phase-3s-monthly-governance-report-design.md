@@ -47,3 +47,15 @@ Period activity is based on event timestamps in UTC. Closure-quality status is t
 - Automated monthly scheduling and report notifications.
 - Tenant-local timezone calendars and pause-aware SLA calculations.
 - External delivery providers.
+
+
+## Implemented API and persistence
+
+The monthly snapshot is now implemented with:
+- `POST /api/procurement/reconciliation/governance-reports` (`finance:approve`) for manual generation of completed UTC months;
+- `GET /api/procurement/reconciliation/governance-reports` and `GET /{report_id}` (`finance:read`) for bounded metadata listing and frozen detail retrieval;
+- one report per month enforced by a tenant-local unique constraint, plus a database append-only trigger on PostgreSQL and SQLite;
+- canonical JSON serialization and SHA-256 digest verification;
+- tenant-local sandbox purge classification that temporarily disables and restores the append-only guard during controlled scrubbing.
+
+The implementation test covers monthly aggregates, recurrence, closure quality, SLA results, backlog-at-generation, payload minimization, digest correctness, duplicate/current-month rejection and database-level immutability.
