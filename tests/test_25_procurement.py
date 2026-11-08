@@ -682,3 +682,36 @@ def test_reconciliation_escalation_configuration_and_self_service_preferences(
         },
     )
     assert external_policy.status_code == 422
+
+
+def test_reconciliation_notification_configuration_audit_is_append_only(
+    client, superuser_headers, multi_tenant_env
+):
+    import pytest
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.orm import Session
+    from backend.domains.procurement.models import ReconciliationNotificationConfigEvent
+
+    response = client.post(
+        "/v1/api/procurement/reconciliation/escalation-policies",
+        headers=superuser_headers,
+        json={
+            "severity": "CRITICAL",
+            "trigger": "BREACHED",
+            "enabled": True,
+            "recipient_role_ids": [],
+            "channels": ["IN_APP"],
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        event = db.query(ReconciliationNotificationConfigEvent).filter_by(
+            event_type="ESCALATION_POLICY_CREATED",
+            object_id=response.json()["id"],
+        ).one()
+        event.details = '{"tampered":true}'
+        with pytest.raises(DBAPIError):
+            db.commit()
+        db.rollback()
