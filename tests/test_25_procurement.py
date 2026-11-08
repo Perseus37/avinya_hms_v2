@@ -504,6 +504,13 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     )
     assert self_review.status_code == 403
 
+    quality_before_reopen = client.get(
+        "/v1/api/procurement/reconciliation/investigations/quality-summary",
+        headers=superuser_headers,
+    )
+    assert quality_before_reopen.status_code == 200, quality_before_reopen.text
+    assert quality_before_reopen.json()["closure_quality"]["not_reviewed"] >= 1
+
     reopened = client.patch(
         f"/v1/api/procurement/reconciliation/investigations/{case['id']}/reopen",
         headers=superuser_headers,
@@ -521,7 +528,6 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     )
     assert quality.status_code == 200, quality.text
     assert quality.json()["reopened_count"] >= 1
-    assert quality.json()["closure_quality"]["not_reviewed"] >= 1
 
     events = client.get(
         f"/v1/api/procurement/reconciliation/investigations/{case['id']}/events",
