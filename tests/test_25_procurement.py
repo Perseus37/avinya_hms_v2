@@ -404,3 +404,108 @@ def test_reconciliation_candidate_discovery_classifies_all_source_indicators():
     assert by_type["OVERDUE_APPROVED_PAYMENT_REQUEST"]["source_id"] == 301
     assert result["truncated"] is False
     assert "not fraud findings" in result["disclaimer"].lower()
+
+
+def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client, superuser_headers):
+    statement = client.post(
+        "/v1/api/procurement/bank-statements/import",
+        headers=superuser_headers,
+        json={
+            "account_key": "INVESTIGATION-01",
+            "statement_reference": "INVESTIGATION-STMT-01",
+            "period_start": "2026-11-01",
+            "period_end": "2026-11-30",
+            "opening_balance_paise": 10000,
+            "closing_balance_paise": 9000,
+            "lines": [{
+                "bank_transaction_id": "INVESTIGATION-TXN-01",
+                "transaction_date": "2026-11-03",
+                "direction": "DEBIT",
+                "amount_paise": 1000,
+            }],
+        },
+    )
+    assert statement.status_code == 201, statement.text
+    source_id = client.get(
+        "/v1/api/procurement/bank-statements/1/lines",
+        headers=superuser_headers,
+    )
+    # Resolve the actual line from the imported statement instead of relying on an ID.
+    batch_id = statement.json()["id"]
+    source_id = client.get(
+        f"/v1/api/procurement/bank-statements/{batch_id}/lines",
+        headers=superuser_headers,
+    )
+    assert source_id.status_code == 200, source_id.text
+    line_id = source_id.json()["items"][0]["id"]
+
+    opened = client.post(
+        "/v1/api/procurement/reconciliation/investigations",
+        headers=superuser_headers,
+        json={
+            "candidate_type": "UNMATCHED_BANK_DEBIT",
+            "source_type": "BANK_STATEMENT_LINE",
+            "source_id": line_id,
+            "source_reference": "INVESTIGATION-TXN-01",
+            "title": "Review unmatched supplier debit",
+            "summary": "Confirm the supplier payment and supporting bank evidence.",
+            "severity": "HIGH",
+        },
+    )
+    assert opened.status_code == 201, opened.text
+    case = opened.json()
+    assert case["status"] == "OPEN"
+    assert case["version"] == 1
+
+    duplicate = client.post(
+        "/v1/api/procurement/reconciliation/investigations",
+        headers=superuser_headers,
+        json={
+            "candidate_type": "UNMATCHED_BANK_DEBIT",
+            "source_type": "BANK_STATEMENT_LINE",
+            "source_id": line_id,
+            "title": "Duplicate case",
+            "summary": "This duplicate must be rejected by the source identity key.",
+        },
+    )
+    assert duplicate.status_code == 409
+
+    in_review = client.patch(
+        f"/v1/api/procurement/reconciliation/investigations/{case['id']}/transition",
+        headers=superuser_headers,
+        json={"to_status": "IN_REVIEW", "expected_version": 1, "note": "Review started"},
+    )
+    assert in_review.status_code == 200, in_review.text
+    assert in_review.json()["status"] == "IN_REVIEW"
+    assert in_review.json()["version"] == 2
+
+    resolved = client.patch(
+        f"/v1/api/procurement/reconciliation/investigations/{case['id']}/transition",
+        headers=superuser_headers,
+        json={
+            "to_status": "RESOLVED",
+            "expected_version": 2,
+            "resolution": "Matched against approved supplier payment evidence.",
+            "root_cause": "TIMING_DIFFERENCE",
+        },
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["status"] == "RESOLVED"
+    assert resolved.json()["version"] == 3
+    assert resolved.json()["resolved_at"] is not None
+
+    stale = client.patch(
+        f"/v1/api/procurement/reconciliation/investigations/{case['id']}/transition",
+        headers=superuser_headers,
+        json={"to_status": "IN_REVIEW", "expected_version": 2},
+    )
+    assert stale.status_code == 409
+
+    events = client.get(
+        f"/v1/api/procurement/reconciliation/investigations/{case['id']}/events",
+        headers=superuser_headers,
+    )
+    assert events.status_code == 200, events.text
+    assert [event["event_type"] for event in events.json()] == [
+        "OPENED", "STATUS_CHANGED", "STATUS_CHANGED"
+    ]
