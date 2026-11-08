@@ -157,3 +157,23 @@ I enumerated all 37 files under `backend/alembic/versions/` on the current `main
 This corrects the earlier open item: the mainline graph has now been enumerated, and the next new tenant migration must be based on `e1a3c7b5d902` unless `main` advances before implementation. The feature branch's `8b6d2f4a9c10` merge revision is not a substitute for this mainline head and must not be imported.
 
 **Migration authoring gate:** immediately before writing a migration, re-read `main` and verify its head has not changed. New source-foundation revisions must be newly authored with new revision IDs and `down_revision = "e1a3c7b5d902"` (or the then-current verified head), and must be registered through the repository's tenant migration mechanism. Do not alter existing revision IDs or checksums.
+
+## Payment-control sequencing decision (verified against current mainline)
+
+The current mainline already has a finance Accounts Payable workflow:
+
+- `ExpenseRecord` uses `PENDING_APPROVAL`, `APPROVED`, `REJECTED`, `PAID`, and `CANCELLED` states.
+- Drafting requires `finance:write`; adjudication requires `finance:approve`; marking an approved expense paid requires `finance:pay`.
+- Vendor invoice approval currently posts an `ExpenseRecord` directly as `APPROVED` through `post_invoice_to_accounts_payable`.
+- The mainline does not currently model supplier payment references, invoice-level payment allocations, imported bank statement batches/lines, or bank-to-payment matches.
+
+Therefore the source-foundation implementation must preserve the existing maker/checker boundary and must not introduce a direct supplier-payment write path that allows an operator to bypass the payable approval lifecycle. The safe dependency order is:
+
+1. **Payment request and approval contract first (Foundation 1A):** introduce supplier payment requests and invoice reservations with requester/reviewer separation, approved-invoice and approved-AP validation, row locking, duplicate reference protection, and an execution link. Keep the existing `finance:approve` and `finance:pay` permission boundaries; the requester cannot approve their own request.
+2. **Recorded supplier payment and allocations (Foundation 1B):** create the immutable payment record only as the result of executing an approved request. Validate vendor identity, approved payable state, outstanding invoice balance, request total, payment total, and allocation total in one transaction. Do not treat a payment request as cash movement.
+3. **Bank statement import and matching (Foundation 1C):** import statement batches/lines idempotently; retain original bank references and positive paise amounts with explicit DEBIT/CREDIT direction; match only DEBIT lines to recorded supplier payments under locks and prevent overmatching on both sides. CREDIT lines remain classification/reconciliation work, not assumed income.
+4. **Exception candidate adapter:** expose the four verified candidate classes only after source records are present and tested.
+
+The previous “Foundation 1: supplier payment records + bank statements” and “Foundation 2: payment request workflow” labels are superseded by this dependency order. Payment requests are a prerequisite to enabling supplier payment execution, not an optional later enhancement. A staged migration may create related tables together, but application routes must not expose payment execution until the approval and reservation invariants are implemented and tested.
+
+This is an engineering sequencing decision based on the current repository behavior, not a claim that every hospital's finance policy is identical. No new payment policy or production behavior has been enabled by this planning update.
