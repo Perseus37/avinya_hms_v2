@@ -87,17 +87,13 @@ def upgrade() -> None:
             name="ck_supplier_payment_request_status",
         ),
         sa.UniqueConstraint("vendor_id", "payment_reference", name="uq_supplier_payment_request_reference"),
+        sa.UniqueConstraint("executed_payment_id", name="uq_supplier_payment_request_executed_payment"),
         sa.ForeignKeyConstraint(["vendor_id"], ["procurement_vendors.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["requested_by_id"], ["users.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["reviewed_by_id"], ["users.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["executed_payment_id"], ["procurement_supplier_payments.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["created_by_id"], ["users.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["updated_by_id"], ["users.id"], ondelete="SET NULL"),
-    )
-    op.create_unique_constraint(
-        "uq_supplier_payment_request_executed_payment",
-        "procurement_supplier_payment_requests",
-        ["executed_payment_id"],
     )
     op.create_index(
         "ix_supplier_payment_request_status_date",
@@ -126,7 +122,6 @@ def downgrade() -> None:
     op.drop_index("ix_supplier_payment_request_allocation_invoice", table_name="procurement_supplier_payment_request_allocations")
     op.drop_table("procurement_supplier_payment_request_allocations")
     op.drop_index("ix_supplier_payment_request_status_date", table_name="procurement_supplier_payment_requests")
-    op.drop_constraint("uq_supplier_payment_request_executed_payment", "procurement_supplier_payment_requests", type_="unique")
     op.drop_table("procurement_supplier_payment_requests")
     op.drop_index("ix_supplier_payment_allocation_invoice", table_name="procurement_supplier_payment_allocations")
     op.drop_table("procurement_supplier_payment_allocations")
