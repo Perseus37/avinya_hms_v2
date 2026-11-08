@@ -181,3 +181,37 @@ def test_supplier_payment_request_contract_accepts_exact_unique_allocations():
 
     assert payload.amount_paise == sum(row.amount_paise for row in payload.allocations)
     assert len({row.invoice_id for row in payload.allocations}) == 2
+
+
+
+def test_supplier_invoice_cannot_be_paid_through_generic_expense_endpoint():
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.finance.models import ExpenseStatusEnum
+    from backend.domains.finance.router import mark_expense_paid
+
+    class ExistingSupplierInvoiceQuery:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def first(self):
+            return (123,)
+
+    class FakeDb:
+        def get(self, _model, expense_id):
+            return SimpleNamespace(id=expense_id, status=ExpenseStatusEnum.APPROVED)
+
+        def query(self, _model):
+            return ExistingSupplierInvoiceQuery()
+
+    with pytest.raises(HTTPException) as error:
+        mark_expense_paid(
+            55,
+            "BANK-REF-55",
+            FakeDb(),
+            SimpleNamespace(id=7),
+        )
+
+    assert error.value.status_code == 409
+    assert "supplier payment request" in error.value.detail.lower()
