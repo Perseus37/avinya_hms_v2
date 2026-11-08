@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
 
 from backend.core.database import get_db
@@ -717,8 +717,8 @@ def get_reconciliation_recurrence_summary(
         ReconciliationInvestigation.source_type,
         func.count(ReconciliationInvestigation.id).label("case_count"),
         func.count(func.distinct(ReconciliationInvestigation.source_id)).label("distinct_sources"),
-        func.sum(func.case((ReconciliationInvestigation.severity == "CRITICAL", 1), else_=0)).label("critical_count"),
-        func.sum(func.case((ReconciliationInvestigation.severity == "HIGH", 1), else_=0)).label("high_count"),
+        func.sum(case((ReconciliationInvestigation.severity == "CRITICAL", 1), else_=0)).label("critical_count"),
+        func.sum(case((ReconciliationInvestigation.severity == "HIGH", 1), else_=0)).label("high_count"),
         func.sum(ReconciliationInvestigation.reopen_count).label("reopen_count"),
     ).filter(
         ReconciliationInvestigation.opened_at >= opened_since,
@@ -738,7 +738,7 @@ def get_reconciliation_recurrence_summary(
         func.count(ReconciliationInvestigation.id).label("case_count"),
         func.count(func.distinct(ReconciliationInvestigation.candidate_type)).label("exception_types"),
         func.sum(ReconciliationInvestigation.reopen_count).label("reopen_count"),
-        func.sum(func.case((ReconciliationInvestigation.resolution_quality_status == "REJECTED", 1), else_=0)).label("rejected_reviews"),
+        func.sum(case((ReconciliationInvestigation.resolution_quality_status == "REJECTED", 1), else_=0)).label("rejected_reviews"),
     ).filter(
         ReconciliationInvestigation.status == "RESOLVED",
         ReconciliationInvestigation.root_cause.is_not(None),
