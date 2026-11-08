@@ -123,6 +123,7 @@ NON_PATIENT_OR_DEFERRED_GET_ROUTES = {
     "/api/procurement/invoices/{invoice_id}",
     "/api/procurement/invoices/{invoice_id}/document",
     "/api/procurement/purchase-orders/{po_id}/print",
+    "/api/procurement/supplier-payment-requests",
     "/api/procurement/vendors/{vendor_id}/metrics",
     "/api/quality/benchmarks",
     "/api/quality/incidents",
