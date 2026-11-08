@@ -357,7 +357,7 @@ def deactivate_patient(
         control_db.delete(pointer)
         control_db.commit()
 
-    return {"status": "success", "message": f"Patient {patient.mrn} deactivated and purged from Central Index."}
+    return {"status": "success", "message": f"Patient {patient.mrn} deactivated and removed from the Central Discovery Index."}
 
 
 @router.post("/{patient_id}/allergies", response_model=PatientAllergyResponse, status_code=status.HTTP_201_CREATED)
