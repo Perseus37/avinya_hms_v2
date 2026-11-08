@@ -407,6 +407,14 @@ def test_reconciliation_candidate_discovery_classifies_all_source_indicators():
 
 
 def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client, superuser_headers):
+    policy = client.post(
+        "/v1/api/procurement/reconciliation/sla-policies",
+        headers=superuser_headers,
+        json={"severity": "HIGH", "target_minutes": 120, "warning_percent": 75},
+    )
+    assert policy.status_code == 201, policy.text
+    assert policy.json()["version"] == 1
+
     statement = client.post(
         "/v1/api/procurement/bank-statements/import",
         headers=superuser_headers,
@@ -452,6 +460,10 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     case = opened.json()
     assert case["status"] == "OPEN"
     assert case["version"] == 1
+    assert case["sla_policy_version"] == 1
+    assert case["sla_target_minutes"] == 120
+    assert case["sla_due_at"] is not None
+    assert case["sla_state"] in {"ON_TRACK", "WARNING"}
 
     duplicate = client.post(
         "/v1/api/procurement/reconciliation/investigations",
@@ -465,6 +477,35 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
         },
     )
     assert duplicate.status_code == 409
+
+    policy_v2 = client.post(
+        "/v1/api/procurement/reconciliation/sla-policies",
+        headers=superuser_headers,
+        json={"severity": "HIGH", "target_minutes": 60, "warning_percent": 80},
+    )
+    assert policy_v2.status_code == 201, policy_v2.text
+    assert policy_v2.json()["version"] == 2
+    active_policies = client.get(
+        "/v1/api/procurement/reconciliation/sla-policies?active_only=true",
+        headers=superuser_headers,
+    )
+    assert active_policies.status_code == 200
+    assert len([item for item in active_policies.json() if item["severity"] == "HIGH"]) == 1
+    assert active_policies.json()[0]["version"] == 2
+    unchanged_case = client.get(
+        "/v1/api/procurement/reconciliation/investigations",
+        headers=superuser_headers,
+    )
+    original_snapshot = next(item for item in unchanged_case.json()["items"] if item["id"] == case["id"])
+    assert original_snapshot["sla_policy_version"] == 1
+    assert original_snapshot["sla_target_minutes"] == 120
+
+    sla_summary = client.get(
+        "/v1/api/procurement/reconciliation/sla-summary",
+        headers=superuser_headers,
+    )
+    assert sla_summary.status_code == 200, sla_summary.text
+    assert sla_summary.json()["with_sla"] >= 1
 
     in_review = client.patch(
         f"/v1/api/procurement/reconciliation/investigations/{case['id']}/transition",
