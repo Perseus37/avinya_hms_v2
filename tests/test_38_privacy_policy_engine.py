@@ -131,8 +131,6 @@ NON_PATIENT_OR_DEFERRED_GET_ROUTES = {
     "/api/procurement/reconciliation/candidates",
     "/api/procurement/reconciliation/investigations",
     "/api/procurement/reconciliation/investigations/{investigation_id}/events",
-    "/api/procurement/reconciliation/investigations/{investigation_id}/reopen",
-    "/api/procurement/reconciliation/investigations/{investigation_id}/quality-review",
     "/api/procurement/reconciliation/investigations/quality-summary",
     "/api/procurement/vendors/{vendor_id}/metrics",
     "/api/quality/benchmarks",
