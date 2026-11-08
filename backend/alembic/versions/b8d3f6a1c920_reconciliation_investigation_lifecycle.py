@@ -43,6 +43,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["assigned_to_id"], ["users.id"], ondelete="RESTRICT"),
     )
     op.create_index("ix_recon_investigation_status_severity", "procurement_reconciliation_investigations", ["status", "severity"])
+    op.create_index("ix_recon_investigation_opened_by", "procurement_reconciliation_investigations", ["opened_by_id"])
     op.create_index("ix_recon_investigation_assignee_status", "procurement_reconciliation_investigations", ["assigned_to_id", "status"])
     op.create_index("ix_recon_investigation_source", "procurement_reconciliation_investigations", ["source_type", "source_id"])
 
@@ -107,5 +108,6 @@ def downgrade() -> None:
     op.drop_table(EVENT_TABLE)
     op.drop_index("ix_recon_investigation_source", table_name="procurement_reconciliation_investigations")
     op.drop_index("ix_recon_investigation_assignee_status", table_name="procurement_reconciliation_investigations")
+    op.drop_index("ix_recon_investigation_opened_by", table_name="procurement_reconciliation_investigations")
     op.drop_index("ix_recon_investigation_status_severity", table_name="procurement_reconciliation_investigations")
     op.drop_table("procurement_reconciliation_investigations")
