@@ -203,3 +203,63 @@ def test_reconciliation_finance_dashboard_returns_bounded_governance_aggregates(
             assert exc.status_code == 422
         else:
             raise AssertionError("Unbounded dashboard queue must be rejected")
+
+
+def test_reconciliation_recurrence_summary_groups_repeated_patterns_and_root_causes(multi_tenant_env):
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.investigations import get_reconciliation_recurrence_summary
+    from backend.domains.procurement.models import ReconciliationInvestigation
+    from fastapi import HTTPException
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    now = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        rows = [
+            ReconciliationInvestigation(
+                external_key=f"recurrence-unmatched-{n}", candidate_type="UNMATCHED_BANK_DEBIT",
+                source_type="BANK_STATEMENT_LINE", source_id=99200+n,
+                title=f"Recurring debit {n}", summary="Synthetic recurrence test case.",
+                severity="CRITICAL" if n == 1 else "HIGH", status="RESOLVED",
+                opened_by_id=actor.id, opened_at=now-timedelta(days=n),
+                updated_at=now, resolved_at=now-timedelta(days=n),
+                closed_by_id=actor.id, resolution="Reconciled after review.",
+                root_cause="  DUPLICATE   REFERENCE " if n == 1 else "duplicate   reference",
+                resolution_quality_status="REJECTED" if n == 1 else "APPROVED",
+                reopen_count=1 if n == 1 else 0, version=2,
+            )
+            for n in (1, 2)
+        ]
+        rows.append(ReconciliationInvestigation(
+            external_key="recurrence-unclassified-credit", candidate_type="UNCLASSIFIED_BANK_CREDIT",
+            source_type="BANK_STATEMENT_LINE", source_id=99203,
+            title="Unclassified credit", summary="A distinct pattern for the recurrence test.",
+            severity="MEDIUM", status="OPEN", opened_by_id=actor.id,
+            opened_at=now-timedelta(days=3), updated_at=now, version=1,
+        ))
+        db.add_all(rows)
+        db.commit()
+
+        result = get_reconciliation_recurrence_summary(db=db, window_days=30, min_occurrences=2, limit=10)
+        pattern = next(x for x in result["repeated_exception_patterns"] if x["candidate_type"] == "UNMATCHED_BANK_DEBIT")
+        cause = next(x for x in result["recurring_recorded_root_causes"] if x["root_cause"] == "duplicate   reference")
+        assert pattern["investigations"] == 2
+        assert pattern["distinct_sources"] == 2
+        assert pattern["critical_cases"] == 1
+        assert pattern["reopens"] == 1
+        assert cause["resolved_cases"] == 2
+        assert cause["rejected_quality_reviews"] == 1
+        assert "summary" not in pattern
+        assert "source_id" not in pattern
+
+        for kwargs in (
+            {"window_days": 0, "min_occurrences": 2, "limit": 10},
+            {"window_days": 30, "min_occurrences": 1, "limit": 10},
+            {"window_days": 30, "min_occurrences": 2, "limit": 1000},
+        ):
+            try:
+                get_reconciliation_recurrence_summary(db=db, **kwargs)
+            except HTTPException as exc:
+                assert exc.status_code == 422
+            else:
+                raise AssertionError("Invalid recurrence query bounds must be rejected")

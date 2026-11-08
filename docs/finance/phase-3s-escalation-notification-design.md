@@ -82,3 +82,16 @@ The read-only `GET /api/procurement/reconciliation/dashboard` endpoint is the fi
 - Returns a bounded priority queue (1–50 rows) containing identifiers, severity, status, assignee ID, timestamps and derived SLA state only.
 - Does not return investigation narratives, source references, bank details, patient information, or event payloads.
 - This is a live aggregate, not a monthly snapshot or export register. Historical monthly governance reporting and accountable export registration remain separate follow-up slices.
+
+
+## Repeat exception and recurring root-cause analytics
+
+The read-only `GET /api/procurement/reconciliation/recurrence-summary` endpoint adds bounded, tenant-local recurrence analysis.
+
+- Repeated exception patterns group human-created investigations by candidate type and source type over a configurable 1–365 day window.
+- Pattern rows include investigation count, distinct source count, critical/high counts and reopen totals; they do not expose source IDs or investigation narratives.
+- Recurring recorded root-cause labels are grouped case-insensitively after trimming outer whitespace, and report resolved-case count, number of exception types, reopens and rejected closure-quality reviews.
+- Both result sets require a configurable minimum occurrence threshold (2–100) and are capped at 50 rows.
+- Root-cause recurrence includes only resolved cases with a non-empty recorded label in the selected period.
+- The API explicitly distinguishes repeated exception categories from verified causality. It does not infer that separate cases share a root cause, and it does not automatically create remediation tasks.
+- This is a live aggregate, not an immutable monthly governance snapshot.

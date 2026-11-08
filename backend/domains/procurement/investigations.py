@@ -690,3 +690,99 @@ def get_reconciliation_finance_dashboard(
             "The priority queue intentionally excludes investigation narratives and source financial details.",
         ],
     }
+
+
+@router.get("/reconciliation/recurrence-summary", response_model=dict)
+def get_reconciliation_recurrence_summary(
+    window_days: int = 90,
+    min_occurrences: int = 2,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    """Report repeated exception classes and recorded root-cause labels, without inferring causality."""
+    if not 1 <= window_days <= 365:
+        raise HTTPException(status_code=422, detail="window_days must be between 1 and 365.")
+    if not 2 <= min_occurrences <= 100:
+        raise HTTPException(status_code=422, detail="min_occurrences must be between 2 and 100.")
+    if not 1 <= limit <= 50:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 50.")
+
+    now = datetime.now(timezone.utc)
+    opened_since = now - timedelta(days=window_days)
+    resolved_since = now - timedelta(days=window_days)
+
+    pattern_rows = db.query(
+        ReconciliationInvestigation.candidate_type,
+        ReconciliationInvestigation.source_type,
+        func.count(ReconciliationInvestigation.id).label("case_count"),
+        func.count(func.distinct(ReconciliationInvestigation.source_id)).label("distinct_sources"),
+        func.sum(func.case((ReconciliationInvestigation.severity == "CRITICAL", 1), else_=0)).label("critical_count"),
+        func.sum(func.case((ReconciliationInvestigation.severity == "HIGH", 1), else_=0)).label("high_count"),
+        func.sum(ReconciliationInvestigation.reopen_count).label("reopen_count"),
+    ).filter(
+        ReconciliationInvestigation.opened_at >= opened_since,
+    ).group_by(
+        ReconciliationInvestigation.candidate_type,
+        ReconciliationInvestigation.source_type,
+    ).having(
+        func.count(ReconciliationInvestigation.id) >= min_occurrences,
+    ).order_by(
+        func.count(ReconciliationInvestigation.id).desc(),
+        ReconciliationInvestigation.candidate_type.asc(),
+        ReconciliationInvestigation.source_type.asc(),
+    ).limit(limit).all()
+
+    root_cause_rows = db.query(
+        func.lower(func.trim(ReconciliationInvestigation.root_cause)).label("root_cause"),
+        func.count(ReconciliationInvestigation.id).label("case_count"),
+        func.count(func.distinct(ReconciliationInvestigation.candidate_type)).label("exception_types"),
+        func.sum(ReconciliationInvestigation.reopen_count).label("reopen_count"),
+        func.sum(func.case((ReconciliationInvestigation.resolution_quality_status == "REJECTED", 1), else_=0)).label("rejected_reviews"),
+    ).filter(
+        ReconciliationInvestigation.status == "RESOLVED",
+        ReconciliationInvestigation.root_cause.is_not(None),
+        func.trim(ReconciliationInvestigation.root_cause) != "",
+        ReconciliationInvestigation.resolved_at >= resolved_since,
+    ).group_by(
+        func.lower(func.trim(ReconciliationInvestigation.root_cause)),
+    ).having(
+        func.count(ReconciliationInvestigation.id) >= min_occurrences,
+    ).order_by(
+        func.count(ReconciliationInvestigation.id).desc(),
+        func.lower(func.trim(ReconciliationInvestigation.root_cause)).asc(),
+    ).limit(limit).all()
+
+    return {
+        "generated_at": now,
+        "window_days": window_days,
+        "minimum_occurrences": min_occurrences,
+        "repeated_exception_patterns": [
+            {
+                "candidate_type": row.candidate_type,
+                "source_type": row.source_type,
+                "investigations": int(row.case_count or 0),
+                "distinct_sources": int(row.distinct_sources or 0),
+                "critical_cases": int(row.critical_count or 0),
+                "high_cases": int(row.high_count or 0),
+                "reopens": int(row.reopen_count or 0),
+            }
+            for row in pattern_rows
+        ],
+        "recurring_recorded_root_causes": [
+            {
+                "root_cause": row.root_cause,
+                "resolved_cases": int(row.case_count or 0),
+                "exception_types": int(row.exception_types or 0),
+                "reopens": int(row.reopen_count or 0),
+                "rejected_quality_reviews": int(row.rejected_reviews or 0),
+            }
+            for row in root_cause_rows
+        ],
+        "interpretation_limits": [
+            "Repeated exception patterns group human-created investigations by candidate type and source type; they do not prove a shared underlying cause.",
+            "Root-cause recurrence groups normalized labels entered by investigators; labels are not independently verified causal findings.",
+            "Only resolved cases with a recorded root-cause label contribute to root-cause recurrence.",
+            "Counts are live tenant-local aggregates, not immutable monthly snapshots.",
+        ],
+    }
