@@ -955,3 +955,8 @@ def execute_supplier_payment_request(
     return db.query(SupplierPayment).options(
         selectinload(SupplierPayment.allocations)
     ).filter(SupplierPayment.id == payment.id).one()
+
+# Bank statement ingestion and manual supplier-payment reconciliation.
+from backend.domains.procurement.bank_reconciliation import router as bank_reconciliation_router
+
+router.include_router(bank_reconciliation_router)
