@@ -449,8 +449,9 @@ def test_09_federation_import_enforces_corporate_group_policy(
         source_pointer = control_db.query(GlobalPatientPointer).filter(
             GlobalPatientPointer.source_mrn == patient.json()["mrn"]
         ).one()
+        source_branch_code = source_pointer.branch_code
         source_registry = control_db.query(TenantRegistry).filter(
-            TenantRegistry.branch_code == source_pointer.branch_code
+            TenantRegistry.branch_code == source_branch_code
         ).one()
         destination_registry = control_db.query(TenantRegistry).filter(
             TenantRegistry.branch_code == "HQ-HYD-01"
@@ -484,7 +485,7 @@ def test_09_federation_import_enforces_corporate_group_policy(
         control_db = multi_tenant_env["control_session_factory"]()
         try:
             source_registry = control_db.query(TenantRegistry).filter(
-                TenantRegistry.branch_code == source_pointer.branch_code
+                TenantRegistry.branch_code == source_branch_code
             ).one()
             destination_registry = control_db.query(TenantRegistry).filter(
                 TenantRegistry.branch_code == "HQ-HYD-01"
