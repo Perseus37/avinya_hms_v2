@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum as PyEnum
 from typing import List, Optional
 from sqlalchemy import (
@@ -303,3 +303,97 @@ class VendorInvoiceItem(AuditMixin, Base):
     total_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
 
     invoice: Mapped["VendorInvoice"] = relationship(back_populates="items")
+
+
+class SupplierPaymentMethodEnum(str, PyEnum):
+    BANK_TRANSFER = "BANK_TRANSFER"
+    UPI = "UPI"
+    CHEQUE = "CHEQUE"
+    CASH = "CASH"
+    CARD = "CARD"
+    NEFT = "NEFT"
+    RTGS = "RTGS"
+    IMPS = "IMPS"
+    OTHER = "OTHER"
+
+
+class SupplierPayment(AuditMixin, Base):
+    """Recorded supplier outflow; invoice allocations are the settlement source of truth."""
+    __tablename__ = "procurement_supplier_payments"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "payment_reference", name="uq_supplier_payment_vendor_reference"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_amount_positive"),
+        Index("ix_supplier_payment_vendor_date", "vendor_id", "payment_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    payment_reference: Mapped[str] = mapped_column(String(100), nullable=False)
+    payment_method: Mapped[SupplierPaymentMethodEnum] = mapped_column(Enum(SupplierPaymentMethodEnum), nullable=False)
+    payment_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recorded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    allocations: Mapped[List["SupplierPaymentAllocation"]] = relationship(back_populates="payment")
+
+
+class SupplierPaymentAllocation(Base):
+    """Positive, append-only invoice allocation for a recorded supplier payment."""
+    __tablename__ = "procurement_supplier_payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_supplier_payment_invoice_allocation"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_allocation_positive"),
+        Index("ix_supplier_payment_allocation_invoice", "invoice_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    payment_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    payment: Mapped["SupplierPayment"] = relationship(back_populates="allocations")
+
+
+class SupplierPaymentRequest(AuditMixin, Base):
+    """Scheduled supplier outflow awaiting independent approval and execution."""
+    __tablename__ = "procurement_supplier_payment_requests"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "payment_reference", name="uq_supplier_payment_request_reference"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_request_amount_positive"),
+        CheckConstraint("status IN ('PENDING','APPROVED','REJECTED','EXECUTED','CANCELLED')", name="ck_supplier_payment_request_status"),
+        Index("ix_supplier_payment_request_status_date", "status", "scheduled_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    payment_reference: Mapped[str] = mapped_column(String(100), nullable=False)
+    payment_method: Mapped[SupplierPaymentMethodEnum] = mapped_column(Enum(SupplierPaymentMethodEnum), nullable=False)
+    scheduled_date: Mapped[date] = mapped_column(Date, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    executed_payment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=True, unique=True
+    )
+    executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    allocations: Mapped[List["SupplierPaymentRequestAllocation"]] = relationship(back_populates="request")
+
+
+class SupplierPaymentRequestAllocation(Base):
+    """Invoice balance reserved by a pending or approved payment request."""
+    __tablename__ = "procurement_supplier_payment_request_allocations"
+    __table_args__ = (
+        UniqueConstraint("request_id", "invoice_id", name="uq_supplier_payment_request_invoice"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_request_allocation_positive"),
+        Index("ix_supplier_payment_request_allocation_invoice", "invoice_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payment_requests.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    request: Mapped["SupplierPaymentRequest"] = relationship(back_populates="allocations")
