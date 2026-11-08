@@ -83,6 +83,41 @@ def test_reconciliation_escalation_evaluator_is_idempotent_and_honors_opt_out(
             "severity": "HIGH",
         }
 
+        from fastapi import HTTPException
+        from backend.domains.procurement.notification_inbox import (
+            list_my_reconciliation_notifications,
+            mark_my_reconciliation_notification_read,
+        )
+
+        inbox = list_my_reconciliation_notifications(db=db, actor=recipient)
+        assert inbox["unread_count"] == 1
+        assert len(inbox["items"]) == 1
+        assert inbox["items"][0]["investigation_id"] == first_case_id
+        assert inbox["items"][0]["severity"] == "HIGH"
+        assert "payload" not in inbox["items"][0]
+        assert "idempotency_key" not in inbox["items"][0]
+
+        read_result = mark_my_reconciliation_notification_read(
+            notification_id=intent.id, db=db, actor=recipient
+        )
+        assert read_result["is_read"] is True
+        first_read_at = read_result["read_at"]
+        repeated_read = mark_my_reconciliation_notification_read(
+            notification_id=intent.id, db=db, actor=recipient
+        )
+        assert repeated_read["read_at"] == first_read_at
+        assert list_my_reconciliation_notifications(db=db, actor=recipient)["unread_count"] == 0
+
+        other_user = db.query(User).filter(User.id != recipient.id).first()
+        if other_user is not None:
+            try:
+                mark_my_reconciliation_notification_read(
+                    notification_id=intent.id, db=db, actor=other_user
+                )
+                assert False, "A different user must not read another recipient's notification."
+            except HTTPException as exc:
+                assert exc.status_code == 404
+
         db.add(ReconciliationNotificationPreference(
             user_id=recipient.id, event_type="SLA_BREACHED", channel="IN_APP",
             enabled=False, updated_at=now, updated_by_id=recipient.id,
