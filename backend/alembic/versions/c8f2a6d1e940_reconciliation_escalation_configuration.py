@@ -63,9 +63,15 @@ def upgrade() -> None:
         sa.Column("details", sa.Text(), nullable=False),
         sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
     )
+    op.create_index("ix_recon_escalation_created_by",
+                    "procurement_reconciliation_escalation_policies", ["created_by_id"])
+    op.create_index("ix_recon_notification_pref_updated_by",
+                    "procurement_reconciliation_notification_preferences", ["updated_by_id"])
     op.create_index("ix_recon_notification_config_actor_time",
                     "procurement_reconciliation_notification_config_events",
                     ["actor_user_id", "occurred_at"])
+    op.create_index("ix_recon_notification_config_subject",
+                    "procurement_reconciliation_notification_config_events", ["subject_user_id"])
     # Protect audit evidence at the database boundary on PostgreSQL and SQLite.
     table = "procurement_reconciliation_notification_config_events"
     if op.get_bind().dialect.name == "sqlite":
@@ -78,11 +84,13 @@ def upgrade() -> None:
             BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
         """))
     else:
-        op.execute(sa.text(f"""
+        op.execute(f"""
             CREATE OR REPLACE FUNCTION prevent_{table}_mutation() RETURNS trigger AS $
-            BEGIN RAISE EXCEPTION 'Notification configuration audit is append-only'; END;
+            BEGIN
+                RAISE EXCEPTION 'Notification configuration audit is append-only';
+            END;
             $ LANGUAGE plpgsql
-        """))
+        """)
         op.execute(sa.text(f"""
             CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE ON {table}
             FOR EACH ROW EXECUTE FUNCTION prevent_{table}_mutation()
@@ -90,8 +98,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_index("ix_recon_notification_config_subject", table_name="procurement_reconciliation_notification_config_events")
     op.drop_index("ix_recon_notification_config_actor_time",
                   table_name="procurement_reconciliation_notification_config_events")
+    op.drop_index("ix_recon_notification_pref_updated_by", table_name="procurement_reconciliation_notification_preferences")
+    op.drop_index("ix_recon_escalation_created_by", table_name="procurement_reconciliation_escalation_policies")
     if op.get_bind().dialect.name == "sqlite":
         op.execute(sa.text("DROP TRIGGER IF EXISTS trg_procurement_reconciliation_notification_config_events_immutable_update"))
         op.execute(sa.text("DROP TRIGGER IF EXISTS trg_procurement_reconciliation_notification_config_events_immutable_delete"))
