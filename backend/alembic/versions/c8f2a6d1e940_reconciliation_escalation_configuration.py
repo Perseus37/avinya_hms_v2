@@ -67,25 +67,25 @@ def upgrade() -> None:
                     "procurement_reconciliation_notification_config_events",
                     ["actor_user_id", "occurred_at"])
     # Protect audit evidence at the database boundary on PostgreSQL and SQLite.
-    for table in ("procurement_reconciliation_notification_config_events",):
-        op.execute(sa.text(f"""
-            CREATE TRIGGER trg_{table}_immutable_update
-            BEFORE UPDATE ON {table}
-            BEGIN
-                SELECT RAISE(ABORT, 'Notification configuration audit is append-only');
-            END
-        """) if op.get_bind().dialect.name == "sqlite" else sa.text(f"""
-            CREATE OR REPLACE FUNCTION prevent_{table}_mutation() RETURNS trigger AS $$
-            BEGIN RAISE EXCEPTION 'Notification configuration audit is append-only'; END;
-            $$ LANGUAGE plpgsql;
-            CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE ON {table}
-            FOR EACH ROW EXECUTE FUNCTION prevent_{table}_mutation();
-        """))
+    table = "procurement_reconciliation_notification_config_events"
     if op.get_bind().dialect.name == "sqlite":
-        op.execute(sa.text("""
-            CREATE TRIGGER trg_procurement_reconciliation_notification_config_events_immutable_delete
-            BEFORE DELETE ON procurement_reconciliation_notification_config_events
+        op.execute(sa.text(f"""
+            CREATE TRIGGER trg_{table}_immutable_update BEFORE UPDATE ON {table}
             BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
+        """))
+        op.execute(sa.text(f"""
+            CREATE TRIGGER trg_{table}_immutable_delete BEFORE DELETE ON {table}
+            BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
+        """))
+    else:
+        op.execute(sa.text(f"""
+            CREATE OR REPLACE FUNCTION prevent_{table}_mutation() RETURNS trigger AS $
+            BEGIN RAISE EXCEPTION 'Notification configuration audit is append-only'; END;
+            $ LANGUAGE plpgsql
+        """))
+        op.execute(sa.text(f"""
+            CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE ON {table}
+            FOR EACH ROW EXECUTE FUNCTION prevent_{table}_mutation()
         """))
 
 
