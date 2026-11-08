@@ -55,7 +55,7 @@ This is intentionally a two-read workflow: discovery provides a point-in-time tr
 
 `CORPORATE_GROUP_ONLY` uses `TenantRegistry.corporate_group_id` in the central control-plane database. The value is an explicit trusted authorization attribute; branch-code prefixes, delimiters, naming conventions, and hospital names are never used to infer group membership.
 
-The field is nullable for migration compatibility. A missing group assignment on either the authenticated requesting branch or source branch denies discovery/import. Existing tenants must be assigned by a trusted control-plane operator before corporate-group federation can work. The group identifier is not populated from tenant-supplied branch registration requests.
+The field is nullable for migration compatibility. A missing group assignment on either the authenticated requesting branch or source branch denies discovery/import. A trusted control-plane operator assigns or clears it through `PATCH /api/tenants/{slug}/entitlements` using the control-plane master setup key; include `corporate_group_id` to set it, pass `null` to clear it, or omit the field to leave it unchanged. The change is recorded in `ControlPlaneAuditLog` and exposed in the tenant fleet listing. The group identifier is not populated from tenant-supplied branch registration requests.
 
 ## Tenant and branch isolation
 
