@@ -960,3 +960,9 @@ def execute_supplier_payment_request(
 from backend.domains.procurement.bank_reconciliation import router as bank_reconciliation_router
 
 router.include_router(bank_reconciliation_router)
+
+
+# Human-owned reconciliation investigation lifecycle.
+from backend.domains.procurement.investigations import router as reconciliation_investigations_router
+
+router.include_router(reconciliation_investigations_router)
