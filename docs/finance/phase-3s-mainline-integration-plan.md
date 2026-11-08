@@ -142,3 +142,18 @@ Do not open an implementation PR until the migration graph and dependency matrix
 - Phase 3S remains implemented on `feature/opd-workflow-v1`, not integrated into `main`.
 - This branch contains planning documentation only at this stage.
 - No production deployment has occurred.
+
+
+## Verified current mainline Alembic head
+
+I enumerated all 37 files under `backend/alembic/versions/` on the current `main` ref and read each revision's declared `revision` and `down_revision`.
+
+- Baseline: `6f591125aedc`.
+- The procurement foundation `3605df409a44` descends from that baseline.
+- The procurement branch proceeds through `8c14e73a92bf`, `c74e11ab42d9`, `d19f6b3a4c82` and subsequent revisions.
+- The current graph converges through the privacy/identity, procurement, workforce, quality, pharmacy/BCMA and related migration branches.
+- The single current mainline head is **`e1a3c7b5d902`** (`complete_foreign_key_indexes`), whose direct parent is `d8a2f1c4e705`.
+
+This corrects the earlier open item: the mainline graph has now been enumerated, and the next new tenant migration must be based on `e1a3c7b5d902` unless `main` advances before implementation. The feature branch's `8b6d2f4a9c10` merge revision is not a substitute for this mainline head and must not be imported.
+
+**Migration authoring gate:** immediately before writing a migration, re-read `main` and verify its head has not changed. New source-foundation revisions must be newly authored with new revision IDs and `down_revision = "e1a3c7b5d902"` (or the then-current verified head), and must be registered through the repository's tenant migration mechanism. Do not alter existing revision IDs or checksums.
