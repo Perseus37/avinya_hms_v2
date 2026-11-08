@@ -332,13 +332,13 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
             "/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY",
             headers=fed_headers,
         )
-        assert resp_unverified.status_code == 404
+        assert resp_unverified.status_code == 403
 
         resp_fake_token = client.get(
             "/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY&emergency_token=EMERGENCY-SECURE-TOKEN-1",
             headers=fed_headers,
         )
-        assert resp_fake_token.status_code == 404
+        assert resp_fake_token.status_code == 403
 
         with Session(apollo_engine) as db:
             user = db.query(User).first()
@@ -367,39 +367,18 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
             f"/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY&break_glass_grant_id={other_grant_id}",
             headers=fed_headers,
         )
-        assert resp_other_grant.status_code == 404
+        assert resp_other_grant.status_code == 403
 
         resp_grant = client.get(
             f"/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY&break_glass_grant_id={grant_id}",
             headers=fed_headers,
         )
-        assert resp_grant.status_code == 200
-        allergy_only_body = resp_grant.json()
-        assert allergy_only_body["active_allergies"]
-        for field in (
-            "source_mrn",
-            "abha_number",
-            "full_name",
-            "date_of_birth",
-            "gender",
-            "blood_group",
-            "phone_number",
-            "email",
-            "address",
-            "emergency_contact_name",
-            "emergency_contact_phone",
-        ):
-            assert allergy_only_body[field] is None, field
+        # A source-local grant ID is not a federated capability. Remote emergency
+        # disclosure remains disabled until node, purpose, scope, replay and actor
+        # authorization can all be verified at the source.
+        assert resp_grant.status_code == 403
 
-        # An allergy-only emergency response is not a patient-import credential.
-        allergy_only_import = client.post(
-            "/v1/api/federation/patients/import",
-            headers=apollo_admin_headers,
-            json=allergy_only_body,
-        )
-        assert allergy_only_import.status_code == 422
-
-        # Emergency-purpose access is grant-gated even when the source branch
+        # Emergency-purpose access is disabled even when the source branch
         # otherwise permits FULL_MESH sharing.
         with Session(apollo_engine) as db:
             pol = db.query(HospitalPolicySetting).first()
@@ -410,13 +389,13 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
             "/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY",
             headers=fed_headers,
         )
-        assert resp_full_mesh_without_grant.status_code == 404
+        assert resp_full_mesh_without_grant.status_code == 403
 
         resp_full_mesh_with_grant = client.get(
             f"/v1/api/federation/patients/discover?abha_number=ABHA-EMERG-99&purpose=EMERGENCY&break_glass_grant_id={grant_id}",
             headers=fed_headers,
         )
-        assert resp_full_mesh_with_grant.status_code == 200
+        assert resp_full_mesh_with_grant.status_code == 403
     finally:
         with Session(apollo_engine) as db:
             pol = db.query(HospitalPolicySetting).first()
