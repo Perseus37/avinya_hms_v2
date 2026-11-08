@@ -40,6 +40,8 @@ def upgrade() -> None:
     op.create_index("ix_recon_outbox_recipient_created",
                     "procurement_reconciliation_notification_outbox",
                     ["recipient_user_id", "created_at"])
+    op.create_index("ix_recon_outbox_status_available",
+                    "procurement_reconciliation_notification_outbox", ["status", "available_at"])
     op.create_index("ix_recon_outbox_investigation",
                     "procurement_reconciliation_notification_outbox", ["investigation_id"])
     op.create_index("ix_recon_outbox_policy",
@@ -48,6 +50,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_recon_outbox_policy", table_name="procurement_reconciliation_notification_outbox")
+    op.drop_index("ix_recon_outbox_status_available", table_name="procurement_reconciliation_notification_outbox")
     op.drop_index("ix_recon_outbox_investigation", table_name="procurement_reconciliation_notification_outbox")
     op.drop_index("ix_recon_outbox_recipient_created", table_name="procurement_reconciliation_notification_outbox")
     op.drop_table("procurement_reconciliation_notification_outbox")
