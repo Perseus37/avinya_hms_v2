@@ -481,6 +481,7 @@ class ReconciliationInvestigation(Base):
         Index("ix_recon_investigation_closed_by", "closed_by_id"),
         Index("ix_recon_investigation_quality_reviewer", "resolution_quality_reviewed_by_id"),
         Index("ix_recon_investigation_sla_policy", "sla_policy_id"),
+        Index("ix_recon_investigation_sla_due_status", "status", "sla_due_at"),
         Index("ix_recon_investigation_assignee_status", "assigned_to_id", "status"),
         Index("ix_recon_investigation_source", "source_type", "source_id"),
     )
