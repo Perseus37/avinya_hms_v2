@@ -62,7 +62,7 @@ class BankStatementImport(BaseModel):
     def validate_statement(self):
         if self.account_key.strip().isdigit():
             raise ValueError("account_key must be an opaque alias, not a numeric account number.")
-        if self.account_label and re.search(r"\\d{8,}", self.account_label):
+        if self.account_label and re.search(r"\d{8,}", self.account_label):
             raise ValueError("account_label must be masked and cannot contain an unmasked account-number-like sequence.")
         if self.period_end < self.period_start:
             raise ValueError("Statement period end cannot precede its start.")
