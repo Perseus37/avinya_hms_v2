@@ -227,13 +227,13 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
 
         # Delete child rows first; requests reference executed payment ledger rows.
         for tbl in (
+            "procurement_supplier_payment_bank_matches",
+            "procurement_bank_statement_lines",
+            "procurement_bank_statement_batches",
             "procurement_supplier_payment_allocations",
             "procurement_supplier_payment_request_allocations",
             "procurement_supplier_payment_requests",
             "procurement_supplier_payments",
-            "procurement_supplier_payment_bank_matches",
-            "procurement_bank_statement_lines",
-            "procurement_bank_statement_batches",
         ):
             if tbl in table_names:
                 session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
