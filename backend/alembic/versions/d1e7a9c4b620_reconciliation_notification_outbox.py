@@ -35,7 +35,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("idempotency_key", name="uq_recon_notification_outbox_idempotency"),
         sa.CheckConstraint("event_type IN ('SLA_WARNING','SLA_BREACHED')", name="ck_recon_outbox_event"),
         sa.CheckConstraint("channel = 'IN_APP'", name="ck_recon_outbox_channel"),
-        sa.CheckConstraint("status = 'PENDING'", name="ck_recon_outbox_status"),
+        sa.CheckConstraint("status IN ('PENDING','PROCESSING','DELIVERED','RETRY','DEAD_LETTER','SUPPRESSED')", name="ck_recon_outbox_status"),
     )
     op.create_index("ix_recon_outbox_recipient_created",
                     "procurement_reconciliation_notification_outbox",
