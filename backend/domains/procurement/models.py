@@ -634,6 +634,7 @@ class ReconciliationNotificationOutbox(Base):
         CheckConstraint("channel = 'IN_APP'", name="ck_recon_outbox_channel"),
         CheckConstraint("status IN ('PENDING','PROCESSING','DELIVERED','RETRY','DEAD_LETTER','SUPPRESSED')", name="ck_recon_outbox_status"),
         Index("ix_recon_outbox_recipient_created", "recipient_user_id", "created_at"),
+        Index("ix_recon_outbox_status_available", "status", "available_at"),
         Index("ix_recon_outbox_investigation", "investigation_id"),
         Index("ix_recon_outbox_policy", "policy_id"),
     )
