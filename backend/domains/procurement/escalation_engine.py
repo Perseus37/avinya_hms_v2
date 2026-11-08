@@ -45,6 +45,7 @@ def evaluate_reconciliation_escalations(
     *,
     now: datetime | None = None,
     batch_size: int = 500,
+    after_case_id: int = 0,
 ) -> dict:
     """Queue eligible in-app escalation intents; caller owns transaction commit.
 
@@ -53,6 +54,8 @@ def evaluate_reconciliation_escalations(
     """
     if batch_size < 1 or batch_size > 5000:
         raise ValueError("batch_size must be between 1 and 5000")
+    if after_case_id < 0:
+        raise ValueError("after_case_id must be zero or greater")
     evaluated_at = _utc(now or datetime.now(timezone.utc))
 
     policies = db.query(ReconciliationEscalationPolicy).filter(
@@ -78,10 +81,13 @@ def evaluate_reconciliation_escalations(
         ReconciliationInvestigation.status.in_(OPEN_STATUSES),
         ReconciliationInvestigation.sla_started_at.is_not(None),
         ReconciliationInvestigation.sla_due_at.is_not(None),
+    ).filter(
+        ReconciliationInvestigation.id > after_case_id
     ).order_by(ReconciliationInvestigation.id.asc()).limit(batch_size).all()
 
     counts = {
         "cases_scanned": len(cases),
+        "next_after_case_id": cases[-1].id if cases else after_case_id,
         "eligible_triggers": 0,
         "recipients_considered": 0,
         "created": 0,
