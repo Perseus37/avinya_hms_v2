@@ -579,3 +579,106 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     assert [event["event_type"] for event in events.json()] == [
         "OPENED", "STATUS_CHANGED", "STATUS_CHANGED", "REOPENED"
     ]
+
+
+def test_reconciliation_escalation_configuration_and_self_service_preferences(
+    client, superuser_headers
+):
+    created = client.post(
+        "/v1/api/procurement/reconciliation/escalation-policies",
+        headers=superuser_headers,
+        json={
+            "severity": "HIGH",
+            "trigger": "WARNING",
+            "enabled": True,
+            "delay_minutes": 15,
+            "recipient_role_ids": [],
+            "channels": ["IN_APP"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["version"] == 1
+    assert created.json()["enabled"] is True
+    assert created.json()["channels"] == ["IN_APP"]
+
+    revised = client.post(
+        "/v1/api/procurement/reconciliation/escalation-policies",
+        headers=superuser_headers,
+        json={
+            "severity": "HIGH",
+            "trigger": "WARNING",
+            "enabled": False,
+            "delay_minutes": 30,
+            "recipient_role_ids": [],
+            "channels": ["IN_APP"],
+        },
+    )
+    assert revised.status_code == 201, revised.text
+    assert revised.json()["version"] == 2
+
+    active = client.get(
+        "/v1/api/procurement/reconciliation/escalation-policies?active_only=true",
+        headers=superuser_headers,
+    )
+    assert active.status_code == 200, active.text
+    active_high = [
+        item for item in active.json()
+        if item["severity"] == "HIGH" and item["trigger"] == "WARNING"
+    ]
+    assert len(active_high) == 1
+    assert active_high[0]["version"] == 2
+
+    preferences = client.get(
+        "/v1/api/procurement/reconciliation/notification-preferences/me",
+        headers=superuser_headers,
+    )
+    assert preferences.status_code == 200, preferences.text
+    in_app = next(
+        item for item in preferences.json()
+        if item["event_type"] == "SLA_WARNING" and item["channel"] == "IN_APP"
+    )
+    email = next(
+        item for item in preferences.json()
+        if item["event_type"] == "SLA_WARNING" and item["channel"] == "EMAIL"
+    )
+    assert in_app["enabled"] is True and in_app["configured"] is False
+    assert email["enabled"] is False and email["available"] is False
+
+    saved = client.put(
+        "/v1/api/procurement/reconciliation/notification-preferences/me",
+        headers=superuser_headers,
+        json=[
+            {"event_type": "SLA_WARNING", "channel": "IN_APP", "enabled": False},
+            {"event_type": "SLA_BREACHED", "channel": "IN_APP", "enabled": True},
+        ],
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["updated"] == 2
+
+    updated = client.get(
+        "/v1/api/procurement/reconciliation/notification-preferences/me",
+        headers=superuser_headers,
+    )
+    assert updated.status_code == 200
+    warning = next(
+        item for item in updated.json()
+        if item["event_type"] == "SLA_WARNING" and item["channel"] == "IN_APP"
+    )
+    assert warning["enabled"] is False and warning["configured"] is True
+
+    external = client.put(
+        "/v1/api/procurement/reconciliation/notification-preferences/me",
+        headers=superuser_headers,
+        json=[{"event_type": "SLA_WARNING", "channel": "EMAIL", "enabled": True}],
+    )
+    assert external.status_code == 422
+
+    external_policy = client.post(
+        "/v1/api/procurement/reconciliation/escalation-policies",
+        headers=superuser_headers,
+        json={
+            "severity": "HIGH", "trigger": "BREACHED",
+            "enabled": True, "channels": ["SMS"],
+        },
+    )
+    assert external_policy.status_code == 422
