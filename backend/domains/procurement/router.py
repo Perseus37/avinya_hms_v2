@@ -731,8 +731,8 @@ def create_supplier_payment_request(
         expense = db.query(ExpenseRecord).filter(
             ExpenseRecord.id == invoice.linked_expense_id
         ).with_for_update().one_or_none()
-        if expense is None or expense.status != ExpenseStatusEnum.APPROVED:
-            raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoice_number} has no payable approved Accounts Payable entry.")
+        if expense is None or expense.status != ExpenseStatusEnum.APPROVED or int(expense.amount_paise) != int(invoice.total_amount_paise):
+            raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoice_number} has no matching payable approved Accounts Payable entry.")
         paid = _supplier_invoice_paid_paise(db, invoice.id)
         reserved = _supplier_invoice_reserved_paise(db, invoice.id)
         available = max(int(invoice.total_amount_paise) - paid - reserved, 0)
@@ -821,8 +821,8 @@ def review_supplier_payment_request(
             expense = db.query(ExpenseRecord).filter(
                 ExpenseRecord.id == invoice.linked_expense_id
             ).with_for_update().one_or_none() if invoice.linked_expense_id else None
-            if expense is None or expense.status != ExpenseStatusEnum.APPROVED:
-                raise HTTPException(status_code=409, detail="A requested Accounts Payable entry is no longer payable.")
+            if expense is None or expense.status != ExpenseStatusEnum.APPROVED or int(expense.amount_paise) != int(invoice.total_amount_paise):
+                raise HTTPException(status_code=409, detail="A requested Accounts Payable entry is no longer payable or no longer matches the invoice total.")
             paid = _supplier_invoice_paid_paise(db, invoice.id)
             reserved = _supplier_invoice_reserved_paise(db, invoice.id, exclude_request_id=request_row.id)
             available = max(int(invoice.total_amount_paise) - paid - reserved, 0)
@@ -862,8 +862,13 @@ def execute_supplier_payment_request(
         raise HTTPException(status_code=404, detail="Supplier payment request not found.")
     if request_row.status != "APPROVED":
         raise HTTPException(status_code=409, detail="Only approved payment requests can be executed.")
-    if request_row.scheduled_date > datetime.now(timezone.utc).date():
+    now = datetime.now(timezone.utc)
+    if request_row.scheduled_date > now.date():
         raise HTTPException(status_code=409, detail="A payment scheduled for a future date cannot yet be executed.")
+    if payload.payment_date.tzinfo is None:
+        raise HTTPException(status_code=422, detail="payment_date must include a timezone.")
+    if payload.payment_date.date() > now.date() or payload.payment_date.date() < request_row.scheduled_date:
+        raise HTTPException(status_code=422, detail="payment_date must be on or after the scheduled date and cannot be in the future.")
 
     reference_key = request_row.payment_reference.casefold()
     if db.query(SupplierPayment.id).filter(
@@ -877,6 +882,8 @@ def execute_supplier_payment_request(
     ).with_for_update().one_or_none()
     if vendor is None:
         raise HTTPException(status_code=404, detail="Supplier not found.")
+    if not vendor.is_active:
+        raise HTTPException(status_code=409, detail="Inactive suppliers cannot receive payment execution.")
     invoice_ids = sorted(row.invoice_id for row in request_row.allocations)
     invoices = db.query(VendorInvoice).filter(
         VendorInvoice.id.in_(invoice_ids)
@@ -895,8 +902,8 @@ def execute_supplier_payment_request(
         expense = db.query(ExpenseRecord).filter(
             ExpenseRecord.id == invoice.linked_expense_id
         ).with_for_update().one_or_none()
-        if expense is None or expense.status != ExpenseStatusEnum.APPROVED:
-            raise HTTPException(status_code=409, detail="A requested Accounts Payable entry is no longer payable.")
+        if expense is None or expense.status != ExpenseStatusEnum.APPROVED or int(expense.amount_paise) != int(invoice.total_amount_paise):
+            raise HTTPException(status_code=409, detail="A requested Accounts Payable entry is no longer payable or no longer matches the invoice total.")
         expenses[invoice.id] = expense
         paid = _supplier_invoice_paid_paise(db, invoice.id)
         reserved = _supplier_invoice_reserved_paise(db, invoice.id, exclude_request_id=request_row.id)
