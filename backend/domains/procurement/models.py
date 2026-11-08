@@ -680,3 +680,28 @@ class ReconciliationGovernanceReport(Base):
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     payload: Mapped[str] = mapped_column(Text, nullable=False)
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+# Keep metadata-created SQLite databases immutable too (unit/integration test parity).
+event.listen(
+    ReconciliationGovernanceReport.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_procurement_reconciliation_governance_reports_immutable_update
+        BEFORE UPDATE ON procurement_reconciliation_governance_reports
+        BEGIN SELECT RAISE(ABORT, 'Monthly reconciliation governance reports are immutable'); END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    ReconciliationGovernanceReport.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_procurement_reconciliation_governance_reports_immutable_delete
+        BEFORE DELETE ON procurement_reconciliation_governance_reports
+        BEGIN SELECT RAISE(ABORT, 'Monthly reconciliation governance reports are immutable'); END
+        """
+    ).execute_if(dialect="sqlite"),
+)
