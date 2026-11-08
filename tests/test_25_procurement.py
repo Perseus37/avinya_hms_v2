@@ -133,3 +133,51 @@ def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_he
 
     issue_res = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/issue", headers=pharmacist_headers, json={"items": [{"indent_item_id": indent["items"][0]["id"], "batch_id": batch["id"], "issue_quantity": 10}]})
     assert issue_res.status_code == 200, f"Indent issue failed: {issue_res.text}"
+
+
+def test_supplier_payment_request_contract_requires_exact_invoice_allocation_total():
+    import pytest
+    from pydantic import ValidationError
+    from backend.domains.procurement.schemas import SupplierPaymentRequestCreate
+
+    with pytest.raises(ValidationError):
+        SupplierPaymentRequestCreate.model_validate({
+            "vendor_id": 1,
+            "payment_reference": "BANK-REF-001",
+            "payment_method": "NEFT",
+            "scheduled_date": "2026-11-08",
+            "amount_paise": 10000,
+            "allocations": [{"invoice_id": 11, "amount_paise": 9000}],
+        })
+
+    with pytest.raises(ValidationError):
+        SupplierPaymentRequestCreate.model_validate({
+            "vendor_id": 1,
+            "payment_reference": "BANK-REF-002",
+            "payment_method": "NEFT",
+            "scheduled_date": "2026-11-08",
+            "amount_paise": 10000,
+            "allocations": [
+                {"invoice_id": 11, "amount_paise": 5000},
+                {"invoice_id": 11, "amount_paise": 5000},
+            ],
+        })
+
+
+def test_supplier_payment_request_contract_accepts_exact_unique_allocations():
+    from backend.domains.procurement.schemas import SupplierPaymentRequestCreate
+
+    payload = SupplierPaymentRequestCreate.model_validate({
+        "vendor_id": 1,
+        "payment_reference": " BANK-REF-003 ",
+        "payment_method": "NEFT",
+        "scheduled_date": "2026-11-08",
+        "amount_paise": 10000,
+        "allocations": [
+            {"invoice_id": 11, "amount_paise": 6000},
+            {"invoice_id": 12, "amount_paise": 4000},
+        ],
+    })
+
+    assert payload.amount_paise == sum(row.amount_paise for row in payload.allocations)
+    assert len({row.invoice_id for row in payload.allocations}) == 2
