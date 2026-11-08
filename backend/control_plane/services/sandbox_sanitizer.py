@@ -312,6 +312,11 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                         END
                     """))
 
+        # Outbox rows reference investigations with RESTRICT; purge them before cases.
+        if "procurement_reconciliation_notification_outbox" in table_names:
+            session.execute(text('DELETE FROM "procurement_reconciliation_notification_outbox"'))  # nosec B608
+            stats["purged_tables"] += 1
+
         # Sandbox clones discard investigation content, but restore append-only protection.
         for tbl in ("procurement_reconciliation_investigation_events", "procurement_reconciliation_investigations"):
             if tbl in table_names:
@@ -357,7 +362,7 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
                 """))
 
-        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables:
+        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables - {"procurement_reconciliation_notification_outbox"}:
             if tbl in table_names:
                 session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
                 stats["purged_tables"] += 1
