@@ -399,3 +399,69 @@ class SupplierPaymentRequestAllocation(Base):
     invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
     amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     request: Mapped["SupplierPaymentRequest"] = relationship(back_populates="allocations")
+
+class BankStatementBatch(Base):
+    """Immutable bank statement import envelope; account_key is an opaque tenant-local alias."""
+    __tablename__ = "procurement_bank_statement_batches"
+    __table_args__ = (
+        UniqueConstraint("account_key", "statement_reference", name="uq_bank_statement_account_reference"),
+        CheckConstraint("period_end >= period_start", name="ck_bank_statement_period_valid"),
+        CheckConstraint("opening_balance_paise >= 0", name="ck_bank_statement_opening_nonnegative"),
+        CheckConstraint("closing_balance_paise >= 0", name="ck_bank_statement_closing_nonnegative"),
+        Index("ix_bank_statement_period", "period_start", "period_end"),
+        Index("ix_bank_statement_imported_by", "imported_by_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    account_label: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    statement_reference: Mapped[str] = mapped_column(String(120), nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    opening_balance_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    closing_balance_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    imported_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class BankStatementLine(Base):
+    """Immutable bank transaction line; only DEBIT lines may be matched to supplier outflows."""
+    __tablename__ = "procurement_bank_statement_lines"
+    __table_args__ = (
+        UniqueConstraint("account_key", "bank_transaction_id", name="uq_bank_statement_transaction_identity"),
+        CheckConstraint("direction IN ('DEBIT','CREDIT')", name="ck_bank_statement_direction"),
+        CheckConstraint("amount_paise > 0", name="ck_bank_statement_amount_positive"),
+        Index("ix_bank_statement_line_batch_date", "batch_id", "transaction_date"),
+        Index("ix_bank_statement_line_direction_date", "direction", "transaction_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("procurement_bank_statement_batches.id", ondelete="RESTRICT"), nullable=False)
+    account_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    bank_transaction_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
+    value_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    bank_reference: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+
+class SupplierPaymentBankMatch(Base):
+    """Append-only manual allocation between a bank debit and a supplier payment."""
+    __tablename__ = "procurement_supplier_payment_bank_matches"
+    __table_args__ = (
+        UniqueConstraint("statement_line_id", "supplier_payment_id", name="uq_bank_match_line_payment"),
+        CheckConstraint("amount_paise > 0", name="ck_bank_match_amount_positive"),
+        Index("ix_bank_match_payment", "supplier_payment_id"),
+        Index("ix_bank_match_actor_time", "matched_by_id", "matched_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    statement_line_id: Mapped[int] = mapped_column(ForeignKey("procurement_bank_statement_lines.id", ondelete="RESTRICT"), nullable=False)
+    supplier_payment_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    matched_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    matched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+
