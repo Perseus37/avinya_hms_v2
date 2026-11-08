@@ -36,14 +36,13 @@ def upgrade() -> None:
         sa.UniqueConstraint("vendor_id", "payment_reference", name="uq_supplier_payment_vendor_reference"),
         sa.ForeignKeyConstraint(["vendor_id"], ["procurement_vendors.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["recorded_by_id"], ["users.id"], ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(["created_by_id"], ["users.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["updated_by_id"], ["users.id"], ondelete="SET NULL"),
     )
     op.create_index(
         "ix_supplier_payment_vendor_date",
         "procurement_supplier_payments",
         ["vendor_id", "payment_date"],
     )
+    op.create_index("ix_procurement_supplier_payments_recorded_by_id", "procurement_supplier_payments", ["recorded_by_id"])
     op.create_table(
         "procurement_supplier_payment_allocations",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -100,6 +99,8 @@ def upgrade() -> None:
         "procurement_supplier_payment_requests",
         ["status", "scheduled_date"],
     )
+    op.create_index("ix_procurement_supplier_payment_requests_requested_by_id", "procurement_supplier_payment_requests", ["requested_by_id"])
+    op.create_index("ix_procurement_supplier_payment_requests_reviewed_by_id", "procurement_supplier_payment_requests", ["reviewed_by_id"])
     op.create_table(
         "procurement_supplier_payment_request_allocations",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -174,10 +175,13 @@ def downgrade() -> None:
             op.execute(f"DROP TRIGGER IF EXISTS trg_{table_name}_immutable_delete")
     op.drop_index("ix_supplier_payment_request_allocation_invoice", table_name="procurement_supplier_payment_request_allocations")
     op.drop_table("procurement_supplier_payment_request_allocations")
+    op.drop_index("ix_procurement_supplier_payment_requests_reviewed_by_id", table_name="procurement_supplier_payment_requests")
+    op.drop_index("ix_procurement_supplier_payment_requests_requested_by_id", table_name="procurement_supplier_payment_requests")
     op.drop_index("ix_supplier_payment_request_status_date", table_name="procurement_supplier_payment_requests")
     op.drop_table("procurement_supplier_payment_requests")
     op.drop_index("ix_supplier_payment_allocation_invoice", table_name="procurement_supplier_payment_allocations")
     op.drop_table("procurement_supplier_payment_allocations")
+    op.drop_index("ix_procurement_supplier_payments_recorded_by_id", table_name="procurement_supplier_payments")
     op.drop_index("ix_supplier_payment_vendor_date", table_name="procurement_supplier_payments")
     op.drop_table("procurement_supplier_payments")
     payment_method.drop(op.get_bind(), checkfirst=True)
