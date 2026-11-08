@@ -538,3 +538,156 @@ def get_reconciliation_investigation_quality_summary(
             "This summary is a live aggregate, not a frozen monthly governance snapshot.",
         ],
     }
+
+
+@router.get("/reconciliation/dashboard", response_model=dict)
+def get_reconciliation_finance_dashboard(
+    window_days: int = 30,
+    queue_limit: int = 20,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    """Read-only, bounded Finance Manager overview of reconciliation governance."""
+    if not 1 <= window_days <= 365:
+        raise HTTPException(status_code=422, detail="window_days must be between 1 and 365.")
+    if not 1 <= queue_limit <= 50:
+        raise HTTPException(status_code=422, detail="queue_limit must be between 1 and 50.")
+
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(days=window_days)
+    active_statuses = ("OPEN", "ASSIGNED", "IN_REVIEW")
+    cases = db.query(ReconciliationInvestigation)
+
+    total = cases.count()
+    active = cases.filter(ReconciliationInvestigation.status.in_(active_statuses))
+    active_count = active.count()
+    overdue_count = active.filter(
+        ReconciliationInvestigation.sla_due_at.is_not(None),
+        ReconciliationInvestigation.sla_due_at < now,
+    ).count()
+    due_soon_count = active.filter(
+        ReconciliationInvestigation.sla_due_at.is_not(None),
+        ReconciliationInvestigation.sla_due_at >= now,
+        ReconciliationInvestigation.sla_due_at <= now + timedelta(hours=24),
+    ).count()
+    without_sla_count = active.filter(ReconciliationInvestigation.sla_due_at.is_(None)).count()
+
+    status_counts = dict(db.query(
+        ReconciliationInvestigation.status, func.count(ReconciliationInvestigation.id)
+    ).group_by(ReconciliationInvestigation.status).all())
+    severity_counts = dict(db.query(
+        ReconciliationInvestigation.severity, func.count(ReconciliationInvestigation.id)
+    ).filter(
+        ReconciliationInvestigation.status.in_(active_statuses)
+    ).group_by(ReconciliationInvestigation.severity).all())
+
+    resolved = cases.filter(ReconciliationInvestigation.status == "RESOLVED")
+    quality_counts = dict(db.query(
+        ReconciliationInvestigation.resolution_quality_status,
+        func.count(ReconciliationInvestigation.id),
+    ).filter(
+        ReconciliationInvestigation.status == "RESOLVED"
+    ).group_by(ReconciliationInvestigation.resolution_quality_status).all())
+    reopened_cases = cases.filter(ReconciliationInvestigation.reopen_count > 0).count()
+    total_reopens = db.query(
+        func.coalesce(func.sum(ReconciliationInvestigation.reopen_count), 0)
+    ).scalar() or 0
+
+    opened_in_window = cases.filter(ReconciliationInvestigation.opened_at >= window_start).count()
+    resolved_in_window = cases.filter(
+        ReconciliationInvestigation.status == "RESOLVED",
+        ReconciliationInvestigation.resolved_at.is_not(None),
+        ReconciliationInvestigation.resolved_at >= window_start,
+    ).count()
+
+    age_buckets = {
+        "under_24_hours": active.filter(
+            ReconciliationInvestigation.opened_at >= now - timedelta(hours=24)
+        ).count(),
+        "1_to_7_days": active.filter(
+            ReconciliationInvestigation.opened_at < now - timedelta(hours=24),
+            ReconciliationInvestigation.opened_at >= now - timedelta(days=7),
+        ).count(),
+        "8_to_30_days": active.filter(
+            ReconciliationInvestigation.opened_at < now - timedelta(days=7),
+            ReconciliationInvestigation.opened_at >= now - timedelta(days=30),
+        ).count(),
+        "over_30_days": active.filter(
+            ReconciliationInvestigation.opened_at < now - timedelta(days=30)
+        ).count(),
+    }
+
+    root_causes = db.query(
+        ReconciliationInvestigation.root_cause,
+        func.count(ReconciliationInvestigation.id),
+    ).filter(
+        ReconciliationInvestigation.status == "RESOLVED",
+        ReconciliationInvestigation.root_cause.is_not(None),
+        ReconciliationInvestigation.resolved_at >= window_start,
+    ).group_by(
+        ReconciliationInvestigation.root_cause
+    ).order_by(
+        func.count(ReconciliationInvestigation.id).desc(),
+        ReconciliationInvestigation.root_cause.asc(),
+    ).limit(10).all()
+
+    queue_rows = active.order_by(
+        ReconciliationInvestigation.sla_due_at.is_(None),
+        ReconciliationInvestigation.sla_due_at.asc(),
+        ReconciliationInvestigation.id.asc(),
+    ).limit(queue_limit).all()
+
+    return {
+        "generated_at": now,
+        "window_days": window_days,
+        "overview": {
+            "total_investigations": total,
+            "active_investigations": active_count,
+            "overdue": overdue_count,
+            "due_within_24_hours": due_soon_count,
+            "active_without_sla": without_sla_count,
+        },
+        "active_by_severity": {
+            severity: int(severity_counts.get(severity, 0))
+            for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+        },
+        "by_status": {
+            status_name: int(status_counts.get(status_name, 0))
+            for status_name in ("OPEN", "ASSIGNED", "IN_REVIEW", "RESOLVED", "DISMISSED")
+        },
+        "closure_quality": {
+            "awaiting_review": int(quality_counts.get("NOT_REVIEWED", 0)),
+            "approved": int(quality_counts.get("APPROVED", 0)),
+            "rejected": int(quality_counts.get("REJECTED", 0)),
+        },
+        "reopening": {
+            "cases_reopened": reopened_cases,
+            "total_reopens": int(total_reopens),
+        },
+        "active_case_age": age_buckets,
+        "period_activity": {
+            "opened": opened_in_window,
+            "resolved": resolved_in_window,
+            "root_causes": [
+                {"root_cause": cause, "resolved_cases": int(count)}
+                for cause, count in root_causes
+            ],
+        },
+        "priority_queue": [
+            {
+                "id": row.id,
+                "severity": row.severity,
+                "status": row.status,
+                "assigned_to_id": row.assigned_to_id,
+                "opened_at": row.opened_at,
+                "sla_due_at": row.sla_due_at,
+                "sla_state": _sla_state(row),
+            }
+            for row in queue_rows
+        ],
+        "limitations": [
+            "This is a live tenant-local aggregate, not a frozen monthly governance report.",
+            "SLA calculations use elapsed wall-clock time; pause-aware business calendars are not enabled.",
+            "The priority queue intentionally excludes investigation narratives and source financial details.",
+        ],
+    }

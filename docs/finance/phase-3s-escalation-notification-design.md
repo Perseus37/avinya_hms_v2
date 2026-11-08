@@ -70,3 +70,15 @@ Exact route paths and permission names must be reconciled with the existing auth
 5. External provider adapters only after secrets, consent/opt-out, rate limits, retry, and operational ownership are approved.
 
 No external notification channel should be enabled by the schema-only or evaluator-only stages.
+
+## Finance Manager reconciliation dashboard
+
+The read-only `GET /api/procurement/reconciliation/dashboard` endpoint is the first Finance Manager review surface. It requires `finance:read` and is tenant-local through the existing tenant-scoped database dependency.
+
+- Provides total and active case counts, overdue and next-24-hour SLA counts, and active cases without an SLA.
+- Breaks active work down by severity and all investigations down by lifecycle status.
+- Shows closure-quality backlog/approval/rejection counts and reopen totals.
+- Includes active-case aging buckets, opened/resolved activity for a bounded 1–365 day window, and the ten most common recorded root-cause labels among recently resolved cases.
+- Returns a bounded priority queue (1–50 rows) containing identifiers, severity, status, assignee ID, timestamps and derived SLA state only.
+- Does not return investigation narratives, source references, bank details, patient information, or event payloads.
+- This is a live aggregate, not a monthly snapshot or export register. Historical monthly governance reporting and accountable export registration remain separate follow-up slices.

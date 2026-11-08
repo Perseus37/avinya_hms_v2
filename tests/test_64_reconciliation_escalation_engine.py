@@ -141,3 +141,65 @@ def test_reconciliation_escalation_evaluator_is_idempotent_and_honors_opt_out(
             investigation_id=second_case_id
         ).count() == 0
         assert db.query(ReconciliationNotificationOutbox).count() == 1
+
+
+
+def test_reconciliation_finance_dashboard_returns_bounded_governance_aggregates(multi_tenant_env):
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.investigations import get_reconciliation_finance_dashboard
+    from backend.domains.procurement.models import ReconciliationInvestigation
+    from fastapi import HTTPException
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    now = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        rows = [
+            ReconciliationInvestigation(
+                external_key="dashboard-case-open", candidate_type="UNMATCHED_BANK_DEBIT",
+                source_type="BANK_STATEMENT_LINE", source_id=99101,
+                title="Dashboard overdue case", summary="Synthetic test case for dashboard aggregation.",
+                severity="CRITICAL", status="OPEN", opened_by_id=actor.id,
+                opened_at=now - timedelta(days=9), updated_at=now,
+                sla_started_at=now - timedelta(days=2), sla_due_at=now - timedelta(hours=2),
+                version=1,
+            ),
+            ReconciliationInvestigation(
+                external_key="dashboard-case-resolved", candidate_type="DUPLICATE_PAYMENT_REFERENCE",
+                source_type="SUPPLIER_PAYMENT", source_id=99102,
+                title="Dashboard resolved case", summary="Synthetic test case for closure quality aggregation.",
+                severity="HIGH", status="RESOLVED", opened_by_id=actor.id,
+                opened_at=now - timedelta(days=2), updated_at=now,
+                resolved_at=now - timedelta(days=1), closed_by_id=actor.id,
+                resolution="Reviewed and corrected.", root_cause="DUPLICATE_REFERENCE",
+                resolution_quality_status="REJECTED", reopen_count=1, version=2,
+            ),
+        ]
+        db.add_all(rows)
+        db.commit()
+
+        dashboard = get_reconciliation_finance_dashboard(db=db, window_days=30, queue_limit=10)
+        assert dashboard["overview"]["total_investigations"] >= 2
+        assert dashboard["overview"]["active_investigations"] >= 1
+        assert dashboard["overview"]["overdue"] >= 1
+        assert dashboard["active_by_severity"]["CRITICAL"] >= 1
+        assert dashboard["closure_quality"]["rejected"] >= 1
+        assert dashboard["reopening"]["cases_reopened"] >= 1
+        assert dashboard["period_activity"]["root_causes"]
+        assert dashboard["priority_queue"][0]["id"] == rows[0].id
+        assert "summary" not in dashboard["priority_queue"][0]
+        assert "source_reference" not in dashboard["priority_queue"][0]
+
+        try:
+            get_reconciliation_finance_dashboard(db=db, window_days=0, queue_limit=10)
+        except HTTPException as exc:
+            assert exc.status_code == 422
+        else:
+            raise AssertionError("Invalid dashboard window must be rejected")
+
+        try:
+            get_reconciliation_finance_dashboard(db=db, window_days=30, queue_limit=1000)
+        except HTTPException as exc:
+            assert exc.status_code == 422
+        else:
+            raise AssertionError("Unbounded dashboard queue must be rejected")
