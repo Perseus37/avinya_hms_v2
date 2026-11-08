@@ -506,7 +506,38 @@ class ReconciliationInvestigation(Base):
     resolution_quality_reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     resolution_quality_reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     resolution_quality_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sla_policy_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_reconciliation_sla_policies.id", ondelete="RESTRICT"), nullable=True)
+    sla_policy_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sla_target_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sla_warning_percent: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sla_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class ReconciliationSLAPolicy(Base):
+    """Versioned severity-based SLA policy; new cases snapshot its values."""
+    __tablename__ = "procurement_reconciliation_sla_policies"
+    __table_args__ = (
+        UniqueConstraint("severity", "version", name="uq_recon_sla_severity_version"),
+        CheckConstraint("severity IN ('LOW','MEDIUM','HIGH','CRITICAL')", name="ck_recon_sla_severity"),
+        CheckConstraint("target_minutes > 0", name="ck_recon_sla_target_positive"),
+        CheckConstraint("warning_percent BETWEEN 1 AND 99", name="ck_recon_sla_warning_percent"),
+        CheckConstraint("version >= 1", name="ck_recon_sla_version_positive"),
+        Index("uq_recon_sla_active_severity", "severity", unique=True,
+              sqlite_where=__import__("sqlalchemy").text("is_active = 1"),
+              postgresql_where=__import__("sqlalchemy").text("is_active = true")),
+        Index("ix_recon_sla_created_by", "created_by_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    severity: Mapped[str] = mapped_column(String(12), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    warning_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=80, server_default="80")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class ReconciliationInvestigationEvent(Base):
