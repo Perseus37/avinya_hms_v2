@@ -71,6 +71,8 @@ Each discovery log also snapshots the authenticated `FederatedNode.id` and `api_
 
 Local user-initiated imports are distinct from inbound federation discovery and therefore do not claim a remote node identity. Their requesting branch is recorded, while node/key attribution remains null.
 
+**Actor attribution boundary:** a federation API key authenticates a hospital node/service, not the individual clinician using that hospital's application. The current protocol does not accept an unverified human identity header and does not claim to identify a remote clinician. For local imports, the source log records the destination branch; it does not assert that the source independently verified the destination user's identity. Human-level attribution requires a signed, verifiable actor assertion and remains a release gate for remote emergency disclosure.
+
 Allergy provenance is carried in the clinical summary so downstream federation hops can retain the original source rather than replacing it with the requesting hospital.
 
 `FederationTransferLog` is now treated as a true append-only audit record:
