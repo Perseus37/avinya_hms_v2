@@ -51,6 +51,17 @@ class InvestigationTransition(BaseModel):
     note: Optional[str] = Field(default=None, max_length=1000)
 
 
+class InvestigationReopen(BaseModel):
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=10, max_length=2000)
+
+
+class InvestigationQualityReview(BaseModel):
+    expected_version: int = Field(ge=1)
+    decision: str = Field(pattern=r"^(APPROVED|REJECTED)$")
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
 def _source_model(source_type: str):
     return {
         "BANK_STATEMENT_LINE": BankStatementLine,
@@ -78,6 +89,12 @@ def _case_payload(row: ReconciliationInvestigation) -> dict:
         "opened_at": row.opened_at,
         "updated_at": row.updated_at,
         "resolved_at": row.resolved_at,
+        "closed_by_id": row.closed_by_id,
+        "reopen_count": row.reopen_count,
+        "resolution_quality_status": row.resolution_quality_status,
+        "resolution_quality_reviewed_by_id": row.resolution_quality_reviewed_by_id,
+        "resolution_quality_reviewed_at": row.resolution_quality_reviewed_at,
+        "resolution_quality_note": row.resolution_quality_note,
         "version": row.version,
     }
 
@@ -234,8 +251,15 @@ def transition_reconciliation_investigation(
         row.root_cause = payload.root_cause.strip()
     if payload.to_status in {"RESOLVED", "DISMISSED"}:
         row.resolved_at = datetime.now(timezone.utc)
+        row.closed_by_id = current_user.id
+        if payload.to_status == "RESOLVED":
+            row.resolution_quality_status = "NOT_REVIEWED"
+            row.resolution_quality_reviewed_by_id = None
+            row.resolution_quality_reviewed_at = None
+            row.resolution_quality_note = None
     else:
         row.resolved_at = None
+        row.closed_by_id = None
     row.version += 1
     row.updated_at = datetime.now(timezone.utc)
     _append_event(db, row, event_type="STATUS_CHANGED", actor_id=current_user.id,
@@ -266,3 +290,110 @@ def list_reconciliation_investigation_events(
         "details": row.details,
         "occurred_at": row.occurred_at,
     } for row in rows]
+
+
+
+@router.patch("/reconciliation/investigations/{investigation_id}/reopen")
+def reopen_reconciliation_investigation(
+    investigation_id: int,
+    payload: InvestigationReopen,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    row = db.query(ReconciliationInvestigation).filter(
+        ReconciliationInvestigation.id == investigation_id
+    ).with_for_update().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Investigation not found.")
+    if row.version != payload.expected_version:
+        raise HTTPException(status_code=409, detail={"message": "Investigation was updated by another user.", "current_version": row.version})
+    if row.status != "RESOLVED":
+        raise HTTPException(status_code=409, detail="Only resolved investigations can be reopened.")
+    previous_resolution = row.resolution
+    previous_root_cause = row.root_cause
+    row.status = "IN_REVIEW"
+    row.resolved_at = None
+    row.closed_by_id = None
+    row.reopen_count += 1
+    row.resolution_quality_status = "NOT_REVIEWED"
+    row.resolution_quality_reviewed_by_id = None
+    row.resolution_quality_reviewed_at = None
+    row.resolution_quality_note = None
+    row.version += 1
+    row.updated_at = datetime.now(timezone.utc)
+    _append_event(
+        db, row, event_type="REOPENED", actor_id=current_user.id,
+        from_status="RESOLVED", to_status="IN_REVIEW",
+        details={
+            "reason": payload.reason.strip(),
+            "previous_resolution": previous_resolution,
+            "previous_root_cause": previous_root_cause,
+            "reopen_count": row.reopen_count,
+        },
+    )
+    db.commit()
+    db.refresh(row)
+    return _case_payload(row)
+
+
+@router.patch("/reconciliation/investigations/{investigation_id}/quality-review")
+def review_reconciliation_investigation_closure(
+    investigation_id: int,
+    payload: InvestigationQualityReview,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    row = db.query(ReconciliationInvestigation).filter(
+        ReconciliationInvestigation.id == investigation_id
+    ).with_for_update().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Investigation not found.")
+    if row.version != payload.expected_version:
+        raise HTTPException(status_code=409, detail={"message": "Investigation was updated by another user.", "current_version": row.version})
+    if row.status != "RESOLVED":
+        raise HTTPException(status_code=409, detail="Only resolved investigations can receive closure-quality review.")
+    if row.resolution_quality_status != "NOT_REVIEWED":
+        raise HTTPException(status_code=409, detail="This closure has already received a quality decision.")
+    if row.closed_by_id == current_user.id:
+        raise HTTPException(status_code=403, detail="The investigator who resolved the case cannot review its closure.")
+    if payload.decision == "REJECTED" and not (payload.note and payload.note.strip()):
+        raise HTTPException(status_code=422, detail="A review note is required when closure quality is rejected.")
+    row.resolution_quality_status = payload.decision
+    row.resolution_quality_reviewed_by_id = current_user.id
+    row.resolution_quality_reviewed_at = datetime.now(timezone.utc)
+    row.resolution_quality_note = payload.note.strip() if payload.note else None
+    row.version += 1
+    row.updated_at = datetime.now(timezone.utc)
+    _append_event(
+        db, row, event_type="CLOSURE_QUALITY_REVIEWED", actor_id=current_user.id,
+        from_status="RESOLVED", to_status="RESOLVED",
+        details={"decision": payload.decision, "note": payload.note},
+    )
+    db.commit()
+    db.refresh(row)
+    return _case_payload(row)
+
+
+@router.get("/reconciliation/investigations/quality-summary", response_model=dict)
+def get_reconciliation_investigation_quality_summary(
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    rows = db.query(ReconciliationInvestigation).all()
+    resolved = [row for row in rows if row.status == "RESOLVED"]
+    return {
+        "total_investigations": len(rows),
+        "resolved_count": len(resolved),
+        "closure_quality": {
+            "not_reviewed": sum(1 for row in resolved if row.resolution_quality_status == "NOT_REVIEWED"),
+            "approved": sum(1 for row in resolved if row.resolution_quality_status == "APPROVED"),
+            "rejected": sum(1 for row in resolved if row.resolution_quality_status == "REJECTED"),
+        },
+        "reopened_count": sum(row.reopen_count for row in rows),
+        "cases_reopened": sum(1 for row in rows if row.reopen_count > 0),
+        "average_reopens_per_case": round(sum(row.reopen_count for row in rows) / len(rows), 2) if rows else 0,
+        "limitations": [
+            "Quality decisions are explicit human reviews, not automated correctness scores.",
+            "This summary is a live aggregate, not a frozen monthly governance snapshot.",
+        ],
+    }
