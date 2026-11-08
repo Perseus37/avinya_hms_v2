@@ -4,6 +4,7 @@ from typing import List, Optional
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
