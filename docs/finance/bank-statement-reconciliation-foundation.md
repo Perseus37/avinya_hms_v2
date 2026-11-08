@@ -35,9 +35,19 @@ All routes are tenant-scoped through the existing tenant database dependency. Im
 - This endpoint accepts normalized JSON rows; it is not a CSV/Excel/PDF bank-statement parser.
 - No bank API credentials or raw account numbers are stored.
 - It does not automatically match by amount, reference, vendor, or date.
-- It does not classify credits, recognize income, or close reconciliation exceptions.
+- It does not classify credits, recognize income, or close reconciliation exceptions. The read-only candidate endpoint below surfaces source-data review prompts only.
 - It does not yet provide a dedicated frontend workspace or export workflow.
+- Candidate detection is a bounded read-only query, not a durable exception case lifecycle, SLA clock, escalation engine, or monthly governance report.
 - Importing the same statement or transaction again returns a conflict; operators must correct the source/import process rather than mutate immutable evidence.
+
+## Reconciliation candidate discovery
+
+- `GET /api/procurement/reconciliation/candidates` returns bounded, read-only review candidates for unmatched/partially matched bank debits, unclassified credits, unreconciled/partially reconciled supplier payments, normalized duplicate payment-reference collisions, and overdue approved payment requests.
+- Supports an explicit `as_of` date and a bounded result `limit`; response reports whether source/result caps truncated the candidate set.
+- Duplicate-reference candidates are grouped per vendor after case-folding and whitespace removal. They are review prompts only; no duplicate payment or fraud conclusion is made.
+- No candidate creates, assigns, closes, or changes a reconciliation case. Credits are not posted as income. All candidates require human accounting review.
+- Bank account aliases must be non-numeric opaque identifiers. Account labels reject contiguous 8+ digit sequences as a basic accidental-disclosure guard; operators must still avoid uploading raw bank identifiers or unrelated statement data.
+- Import is an operator-supplied normalized JSON workflow. Actor and import timestamp are recorded, but the API does not cryptographically authenticate bank origin. Imported data must not be described as bank-verified.
 
 ## Migration
 
