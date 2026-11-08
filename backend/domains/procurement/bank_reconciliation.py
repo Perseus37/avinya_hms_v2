@@ -7,6 +7,7 @@ as income or matched automatically.
 """
 from datetime import date, datetime, timezone
 import base64
+import binascii
 import json
 from typing import List, Optional
 from collections import defaultdict
@@ -372,7 +373,7 @@ def list_reconciliation_candidates(
             candidate_offset = int(decoded["candidate_offset"])
             if source_offset < 0 or candidate_offset < 0 or source_offset % source_cap:
                 raise ValueError("Invalid cursor position")
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError) as exc:
             raise HTTPException(status_code=422, detail="Invalid reconciliation candidate cursor.") from exc
 
     lines = db.query(BankStatementLine).order_by(BankStatementLine.id).offset(source_offset).limit(source_cap + 1).all()

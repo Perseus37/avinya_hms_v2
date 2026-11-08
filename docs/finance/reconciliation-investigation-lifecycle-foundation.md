@@ -77,3 +77,8 @@ New endpoints:
 - `GET /api/procurement/reconciliation/investigations/quality-summary` (`finance:read`)
 
 The summary is a live aggregate of resolved closure-review states and reopen counts. It is not a monthly frozen report, automated quality score, or inferred root-cause analysis. Evidence-file upload/download remains deferred until private object-storage, malware scanning, retention, and download-audit contracts are confirmed.
+
+
+## Investigation event-history pagination
+
+The event-history endpoint returns at most 100 events by default (maximum 500), ordered by descending event ID. Continue with `before_id` set to the last event ID returned. This stable keyset pagination avoids loading an unbounded case history while preserving the existing list response shape.
