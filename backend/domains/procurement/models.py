@@ -463,3 +463,56 @@ class SupplierPaymentBankMatch(Base):
     matched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     reason: Mapped[str] = mapped_column(String(1000), nullable=False)
 
+
+
+class ReconciliationInvestigation(Base):
+    """Tenant-scoped human investigation opened from a reconciliation source indicator."""
+    __tablename__ = "procurement_reconciliation_investigations"
+    __table_args__ = (
+        UniqueConstraint("external_key", name="uq_recon_investigation_external_key"),
+        CheckConstraint("severity IN ('LOW','MEDIUM','HIGH','CRITICAL')", name="ck_recon_investigation_severity"),
+        CheckConstraint("status IN ('OPEN','ASSIGNED','IN_REVIEW','RESOLVED','DISMISSED')", name="ck_recon_investigation_status"),
+        CheckConstraint("version >= 1", name="ck_recon_investigation_version_positive"),
+        Index("ix_recon_investigation_status_severity", "status", "severity"),
+        Index("ix_recon_investigation_assignee_status", "assigned_to_id", "status"),
+        Index("ix_recon_investigation_source", "source_type", "source_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    external_key: Mapped[str] = mapped_column(String(220), nullable=False)
+    candidate_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_reference: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    title: Mapped[str] = mapped_column(String(180), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(12), nullable=False, default="MEDIUM")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    opened_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    assigned_to_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    resolution: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    root_cause: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class ReconciliationInvestigationEvent(Base):
+    """Append-only event history for investigation assignment and lifecycle transitions."""
+    __tablename__ = "procurement_reconciliation_investigation_events"
+    __table_args__ = (
+        Index("ix_recon_investigation_event_case_time", "investigation_id", "occurred_at"),
+        Index("ix_recon_investigation_event_actor_time", "actor_user_id", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    investigation_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_reconciliation_investigations.id", ondelete="RESTRICT"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    from_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    to_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
