@@ -1,17 +1,18 @@
 """Bank statement ingestion and controlled supplier-payment matching.
 
-The account_key is an opaque tenant-local identifier supplied by the bank integration.
-Never send raw account numbers, credentials, or statement files containing unrelated PII
-through this JSON endpoint.
+The account_key is an opaque tenant-local alias supplied by the bank integration.
+Never submit raw account numbers, credentials, or unrelated customer statement data
+through this JSON endpoint. Credits remain classification work and are never treated
+as income or matched automatically.
 """
 from datetime import date, datetime, timezone
-import re
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, selectinload
 
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission, validate_pagination
@@ -50,8 +51,8 @@ class BankStatementImport(BaseModel):
     statement_reference: str = Field(min_length=1, max_length=120)
     period_start: date
     period_end: date
-    opening_balance_paise: int = Field(ge=0)
-    closing_balance_paise: int = Field(ge=0)
+    opening_balance_paise: int
+    closing_balance_paise: int
     lines: List[BankStatementLineImport] = Field(min_length=1, max_length=5000)
 
     @model_validator(mode="after")
@@ -104,6 +105,17 @@ class SupplierPaymentBankMatchCreate(BaseModel):
     reason: str = Field(min_length=5, max_length=1000)
 
 
+class SupplierPaymentBankMatchResponse(BaseModel):
+    id: int
+    statement_line_id: int
+    supplier_payment_id: int
+    amount_paise: int
+    matched_by_id: int
+    matched_at: datetime
+    reason: str
+    model_config = ConfigDict(from_attributes=True)
+
+
 @router.post("/bank-statements/import", response_model=BankStatementBatchResponse, status_code=status.HTTP_201_CREATED)
 def import_bank_statement(
     payload: BankStatementImport,
@@ -128,27 +140,31 @@ def import_bank_statement(
         closing_balance_paise=payload.closing_balance_paise,
         imported_by_id=current_user.id,
     )
-    db.add(batch)
-    db.flush()
-    for line in payload.lines:
-        transaction_id = line.bank_transaction_id.strip()
-        if db.query(BankStatementLine.id).filter(
-            BankStatementLine.account_key == account_key,
-            BankStatementLine.bank_transaction_id == transaction_id,
-        ).first():
-            raise HTTPException(status_code=409, detail=f"Bank transaction {transaction_id} was already imported.")
-        db.add(BankStatementLine(
-            batch_id=batch.id,
-            account_key=account_key,
-            bank_transaction_id=transaction_id,
-            transaction_date=line.transaction_date,
-            value_date=line.value_date,
-            direction=line.direction,
-            amount_paise=line.amount_paise,
-            bank_reference=line.bank_reference.strip() if line.bank_reference else None,
-            description=line.description.strip() if line.description else None,
-        ))
-    db.commit()
+    try:
+        db.add(batch)
+        db.flush()
+        for line in payload.lines:
+            transaction_id = line.bank_transaction_id.strip()
+            if db.query(BankStatementLine.id).filter(
+                BankStatementLine.account_key == account_key,
+                BankStatementLine.bank_transaction_id == transaction_id,
+            ).first():
+                raise HTTPException(status_code=409, detail=f"Bank transaction {transaction_id} was already imported.")
+            db.add(BankStatementLine(
+                batch_id=batch.id,
+                account_key=account_key,
+                bank_transaction_id=transaction_id,
+                transaction_date=line.transaction_date,
+                value_date=line.value_date,
+                direction=line.direction,
+                amount_paise=line.amount_paise,
+                bank_reference=line.bank_reference.strip() if line.bank_reference else None,
+                description=line.description.strip() if line.description else None,
+            ))
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Statement or bank transaction identity already exists.") from exc
     db.refresh(batch)
     return batch
 
@@ -192,6 +208,47 @@ def list_bank_statement_lines(
     rows = query.offset((page - 1) * page_size).limit(page_size).all()
     return {
         "items": [BankStatementLineResponse.model_validate(row).model_dump(mode="json") for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.get("/supplier-payments", response_model=dict)
+def list_supplier_payments(
+    vendor_id: Optional[int] = Query(default=None, gt=0),
+    page: int = Query(default=1, gt=0),
+    page_size: int = Query(default=50, gt=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    page, page_size = validate_pagination(page, page_size)
+    query = db.query(SupplierPayment).options(
+        selectinload(SupplierPayment.allocations)
+    )
+    if vendor_id is not None:
+        query = query.filter(SupplierPayment.vendor_id == vendor_id)
+    query = query.order_by(SupplierPayment.payment_date.desc(), SupplierPayment.id.desc())
+    total = query.count()
+    rows = query.offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "vendor_id": row.vendor_id,
+                "payment_reference": row.payment_reference,
+                "payment_method": row.payment_method.value,
+                "payment_date": row.payment_date,
+                "amount_paise": row.amount_paise,
+                "notes": row.notes,
+                "recorded_by_id": row.recorded_by_id,
+                "allocations": [
+                    {"id": item.id, "invoice_id": item.invoice_id, "amount_paise": item.amount_paise}
+                    for item in row.allocations
+                ],
+            }
+            for row in rows
+        ],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -250,14 +307,31 @@ def match_bank_debit_to_supplier_payment(
         reason=payload.reason.strip(),
     )
     db.add(match)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This bank line and supplier payment are already linked.") from exc
     db.refresh(match)
+    return SupplierPaymentBankMatchResponse.model_validate(match).model_dump(mode="json")
+
+
+@router.get("/bank-statement-lines/{line_id}/matches", response_model=dict)
+def list_bank_statement_line_matches(
+    line_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    line = db.get(BankStatementLine, line_id)
+    if line is None:
+        raise HTTPException(status_code=404, detail="Bank statement line not found.")
+    rows = db.query(SupplierPaymentBankMatch).filter(
+        SupplierPaymentBankMatch.statement_line_id == line_id
+    ).order_by(SupplierPaymentBankMatch.id).all()
+    matched = sum(row.amount_paise for row in rows)
     return {
-        "id": match.id,
-        "statement_line_id": match.statement_line_id,
-        "supplier_payment_id": match.supplier_payment_id,
-        "amount_paise": match.amount_paise,
-        "matched_by_id": match.matched_by_id,
-        "matched_at": match.matched_at,
-        "reason": match.reason,
+        "items": [SupplierPaymentBankMatchResponse.model_validate(row).model_dump(mode="json") for row in rows],
+        "line_amount_paise": line.amount_paise,
+        "matched_amount_paise": matched,
+        "remaining_amount_paise": line.amount_paise - matched,
     }
