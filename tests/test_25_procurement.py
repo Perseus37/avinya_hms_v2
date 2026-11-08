@@ -426,10 +426,6 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
         },
     )
     assert statement.status_code == 201, statement.text
-    source_id = client.get(
-        "/v1/api/procurement/bank-statements/1/lines",
-        headers=superuser_headers,
-    )
     # Resolve the actual line from the imported statement instead of relying on an ID.
     batch_id = statement.json()["id"]
     source_id = client.get(
