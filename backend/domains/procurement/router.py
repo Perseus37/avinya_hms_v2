@@ -964,5 +964,7 @@ router.include_router(bank_reconciliation_router)
 
 # Human-owned reconciliation investigation lifecycle.
 from backend.domains.procurement.investigations import router as reconciliation_investigations_router
+from backend.domains.procurement.escalation import router as reconciliation_escalation_router
 
 router.include_router(reconciliation_investigations_router)
+router.include_router(reconciliation_escalation_router)
