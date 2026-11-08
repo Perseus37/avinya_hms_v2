@@ -120,11 +120,11 @@ def upgrade() -> None:
     if bind.dialect.name == "postgresql":
         op.execute("""
             CREATE OR REPLACE FUNCTION prevent_supplier_payment_mutation()
-            RETURNS trigger AS $
+            RETURNS trigger AS $fn$
             BEGIN
                 RAISE EXCEPTION 'Supplier payment ledger records are append-only';
             END;
-            $ LANGUAGE plpgsql
+            $fn$ LANGUAGE plpgsql
         """)
         for table_name in (
             "procurement_supplier_payments",
