@@ -1,5 +1,7 @@
 """Append-only accountability metadata for generated security audit exports."""
 
+from datetime import datetime
+
 from sqlalchemy import CheckConstraint, DDL, DateTime, ForeignKey, Index, Integer, String, Text, event, func
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,7 +24,7 @@ class SecurityAuditExportRegister(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     actor_user_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+        Integer, ForeignKey("users.id", ondelete="RESTRICT", name="fk_security_audit_export_actor"), nullable=False
     )
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     category: Mapped[str | None] = mapped_column(String(40), nullable=True)

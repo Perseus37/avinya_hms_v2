@@ -224,6 +224,13 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
             "procurement_reconciliation_notification_config_events",
         }
         immutable_governance_tables = {"procurement_reconciliation_governance_reports"}
+        immutable_audit_export_tables = {"security_audit_export_register"}
+        if session.bind.dialect.name == "postgresql":
+            if "security_audit_export_register" in table_names:
+                session.execute(text("DROP TRIGGER IF EXISTS trg_security_audit_export_no_mutation ON security_audit_export_register"))
+        elif session.bind.dialect.name == "sqlite" and "security_audit_export_register" in table_names:
+            session.execute(text("DROP TRIGGER IF EXISTS trg_security_audit_export_no_update"))
+            session.execute(text("DROP TRIGGER IF EXISTS trg_security_audit_export_no_delete"))
         if session.bind.dialect.name == "postgresql":
             for tbl in immutable_governance_tables:
                 if tbl in table_names:
@@ -374,7 +381,7 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
                 """))
 
-        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables - immutable_governance_tables - {"procurement_reconciliation_notification_outbox"}:
+        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables - immutable_governance_tables - immutable_audit_export_tables - {"procurement_reconciliation_notification_outbox"}:
             if tbl in table_names:
                 session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
                 stats["purged_tables"] += 1
@@ -399,6 +406,27 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                 BEFORE DELETE ON procurement_reconciliation_governance_reports
                 BEGIN SELECT RAISE(ABORT, 'Monthly reconciliation governance reports are immutable'); END
             """))
+
+        if "security_audit_export_register" in table_names:
+            session.execute(text('DELETE FROM "security_audit_export_register"'))  # nosec B608
+            stats["purged_tables"] += 1
+            if session.bind.dialect.name == "postgresql":
+                session.execute(text("""
+                    CREATE TRIGGER trg_security_audit_export_no_mutation
+                    BEFORE UPDATE OR DELETE ON security_audit_export_register
+                    FOR EACH ROW EXECUTE FUNCTION prevent_security_audit_export_register_mutation()
+                """))
+            elif session.bind.dialect.name == "sqlite":
+                session.execute(text("""
+                    CREATE TRIGGER trg_security_audit_export_no_update
+                    BEFORE UPDATE ON security_audit_export_register
+                    BEGIN SELECT RAISE(ABORT, 'security audit export register is append-only'); END
+                """))
+                session.execute(text("""
+                    CREATE TRIGGER trg_security_audit_export_no_delete
+                    BEFORE DELETE ON security_audit_export_register
+                    BEGIN SELECT RAISE(ABORT, 'security audit export register is append-only'); END
+                """))
 
         # 2. WIPE USERS, PASSWORDS, AND MFA (N-37)
         if "users" in table_names:

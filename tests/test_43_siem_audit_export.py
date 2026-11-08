@@ -132,7 +132,7 @@ def test_stream_export_register_persists_exact_digest_and_metadata(client, super
 
     response = client.get("/v1/api/audit/stream?category=DATA_BREACH&limit=25", headers=superuser_headers)
     assert response.status_code == 200
-    assert response.content.endswith(b"\\n") or response.content == b""
+    assert response.content.endswith(b"\n") or response.content == b""
     engine = tenant_engine_pool.get_engine("hms_default")
     with Session(bind=engine) as session:
         row = session.execute(

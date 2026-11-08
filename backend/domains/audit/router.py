@@ -303,7 +303,10 @@ def stream_security_events(
     return Response(
         content=payload,
         media_type="application/x-ndjson",
-        headers={"Content-Disposition": "attachment; filename=security-audit-events.ndjson"},
+        headers={
+            "Content-Disposition": "attachment; filename=security-audit-events.ndjson",
+            "X-Audit-Export-Id": str(record.id),
+        },
     )
 
 
