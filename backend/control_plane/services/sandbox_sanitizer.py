@@ -218,6 +218,7 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
 
         immutable_investigation_tables = {
             "procurement_reconciliation_investigation_events",
+            "procurement_reconciliation_notification_config_events",
         }
         if session.bind.dialect.name == "postgresql":
             for tbl in immutable_investigation_tables:
@@ -334,6 +335,25 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     CREATE TRIGGER trg_procurement_reconciliation_investigation_events_immutable_delete
                     BEFORE DELETE ON procurement_reconciliation_investigation_events
                     BEGIN SELECT RAISE(ABORT, 'Reconciliation investigation events are append-only'); END
+                """))
+        if session.bind.dialect.name == "postgresql":
+            if "procurement_reconciliation_notification_config_events" in table_names:
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_notification_config_events_immutable
+                    BEFORE UPDATE OR DELETE ON procurement_reconciliation_notification_config_events
+                    FOR EACH ROW EXECUTE FUNCTION prevent_procurement_reconciliation_notification_config_events_mutation()
+                """))
+        elif session.bind.dialect.name == "sqlite":
+            if "procurement_reconciliation_notification_config_events" in table_names:
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_notification_config_events_immutable_update
+                    BEFORE UPDATE ON procurement_reconciliation_notification_config_events
+                    BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
+                """))
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_notification_config_events_immutable_delete
+                    BEFORE DELETE ON procurement_reconciliation_notification_config_events
+                    BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
                 """))
 
         for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables:
