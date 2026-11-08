@@ -162,3 +162,13 @@ This split avoids implementing an incomplete approval workflow while keeping the
 
 The existing procurement migration `3605df409a44` explicitly descends from baseline `6f591125aedc` and creates the core vendor, purchase-order, GRN and invoice tables. It is a mainline foundation, not a reason to import the feature branch's later migration chain. Before authoring a new migration, the current full mainline revision graph and all heads must be enumerated from the checked-out `main` ref; this inventory intentionally does not guess the current Alembic head from a migration filename.
 
+## Verified mainline payment approval dependency
+
+A follow-up inspection of `backend/domains/finance/models.py`, `backend/domains/finance/router.py`, and `backend/domains/procurement/services.py` resolves the previously open sequencing question:
+
+- Mainline AP uses `ExpenseRecord` with distinct `finance:write`, `finance:approve`, and `finance:pay` permissions.
+- The supplier invoice approval path posts an AP expense as `APPROVED`; it does not record the actual supplier bank/cash outflow.
+- Mainline has a generic `mark-paid` endpoint for an expense, but it stores only a receipt reference and PAID state. It does not provide invoice-level settlement allocation or bank-statement reconciliation.
+- Consequently, supplier payments must not be implemented as a direct unapproved payment-entry endpoint. The supplier payment request/review/execute lifecycle is required before enabling the recorded supplier payment operation.
+
+The integration order is now **request + independent approval + invoice reservations → execute into immutable payment + invoice allocations → bank statement import → debit matching → exception candidate generation**. The feature branch's request model and endpoint behavior are useful reference material, but must be re-authored against current mainline APIs and validated rather than copied wholesale.
