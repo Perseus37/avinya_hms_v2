@@ -81,6 +81,9 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "procurement_supplier_payment_request_allocations",
     "procurement_supplier_payment_requests",
     "procurement_supplier_payments",
+    "procurement_bank_statement_batches",
+    "procurement_bank_statement_lines",
+    "procurement_supplier_payment_bank_matches",
     "break_glass_uses",
     "break_glass_grants",
     "service_workflow_events",
@@ -207,12 +210,30 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
 
+        immutable_bank_tables = {
+            "procurement_bank_statement_batches",
+            "procurement_bank_statement_lines",
+            "procurement_supplier_payment_bank_matches",
+        }
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_bank_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_bank_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+
         # Delete child rows first; requests reference executed payment ledger rows.
         for tbl in (
             "procurement_supplier_payment_allocations",
             "procurement_supplier_payment_request_allocations",
             "procurement_supplier_payment_requests",
             "procurement_supplier_payments",
+            "procurement_supplier_payment_bank_matches",
+            "procurement_bank_statement_lines",
+            "procurement_bank_statement_batches",
         ):
             if tbl in table_names:
                 session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
@@ -244,7 +265,33 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                         END
                     """))
 
-        for tbl in PURGED_LOG_TABLES - immutable_finance_tables:
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_bank_tables:
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable
+                        BEFORE UPDATE OR DELETE ON "{tbl}"
+                        FOR EACH ROW EXECUTE FUNCTION prevent_bank_reconciliation_mutation()
+                    """))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_bank_tables:
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_update
+                        BEFORE UPDATE ON "{tbl}"
+                        BEGIN
+                            SELECT RAISE(ABORT, 'Bank statement and reconciliation records are append-only');
+                        END
+                    """))
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_delete
+                        BEFORE DELETE ON "{tbl}"
+                        BEGIN
+                            SELECT RAISE(ABORT, 'Bank statement and reconciliation records are append-only');
+                        END
+                    """))
+
+        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables:
             if tbl in table_names:
                 session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
                 stats["purged_tables"] += 1
