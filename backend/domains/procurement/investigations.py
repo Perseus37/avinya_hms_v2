@@ -114,6 +114,84 @@ def _append_event(db: Session, row: ReconciliationInvestigation, *, event_type: 
     ))
 
 
+@router.post("/reconciliation/sla-policies", status_code=status.HTTP_201_CREATED)
+def create_reconciliation_sla_policy(
+    payload: SLAPolicyCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    existing = db.query(ReconciliationSLAPolicy).filter(
+        ReconciliationSLAPolicy.severity == payload.severity
+    ).with_for_update().all()
+    next_version = max((item.version for item in existing), default=0) + 1
+    for item in existing:
+        if item.is_active:
+            item.is_active = False
+    policy = ReconciliationSLAPolicy(
+        severity=payload.severity, version=next_version,
+        target_minutes=payload.target_minutes, warning_percent=payload.warning_percent,
+        is_active=True, created_by_id=current_user.id,
+    )
+    try:
+        db.add(policy)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A concurrent SLA policy update occurred; retry.") from exc
+    db.refresh(policy)
+    return {
+        "id": policy.id, "severity": policy.severity, "version": policy.version,
+        "target_minutes": policy.target_minutes, "warning_percent": policy.warning_percent,
+        "is_active": policy.is_active, "created_by_id": policy.created_by_id,
+        "created_at": policy.created_at,
+    }
+
+
+@router.get("/reconciliation/sla-policies", response_model=list[dict])
+def list_reconciliation_sla_policies(
+    active_only: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    query = db.query(ReconciliationSLAPolicy)
+    if active_only:
+        query = query.filter(ReconciliationSLAPolicy.is_active.is_(True))
+    rows = query.order_by(ReconciliationSLAPolicy.severity, ReconciliationSLAPolicy.version.desc()).all()
+    return [{
+        "id": row.id, "severity": row.severity, "version": row.version,
+        "target_minutes": row.target_minutes, "warning_percent": row.warning_percent,
+        "is_active": row.is_active, "created_by_id": row.created_by_id,
+        "created_at": row.created_at,
+    } for row in rows]
+
+
+@router.get("/reconciliation/sla-summary", response_model=dict)
+def get_reconciliation_sla_summary(
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    now = datetime.now(timezone.utc)
+    active_statuses = ("OPEN", "ASSIGNED", "IN_REVIEW")
+    base = db.query(ReconciliationInvestigation).filter(ReconciliationInvestigation.status.in_(active_statuses))
+    total_open = base.count()
+    configured = base.filter(ReconciliationInvestigation.sla_due_at.is_not(None)).count()
+    overdue = base.filter(ReconciliationInvestigation.sla_due_at < now).count()
+    by_severity = dict(db.query(
+        ReconciliationInvestigation.severity, func.count(ReconciliationInvestigation.id),
+    ).filter(
+        ReconciliationInvestigation.status.in_(active_statuses),
+        ReconciliationInvestigation.sla_due_at < now,
+    ).group_by(ReconciliationInvestigation.severity).all())
+    return {
+        "open_investigations": total_open,
+        "with_sla": configured,
+        "without_sla": total_open - configured,
+        "overdue": overdue,
+        "overdue_by_severity": {key: int(value) for key, value in by_severity.items()},
+        "clock_semantics": "Elapsed wall-clock minutes; pause-aware calendars are not enabled.",
+    }
+
+
 @router.post("/reconciliation/investigations", status_code=status.HTTP_201_CREATED)
 def create_reconciliation_investigation(
     payload: InvestigationCreate,
@@ -124,6 +202,11 @@ def create_reconciliation_investigation(
     if source is None:
         raise HTTPException(status_code=404, detail="Reconciliation source record not found.")
     external_key = f"{payload.candidate_type}:{payload.source_type}:{payload.source_id}"
+    now = datetime.now(timezone.utc)
+    policy = db.query(ReconciliationSLAPolicy).filter(
+        ReconciliationSLAPolicy.severity == payload.severity,
+        ReconciliationSLAPolicy.is_active.is_(True),
+    ).one_or_none()
     existing = db.query(ReconciliationInvestigation).filter(
         ReconciliationInvestigation.external_key == external_key
     ).one_or_none()
@@ -143,6 +226,13 @@ def create_reconciliation_investigation(
         severity=payload.severity,
         status="OPEN",
         opened_by_id=current_user.id,
+        opened_at=now,
+        sla_policy_id=policy.id if policy else None,
+        sla_policy_version=policy.version if policy else None,
+        sla_target_minutes=policy.target_minutes if policy else None,
+        sla_warning_percent=policy.warning_percent if policy else None,
+        sla_started_at=now if policy else None,
+        sla_due_at=now + timedelta(minutes=policy.target_minutes) if policy else None,
         version=1,
     )
     try:
