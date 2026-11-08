@@ -473,8 +473,11 @@ class ReconciliationInvestigation(Base):
         CheckConstraint("severity IN ('LOW','MEDIUM','HIGH','CRITICAL')", name="ck_recon_investigation_severity"),
         CheckConstraint("status IN ('OPEN','ASSIGNED','IN_REVIEW','RESOLVED','DISMISSED')", name="ck_recon_investigation_status"),
         CheckConstraint("version >= 1", name="ck_recon_investigation_version_positive"),
+        CheckConstraint("reopen_count >= 0", name="ck_recon_investigation_reopen_count_nonneg"),
+        CheckConstraint("resolution_quality_status IN ('NOT_REVIEWED','APPROVED','REJECTED')", name="ck_recon_investigation_quality_status"),
         Index("ix_recon_investigation_status_severity", "status", "severity"),
         Index("ix_recon_investigation_opened_by", "opened_by_id"),
+        Index("ix_recon_investigation_closed_by", "closed_by_id"),
         Index("ix_recon_investigation_assignee_status", "assigned_to_id", "status"),
         Index("ix_recon_investigation_source", "source_type", "source_id"),
     )
@@ -496,6 +499,12 @@ class ReconciliationInvestigation(Base):
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    reopen_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    resolution_quality_status: Mapped[str] = mapped_column(String(16), nullable=False, default="NOT_REVIEWED", server_default="NOT_REVIEWED")
+    resolution_quality_reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolution_quality_reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_quality_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
