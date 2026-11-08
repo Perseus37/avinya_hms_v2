@@ -525,8 +525,8 @@ class ReconciliationSLAPolicy(Base):
         CheckConstraint("warning_percent BETWEEN 1 AND 99", name="ck_recon_sla_warning_percent"),
         CheckConstraint("version >= 1", name="ck_recon_sla_version_positive"),
         Index("uq_recon_sla_active_severity", "severity", unique=True,
-              sqlite_where=__import__("sqlalchemy").text("is_active = 1"),
-              postgresql_where=__import__("sqlalchemy").text("is_active = true")),
+              sqlite_where=text("is_active = 1"),
+              postgresql_where=text("is_active = true")),
         Index("ix_recon_sla_created_by", "created_by_id"),
     )
 
@@ -535,7 +535,7 @@ class ReconciliationSLAPolicy(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     target_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     warning_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=80, server_default="80")
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="1")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
