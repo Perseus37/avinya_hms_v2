@@ -172,3 +172,22 @@ A follow-up inspection of `backend/domains/finance/models.py`, `backend/domains/
 - Consequently, supplier payments must not be implemented as a direct unapproved payment-entry endpoint. The supplier payment request/review/execute lifecycle is required before enabling the recorded supplier payment operation.
 
 The integration order is now **request + independent approval + invoice reservations → execute into immutable payment + invoice allocations → bank statement import → debit matching → exception candidate generation**. The feature branch's request model and endpoint behavior are useful reference material, but must be re-authored against current mainline APIs and validated rather than copied wholesale.
+
+## Additional execution-contract findings from the feature reference
+
+The feature reference's payment execution path provides two useful integration behaviors:
+
+- It creates the immutable supplier payment and invoice allocations from an approved payment request in one transaction.
+- It updates the linked `ExpenseRecord` to `PAID` and stores the payment reference only when the invoice becomes fully settled; partially settled invoices remain in the approved payable state. The invoice status similarly remains `MATCHED_APPROVED` until fully settled.
+- Direct payment recording is restricted to a superuser break-glass path; ordinary operators must use request/review/execute. The clean mainline port should retain that restriction only if a direct-entry emergency path is explicitly required; otherwise omit the direct-entry route entirely in the first release.
+
+The feature reference also depends on supplier advances, credit adjustments, supplier suspension, and related helpers. Those capabilities are not part of the current mainline source contract and are deliberately excluded from this source-foundation extraction. The first mainline implementation must calculate invoice outstanding from current invoice total and settled payment allocations only, and must reject any request if the linked AP expense is missing or not `APPROVED`. Do not silently assume advance or credit-note offsets until those ledgers are independently integrated.
+
+Additional port gates:
+
+1. Keep payment request creation under `finance:write`, independent review under `finance:approve`, and execution under `finance:pay`.
+2. Enforce requester/reviewer separation, including rejecting self-approval.
+3. Lock request, vendor, invoice, and linked AP expense rows in deterministic ID order before review/execution; recompute reservations and settled totals inside the transaction.
+4. On execution, create payment + allocations, transition request to `EXECUTED`, update invoice settlement state, and mark linked AP expense `PAID` only when its invoice is fully settled. All state changes commit atomically.
+5. Do not port the feature branch's direct superuser payment endpoint by default. If retained later, document it as an explicit break-glass operation with mandatory reason and audit event.
+6. Keep bank statement imports and bank matching separate from payment execution. A supplier payment record is not evidence that the bank statement line has been reconciled.
