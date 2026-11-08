@@ -561,3 +561,60 @@ class ReconciliationInvestigationEvent(Base):
     actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ReconciliationEscalationPolicy(Base):
+    """Versioned tenant-local escalation rule; currently configuration only."""
+    __tablename__ = "procurement_reconciliation_escalation_policies"
+    __table_args__ = (
+        UniqueConstraint("severity", "trigger", "version", name="uq_recon_escalation_version"),
+        CheckConstraint("severity IN ('LOW','MEDIUM','HIGH','CRITICAL')", name="ck_recon_escalation_severity"),
+        CheckConstraint("trigger IN ('WARNING','BREACHED')", name="ck_recon_escalation_trigger"),
+        CheckConstraint("version >= 1", name="ck_recon_escalation_version_positive"),
+        CheckConstraint("delay_minutes >= 0", name="ck_recon_escalation_delay_nonneg"),
+        Index("uq_recon_escalation_active", "severity", "trigger", unique=True,
+              sqlite_where=text("is_active = 1"),
+              postgresql_where=text("is_active = true")),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    severity: Mapped[str] = mapped_column(String(12), nullable=False)
+    trigger: Mapped[str] = mapped_column(String(12), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    delay_minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    recipient_role_ids: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    channels: Mapped[str] = mapped_column(Text, nullable=False, server_default='["IN_APP"]')
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ReconciliationNotificationPreference(Base):
+    """A user's own notification choice for one event and delivery channel."""
+    __tablename__ = "procurement_reconciliation_notification_preferences"
+    __table_args__ = (
+        UniqueConstraint("user_id", "event_type", "channel", name="uq_recon_notification_preference"),
+        CheckConstraint("event_type IN ('SLA_WARNING','SLA_BREACHED')", name="ck_recon_notification_event"),
+        CheckConstraint("channel IN ('IN_APP','EMAIL','SMS','PUSH')", name="ck_recon_notification_channel"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    channel: Mapped[str] = mapped_column(String(12), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+
+
+class ReconciliationNotificationConfigEvent(Base):
+    """Append-only audit for escalation policy and preference changes."""
+    __tablename__ = "procurement_reconciliation_notification_config_events"
+    __table_args__ = (Index("ix_recon_notification_config_actor_time", "actor_user_id", "occurred_at"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    subject_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    object_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    object_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    details: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
