@@ -91,8 +91,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["requested_by_id"], ["users.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["reviewed_by_id"], ["users.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["executed_payment_id"], ["procurement_supplier_payments.id"], ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(["created_by_id"], ["users.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["updated_by_id"], ["users.id"], ondelete="SET NULL"),
     )
     op.create_index(
         "ix_supplier_payment_request_status_date",
