@@ -581,7 +581,6 @@ def get_reconciliation_finance_dashboard(
         ReconciliationInvestigation.status.in_(active_statuses)
     ).group_by(ReconciliationInvestigation.severity).all())
 
-    resolved = cases.filter(ReconciliationInvestigation.status == "RESOLVED")
     quality_counts = dict(db.query(
         ReconciliationInvestigation.resolution_quality_status,
         func.count(ReconciliationInvestigation.id),
