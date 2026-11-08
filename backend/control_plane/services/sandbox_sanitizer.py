@@ -88,6 +88,7 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "procurement_supplier_payment_bank_matches",
     "procurement_reconciliation_investigations",
     "procurement_reconciliation_investigation_events",
+    "procurement_reconciliation_notification_preferences",
     "procurement_reconciliation_notification_config_events",
     "break_glass_uses",
     "break_glass_grants",
