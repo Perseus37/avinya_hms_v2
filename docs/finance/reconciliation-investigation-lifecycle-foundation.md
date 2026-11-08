@@ -44,3 +44,22 @@ A resolution note is mandatory for RESOLVED; a reason is mandatory for DISMISSED
 ## Migration
 
 `b8d3f6a1c920` follows the clean mainline source foundation `a7c4e9d2f610`. It does not import the diverged feature branch's migration ancestry.
+
+
+## Closure quality and controlled reopening
+
+The follow-on migration `d6a9c2f4e810` adds closure governance without changing the original source-candidate model:
+
+- A resolved/dismissed case records the closing actor; resolved cases start with `NOT_REVIEWED` closure quality.
+- A separate finance approver can mark a resolved closure `APPROVED` or `REJECTED`. The person who resolved the case cannot review that closure.
+- A rejection requires a written review note. The decision, reviewer, timestamp and note are retained on the case and in the append-only event history.
+- A resolved case can be reopened only through the explicit reopen endpoint, with a reason and optimistic version. Reopening moves it to `IN_REVIEW`, increments `reopen_count`, clears the active closure review state and appends a `REOPENED` event containing the prior resolution context.
+- Dismissed cases remain terminal in this slice.
+
+New endpoints:
+
+- `PATCH /api/procurement/reconciliation/investigations/{id}/reopen` (`finance:approve`)
+- `PATCH /api/procurement/reconciliation/investigations/{id}/quality-review` (`finance:approve`)
+- `GET /api/procurement/reconciliation/investigations/quality-summary` (`finance:read`)
+
+The summary is a live aggregate of resolved closure-review states and reopen counts. It is not a monthly frozen report, automated quality score, or inferred root-cause analysis. Evidence-file upload/download remains deferred until private object-storage, malware scanning, retention, and download-audit contracts are confirmed.
