@@ -110,6 +110,9 @@ def test_reconciliation_escalation_evaluator_is_idempotent_and_honors_opt_out(
 
         other_user = db.query(User).filter(User.id != recipient.id).first()
         if other_user is not None:
+            assert list_my_reconciliation_notifications(
+                db=db, actor=other_user
+            )["items"] == []
             try:
                 mark_my_reconciliation_notification_read(
                     notification_id=intent.id, db=db, actor=other_user
