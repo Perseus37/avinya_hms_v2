@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission, validate_pagination
@@ -126,11 +127,15 @@ def create_reconciliation_investigation(
         opened_by_id=current_user.id,
         version=1,
     )
-    db.add(row)
-    db.flush()
-    _append_event(db, row, event_type="OPENED", actor_id=current_user.id,
-                  to_status="OPEN", details={"source_type": row.source_type, "source_id": row.source_id})
-    db.commit()
+    try:
+        db.add(row)
+        db.flush()
+        _append_event(db, row, event_type="OPENED", actor_id=current_user.id,
+                      to_status="OPEN", details={"source_type": row.source_type, "source_id": row.source_id})
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An investigation already exists for this candidate source.") from exc
     db.refresh(row)
     return _case_payload(row)
 
@@ -223,6 +228,8 @@ def transition_reconciliation_investigation(
     row.status = payload.to_status
     if payload.resolution:
         row.resolution = payload.resolution.strip()
+    elif payload.to_status == "DISMISSED" and payload.note:
+        row.resolution = payload.note.strip()
     if payload.root_cause:
         row.root_cause = payload.root_cause.strip()
     if payload.to_status in {"RESOLVED", "DISMISSED"}:
