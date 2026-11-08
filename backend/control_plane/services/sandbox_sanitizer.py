@@ -54,6 +54,7 @@ MASTER_AND_CONFIG_TABLES: frozenset[str] = frozenset({
     "privacy_policy_revisions",
     "privacy_retention_policies",
     "procurement_vendors",
+    "procurement_reconciliation_sla_policies",
     "quality_indicator_benchmarks",
     "report_templates",
     "role_permissions",
