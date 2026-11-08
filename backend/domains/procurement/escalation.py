@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission, get_current_user
-from backend.domains.identity.models import Role, User, UserStatusEnum
+from backend.domains.identity.models import Role, User
 from backend.domains.procurement.models import (
     ReconciliationEscalationPolicy,
     ReconciliationNotificationPreference,
@@ -68,7 +68,7 @@ def create_escalation_policy(
     actor: User = Depends(RequirePermission("finance:approve")),
 ):
     role_ids = sorted(payload.recipient_role_ids)
-    roles = db.query(Role).filter(Role.id.in_(role_ids), Role.is_active.is_(True)).all() if role_ids else []
+    roles = db.query(Role).filter(Role.id.in_(role_ids)).all() if role_ids else []
     if len(roles) != len(role_ids):
         raise HTTPException(status_code=422, detail="One or more recipient roles are invalid or inactive.")
     rows = db.query(ReconciliationEscalationPolicy).filter(
