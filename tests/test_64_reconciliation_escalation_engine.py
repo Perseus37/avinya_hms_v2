@@ -59,12 +59,13 @@ def test_reconciliation_escalation_evaluator_is_idempotent_and_honors_opt_out(
         db.commit()
         first_case_id = first_case.id
 
-        first = evaluate_reconciliation_escalations(db, now=now)
+        first = evaluate_reconciliation_escalations(db, now=now, batch_size=1)
         assert first["created"] == 1
         assert first["duplicates"] == 0
+        assert first["next_after_case_id"] == first_case_id
         db.commit()
 
-        repeated = evaluate_reconciliation_escalations(db, now=now + timedelta(minutes=1))
+        repeated = evaluate_reconciliation_escalations(db, now=now + timedelta(minutes=1), batch_size=1)
         assert repeated["created"] == 0
         assert repeated["duplicates"] == 1
         db.commit()
@@ -91,9 +92,11 @@ def test_reconciliation_escalation_evaluator_is_idempotent_and_honors_opt_out(
         db.commit()
         second_case_id = second_case.id
 
-        opted_out = evaluate_reconciliation_escalations(db, now=now + timedelta(minutes=2))
+        opted_out = evaluate_reconciliation_escalations(
+            db, now=now + timedelta(minutes=2), after_case_id=first_case_id
+        )
         assert opted_out["created"] == 0
-        assert opted_out["opted_out"] == 2
+        assert opted_out["opted_out"] == 1
         db.commit()
 
         assert db.query(ReconciliationNotificationOutbox).filter_by(
