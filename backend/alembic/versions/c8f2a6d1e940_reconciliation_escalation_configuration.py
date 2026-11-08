@@ -85,7 +85,7 @@ def upgrade() -> None:
         """))
     else:
         op.execute(f"""
-            CREATE OR REPLACE FUNCTION prevent_{table}_mutation() RETURNS trigger AS $
+            CREATE OR REPLACE FUNCTION prevent_{table}_mutation() RETURNS trigger AS $$
             BEGIN
                 RAISE EXCEPTION 'Notification configuration audit is append-only';
             END;
