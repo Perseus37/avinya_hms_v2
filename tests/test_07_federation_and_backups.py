@@ -271,7 +271,7 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
     apollo_admin_headers,
     sunrise_admin_headers,
 ):
-    """Audit F-01: EMERGENCY_ALLERGIES_ONLY cannot be bypassed with a caller-controlled token string or another patient's grant."""
+    """Remote emergency disclosure remains disabled until federated requester authorization is verifiable."""
     from datetime import datetime, timezone, timedelta
     from sqlalchemy.orm import Session
     from backend.domains.policies.models import FederationPolicyEnum, HospitalPolicySetting
@@ -378,6 +378,14 @@ def test_08_federation_emergency_requires_patient_bound_break_glass(
         # authorization can all be verified at the source.
         assert resp_grant.status_code == 403
 
+        # A redacted allergy-only envelope cannot be used as a patient import.
+        allergy_only_import = client.post(
+            "/v1/api/federation/patients/import",
+            headers=apollo_admin_headers,
+            json={"active_allergies": []},
+        )
+        assert allergy_only_import.status_code == 422
+
         # Emergency-purpose access is disabled even when the source branch
         # otherwise permits FULL_MESH sharing.
         with Session(apollo_engine) as db:
@@ -472,6 +480,12 @@ def test_09_federation_import_enforces_corporate_group_policy(
         db.commit()
 
     try:
+        denied_discovery = client.get(
+            "/v1/api/federation/patients/discover?abha_number=ABHA-CORP-IMPORT-01&purpose=CONTINUITY_OF_CARE",
+            headers=fed_headers,
+        )
+        assert denied_discovery.status_code == 404
+
         imported = client.post(
             "/v1/api/federation/patients/import",
             headers=superuser_headers,
@@ -494,6 +508,12 @@ def test_09_federation_import_enforces_corporate_group_policy(
             control_db.commit()
         finally:
             control_db.close()
+
+        allowed_discovery = client.get(
+            "/v1/api/federation/patients/discover?abha_number=ABHA-CORP-IMPORT-01&purpose=CONTINUITY_OF_CARE",
+            headers=fed_headers,
+        )
+        assert allowed_discovery.status_code == 200
 
         allowed = client.post(
             "/v1/api/federation/patients/import",
