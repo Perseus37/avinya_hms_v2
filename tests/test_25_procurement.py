@@ -366,6 +366,9 @@ def test_reconciliation_candidate_discovery_classifies_all_source_indicators():
         def limit(self, *_args):
             return self
 
+        def offset(self, *_args):
+            return self
+
         def filter(self, *_args):
             return self
 
