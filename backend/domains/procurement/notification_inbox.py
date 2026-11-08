@@ -41,11 +41,15 @@ def _notification_view(row: ReconciliationNotificationOutbox) -> dict:
 @router.get("/reconciliation/notifications/me")
 def list_my_reconciliation_notifications(
     unread_only: bool = False,
-    before_id: int | None = Query(default=None, gt=0),
-    limit: int = Query(default=30, ge=1, le=100),
+    before_id: int | None = None,
+    limit: int = 30,
     db: Session = Depends(get_db),
     actor: User = Depends(get_current_user),
 ):
+    if before_id is not None and before_id <= 0:
+        raise HTTPException(status_code=422, detail="before_id must be positive.")
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100.")
     base = db.query(ReconciliationNotificationOutbox).filter(
         ReconciliationNotificationOutbox.recipient_user_id == actor.id,
         ReconciliationNotificationOutbox.channel == "IN_APP",
