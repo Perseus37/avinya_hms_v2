@@ -94,3 +94,37 @@ Federation security changes must preserve:
 - branch/database isolation;
 - tenant-bound federation credential registration;
 - import idempotency and rollback on local database failure.
+
+## Patient deactivation, erasure, and immutable audit retention
+
+### Current behavior (not statutory erasure)
+
+- `DELETE /api/patients/{patient_id}` is a soft-deactivation operation: it sets `Patient.is_active=false` and removes the matching `GlobalPatientPointer` from the central discovery index.
+- It does not delete the patient row, clinical records, or federation transfer history. The response therefore says "deactivated and removed from the Central Discovery Index"; it must not imply that all copies or personal data have been erased.
+- `FederationTransferLog.patient_id` currently has `ON DELETE RESTRICT`, and PostgreSQL prevents updates/deletes to transfer-log rows. This prevents silent audit destruction, but it also means a patient row referenced by a transfer log cannot be hard-deleted.
+- The current transfer log still has a direct patient-row reference. It is therefore **not pseudonymized** merely because ABHA values in `requested_identifier` are fingerprinted.
+
+### Required governed erasure workflow (not implemented)
+
+A future erasure request must be evaluated by an authorized privacy/data-protection officer against the applicable jurisdiction, record category, statutory/clinical retention duties, legal holds, active disputes, and contractual obligations. No universal retention duration or automatic erasure rule is assumed here.
+
+The workflow must distinguish at least:
+
+1. **Access restriction / deactivation:** immediately prevent routine discovery and new use where legally permitted; revoke or remove central discovery pointers and federation eligibility.
+2. **Retention hold:** preserve records that must remain for statutory, clinical, safety, audit, litigation, or other documented lawful purposes, with a recorded legal basis, scope, owner, and review date.
+3. **Erasure approval:** require an explicit decision and evidence of authority; do not translate a request directly into a database cascade.
+4. **Minimization / pseudonymization:** where retention of an audit event is required but direct identity is not, migrate the audit design to a non-reversible subject reference that is not a patient-table foreign key. Keep any re-identification mapping separately protected and access-controlled only where a lawful need exists.
+5. **Execution and verification:** apply approved actions consistently to tenant databases, central discovery/index data, caches, exports, backups, and connected processors; record per-system outcomes and failures without copying unnecessary patient identifiers into the erasure register.
+6. **Exceptions and review:** document partial refusal/deferment, legal basis, data categories retained, expiry/review trigger, approver, and the user's response/appeal route where required.
+
+### Engineering release gates before implementing hard erasure
+
+- Design a versioned retention schedule by record category and jurisdiction with named data controller/processor responsibilities. Legal/compliance owners must approve the schedule; engineering must not invent retention periods.
+- Replace the direct immutable-log FK with a stable, non-identifying subject reference before any patient hard-delete path is enabled. Existing audit rows need a controlled backfill and verification plan.
+- Preserve tamper evidence without freezing direct identifiers forever: immutable event payloads should contain only necessary minimized fields; subject-reference rotation or key destruction must not corrupt audit integrity.
+- Define how clinical records, invoices, prescriptions, lab results, consent, ABHA mappings, and legal holds interact with erasure; federation logs are only one dependency.
+- Define backup expiry/rewrite semantics and a verified restore procedure that reapplies completed erasure/tombstone instructions before restored data becomes available.
+- Add an auditable request state machine, dual-control approval for exceptional hard deletion, idempotent execution, retry/reconciliation, and tests proving no cross-tenant effects.
+- Until these controls and the legal schedule are approved, retain the existing soft-deactivation path and keep hard deletion disabled for patients with immutable audit references.
+
+This section is an engineering control design, not legal advice and not evidence that statutory erasure is currently supported.
