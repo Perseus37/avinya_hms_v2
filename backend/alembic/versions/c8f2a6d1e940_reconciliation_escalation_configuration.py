@@ -89,7 +89,7 @@ def upgrade() -> None:
             BEGIN
                 RAISE EXCEPTION 'Notification configuration audit is append-only';
             END;
-            $ LANGUAGE plpgsql
+            $$ LANGUAGE plpgsql
         """)
         op.execute(sa.text(f"""
             CREATE TRIGGER trg_{table}_immutable BEFORE UPDATE OR DELETE ON {table}
