@@ -497,11 +497,37 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     )
     assert stale.status_code == 409
 
+    self_review = client.patch(
+        f"/v1/api/procurement/reconciliation/investigations/{case['id']}/quality-review",
+        headers=superuser_headers,
+        json={"decision": "APPROVED", "expected_version": 3, "note": "Self-review must be blocked."},
+    )
+    assert self_review.status_code == 403
+
+    reopened = client.patch(
+        f"/v1/api/procurement/reconciliation/investigations/{case['id']}/reopen",
+        headers=superuser_headers,
+        json={"expected_version": 3, "reason": "New bank evidence contradicts the recorded resolution."},
+    )
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["status"] == "IN_REVIEW"
+    assert reopened.json()["version"] == 4
+    assert reopened.json()["reopen_count"] == 1
+    assert reopened.json()["resolved_at"] is None
+
+    quality = client.get(
+        "/v1/api/procurement/reconciliation/investigations/quality-summary",
+        headers=superuser_headers,
+    )
+    assert quality.status_code == 200, quality.text
+    assert quality.json()["reopened_count"] >= 1
+    assert quality.json()["closure_quality"]["not_reviewed"] >= 1
+
     events = client.get(
         f"/v1/api/procurement/reconciliation/investigations/{case['id']}/events",
         headers=superuser_headers,
     )
     assert events.status_code == 200, events.text
     assert [event["event_type"] for event in events.json()] == [
-        "OPENED", "STATUS_CHANGED", "STATUS_CHANGED"
+        "OPENED", "STATUS_CHANGED", "STATUS_CHANGED", "REOPENED"
     ]
