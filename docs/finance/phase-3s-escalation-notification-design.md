@@ -1,7 +1,7 @@
 # Phase 3S — Escalation Rules and Notification Preferences
 
 ## Status
-Stage 1 implementation baseline. Policy and preference configuration APIs are implemented; evaluation, outbox creation, and dispatch are not implemented or enabled.
+Stages 1–2 are implemented: versioned policy/preferences, idempotent SLA evaluation, and durable tenant-local in-app outbox intents. Stage 3 adds a recipient-scoped inbox read API and read acknowledgement. No background delivery worker or external provider is enabled.
 
 ## Goals
 1. Configure severity- and SLA-state-based escalation rules without hardcoded recipient identities.
@@ -30,7 +30,9 @@ The evaluator records a trigger observation once per case, trigger, and policy v
 - GET /reconciliation/escalation-policies — finance reader lists policy history.
 - PUT /reconciliation/notification-preferences/me — authenticated user updates their own preferences; no administrator may silently opt a user into external channels.
 - GET /reconciliation/notification-preferences/me — authenticated user reads their preferences.
-- GET /reconciliation/notification-outbox — finance reader sees operational counts and safe metadata only; provider payload and secrets are never exposed.
+- GET /reconciliation/notifications/me — authenticated user sees only their own in-app notifications, with bounded cursor pagination and unread count.
+- PATCH /reconciliation/notifications/me/{notification_id}/read — recipient-only, idempotent read acknowledgement; another user's IDs return 404.
+- The inbox returns only notification ID, investigation ID, event type, severity, timestamps and read state. It never returns raw payload, idempotency key, policy internals, bank data, or investigation narrative.
 - Worker/evaluator functions are internal service entry points, not public tenant API endpoints.
 Exact route paths and permission names must be reconciled with the existing authorization contract before implementation.
 
@@ -63,7 +65,8 @@ Exact route paths and permission names must be reconciled with the existing auth
 ## Delivery stages
 1. **Implemented and validated separately:** schema, versioned policy APIs, self-service preference APIs, append-only configuration audit, sandbox purge handling. Only IN_APP is currently configurable; external channels are rejected.
 2. **Implemented in this branch; validation pending:** an internal `evaluate_reconciliation_escalations(db, now, batch_size)` service evaluates open cases against their immutable SLA snapshots, applies the active severity/trigger policy delay, resolves active tenant-local role members, honors in-app opt-outs, and inserts minimal durable outbox intents. A unique database idempotency key prevents duplicate case/trigger/policy-version/recipient/channel intents across repeated or concurrent runs. The evaluator owns no transaction commit; its caller commits. It performs no provider calls and is not exposed as an HTTP route. Warning intents are not emitted after the case has breached. Evaluation is cursor-paginated by investigation ID (`after_case_id` / `next_after_case_id`) so large tenants can drain bounded batches without repeatedly scanning only the oldest cases. No recipients means no intent; later evaluations can discover newly assigned active role members.
-3. In-app delivery adapter and read surface, including dispatch-time revalidation of case status, user activity, and current preference.
-4. External provider adapters only after secrets, consent/opt-out, rate limits, retry, and operational ownership are approved.
+3. **Implemented in this branch; validation pending:** recipient-scoped in-app inbox read API with bounded ID cursor pagination, unread count, minimal allow-listed response metadata, idempotent read acknowledgement, and 404 behavior that prevents cross-recipient ID probing. A notification is not marked delivered merely because it was listed; read state is tracked separately.
+4. Delivery worker/lease/retry lifecycle remains deferred. Before any dispatch worker is enabled, it must recheck investigation state, recipient activity, current preference, and policy eligibility immediately before delivery.
+5. External provider adapters only after secrets, consent/opt-out, rate limits, retry, and operational ownership are approved.
 
 No external notification channel should be enabled by the schema-only or evaluator-only stages.
