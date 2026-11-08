@@ -334,7 +334,7 @@ class SupplierPayment(AuditMixin, Base):
     payment_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    recorded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    recorded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
     allocations: Mapped[List["SupplierPaymentAllocation"]] = relationship(back_populates="payment")
 
 
@@ -373,9 +373,9 @@ class SupplierPaymentRequest(AuditMixin, Base):
     amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
-    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True)
     reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     executed_payment_id: Mapped[Optional[int]] = mapped_column(
