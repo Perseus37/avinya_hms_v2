@@ -7,6 +7,7 @@ as income or matched automatically.
 """
 from datetime import date, datetime, timezone
 from typing import List, Optional
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -22,6 +23,7 @@ from backend.domains.procurement.models import (
     BankStatementLine,
     SupplierPayment,
     SupplierPaymentBankMatch,
+    SupplierPaymentRequest,
 )
 
 router = APIRouter()
@@ -57,6 +59,10 @@ class BankStatementImport(BaseModel):
 
     @model_validator(mode="after")
     def validate_statement(self):
+        if self.account_key.strip().isdigit():
+            raise ValueError("account_key must be an opaque alias, not a numeric account number.")
+        if self.account_label and __import__("re").search(r"\\d{8,}", self.account_label):
+            raise ValueError("account_label must be masked and cannot contain an unmasked account-number-like sequence.")
         if self.period_end < self.period_start:
             raise ValueError("Statement period end cannot precede its start.")
         if not self.statement_reference.strip():
@@ -334,4 +340,108 @@ def list_bank_statement_line_matches(
         "line_amount_paise": line.amount_paise,
         "matched_amount_paise": matched,
         "remaining_amount_paise": line.amount_paise - matched,
+    }
+
+
+
+@router.get("/reconciliation/candidates", response_model=dict)
+def list_reconciliation_candidates(
+    as_of: date = Query(default_factory=date.today),
+    limit: int = Query(default=500, ge=1, le=2000),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    """Return deterministic source-data candidates for human reconciliation review.
+
+    These are indicators only: no candidate is a fraud finding, accounting
+    classification, or automatically created/closed investigation.
+    """
+    candidates = []
+    source_cap = 5001
+
+    lines = db.query(BankStatementLine).order_by(BankStatementLine.id).limit(source_cap).all()
+    line_matches = dict(
+        db.query(
+            SupplierPaymentBankMatch.statement_line_id,
+            func.coalesce(func.sum(SupplierPaymentBankMatch.amount_paise), 0),
+        ).group_by(SupplierPaymentBankMatch.statement_line_id).all()
+    )
+    for line in lines:
+        matched = int(line_matches.get(line.id, 0) or 0)
+        if line.direction == "CREDIT":
+            candidates.append({
+                "candidate_type": "UNCLASSIFIED_BANK_CREDIT",
+                "source_id": line.id,
+                "transaction_date": line.transaction_date.isoformat(),
+                "amount_paise": int(line.amount_paise),
+                "reference": line.bank_reference or line.bank_transaction_id,
+                "review_note": "Credit requires manual accounting classification; this system does not infer income.",
+            })
+        elif matched < int(line.amount_paise):
+            candidates.append({
+                "candidate_type": "UNMATCHED_BANK_DEBIT" if matched == 0 else "PARTIALLY_MATCHED_BANK_DEBIT",
+                "source_id": line.id,
+                "transaction_date": line.transaction_date.isoformat(),
+                "amount_paise": int(line.amount_paise),
+                "matched_amount_paise": matched,
+                "remaining_amount_paise": int(line.amount_paise) - matched,
+                "reference": line.bank_reference or line.bank_transaction_id,
+            })
+
+    payments = db.query(SupplierPayment).order_by(SupplierPayment.id).limit(source_cap).all()
+    payment_matches = dict(
+        db.query(
+            SupplierPaymentBankMatch.supplier_payment_id,
+            func.coalesce(func.sum(SupplierPaymentBankMatch.amount_paise), 0),
+        ).group_by(SupplierPaymentBankMatch.supplier_payment_id).all()
+    )
+    reference_groups = defaultdict(list)
+    for payment in payments:
+        matched = int(payment_matches.get(payment.id, 0) or 0)
+        if matched < int(payment.amount_paise):
+            candidates.append({
+                "candidate_type": "UNRECONCILED_SUPPLIER_PAYMENT" if matched == 0 else "PARTIALLY_RECONCILED_SUPPLIER_PAYMENT",
+                "source_id": payment.id,
+                "transaction_date": payment.payment_date.date().isoformat(),
+                "amount_paise": int(payment.amount_paise),
+                "matched_amount_paise": matched,
+                "remaining_amount_paise": int(payment.amount_paise) - matched,
+                "reference": payment.payment_reference,
+                "vendor_id": payment.vendor_id,
+            })
+        normalized = "".join(payment.payment_reference.casefold().split())
+        reference_groups[(payment.vendor_id, normalized)].append(payment)
+    for (vendor_id, normalized_reference), group in reference_groups.items():
+        if normalized_reference and len(group) > 1:
+            candidates.append({
+                "candidate_type": "POSSIBLE_DUPLICATE_PAYMENT_REFERENCE",
+                "source_ids": [row.id for row in group],
+                "vendor_id": vendor_id,
+                "reference": group[0].payment_reference,
+                "review_note": "Normalized reference collision only; manual review required and no duplicate/fraud conclusion is made.",
+            })
+
+    overdue = db.query(SupplierPaymentRequest).filter(
+        SupplierPaymentRequest.status == "APPROVED",
+        SupplierPaymentRequest.scheduled_date < as_of,
+        SupplierPaymentRequest.executed_payment_id.is_(None),
+    ).order_by(SupplierPaymentRequest.scheduled_date, SupplierPaymentRequest.id).limit(source_cap).all()
+    for request_row in overdue:
+        candidates.append({
+            "candidate_type": "OVERDUE_APPROVED_PAYMENT_REQUEST",
+            "source_id": request_row.id,
+            "scheduled_date": request_row.scheduled_date.isoformat(),
+            "amount_paise": int(request_row.amount_paise),
+            "reference": request_row.payment_reference,
+            "vendor_id": request_row.vendor_id,
+        })
+
+    candidates.sort(key=lambda row: (row["candidate_type"], row.get("transaction_date", row.get("scheduled_date", "")), row.get("source_id", 0)))
+    return {
+        "items": candidates[:limit],
+        "total_candidates": len(candidates),
+        "limit": limit,
+        "truncated": len(lines) == source_cap or len(payments) == source_cap or len(overdue) == source_cap or len(candidates) > limit,
+        "as_of": as_of.isoformat(),
+        "disclaimer": "Candidates are review prompts, not fraud findings or accounting conclusions.",
     }
