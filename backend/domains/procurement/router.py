@@ -968,3 +968,5 @@ from backend.domains.procurement.escalation import router as reconciliation_esca
 
 router.include_router(reconciliation_investigations_router)
 router.include_router(reconciliation_escalation_router)
+from backend.domains.procurement.notification_inbox import router as reconciliation_notification_inbox_router
+router.include_router(reconciliation_notification_inbox_router)
