@@ -623,3 +623,36 @@ class ReconciliationNotificationConfigEvent(Base):
     object_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     details: Mapped[str] = mapped_column(Text, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ReconciliationNotificationOutbox(Base):
+    """Durable, tenant-local in-app notification intent; delivery is a later stage."""
+    __tablename__ = "procurement_reconciliation_notification_outbox"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_recon_notification_outbox_idempotency"),
+        CheckConstraint("event_type IN ('SLA_WARNING','SLA_BREACHED')", name="ck_recon_outbox_event"),
+        CheckConstraint("channel = 'IN_APP'", name="ck_recon_outbox_channel"),
+        CheckConstraint("status = 'PENDING'", name="ck_recon_outbox_status"),
+        Index("ix_recon_outbox_recipient_created", "recipient_user_id", "created_at"),
+        Index("ix_recon_outbox_investigation", "investigation_id"),
+        Index("ix_recon_outbox_policy", "policy_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    idempotency_key: Mapped[str] = mapped_column(String(220), nullable=False)
+    investigation_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_reconciliation_investigations.id", ondelete="RESTRICT"), nullable=False
+    )
+    policy_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_reconciliation_escalation_policies.id", ondelete="RESTRICT"), nullable=False
+    )
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    recipient_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    channel: Mapped[str] = mapped_column(String(12), nullable=False, server_default="IN_APP")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="PENDING")
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
