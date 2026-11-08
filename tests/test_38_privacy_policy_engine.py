@@ -131,6 +131,8 @@ NON_PATIENT_OR_DEFERRED_GET_ROUTES = {
     "/api/procurement/reconciliation/candidates",
     "/api/procurement/reconciliation/sla-policies",
     "/api/procurement/reconciliation/sla-summary",
+    "/api/procurement/reconciliation/escalation-policies",
+    "/api/procurement/reconciliation/notification-preferences/me",
     "/api/procurement/reconciliation/investigations",
     "/api/procurement/reconciliation/investigations/{investigation_id}/events",
     "/api/procurement/reconciliation/investigations/quality-summary",
