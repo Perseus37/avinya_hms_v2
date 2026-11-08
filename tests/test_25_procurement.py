@@ -215,3 +215,63 @@ def test_supplier_invoice_cannot_be_paid_through_generic_expense_endpoint():
 
     assert error.value.status_code == 409
     assert "supplier payment request" in error.value.detail.lower()
+
+def test_bank_statement_contract_requires_balanced_period_and_unique_transactions():
+    import pytest
+    from pydantic import ValidationError
+    from backend.domains.procurement.bank_reconciliation import BankStatementImport
+
+    valid = {
+        "account_key": "OPERATING-01",
+        "account_label": "Main operating account",
+        "statement_reference": "STMT-2026-11",
+        "period_start": "2026-11-01",
+        "period_end": "2026-11-30",
+        "opening_balance_paise": 10000,
+        "closing_balance_paise": 9000,
+        "lines": [
+            {
+                "bank_transaction_id": "TXN-001",
+                "transaction_date": "2026-11-03",
+                "direction": "DEBIT",
+                "amount_paise": 3000,
+                "description": "Supplier transfer",
+            },
+            {
+                "bank_transaction_id": "TXN-002",
+                "transaction_date": "2026-11-04",
+                "direction": "CREDIT",
+                "amount_paise": 2000,
+                "description": "Bank credit",
+            },
+        ],
+    }
+    payload = BankStatementImport.model_validate(valid)
+    assert payload.opening_balance_paise + 2000 - 3000 == payload.closing_balance_paise
+
+    bad_balance = {**valid, "closing_balance_paise": 9500}
+    with pytest.raises(ValidationError):
+        BankStatementImport.model_validate(bad_balance)
+
+    duplicate = {
+        **valid,
+        "lines": [valid["lines"][0], {**valid["lines"][1], "bank_transaction_id": "TXN-001"}],
+    }
+    with pytest.raises(ValidationError):
+        BankStatementImport.model_validate(duplicate)
+
+    outside_period = {
+        **valid,
+        "lines": [{**valid["lines"][0], "transaction_date": "2026-12-01"}],
+    }
+    with pytest.raises(ValidationError):
+        BankStatementImport.model_validate(outside_period)
+
+
+def test_bank_statement_import_route_is_registered(client, superuser_headers):
+    response = client.get(
+        "/v1/api/procurement/bank-statements",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert {"items", "total", "page", "page_size"} <= set(response.json())
