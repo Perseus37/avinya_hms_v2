@@ -282,3 +282,39 @@ def test_bank_statement_import_route_is_registered(client, superuser_headers):
     )
     assert payments.status_code == 200, payments.text
     assert {"items", "total", "page", "page_size"} <= set(payments.json())
+
+
+def test_bank_statement_contract_rejects_numeric_account_alias_and_unmasked_label():
+    import pytest
+    from pydantic import ValidationError
+    from backend.domains.procurement.bank_reconciliation import BankStatementImport
+
+    valid = {
+        "account_key": "OPERATING-01",
+        "statement_reference": "STMT-SECURITY-01",
+        "period_start": "2026-11-01",
+        "period_end": "2026-11-30",
+        "opening_balance_paise": 1000,
+        "closing_balance_paise": 1000,
+        "lines": [{
+            "bank_transaction_id": "TXN-SECURITY-01",
+            "transaction_date": "2026-11-03",
+            "direction": "DEBIT",
+            "amount_paise": 100,
+        }],
+    }
+    with pytest.raises(ValidationError):
+        BankStatementImport.model_validate({**valid, "account_key": "123456789012"})
+    with pytest.raises(ValidationError):
+        BankStatementImport.model_validate({**valid, "account_label": "Account 123456789012"})
+
+
+def test_reconciliation_candidate_endpoint_is_registered(client, superuser_headers):
+    response = client.get(
+        "/v1/api/procurement/reconciliation/candidates?as_of=2026-11-08&limit=100",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert {"items", "total_candidates", "limit", "truncated", "as_of", "disclaimer"} <= set(body)
+    assert body["as_of"] == "2026-11-08"
