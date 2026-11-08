@@ -31,7 +31,7 @@ class EscalationPolicyCreate(BaseModel):
     enabled: bool = False
     delay_minutes: int = Field(default=0, ge=0, le=525600)
     recipient_role_ids: list[int] = Field(default_factory=list, max_length=30)
-    channels: list[Literal["IN_APP", "EMAIL", "SMS", "PUSH"]] = Field(default_factory=lambda: ["IN_APP"])
+    channels: list[Literal["IN_APP", "EMAIL", "SMS", "PUSH"]] = Field(default_factory=lambda: ["IN_APP"], min_length=1, max_length=1)
 
     @model_validator(mode="after")
     def validate_channels(self):
