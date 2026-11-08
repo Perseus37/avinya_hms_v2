@@ -8,6 +8,7 @@ from sqlalchemy import select
 from backend.core.database import get_db
 from backend.core.dependencies import RequirePermission
 from backend.domains.identity.models import User
+from backend.domains.procurement.models import VendorInvoice
 from backend.domains.finance.models import (
     ExpenseCategoryEnum,
     ExpenseRecord,
@@ -86,7 +87,16 @@ def mark_expense_paid(
     expense = db.get(ExpenseRecord, expense_id)
     if not expense or expense.status != ExpenseStatusEnum.APPROVED:
         raise HTTPException(status_code=400, detail="Only APPROVED expenses can be paid.")
-    
+
+    supplier_invoice = db.query(VendorInvoice.id).filter(
+        VendorInvoice.linked_expense_id == expense.id
+    ).first()
+    if supplier_invoice:
+        raise HTTPException(
+            status_code=409,
+            detail="Supplier invoice payables must be settled through the supplier payment request approval and execution workflow.",
+        )
+
     expense.status = ExpenseStatusEnum.PAID
     expense.receipt_reference = receipt_reference
     expense.updated_by_id = current_user.id
