@@ -1,4 +1,3 @@
-import re
 import hashlib
 from datetime import datetime, timezone
 import secrets
@@ -278,6 +277,17 @@ def discover_and_aggregate_patient_across_branches(
     if not phone_number and not abha_number:
         raise HTTPException(status_code=400, detail="Provide either phone_number or abha_number.")
 
+    # Remote emergency disclosure is disabled until the source can validate a
+    # node-bound, purpose/scope-bound capability and a verifiable human actor
+    # assertion. A local BreakGlassGrant ID alone is not a federation credential.
+    if purpose.strip().upper() in {
+        "EMERGENCY", "EMERGENCY_CARE", "EMERGENCY_TREATMENT", "EMERGENCY_ADMISSION"
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Remote emergency federation is disabled pending verified requester authorization.",
+        )
+
     stmt = select(GlobalPatientPointer)
     if abha_number:
         stmt = stmt.where(GlobalPatientPointer.abha_number == abha_number)
@@ -312,6 +322,14 @@ def discover_and_aggregate_patient_across_branches(
         )
     ).scalars().all()
     branch_to_db = {reg.branch_code: reg.db_name for reg in tenant_regs}
+    branch_to_group = {reg.branch_code: reg.corporate_group_id for reg in tenant_regs}
+    calling_registry = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.branch_code == calling_node.branch_code,
+            TenantRegistry.is_active.is_(True),
+        )
+    ).scalar_one_or_none()
+    calling_group_id = calling_registry.corporate_group_id if calling_registry else None
 
     def _fetch_branch_data(ptr, branch_db_name: Optional[str]):
         if not branch_db_name:
@@ -325,10 +343,14 @@ def discover_and_aggregate_patient_across_branches(
             if policy.federation_sharing_mode == FederationPolicyEnum.ISOLATED_SILO:
                 return None
             if policy.federation_sharing_mode == FederationPolicyEnum.CORPORATE_GROUP_ONLY:
-                # F-09: Robust corporate group matching across hyphen and underscore delimiters
-                calling_group = re.split(r"[-_]", calling_node.branch_code)[0].strip().upper()
-                target_group = re.split(r"[-_]", ptr.branch_code)[0].strip().upper()
-                if target_group != calling_group:
+                # Group membership is an explicit control-plane authorization attribute.
+                # Missing assignments fail closed; branch-code naming is never trusted.
+                target_group_id = branch_to_group.get(ptr.branch_code)
+                if (
+                    not calling_group_id
+                    or not target_group_id
+                    or target_group_id != calling_group_id
+                ):
                     return None
             emergency_purpose = purpose.strip().upper() in {
                 "EMERGENCY", "EMERGENCY_CARE", "EMERGENCY_TREATMENT", "EMERGENCY_ADMISSION"
@@ -550,9 +572,21 @@ def import_federated_patient_locally(
         }:
             raise HTTPException(status_code=403, detail="Source branch policy does not permit demographic import.")
         if source_policy.federation_sharing_mode == FederationPolicyEnum.CORPORATE_GROUP_ONLY:
-            source_group = re.split(r"[-_]", source_pointer.branch_code)[0].strip().upper()
-            destination_group = re.split(r"[-_]", tenant.branch_code)[0].strip().upper()
-            if source_group != destination_group:
+            destination_registry = control_db.execute(
+                select(TenantRegistry).where(
+                    TenantRegistry.branch_code == tenant.branch_code,
+                    TenantRegistry.is_active.is_(True),
+                )
+            ).scalar_one_or_none()
+            source_group_id = source_registry.corporate_group_id
+            destination_group_id = (
+                destination_registry.corporate_group_id if destination_registry else None
+            )
+            if (
+                not source_group_id
+                or not destination_group_id
+                or source_group_id != destination_group_id
+            ):
                 raise HTTPException(
                     status_code=403,
                     detail="Source branch policy does not permit cross-group demographic import.",
