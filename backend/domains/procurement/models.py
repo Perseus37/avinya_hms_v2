@@ -406,8 +406,6 @@ class BankStatementBatch(Base):
     __table_args__ = (
         UniqueConstraint("account_key", "statement_reference", name="uq_bank_statement_account_reference"),
         CheckConstraint("period_end >= period_start", name="ck_bank_statement_period_valid"),
-        CheckConstraint("opening_balance_paise >= 0", name="ck_bank_statement_opening_nonnegative"),
-        CheckConstraint("closing_balance_paise >= 0", name="ck_bank_statement_closing_nonnegative"),
         Index("ix_bank_statement_period", "period_start", "period_end"),
         Index("ix_bank_statement_imported_by", "imported_by_id"),
     )
