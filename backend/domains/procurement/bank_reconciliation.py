@@ -8,6 +8,7 @@ as income or matched automatically.
 from datetime import date, datetime, timezone
 from typing import List, Optional
 from collections import defaultdict
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -61,7 +62,7 @@ class BankStatementImport(BaseModel):
     def validate_statement(self):
         if self.account_key.strip().isdigit():
             raise ValueError("account_key must be an opaque alias, not a numeric account number.")
-        if self.account_label and __import__("re").search(r"\\d{8,}", self.account_label):
+        if self.account_label and re.search(r"\\d{8,}", self.account_label):
             raise ValueError("account_label must be masked and cannot contain an unmasked account-number-like sequence.")
         if self.period_end < self.period_start:
             raise ValueError("Statement period end cannot precede its start.")
@@ -346,7 +347,7 @@ def list_bank_statement_line_matches(
 
 @router.get("/reconciliation/candidates", response_model=dict)
 def list_reconciliation_candidates(
-    as_of: date = Query(default_factory=date.today),
+    as_of: Optional[date] = Query(default=None),
     limit: int = Query(default=500, ge=1, le=2000),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
@@ -356,6 +357,7 @@ def list_reconciliation_candidates(
     These are indicators only: no candidate is a fraud finding, accounting
     classification, or automatically created/closed investigation.
     """
+    as_of = as_of or date.today()
     candidates = []
     source_cap = 5001
 
