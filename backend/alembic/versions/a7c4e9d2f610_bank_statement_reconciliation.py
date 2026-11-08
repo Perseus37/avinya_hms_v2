@@ -33,8 +33,6 @@ def upgrade() -> None:
         sa.Column("imported_by_id", sa.Integer(), nullable=False),
         sa.Column("imported_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.CheckConstraint("period_end >= period_start", name="ck_bank_statement_period_valid"),
-        sa.CheckConstraint("opening_balance_paise >= 0", name="ck_bank_statement_opening_nonnegative"),
-        sa.CheckConstraint("closing_balance_paise >= 0", name="ck_bank_statement_closing_nonnegative"),
         sa.UniqueConstraint("account_key", "statement_reference", name="uq_bank_statement_account_reference"),
         sa.ForeignKeyConstraint(["imported_by_id"], ["users.id"], ondelete="RESTRICT"),
     )
