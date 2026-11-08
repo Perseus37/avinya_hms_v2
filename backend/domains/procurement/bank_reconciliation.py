@@ -366,7 +366,9 @@ def list_reconciliation_candidates(
     source_cap = 1000
     source_offset = 0
     candidate_offset = 0
-    if cursor:
+    # Direct unit callers may see FastAPI's Query sentinel as the Python default.
+    # Only decode an actual cursor string; HTTP requests supply str or None.
+    if isinstance(cursor, str) and cursor:
         try:
             decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
             source_offset = int(decoded["source_offset"])
