@@ -18,15 +18,17 @@ For the current topology, registered branch identities are sourced from the cont
 
 ## Emergency federation
 
-`EMERGENCY_ALLERGIES_ONLY` is intentionally fail-closed.
+**Remote emergency disclosure is currently disabled for every federation sharing mode**, including `EMERGENCY_ALLERGIES_ONLY` and `FULL_MESH`. The discovery endpoint returns `403` for emergency purposes before reading patient records. This is a deliberate fail-closed control, not a temporary test limitation.
 
-- `purpose=EMERGENCY` is not authorization by itself.
-- A caller-controlled string such as `EMERGENCY-*` is not a valid credential.
-- A `BreakGlassGrant` must exist in the source branch database.
-- The grant must be unexpired and bound to the exact source patient being disclosed.
-- The existing privacy data-use decision is still evaluated after emergency authorization.
+A source-local `BreakGlassGrant` ID is not a federated credential. The existing local break-glass workflow remains available inside the source tenant, but it does not authorize a remote node. Re-enabling remote emergency disclosure requires all of the following in a separately reviewed implementation:
 
-A future interoperable emergency token must be cryptographically verifiable and explicitly bound to the requesting branch, source patient, purpose, expiry, and issuer. It must not be implemented as a prefix or length check.
+- Source-issued grant bound to the exact patient, authenticated requesting node/branch, explicit emergency purpose, and minimum permitted data scope.
+- Source-side expiry and revocation checks, plus atomic one-time consumption/replay protection before disclosure.
+- A verifiable requester identity assertion if the workflow is intended to attribute access to a human clinician. An API key authenticates a node/service, not an individual clinician.
+- Source-local audit of the authenticated node, verified actor assertion (when present), grant, purpose, scope, outcome, and correlation/request identifier.
+- Privacy opt-out and tenant data-use policy checks remain mandatory.
+
+No caller-controlled token prefix, raw grant ID, or unverified actor header may substitute for those controls.
 
 ## Import integrity
 
@@ -48,6 +50,12 @@ The import path therefore:
 The two databases cannot share one atomic transaction. The ordering therefore guarantees that a successful local import cannot exist without a prior durable source-side request record. If the later local commit fails, the source log remains an accurate record of an authorized import request/attempt, not proof that the destination clone completed. The explicit `REQUESTED` purpose avoids overstating the event. Retries can produce additional request events; the destination patient identity check still prevents duplicate local patient creation.
 
 This is intentionally a two-read workflow: discovery provides a point-in-time transfer candidate, while import revalidates the source of truth before creating the local clone.
+
+## Corporate group authorization
+
+`CORPORATE_GROUP_ONLY` uses `TenantRegistry.corporate_group_id` in the central control-plane database. The value is an explicit trusted authorization attribute; branch-code prefixes, delimiters, naming conventions, and hospital names are never used to infer group membership.
+
+The field is nullable for migration compatibility. A missing group assignment on either the authenticated requesting branch or source branch denies discovery/import. Existing tenants must be assigned by a trusted control-plane operator before corporate-group federation can work. The group identifier is not populated from tenant-supplied branch registration requests.
 
 ## Tenant and branch isolation
 
