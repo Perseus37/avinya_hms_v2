@@ -61,4 +61,4 @@ The migration adds unique identities, amount/direction/period constraints, forei
 
 ## Verification gate
 
-The required release workflow must pass on the final commit, including the full Python suite and PostgreSQL 17 migration parity. Until then this implementation remains unverified and the pull request remains draft.
+The first source-foundation commit passed the full release-gate workflow on 2026-11-08 (run #42466479589). The subsequent candidate-discovery and import-validation commits still require a fresh full workflow on the final head. The pull request remains draft pending that verification and independent review.
