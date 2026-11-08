@@ -25,10 +25,12 @@ def upgrade() -> None:
     op.create_check_constraint("ck_recon_investigation_reopen_count_nonneg", table, "reopen_count >= 0")
     op.create_check_constraint("ck_recon_investigation_quality_status", table, "resolution_quality_status IN ('NOT_REVIEWED','APPROVED','REJECTED')")
     op.create_index("ix_recon_investigation_closed_by", table, ["closed_by_id"])
+    op.create_index("ix_recon_investigation_quality_reviewer", table, ["resolution_quality_reviewed_by_id"])
 
 
 def downgrade() -> None:
     table = "procurement_reconciliation_investigations"
+    op.drop_index("ix_recon_investigation_quality_reviewer", table_name=table)
     op.drop_index("ix_recon_investigation_closed_by", table_name=table)
     op.drop_constraint("ck_recon_investigation_quality_status", table, type_="check")
     op.drop_constraint("ck_recon_investigation_reopen_count_nonneg", table, type_="check")
