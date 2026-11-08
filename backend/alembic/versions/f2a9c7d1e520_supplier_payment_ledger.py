@@ -116,9 +116,62 @@ def upgrade() -> None:
         "procurement_supplier_payment_request_allocations",
         ["invoice_id"],
     )
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.execute("""
+            CREATE OR REPLACE FUNCTION prevent_supplier_payment_mutation()
+            RETURNS trigger AS $
+            BEGIN
+                RAISE EXCEPTION 'Supplier payment ledger records are append-only';
+            END;
+            $ LANGUAGE plpgsql
+        """)
+        for table_name in (
+            "procurement_supplier_payments",
+            "procurement_supplier_payment_allocations",
+        ):
+            op.execute(f"""
+                CREATE TRIGGER trg_{table_name}_immutable
+                BEFORE UPDATE OR DELETE ON {table_name}
+                FOR EACH ROW EXECUTE FUNCTION prevent_supplier_payment_mutation()
+            """)
+    elif bind.dialect.name == "sqlite":
+        for table_name in (
+            "procurement_supplier_payments",
+            "procurement_supplier_payment_allocations",
+        ):
+            op.execute(f"""
+                CREATE TRIGGER trg_{table_name}_immutable_update
+                BEFORE UPDATE ON {table_name}
+                BEGIN
+                    SELECT RAISE(ABORT, 'Supplier payment ledger records are append-only');
+                END
+            """)
+            op.execute(f"""
+                CREATE TRIGGER trg_{table_name}_immutable_delete
+                BEFORE DELETE ON {table_name}
+                BEGIN
+                    SELECT RAISE(ABORT, 'Supplier payment ledger records are append-only');
+                END
+            """)
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        for table_name in (
+            "procurement_supplier_payments",
+            "procurement_supplier_payment_allocations",
+        ):
+            op.execute(f"DROP TRIGGER IF EXISTS trg_{table_name}_immutable ON {table_name}")
+        op.execute("DROP FUNCTION IF EXISTS prevent_supplier_payment_mutation()")
+    elif bind.dialect.name == "sqlite":
+        for table_name in (
+            "procurement_supplier_payments",
+            "procurement_supplier_payment_allocations",
+        ):
+            op.execute(f"DROP TRIGGER IF EXISTS trg_{table_name}_immutable_update")
+            op.execute(f"DROP TRIGGER IF EXISTS trg_{table_name}_immutable_delete")
     op.drop_index("ix_supplier_payment_request_allocation_invoice", table_name="procurement_supplier_payment_request_allocations")
     op.drop_table("procurement_supplier_payment_request_allocations")
     op.drop_index("ix_supplier_payment_request_status_date", table_name="procurement_supplier_payment_requests")
