@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from backend.core.database import get_db
@@ -379,19 +380,32 @@ def get_reconciliation_investigation_quality_summary(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
-    rows = db.query(ReconciliationInvestigation).all()
-    resolved = [row for row in rows if row.status == "RESOLVED"]
+    total = db.query(func.count(ReconciliationInvestigation.id)).scalar() or 0
+    resolved_count = db.query(func.count(ReconciliationInvestigation.id)).filter(
+        ReconciliationInvestigation.status == "RESOLVED"
+    ).scalar() or 0
+    quality_counts = dict(db.query(
+        ReconciliationInvestigation.resolution_quality_status,
+        func.count(ReconciliationInvestigation.id),
+    ).filter(
+        ReconciliationInvestigation.status == "RESOLVED"
+    ).group_by(ReconciliationInvestigation.resolution_quality_status).all())
+    reopened_count = db.query(func.coalesce(func.sum(ReconciliationInvestigation.reopen_count), 0)).scalar() or 0
+    cases_reopened = db.query(func.count(ReconciliationInvestigation.id)).filter(
+        ReconciliationInvestigation.reopen_count > 0
+    ).scalar() or 0
+    average_reopens = db.query(func.avg(ReconciliationInvestigation.reopen_count)).scalar()
     return {
-        "total_investigations": len(rows),
-        "resolved_count": len(resolved),
+        "total_investigations": int(total),
+        "resolved_count": int(resolved_count),
         "closure_quality": {
-            "not_reviewed": sum(1 for row in resolved if row.resolution_quality_status == "NOT_REVIEWED"),
-            "approved": sum(1 for row in resolved if row.resolution_quality_status == "APPROVED"),
-            "rejected": sum(1 for row in resolved if row.resolution_quality_status == "REJECTED"),
+            "not_reviewed": int(quality_counts.get("NOT_REVIEWED", 0)),
+            "approved": int(quality_counts.get("APPROVED", 0)),
+            "rejected": int(quality_counts.get("REJECTED", 0)),
         },
-        "reopened_count": sum(row.reopen_count for row in rows),
-        "cases_reopened": sum(1 for row in rows if row.reopen_count > 0),
-        "average_reopens_per_case": round(sum(row.reopen_count for row in rows) / len(rows), 2) if rows else 0,
+        "reopened_count": int(reopened_count),
+        "cases_reopened": int(cases_reopened),
+        "average_reopens_per_case": round(float(average_reopens or 0), 2),
         "limitations": [
             "Quality decisions are explicit human reviews, not automated correctness scores.",
             "This summary is a live aggregate, not a frozen monthly governance snapshot.",
