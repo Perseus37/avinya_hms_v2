@@ -268,8 +268,6 @@ def discover_and_aggregate_patient_across_branches(
     phone_number: Optional[str] = Query(default=None, description="Patient registered phone number"),
     abha_number: Optional[str] = Query(default=None, description="National ABHA ID"),
     purpose: str = Query(default="CONTINUITY_OF_CARE", min_length=3, max_length=255),
-    break_glass_grant_id: Optional[int] = Query(default=None, description="Active Break-Glass Emergency Grant ID"),
-    emergency_token: Optional[str] = Query(default=None, description="Verifiable Emergency Authorization Token"),
     calling_node: FederatedNode = Depends(get_federated_node),
     control_db: Session = Depends(get_control_db),
     _: None = Depends(RateLimiter(scope="fed_discover", max_requests=60, window_seconds=60)),
@@ -352,35 +350,14 @@ def discover_and_aggregate_patient_across_branches(
                     or target_group_id != calling_group_id
                 ):
                     return None
-            emergency_purpose = purpose.strip().upper() in {
-                "EMERGENCY", "EMERGENCY_CARE", "EMERGENCY_TREATMENT", "EMERGENCY_ADMISSION"
-            }
-            if (
-                policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY
-                and not emergency_purpose
-            ):
+            # Emergency-purpose requests are rejected at the endpoint boundary
+            # until a verifiable node/actor capability protocol is implemented.
+            if policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY:
                 return None
 
             patient = branch_db.query(Patient).filter(Patient.mrn == ptr.source_mrn, Patient.is_active.is_(True)).first()
             if not patient or getattr(patient, "allow_network_sharing", True) is False:
                 return None
-
-            # Every emergency-purpose disclosure requires a real, unexpired grant
-            # bound to the exact source patient, regardless of the branch's general
-            # sharing mode. The restricted mode additionally limits the purpose above.
-            if emergency_purpose:
-                from backend.domains.patients.models import BreakGlassGrant
-
-                if break_glass_grant_id is None:
-                    return None
-                now_utc = datetime.now(timezone.utc)
-                grant = branch_db.query(BreakGlassGrant).filter(
-                    BreakGlassGrant.id == break_glass_grant_id,
-                    BreakGlassGrant.patient_id == patient.id,
-                    BreakGlassGrant.expires_at > now_utc,
-                ).first()
-                if not grant:
-                    return None
 
             decision = evaluate_tenant_data_use(
                 branch_db,
