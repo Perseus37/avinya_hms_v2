@@ -757,3 +757,21 @@ def test_reconciliation_notification_configuration_audit_is_recorded(
         ).one()
         assert event.actor_user_id > 0
         assert '"severity":"CRITICAL"' in event.details
+
+
+def test_reconciliation_candidate_cursor_rejects_offsets_outside_database_range():
+    import base64
+
+    from fastapi import HTTPException
+
+    from backend.domains.procurement.bank_reconciliation import list_reconciliation_candidates
+
+    forged_cursor = base64.urlsafe_b64encode(
+        json.dumps({"source_offset": 2**63, "candidate_offset": 0}).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+
+    with pytest.raises(HTTPException) as exc:
+        list_reconciliation_candidates(cursor=forged_cursor, db=object())
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "Invalid reconciliation candidate cursor."

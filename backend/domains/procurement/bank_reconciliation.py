@@ -376,7 +376,14 @@ def list_reconciliation_candidates(
             decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
             source_offset = int(decoded["source_offset"])
             candidate_offset = int(decoded["candidate_offset"])
-            if source_offset < 0 or candidate_offset < 0 or source_offset % source_cap:
+            # PostgreSQL OFFSET is a signed 64-bit integer. Reject forged or
+            # corrupted cursors before the value reaches the database driver.
+            if (
+                source_offset < 0
+                or source_offset > (2**63 - 1)
+                or candidate_offset < 0
+                or source_offset % source_cap
+            ):
                 raise ValueError("Invalid cursor position")
         except (ValueError, TypeError, KeyError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError) as exc:
             raise HTTPException(status_code=422, detail="Invalid reconciliation candidate cursor.") from exc
