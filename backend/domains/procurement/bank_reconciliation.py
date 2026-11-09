@@ -164,13 +164,28 @@ def import_bank_statement(
     try:
         db.add(batch)
         db.flush()
-        for line in payload.lines:
-            transaction_id = line.bank_transaction_id.strip()
-            if db.query(BankStatementLine.id).filter(
+        transaction_ids = [line.bank_transaction_id.strip() for line in payload.lines]
+        existing_transaction_ids: set[str] = set()
+        # Stay below conservative SQLite bind-parameter limits while avoiding
+        # one duplicate-check query per imported statement line.
+        for offset in range(0, len(transaction_ids), 500):
+            chunk = transaction_ids[offset:offset + 500]
+            existing_rows = db.query(BankStatementLine.bank_transaction_id).filter(
                 BankStatementLine.account_key == account_key,
-                BankStatementLine.bank_transaction_id == transaction_id,
-            ).first():
-                raise HTTPException(status_code=409, detail=f"Bank transaction {transaction_id} was already imported.")
+                BankStatementLine.bank_transaction_id.in_(chunk),
+            ).all()
+            existing_transaction_ids.update(row[0] for row in existing_rows)
+        duplicate_transaction_id = next(
+            (transaction_id for transaction_id in transaction_ids
+             if transaction_id in existing_transaction_ids),
+            None,
+        )
+        if duplicate_transaction_id is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Bank transaction {duplicate_transaction_id} was already imported.",
+            )
+        for line, transaction_id in zip(payload.lines, transaction_ids):
             db.add(BankStatementLine(
                 batch_id=batch.id,
                 account_key=account_key,

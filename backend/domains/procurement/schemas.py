@@ -1,4 +1,5 @@
 from datetime import date, datetime
+import re
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 from backend.domains.procurement.models import (
@@ -206,6 +207,14 @@ class SupplierPaymentRequestCreate(BaseModel):
     vendor_id: int = Field(gt=0)
     payment_reference: str = Field(min_length=2, max_length=100)
     payment_method: SupplierPaymentMethodEnum
+
+    @field_validator("payment_reference")
+    @classmethod
+    def normalize_payment_reference(cls, value: str) -> str:
+        normalized = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._/-]{1,99}", normalized):
+            raise ValueError("payment_reference must use 2-100 ASCII letters, digits, spaces, or ._/- characters.")
+        return normalized.upper()
     scheduled_date: date
     amount_paise: int = Field(gt=0)
     notes: Optional[str] = Field(default=None, max_length=2000)

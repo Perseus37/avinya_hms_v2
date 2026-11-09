@@ -851,6 +851,23 @@ def review_supplier_payment_request(
     return _load_payment_request(db, request_row.id)
 
 
+def _validate_supplier_payment_timestamp(
+    payment_date: datetime,
+    scheduled_date: date,
+    now: datetime,
+) -> datetime:
+    """Normalize an aware payment instant to UTC before enforcing date rules."""
+    if payment_date.tzinfo is None or payment_date.utcoffset() is None:
+        raise HTTPException(status_code=422, detail="payment_date must include a timezone.")
+    normalized = payment_date.astimezone(timezone.utc)
+    if normalized > now or normalized.date() < scheduled_date:
+        raise HTTPException(
+            status_code=422,
+            detail="payment_date must be on or after the scheduled date and cannot be in the future.",
+        )
+    return normalized
+
+
 @router.post(
     "/supplier-payment-requests/{request_id}/execute",
     response_model=SupplierPaymentResponse,
@@ -870,15 +887,14 @@ def execute_supplier_payment_request(
     now = datetime.now(timezone.utc)
     if request_row.scheduled_date > now.date():
         raise HTTPException(status_code=409, detail="A payment scheduled for a future date cannot yet be executed.")
-    if payload.payment_date.tzinfo is None:
-        raise HTTPException(status_code=422, detail="payment_date must include a timezone.")
-    if payload.payment_date.date() > now.date() or payload.payment_date.date() < request_row.scheduled_date:
-        raise HTTPException(status_code=422, detail="payment_date must be on or after the scheduled date and cannot be in the future.")
+    payment_date_utc = _validate_supplier_payment_timestamp(
+        payload.payment_date, request_row.scheduled_date, now
+    )
 
-    reference_key = request_row.payment_reference.casefold()
+    reference_key = request_row.payment_reference.strip().upper()
     if db.query(SupplierPayment.id).filter(
         SupplierPayment.vendor_id == request_row.vendor_id,
-        func.lower(SupplierPayment.payment_reference) == reference_key,
+        func.upper(func.trim(SupplierPayment.payment_reference)) == reference_key,
     ).first():
         raise HTTPException(status_code=409, detail="The supplier payment reference has already been recorded.")
 
@@ -929,7 +945,7 @@ def execute_supplier_payment_request(
         vendor_id=vendor.id,
         payment_reference=request_row.payment_reference,
         payment_method=request_row.payment_method,
-        payment_date=payload.payment_date,
+        payment_date=payment_date_utc,
         amount_paise=request_row.amount_paise,
         notes=request_row.notes,
         recorded_by_id=current_user.id,

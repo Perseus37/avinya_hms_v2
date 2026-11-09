@@ -181,6 +181,7 @@ def test_supplier_payment_request_contract_accepts_exact_unique_allocations():
         ],
     })
 
+    assert payload.payment_reference == "BANK-REF-003"
     assert payload.amount_paise == sum(row.amount_paise for row in payload.allocations)
     assert len({row.invoice_id for row in payload.allocations}) == 2
 
@@ -829,4 +830,68 @@ def test_financial_reasons_reject_whitespace_only_values():
     ):
         with pytest.raises(ValidationError):
             InvestigationTransition.model_validate(payload)
+
+def test_supplier_payment_timestamp_uses_utc_instant_for_future_check():
+    from datetime import date, datetime, timedelta, timezone
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.router import _validate_supplier_payment_timestamp
+
+    now = datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc)
+    offset_timestamp = datetime(
+        2026, 11, 9, 23, 30, tzinfo=timezone(timedelta(hours=-10))
+    )
+    with pytest.raises(HTTPException) as error:
+        _validate_supplier_payment_timestamp(
+            offset_timestamp, date(2026, 11, 9), now
+        )
+    assert error.value.status_code == 422
+
+def test_bank_statement_import_checks_existing_transaction_ids_in_batches(
+    client, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy import event
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    duplicate_check_queries = []
+
+    def record_query(_conn, _cursor, statement, _parameters, _context, _executemany):
+        normalized = statement.lstrip().upper()
+        if normalized.startswith("SELECT") and "PROCUREMENT_BANK_STATEMENT_LINES" in normalized:
+            duplicate_check_queries.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_query)
+    try:
+        response = client.post(
+            "/v1/api/procurement/bank-statements/import",
+            headers=superuser_headers,
+            json={
+                "account_key": "BANK-ALIAS-N1",
+                "account_label": "****1234",
+                "statement_reference": "N1-IMPORT-BATCH",
+                "period_start": "2026-11-01",
+                "period_end": "2026-11-02",
+                "opening_balance_paise": 10000,
+                "closing_balance_paise": 9950,
+                "lines": [
+                    {
+                        "bank_transaction_id": "N1-TX-001",
+                        "transaction_date": "2026-11-01",
+                        "direction": "DEBIT",
+                        "amount_paise": 100,
+                    },
+                    {
+                        "bank_transaction_id": "N1-TX-002",
+                        "transaction_date": "2026-11-02",
+                        "direction": "CREDIT",
+                        "amount_paise": 50,
+                    },
+                ],
+            },
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record_query)
+
+    assert response.status_code == 201, response.text
+    assert len(duplicate_check_queries) == 1
 
