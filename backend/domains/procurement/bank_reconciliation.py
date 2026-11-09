@@ -64,7 +64,7 @@ class BankStatementImport(BaseModel):
     @model_validator(mode="after")
     def validate_statement(self):
         # Separators do not make a raw numeric account number an opaque alias.
-        normalized_account_key = re.sub(r"[._:-]", "", self.account_key.strip())
+        normalized_account_key = re.sub(r"[\s._:-]", "", self.account_key.strip())
         if normalized_account_key.isdigit():
             raise ValueError("account_key must be an opaque alias, not a numeric account number.")
         # Detect long digit sequences even when common display separators are inserted.

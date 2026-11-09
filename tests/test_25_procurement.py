@@ -314,6 +314,8 @@ def test_bank_statement_contract_rejects_numeric_account_alias_and_unmasked_labe
     with pytest.raises(ValidationError):
         BankStatementImport.model_validate({**valid, "account_key": "1234.5678.9012"})
     with pytest.raises(ValidationError):
+        BankStatementImport.model_validate({**valid, "account_key": "1234 5678 9012"})
+    with pytest.raises(ValidationError):
         BankStatementImport.model_validate({**valid, "account_label": "Account 123456789012"})
     with pytest.raises(ValidationError):
         BankStatementImport.model_validate({**valid, "account_label": "Account 1234-5678-9012"})
