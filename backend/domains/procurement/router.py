@@ -8,7 +8,7 @@ from sqlalchemy import select, func
 from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
 from backend.core.date_ranges import resolve_record_date_window
-from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.dependencies import RequirePermission, user_has_permission, validate_pagination
 from backend.core.export import stream_csv_response, chunked_query_fetcher
 from backend.domains.identity.models import User
 from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
@@ -791,6 +791,40 @@ def list_supplier_payment_requests(
         SupplierPaymentRequest.scheduled_date.asc(),
         SupplierPaymentRequest.id.asc(),
     ).all()
+
+
+@router.patch(
+    "/supplier-payment-requests/{request_id}/cancel",
+    response_model=SupplierPaymentRequestResponse,
+)
+def cancel_supplier_payment_request(
+    request_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:write", "finance:approve")),
+):
+    request_row = _load_payment_request(db, request_id, for_update=True)
+    if request_row is None:
+        raise HTTPException(status_code=404, detail="Supplier payment request not found.")
+
+    is_approver = user_has_permission(db, current_user, "finance:approve")
+    is_requester = request_row.requested_by_id == current_user.id
+    if not is_approver and not (is_requester and request_row.status == "PENDING"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the requester may cancel their own pending request; finance approvers may cancel pending or approved requests.",
+        )
+    if request_row.status not in {"PENDING", "APPROVED"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Only pending or approved payment requests can be cancelled before execution.",
+        )
+    if not is_approver and request_row.status != "PENDING":
+        raise HTTPException(status_code=403, detail="Requesters cannot cancel an approved payment request.")
+
+    request_row.status = "CANCELLED"
+    request_row.updated_by_id = current_user.id
+    db.commit()
+    return _load_payment_request(db, request_row.id)
 
 
 @router.patch(
