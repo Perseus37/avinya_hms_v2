@@ -63,9 +63,12 @@ class BankStatementImport(BaseModel):
 
     @model_validator(mode="after")
     def validate_statement(self):
-        if self.account_key.strip().isdigit():
+        # Separators do not make a raw numeric account number an opaque alias.
+        normalized_account_key = re.sub(r"[._:-]", "", self.account_key.strip())
+        if normalized_account_key.isdigit():
             raise ValueError("account_key must be an opaque alias, not a numeric account number.")
-        if self.account_label and re.search(r"\d{8,}", self.account_label):
+        # Detect long digit sequences even when common display separators are inserted.
+        if self.account_label and re.search(r"(?<!\d)(?:\d[\s._:-]?){7,}\d(?!\d)", self.account_label):
             raise ValueError("account_label must be masked and cannot contain an unmasked account-number-like sequence.")
         if self.period_end < self.period_start:
             raise ValueError("Statement period end cannot precede its start.")
