@@ -1055,3 +1055,70 @@ def test_supplier_payment_request_listing_is_paginated_and_bounded():
         "page_size": 10,
     }
     assert len(query.filtered) == 2
+
+
+
+def test_bank_statement_match_history_is_paginated_but_totals_cover_all_matches():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from backend.domains.procurement.bank_reconciliation import (
+        list_bank_statement_line_matches,
+    )
+
+    rows = [
+        SimpleNamespace(
+            id=2, statement_line_id=8, supplier_payment_id=12,
+            amount_paise=300, matched_by_id=4,
+            matched_at=datetime(2026, 11, 1, tzinfo=timezone.utc),
+            reason="Second allocation",
+        )
+    ]
+
+    class FakeMatchQuery:
+        def __init__(self):
+            self.offset_value = None
+            self.limit_value = None
+        def filter(self, *_args):
+            return self
+        def count(self):
+            return 5
+        def order_by(self, *_args):
+            return self
+        def offset(self, value):
+            self.offset_value = value
+            return self
+        def limit(self, value):
+            self.limit_value = value
+            return self
+        def all(self):
+            assert self.offset_value == 2
+            assert self.limit_value == 1
+            return rows
+
+    class FakeAggregateQuery:
+        def filter(self, *_args):
+            return self
+        def scalar(self):
+            return 1250
+
+    class FakeDb:
+        def __init__(self):
+            self.match_query = FakeMatchQuery()
+        def get(self, _model, line_id):
+            assert line_id == 8
+            return SimpleNamespace(id=8, amount_paise=2000)
+        def query(self, *entities):
+            if len(entities) == 1 and entities[0].__name__ == "SupplierPaymentBankMatch":
+                return self.match_query
+            return FakeAggregateQuery()
+
+    result = list_bank_statement_line_matches(
+        8, page=3, page_size=1, db=FakeDb()
+    )
+    assert result["total"] == 5
+    assert result["page"] == 3
+    assert result["page_size"] == 1
+    assert result["items"][0]["id"] == 2
+    assert result["matched_amount_paise"] == 1250
+    assert result["remaining_amount_paise"] == 750
