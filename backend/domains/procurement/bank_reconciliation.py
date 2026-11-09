@@ -355,21 +355,37 @@ def match_bank_debit_to_supplier_payment(
 @router.get("/bank-statement-lines/{line_id}/matches", response_model=dict)
 def list_bank_statement_line_matches(
     line_id: int,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
+    page, page_size = validate_pagination(page, page_size)
     line = db.get(BankStatementLine, line_id)
     if line is None:
         raise HTTPException(status_code=404, detail="Bank statement line not found.")
-    rows = db.query(SupplierPaymentBankMatch).filter(
+
+    match_query = db.query(SupplierPaymentBankMatch).filter(
         SupplierPaymentBankMatch.statement_line_id == line_id
-    ).order_by(SupplierPaymentBankMatch.id).all()
-    matched = sum(row.amount_paise for row in rows)
+    )
+    total = match_query.count()
+    matched = db.query(
+        func.coalesce(func.sum(SupplierPaymentBankMatch.amount_paise), 0)
+    ).filter(
+        SupplierPaymentBankMatch.statement_line_id == line_id
+    ).scalar()
+    rows = match_query.order_by(SupplierPaymentBankMatch.id).offset(
+        (page - 1) * page_size
+    ).limit(page_size).all()
+    matched_total = int(matched or 0)
     return {
         "items": [SupplierPaymentBankMatchResponse.model_validate(row).model_dump(mode="json") for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
         "line_amount_paise": line.amount_paise,
-        "matched_amount_paise": matched,
-        "remaining_amount_paise": line.amount_paise - matched,
+        "matched_amount_paise": matched_total,
+        "remaining_amount_paise": line.amount_paise - matched_total,
     }
 
 
