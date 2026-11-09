@@ -106,3 +106,26 @@ def test_03_lis_equipment_registration(client, superuser_headers):
         }
     )
     assert equip_res.status_code == 201
+
+
+def test_03_expense_adjudication_cannot_bypass_payment_permission(client, superuser_headers):
+    """Approval is not payment: adjudication must not accept PAID as a target state."""
+    draft_res = client.post(
+        "/v1/api/finance/ap/expenses",
+        headers=superuser_headers,
+        json={
+            "category": "MEDICAL_SUPPLIES",
+            "title": "Payment permission boundary",
+            "amount_paise": 125000,
+            "vendor_name": "Test Supplier",
+        },
+    )
+    assert draft_res.status_code == 201
+    expense_id = draft_res.json()["id"]
+
+    paid_res = client.patch(
+        f"/v1/api/finance/ap/expenses/{expense_id}/adjudicate",
+        headers=superuser_headers,
+        json={"status": "PAID"},
+    )
+    assert paid_res.status_code == 422

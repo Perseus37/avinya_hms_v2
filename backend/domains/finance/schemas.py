@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,7 +19,7 @@ class ExpenseDraft(BaseModel):
 
 
 class ExpenseAdjudicate(BaseModel):
-    status: ExpenseStatusEnum
+    status: Literal[ExpenseStatusEnum.APPROVED, ExpenseStatusEnum.REJECTED]
     rejection_reason: Optional[str] = None
 
 

@@ -60,7 +60,10 @@ def adjudicate_expense(
             status_code=409,
             detail=f"Cannot adjudicate an expense in '{expense.status.value}' state. Only PENDING_APPROVAL expenses can be adjudicated.",
         )
-    
+
+    if payload.status not in {ExpenseStatusEnum.APPROVED, ExpenseStatusEnum.REJECTED}:
+        raise HTTPException(status_code=422, detail="Adjudication can only approve or reject an expense.")
+
     if payload.status == ExpenseStatusEnum.REJECTED and not payload.rejection_reason:
         raise HTTPException(status_code=400, detail="Rejection reason is mandatory.")
 
