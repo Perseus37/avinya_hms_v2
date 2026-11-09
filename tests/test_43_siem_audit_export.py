@@ -298,3 +298,25 @@ def test_security_event_merge_uses_numeric_id_for_equal_timestamp_ties():
 
     assert [event.event_id for event in ordered] == ["AUDIT-PRIV-10", "AUDIT-PRIV-9"]
 
+def test_siem_webhook_rejects_authentication_over_http(client, superuser_headers):
+    response = client.post(
+        "/v1/api/audit/siem/webhook-test",
+        headers=superuser_headers,
+        json={
+            "webhook_url": "http://siem.example.com/webhook",
+            "auth_header": "Bearer test-secret",
+        },
+    )
+    assert response.status_code == 400
+    assert "HTTPS" in response.json()["message"]
+
+
+def test_siem_webhook_rejects_malformed_ipv6_url(client, superuser_headers):
+    response = client.post(
+        "/v1/api/audit/siem/webhook-test",
+        headers=superuser_headers,
+        json={"webhook_url": "http://[::1"},
+    )
+    assert response.status_code == 400
+    assert response.json()["message"] == "Invalid webhook URL."
+

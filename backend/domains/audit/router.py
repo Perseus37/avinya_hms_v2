@@ -495,20 +495,33 @@ def test_siem_webhook_connectivity(
     from urllib.parse import urlparse
     import httpx
 
-    parsed = urlparse(payload.webhook_url)
+    try:
+        parsed = urlparse(payload.webhook_url)
+        parsed_hostname = parsed.hostname
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid webhook URL.",
+        ) from exc
+
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid webhook URL scheme. Only http/https supported.",
         )
-    if not parsed.hostname:
+    if not parsed_hostname:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid webhook URL: missing hostname.",
         )
+    if payload.auth_header and parsed.scheme != "https":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Authorization credentials may only be sent to HTTPS webhook URLs.",
+        )
 
     # SSRF Guard: Disallow loopback, private, link-local, and cloud-metadata addresses
-    hostname = parsed.hostname.strip().lower()
+    hostname = parsed_hostname.strip().lower()
     if hostname in ("localhost", "127.0.0.1", "::1", "169.254.169.254", "metadata.google.internal"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
