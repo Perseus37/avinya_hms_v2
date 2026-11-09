@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 def test_purchase_return_endpoint_reaches_service_validation(client, superuser_headers):
@@ -575,6 +576,34 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     assert reopened.json()["version"] == 4
     assert reopened.json()["reopen_count"] == 1
     assert reopened.json()["resolved_at"] is None
+    assert reopened.json()["resolution"] is None
+    assert reopened.json()["root_cause"] is None
+
+    # The previous closure remains in immutable history, not active case fields.
+    events_after_reopen = client.get(
+        f"/v1/api/procurement/reconciliation/investigations/{case['id']}/events",
+        headers=superuser_headers,
+    )
+    assert events_after_reopen.status_code == 200, events_after_reopen.text
+    reopened_event = events_after_reopen.json()[0]
+    assert reopened_event["event_type"] == "REOPENED"
+    reopened_details = json.loads(reopened_event["details"])
+    assert reopened_details["previous_resolution"] == "Matched against approved supplier payment evidence."
+    assert reopened_details["previous_root_cause"] == "TIMING_DIFFERENCE"
+
+    resolved_again = client.patch(
+        f"/v1/api/procurement/reconciliation/investigations/{case['id']}/transition",
+        headers=superuser_headers,
+        json={
+            "to_status": "RESOLVED",
+            "expected_version": 4,
+            "resolution": "Reviewed the new evidence and closed the investigation.",
+        },
+    )
+    assert resolved_again.status_code == 200, resolved_again.text
+    assert resolved_again.json()["status"] == "RESOLVED"
+    assert resolved_again.json()["root_cause"] is None
+    assert resolved_again.json()["resolution"] == "Reviewed the new evidence and closed the investigation."
 
     quality = client.get(
         "/v1/api/procurement/reconciliation/investigations/quality-summary",

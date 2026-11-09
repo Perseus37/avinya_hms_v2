@@ -476,6 +476,10 @@ def reopen_reconciliation_investigation(
     previous_resolution = row.resolution
     previous_root_cause = row.root_cause
     row.status = "IN_REVIEW"
+    # Preserve prior closure context in the immutable REOPENED event, but clear
+    # active closure fields so a later resolution cannot inherit stale data.
+    row.resolution = None
+    row.root_cause = None
     row.resolved_at = None
     row.closed_by_id = None
     row.reopen_count += 1
