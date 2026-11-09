@@ -475,6 +475,18 @@ def list_reconciliation_candidates(
     # to vendor/reference pairs represented in this page so query work stays bounded.
     reference_groups = defaultdict(list)
     for payment in payments:
+        matched = int(payment_matches.get(payment.id, 0) or 0)
+        if matched < int(payment.amount_paise):
+            candidates.append({
+                "candidate_type": "UNRECONCILED_SUPPLIER_PAYMENT" if matched == 0 else "PARTIALLY_RECONCILED_SUPPLIER_PAYMENT",
+                "source_id": payment.id,
+                "transaction_date": payment.payment_date.date().isoformat(),
+                "amount_paise": int(payment.amount_paise),
+                "matched_amount_paise": matched,
+                "remaining_amount_paise": int(payment.amount_paise) - matched,
+                "reference": payment.payment_reference,
+                "vendor_id": payment.vendor_id,
+            })
         normalized = "".join(payment.payment_reference.split()).upper()
         if normalized:
             reference_groups[(payment.vendor_id, normalized)].append(payment)

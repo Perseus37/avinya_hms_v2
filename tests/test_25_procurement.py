@@ -330,7 +330,7 @@ def test_reconciliation_candidate_endpoint_is_registered(client, superuser_heade
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert {"items", "total_candidates", "limit", "truncated", "as_of", "disclaimer"} <= set(body)
+    assert {"items", "window_candidate_count", "limit", "truncated", "as_of", "disclaimer"} <= set(body)
     assert body["as_of"] == "2026-11-08"
 
 
@@ -399,6 +399,13 @@ def test_reconciliation_candidate_discovery_classifies_all_source_indicators():
                 return FakeQuery([debit, credit])
             if first is SupplierPayment:
                 return FakeQuery([payment_partial, payment_duplicate])
+            if first is SupplierPayment.vendor_id:
+                return FakeQuery([SimpleNamespace(
+                    vendor_id=9,
+                    normalized_reference="SUPP-REF77",
+                    payment_count=2,
+                    first_payment_id=201,
+                )])
             if first is SupplierPaymentRequest:
                 return FakeQuery([overdue_request])
             if first is SupplierPaymentBankMatch.statement_line_id:
