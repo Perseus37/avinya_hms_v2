@@ -13,7 +13,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
-from sqlalchemy import case, func
+from sqlalchemy import case, cast, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 
 from backend.core.database import get_db
@@ -839,10 +840,14 @@ def _governance_report_payload(db: Session, *, period_start: datetime,
         ReconciliationInvestigation.opened_at >= period_start,
         ReconciliationInvestigation.opened_at < period_end,
     ).scalar() or 0
-    resolved = db.query(func.count(ReconciliationInvestigation.id)).filter(
-        ReconciliationInvestigation.status == "RESOLVED",
-        ReconciliationInvestigation.resolved_at >= period_start,
-        ReconciliationInvestigation.resolved_at < period_end,
+    resolved_event_filter = (
+        ReconciliationInvestigationEvent.event_type == "STATUS_CHANGED",
+        ReconciliationInvestigationEvent.to_status == "RESOLVED",
+        ReconciliationInvestigationEvent.occurred_at >= period_start,
+        ReconciliationInvestigationEvent.occurred_at < period_end,
+    )
+    resolved = db.query(func.count(ReconciliationInvestigationEvent.id)).filter(
+        *resolved_event_filter
     ).scalar() or 0
     reopened = db.query(func.count(ReconciliationInvestigationEvent.id)).filter(
         ReconciliationInvestigationEvent.event_type == "REOPENED",
@@ -850,29 +855,40 @@ def _governance_report_payload(db: Session, *, period_start: datetime,
         ReconciliationInvestigationEvent.occurred_at < period_end,
     ).scalar() or 0
 
+    # A case may be reopened after a resolution. Its mutable current state must
+    # not erase the historical resolution activity captured by the event ledger.
+    resolved_case_ids = db.query(
+        ReconciliationInvestigationEvent.investigation_id
+    ).filter(*resolved_event_filter).distinct().subquery()
     quality_rows = db.query(
         ReconciliationInvestigation.resolution_quality_status,
         func.count(ReconciliationInvestigation.id),
     ).filter(
-        ReconciliationInvestigation.status == "RESOLVED",
-        ReconciliationInvestigation.resolved_at >= period_start,
-        ReconciliationInvestigation.resolved_at < period_end,
+        ReconciliationInvestigation.id.in_(
+            db.query(resolved_case_ids.c.investigation_id)
+        )
     ).group_by(ReconciliationInvestigation.resolution_quality_status).all()
     quality = {status: int(count or 0) for status, count in quality_rows}
 
     sla_rows = db.query(
-        func.sum(case((ReconciliationInvestigation.resolved_at <= ReconciliationInvestigation.sla_due_at, 1), else_=0)),
-        func.sum(case((ReconciliationInvestigation.resolved_at > ReconciliationInvestigation.sla_due_at, 1), else_=0)),
+        func.sum(case((
+            ReconciliationInvestigationEvent.occurred_at <= ReconciliationInvestigation.sla_due_at, 1
+        ), else_=0)),
+        func.sum(case((
+            ReconciliationInvestigationEvent.occurred_at > ReconciliationInvestigation.sla_due_at, 1
+        ), else_=0)),
+    ).join(
+        ReconciliationInvestigation,
+        ReconciliationInvestigation.id == ReconciliationInvestigationEvent.investigation_id,
     ).filter(
-        ReconciliationInvestigation.status == "RESOLVED",
-        ReconciliationInvestigation.resolved_at >= period_start,
-        ReconciliationInvestigation.resolved_at < period_end,
+        *resolved_event_filter,
         ReconciliationInvestigation.sla_due_at.is_not(None),
     ).one()
-    resolved_with_sla = db.query(func.count(ReconciliationInvestigation.id)).filter(
-        ReconciliationInvestigation.status == "RESOLVED",
-        ReconciliationInvestigation.resolved_at >= period_start,
-        ReconciliationInvestigation.resolved_at < period_end,
+    resolved_with_sla = db.query(func.count(ReconciliationInvestigationEvent.id)).join(
+        ReconciliationInvestigation,
+        ReconciliationInvestigation.id == ReconciliationInvestigationEvent.investigation_id,
+    ).filter(
+        *resolved_event_filter,
         ReconciliationInvestigation.sla_due_at.is_not(None),
     ).scalar() or 0
 
@@ -892,19 +908,27 @@ def _governance_report_payload(db: Session, *, period_start: datetime,
         ReconciliationInvestigation.source_type.asc(),
     ).limit(25).all()
 
-    normalized_root_cause = func.upper(func.trim(ReconciliationInvestigation.root_cause))
+    if db.get_bind().dialect.name == "postgresql":
+        recorded_root_cause = func.jsonb_extract_path_text(
+            cast(ReconciliationInvestigationEvent.details, JSONB), "root_cause"
+        )
+    else:
+        recorded_root_cause = func.json_extract(
+            ReconciliationInvestigationEvent.details, "$.root_cause"
+        )
+    normalized_root_cause = func.upper(func.trim(recorded_root_cause))
     cause_rows = db.query(
         normalized_root_cause.label("root_cause"),
-        func.count(ReconciliationInvestigation.id).label("case_count"),
+        func.count(func.distinct(ReconciliationInvestigationEvent.investigation_id)).label("case_count"),
     ).filter(
-        ReconciliationInvestigation.status == "RESOLVED",
+        *resolved_event_filter,
         normalized_root_cause.in_(ROOT_CAUSE_CATEGORIES),
-        ReconciliationInvestigation.resolved_at >= period_start,
-        ReconciliationInvestigation.resolved_at < period_end,
     ).group_by(normalized_root_cause).having(
-        func.count(ReconciliationInvestigation.id) >= 2
-    ).order_by(func.count(ReconciliationInvestigation.id).desc(),
-               normalized_root_cause.asc()).limit(25).all()
+        func.count(func.distinct(ReconciliationInvestigationEvent.investigation_id)) >= 2
+    ).order_by(
+        func.count(func.distinct(ReconciliationInvestigationEvent.investigation_id)).desc(),
+        normalized_root_cause.asc(),
+    ).limit(25).all()
 
     active_filter = ReconciliationInvestigation.status.in_(("OPEN", "ASSIGNED", "IN_REVIEW"))
     active_count = db.query(func.count(ReconciliationInvestigation.id)).filter(active_filter).scalar() or 0

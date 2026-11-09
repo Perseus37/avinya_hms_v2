@@ -108,3 +108,81 @@ def test_reconciliation_candidate_discovery_returns_continuation_cursor(multi_te
         assert any("supplier_payment_id in" in statement for statement in aggregate_queries)
     finally:
         event.remove(engine, "before_cursor_execute", capture_sql)
+
+
+def test_governance_report_uses_resolution_event_history_after_reopen(multi_tenant_env):
+    """Reopening a case must not erase resolution activity from its historical month."""
+    import json
+    from datetime import timedelta
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.investigations import _governance_report_payload
+    from backend.domains.procurement.models import (
+        ReconciliationInvestigation, ReconciliationInvestigationEvent,
+    )
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    period_start = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    period_end = datetime(2026, 12, 1, tzinfo=timezone.utc)
+    resolved_at = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        case = ReconciliationInvestigation(
+            external_key="hardening-governance-reopened",
+            candidate_type="UNMATCHED_BANK_DEBIT",
+            source_type="BANK_STATEMENT_LINE",
+            source_id=880003,
+            title="Governance reopened case",
+            summary="Regression case for historical resolution reporting.",
+            severity="HIGH",
+            status="IN_REVIEW",
+            opened_by_id=actor.id,
+            opened_at=period_start - timedelta(days=1),
+            updated_at=period_end,
+            sla_due_at=resolved_at - timedelta(hours=1),
+            resolved_at=None,
+            resolution=None,
+            root_cause=None,
+            resolution_quality_status="NOT_REVIEWED",
+            version=4,
+        )
+        db.add(case)
+        db.flush()
+        db.add_all([
+            ReconciliationInvestigationEvent(
+                investigation_id=case.id,
+                event_type="STATUS_CHANGED",
+                from_status="IN_REVIEW",
+                to_status="RESOLVED",
+                actor_user_id=actor.id,
+                details=json.dumps({
+                    "resolution": "Resolved with supporting evidence.",
+                    "root_cause": "TIMING_DIFFERENCE",
+                }),
+                occurred_at=resolved_at,
+            ),
+            ReconciliationInvestigationEvent(
+                investigation_id=case.id,
+                event_type="REOPENED",
+                from_status="RESOLVED",
+                to_status="IN_REVIEW",
+                actor_user_id=actor.id,
+                details=json.dumps({
+                    "previous_resolution": "Resolved with supporting evidence.",
+                    "previous_root_cause": "TIMING_DIFFERENCE",
+                }),
+                occurred_at=resolved_at + timedelta(hours=1),
+            ),
+        ])
+        db.commit()
+
+        snapshot = _governance_report_payload(
+            db, period_start=period_start, period_end=period_end,
+            generated_at=datetime(2026, 12, 2, tzinfo=timezone.utc),
+        )
+
+    assert snapshot["activity"]["resolved"] == 1
+    assert snapshot["activity"]["reopened_events"] == 1
+    assert snapshot["sla"]["resolved_with_sla"] == 1
+    assert snapshot["sla"]["closed_late"] == 1
+    assert snapshot["closure_quality"]["not_reviewed"] == 1
+    assert snapshot["recurring_recorded_root_causes"] == []
