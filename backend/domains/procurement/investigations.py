@@ -77,7 +77,12 @@ class InvestigationTransition(BaseModel):
     @field_validator("resolution", "note")
     @classmethod
     def normalize_required_text(cls, value: Optional[str]) -> Optional[str]:
-        return value.strip() if value is not None else None
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("resolution and note values cannot be blank.")
+        return normalized
 
     @field_validator("root_cause")
     @classmethod
