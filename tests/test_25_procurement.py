@@ -297,8 +297,7 @@ def test_bank_statement_contract_rejects_numeric_account_alias_and_unmasked_labe
 
     valid = {
         "account_key": "OPERATING-01",
-        "statement_reference": "STMT-SECURITY-01",
-        "period_start": "2026-11-01",
+        "statement_reference": "STMT-SECURITY-01",        "period_start": "2026-11-01",
         "period_end": "2026-11-30",
         "opening_balance_paise": 1000,
         "closing_balance_paise": 1000,
@@ -597,8 +596,7 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     events_after_reopen = client.get(
         f"/v1/api/procurement/reconciliation/investigations/{case['id']}/events",
         headers=superuser_headers,
-    )
-    assert events_after_reopen.status_code == 200, events_after_reopen.text
+    )    assert events_after_reopen.status_code == 200, events_after_reopen.text
     reopened_event = events_after_reopen.json()[0]
     assert reopened_event["event_type"] == "REOPENED"
     reopened_details = reopened_event["details"]
@@ -897,8 +895,7 @@ def test_bank_statement_import_checks_existing_transaction_ids_in_batches(
                         "amount_paise": 50,
                     },
                 ],
-            },
-        )
+            },        )
     finally:
         event.remove(engine, "before_cursor_execute", record_query)
 
@@ -1109,7 +1106,7 @@ def test_bank_statement_match_history_is_paginated_but_totals_cover_all_matches(
             assert line_id == 8
             return SimpleNamespace(id=8, amount_paise=2000)
         def query(self, *entities):
-            if len(entities) == 1 and entities[0].__name__ == "SupplierPaymentBankMatch":
+            if len(entities) == 1 and getattr(entities[0], "__name__", None) == "SupplierPaymentBankMatch":
                 return self.match_query
             return FakeAggregateQuery()
 
