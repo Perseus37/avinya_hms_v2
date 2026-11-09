@@ -361,6 +361,12 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     BEFORE DELETE ON procurement_reconciliation_investigation_events
                     BEGIN SELECT RAISE(ABORT, 'Reconciliation investigation events are append-only'); END
                 """))
+        # This append-only audit table is purge-only in sandbox clones. Delete its
+        # rows after dropping the guard and before restoring append-only protection.
+        if "procurement_reconciliation_notification_config_events" in table_names:
+            session.execute(text('DELETE FROM "procurement_reconciliation_notification_config_events"'))  # nosec B608
+            stats["purged_tables"] += 1
+
         if session.bind.dialect.name == "postgresql":
             if "procurement_reconciliation_notification_config_events" in table_names:
                 session.execute(text("""

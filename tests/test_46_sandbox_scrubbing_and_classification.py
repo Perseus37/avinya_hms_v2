@@ -547,3 +547,50 @@ def test_09_sandbox_scrubbing_ancillary_and_random_password(client: TestClient):
         diag_row = db.execute(text(f"SELECT clinical_remarks FROM encounter_diagnoses WHERE encounter_id = {enc_id}")).first()
         assert diag_row is not None
         assert diag_row[0] == "Sandbox diagnostic evaluation"
+
+
+def test_sandbox_purges_notification_config_audit_and_restores_immutability(client):
+    from sqlalchemy.exc import DBAPIError
+    from backend.domains.procurement.models import ReconciliationNotificationConfigEvent
+
+    engine = tenant_engine_pool.get_engine("hms_apollo")
+    with Session(bind=engine) as db:
+        actor = db.execute(select(User).where(User.is_superuser == True)).scalars().first()
+        assert actor is not None
+        event = ReconciliationNotificationConfigEvent(
+            actor_user_id=actor.id,
+            event_type="SANDBOX_PURGE_REGRESSION",
+            object_type="ESCALATION_POLICY",
+            details="Must not survive sandbox sanitization",
+        )
+        db.add(event)
+        db.commit()
+        event_id = event.id
+
+    scrub_sandbox_database("hms_apollo")
+
+    with Session(bind=engine) as db:
+        assert db.query(ReconciliationNotificationConfigEvent).filter(
+            ReconciliationNotificationConfigEvent.id == event_id
+        ).count() == 0
+
+        # Recreate one row after sanitization and prove the append-only guard was restored.
+        event = ReconciliationNotificationConfigEvent(
+            actor_user_id=actor.id,
+            event_type="SANDBOX_PURGE_TRIGGER_CHECK",
+            object_type="ESCALATION_POLICY",
+            details="Append-only guard must be active after purge",
+        )
+        db.add(event)
+        db.commit()
+        with pytest.raises(DBAPIError):
+            db.execute(
+                text("""
+                    UPDATE procurement_reconciliation_notification_config_events
+                    SET details = 'tampered'
+                    WHERE id = :event_id
+                """),
+                {"event_id": event.id},
+            )
+            db.commit()
+        db.rollback()
