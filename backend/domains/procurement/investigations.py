@@ -643,11 +643,39 @@ def get_reconciliation_finance_dashboard(
     ).scalar() or 0
 
     opened_in_window = cases.filter(ReconciliationInvestigation.opened_at >= window_start).count()
-    resolved_in_window = cases.filter(
-        ReconciliationInvestigation.status == "RESOLVED",
-        ReconciliationInvestigation.resolved_at.is_not(None),
-        ReconciliationInvestigation.resolved_at >= window_start,
-    ).count()
+    resolved_event_filter = (
+        ReconciliationInvestigationEvent.event_type == "STATUS_CHANGED",
+        ReconciliationInvestigationEvent.to_status == "RESOLVED",
+        ReconciliationInvestigationEvent.occurred_at >= window_start,
+        ReconciliationInvestigationEvent.occurred_at <= now,
+    )
+    resolved_in_window = db.query(
+        func.count(ReconciliationInvestigationEvent.id)
+    ).filter(*resolved_event_filter).scalar() or 0
+
+    if db.bind.dialect.name == "postgresql":
+        recorded_root_cause = func.jsonb_extract_path_text(
+            cast(ReconciliationInvestigationEvent.details, JSONB), "root_cause"
+        )
+    else:
+        recorded_root_cause = func.json_extract(
+            ReconciliationInvestigationEvent.details, "$.root_cause"
+        )
+    normalized_root_cause = func.upper(func.trim(recorded_root_cause))
+    root_causes = db.query(
+        normalized_root_cause.label("root_cause"),
+        func.count(func.distinct(
+            ReconciliationInvestigationEvent.investigation_id
+        )).label("resolved_cases"),
+    ).filter(
+        *resolved_event_filter,
+        normalized_root_cause.in_(ROOT_CAUSE_CATEGORIES),
+    ).group_by(
+        normalized_root_cause
+    ).order_by(
+        func.count(func.distinct(ReconciliationInvestigationEvent.investigation_id)).desc(),
+        normalized_root_cause.asc(),
+    ).limit(10).all()
 
     age_buckets = {
         "under_24_hours": active.filter(
@@ -665,20 +693,6 @@ def get_reconciliation_finance_dashboard(
             ReconciliationInvestigation.opened_at < now - timedelta(days=30)
         ).count(),
     }
-
-    root_causes = db.query(
-        ReconciliationInvestigation.root_cause,
-        func.count(ReconciliationInvestigation.id),
-    ).filter(
-        ReconciliationInvestigation.status == "RESOLVED",
-        ReconciliationInvestigation.root_cause.is_not(None),
-        ReconciliationInvestigation.resolved_at >= window_start,
-    ).group_by(
-        ReconciliationInvestigation.root_cause
-    ).order_by(
-        func.count(ReconciliationInvestigation.id).desc(),
-        ReconciliationInvestigation.root_cause.asc(),
-    ).limit(10).all()
 
     queue_rows = active.order_by(
         ReconciliationInvestigation.sla_due_at.is_(None),
