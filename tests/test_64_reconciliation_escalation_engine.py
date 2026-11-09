@@ -147,7 +147,7 @@ def test_reconciliation_escalation_evaluator_is_idempotent_and_honors_opt_out(
 def test_reconciliation_finance_dashboard_returns_bounded_governance_aggregates(multi_tenant_env):
     from backend.domains.identity.models import User
     from backend.domains.procurement.investigations import get_reconciliation_finance_dashboard
-    from backend.domains.procurement.models import ReconciliationInvestigation
+    from backend.domains.procurement.models import ReconciliationInvestigation, ReconciliationInvestigationEvent
     from fastapi import HTTPException
 
     engine = multi_tenant_env["tenant_engines"]["hms_default"]
