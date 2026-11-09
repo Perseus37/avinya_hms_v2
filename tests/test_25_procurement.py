@@ -587,7 +587,7 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     assert events_after_reopen.status_code == 200, events_after_reopen.text
     reopened_event = events_after_reopen.json()[0]
     assert reopened_event["event_type"] == "REOPENED"
-    reopened_details = json.loads(reopened_event["details"])
+    reopened_details = reopened_event["details"]
     assert reopened_details["previous_resolution"] == "Matched against approved supplier payment evidence."
     assert reopened_details["previous_root_cause"] == "TIMING_DIFFERENCE"
 
