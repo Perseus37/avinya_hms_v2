@@ -55,6 +55,32 @@ class SiemWebhookTestRequest(BaseModel):
     auth_header: Optional[str] = None
 
 
+AUDIT_EVENT_CATEGORIES = frozenset({
+    "PRIVACY_CONSENT",
+    "BREAK_GLASS",
+    "DATA_BREACH",
+    "RETENTION_PURGE",
+})
+AUDIT_EVENT_SEVERITIES = frozenset({"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"})
+
+
+def _validate_event_filters(
+    from_time: Optional[datetime],
+    to_time: Optional[datetime],
+    category: Optional[str],
+    severity: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    if from_time and to_time and from_time > to_time:
+        raise HTTPException(status_code=400, detail="from_time must not be later than to_time.")
+    normalized_category = category.strip().upper() if category else None
+    normalized_severity = severity.strip().upper() if severity else None
+    if normalized_category and normalized_category not in AUDIT_EVENT_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Unsupported security event category.")
+    if normalized_severity and normalized_severity not in AUDIT_EVENT_SEVERITIES:
+        raise HTTPException(status_code=400, detail="Unsupported security event severity.")
+    return normalized_category, normalized_severity
+
+
 def _collect_security_events(
     db: Session,
     *,
@@ -254,8 +280,8 @@ def _collect_security_events(
                     )
                 )
 
-    # Sort all merged events by timestamp descending
-    events.sort(key=lambda e: e.timestamp, reverse=True)
+    # Stable tie-breakers prevent records with identical timestamps moving between pages.
+    events.sort(key=lambda e: (e.timestamp, e.category, e.event_id), reverse=True)
     paginated = events[offset : offset + limit]
     return total, paginated
 
@@ -276,6 +302,7 @@ def get_security_events(
     actor: User = Depends(RequirePermission("privacy:read")),
 ):
     """Returns normalized security audit logs formatted for SOC/SIEM inspection."""
+    category, severity = _validate_event_filters(from_time, to_time, category, severity)
     total, events = _collect_security_events(
         db,
         from_time=from_time,
@@ -307,8 +334,7 @@ def stream_security_events(
     actor: User = Depends(RequirePermission("privacy:read")),
 ):
     """Streams newline-delimited JSON (NDJSON) security logs for automated SIEM log shippers."""
-    if from_time and to_time and from_time > to_time:
-        raise HTTPException(status_code=400, detail="from_time must not be later than to_time.")
+    category, severity = _validate_event_filters(from_time, to_time, category, severity)
 
     _, events = _collect_security_events(
         db,
@@ -380,8 +406,7 @@ def list_security_audit_exports(
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("privacy:read")),
 ):
-    if from_time and to_time and from_time > to_time:
-        raise HTTPException(status_code=400, detail="from_time must not be later than to_time.")
+    category, _ = _validate_event_filters(from_time, to_time, category)
     stmt = select(SecurityAuditExportRegister)
     if before_id is not None:
         stmt = stmt.where(SecurityAuditExportRegister.id < before_id)

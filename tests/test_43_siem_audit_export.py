@@ -215,3 +215,26 @@ def test_security_event_total_and_offset_are_global_across_sources(client, super
     assert len(first.json()["events"]) == 1
     assert len(second.json()["events"]) == 1
     assert first.json()["events"][0]["event_id"] != second.json()["events"][0]["event_id"]
+
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "from_time=2026-11-02T00:00:00Z&to_time=2026-11-01T00:00:00Z",
+        "category=NOT_A_SECURITY_CATEGORY",
+        "severity=EXTREME",
+    ],
+)
+def test_security_event_query_rejects_invalid_filters(client, superuser_headers, query):
+    response = client.get(f"/v1/api/audit/security-events?{query}", headers=superuser_headers)
+    assert response.status_code == 400
+
+
+def test_security_event_stream_normalizes_supported_filters(client, superuser_headers):
+    response = client.get(
+        "/v1/api/audit/stream?category=%20privacy_consent%20&severity=%20info%20&limit=10",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200
+    assert "application/x-ndjson" in response.headers["content-type"]
