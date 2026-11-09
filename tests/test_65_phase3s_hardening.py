@@ -147,6 +147,27 @@ def test_governance_report_uses_resolution_event_history_after_reopen(multi_tena
         )
         db.add(case)
         db.flush()
+        second_case = ReconciliationInvestigation(
+            external_key="hardening-governance-still-resolved",
+            candidate_type="UNMATCHED_BANK_DEBIT",
+            source_type="BANK_STATEMENT_LINE",
+            source_id=880004,
+            title="Governance still-resolved case",
+            summary="Second case for root-cause recurrence aggregation.",
+            severity="HIGH",
+            status="RESOLVED",
+            opened_by_id=actor.id,
+            opened_at=period_start - timedelta(days=1),
+            updated_at=period_end,
+            sla_due_at=resolved_at - timedelta(hours=1),
+            resolved_at=resolved_at + timedelta(days=1),
+            resolution="Resolved with supporting evidence.",
+            root_cause="TIMING_DIFFERENCE",
+            resolution_quality_status="APPROVED",
+            version=2,
+        )
+        db.add(second_case)
+        db.flush()
         db.add_all([
             ReconciliationInvestigationEvent(
                 investigation_id=case.id,
@@ -172,6 +193,18 @@ def test_governance_report_uses_resolution_event_history_after_reopen(multi_tena
                 }),
                 occurred_at=resolved_at + timedelta(hours=1),
             ),
+            ReconciliationInvestigationEvent(
+                investigation_id=second_case.id,
+                event_type="STATUS_CHANGED",
+                from_status="IN_REVIEW",
+                to_status="RESOLVED",
+                actor_user_id=actor.id,
+                details=json.dumps({
+                    "resolution": "Resolved with supporting evidence.",
+                    "root_cause": "TIMING_DIFFERENCE",
+                }),
+                occurred_at=resolved_at + timedelta(days=1),
+            ),
         ])
         db.commit()
 
@@ -180,9 +213,12 @@ def test_governance_report_uses_resolution_event_history_after_reopen(multi_tena
             generated_at=datetime(2026, 12, 2, tzinfo=timezone.utc),
         )
 
-    assert snapshot["activity"]["resolved"] == 1
+    assert snapshot["activity"]["resolved"] == 2
     assert snapshot["activity"]["reopened_events"] == 1
-    assert snapshot["sla"]["resolved_with_sla"] == 1
-    assert snapshot["sla"]["closed_late"] == 1
+    assert snapshot["sla"]["resolved_with_sla"] == 2
+    assert snapshot["sla"]["closed_late"] == 2
     assert snapshot["closure_quality"]["not_reviewed"] == 1
-    assert snapshot["recurring_recorded_root_causes"] == []
+    assert snapshot["closure_quality"]["approved"] == 1
+    assert snapshot["recurring_recorded_root_causes"] == [
+        {"root_cause": "TIMING_DIFFERENCE", "resolved_cases": 2}
+    ]
