@@ -195,13 +195,16 @@ def test_supplier_invoice_cannot_be_paid_through_generic_expense_endpoint():
         def filter(self, *_args, **_kwargs):
             return self
 
+        def with_for_update(self):
+            return self
+
+        def one_or_none(self):
+            return SimpleNamespace(id=55, status=ExpenseStatusEnum.APPROVED)
+
         def first(self):
             return (123,)
 
     class FakeDb:
-        def get(self, _model, expense_id):
-            return SimpleNamespace(id=expense_id, status=ExpenseStatusEnum.APPROVED)
-
         def query(self, _model):
             return ExistingSupplierInvoiceQuery()
 
