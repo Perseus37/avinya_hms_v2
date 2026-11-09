@@ -317,6 +317,23 @@ def test_monthly_reconciliation_governance_report_is_immutable_and_tenant_scoped
         ))
         db.add_all(rows)
         db.flush()
+        # Monthly activity is derived from immutable lifecycle events, not the
+        # mutable resolved_at/root_cause fields on the investigation records.
+        db.add_all([
+            ReconciliationInvestigationEvent(
+                investigation_id=rows[n - 1].id,
+                event_type="STATUS_CHANGED",
+                from_status="IN_REVIEW",
+                to_status="RESOLVED",
+                actor_user_id=actor.id,
+                details=json.dumps({
+                    "resolution": "Private narrative must not be included in the report.",
+                    "root_cause": "DUPLICATE_REFERENCE",
+                }),
+                occurred_at=period_start + timedelta(days=5+n),
+            )
+            for n in (1, 2)
+        ])
         db.add(ReconciliationInvestigationEvent(
             investigation_id=rows[0].id, event_type="REOPENED",
             from_status="RESOLVED", to_status="IN_REVIEW",
