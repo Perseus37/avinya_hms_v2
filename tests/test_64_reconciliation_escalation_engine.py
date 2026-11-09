@@ -224,7 +224,7 @@ def test_reconciliation_recurrence_summary_groups_repeated_patterns_and_root_cau
                 opened_by_id=actor.id, opened_at=now-timedelta(days=n),
                 updated_at=now, resolved_at=now-timedelta(days=n),
                 closed_by_id=actor.id, resolution="Reconciled after review.",
-                root_cause="  DUPLICATE   REFERENCE " if n == 1 else "duplicate   reference",
+                root_cause="DUPLICATE_REFERENCE",
                 resolution_quality_status="REJECTED" if n == 1 else "APPROVED",
                 reopen_count=1 if n == 1 else 0, version=2,
             )
@@ -242,7 +242,7 @@ def test_reconciliation_recurrence_summary_groups_repeated_patterns_and_root_cau
 
         result = get_reconciliation_recurrence_summary(db=db, window_days=30, min_occurrences=2, limit=10)
         pattern = next(x for x in result["repeated_exception_patterns"] if x["candidate_type"] == "UNMATCHED_BANK_DEBIT")
-        cause = next(x for x in result["recurring_recorded_root_causes"] if x["root_cause"] == "duplicate   reference")
+        cause = next(x for x in result["recurring_recorded_root_causes"] if x["root_cause"] == "DUPLICATE_REFERENCE")
         assert pattern["investigations"] == 2
         assert pattern["distinct_sources"] == 2
         assert pattern["critical_cases"] == 1
@@ -301,7 +301,7 @@ def test_monthly_reconciliation_governance_report_is_immutable_and_tenant_scoped
                 updated_at=period_start + timedelta(days=5+n),
                 resolved_at=period_start + timedelta(days=5+n), closed_by_id=actor.id,
                 resolution="Private narrative must not be included in the report.",
-                root_cause="  DUPLICATE   REFERENCE " if n == 1 else "duplicate   reference",
+                root_cause="DUPLICATE_REFERENCE",
                 resolution_quality_status="REJECTED" if n == 1 else "APPROVED",
                 reopen_count=1 if n == 1 else 0, sla_due_at=period_start + timedelta(days=4+n),
                 version=2,
@@ -380,3 +380,27 @@ def test_monthly_reconciliation_governance_report_is_immutable_and_tenant_scoped
         except DBAPIError:
             db.rollback()
 
+
+
+
+def test_investigation_root_cause_accepts_only_approved_categories():
+    from backend.domains.procurement.investigations import InvestigationTransition
+    from pydantic import ValidationError
+
+    normalized = InvestigationTransition.model_validate({
+        "to_status": "RESOLVED",
+        "expected_version": 1,
+        "root_cause": " duplicate reference ",
+    })
+    assert normalized.root_cause == "DUPLICATE_REFERENCE"
+
+    try:
+        InvestigationTransition.model_validate({
+            "to_status": "RESOLVED",
+            "expected_version": 1,
+            "root_cause": "Patient Jane Doe, account 123456",
+        })
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("Free-text root causes must be rejected")

@@ -6,11 +6,12 @@ type/id/reference and never copies patient or bank-account payloads.
 """
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
@@ -29,6 +30,18 @@ from backend.domains.procurement.models import (
 )
 
 router = APIRouter()
+
+# Investigator-entered root causes are categorical codes, never free text.
+ROOT_CAUSE_CATEGORIES = (
+    "DUPLICATE_REFERENCE",
+    "VENDOR_MISMATCH",
+    "AMOUNT_MISMATCH",
+    "PAYMENT_ALLOCATION_ERROR",
+    "MISSING_SUPPORTING_DOCUMENT",
+    "BANK_STATEMENT_DATA_ERROR",
+    "PROCESS_CONTROL_GAP",
+    "OTHER",
+)
 
 
 class SLAPolicyCreate(BaseModel):
@@ -58,6 +71,17 @@ class InvestigationTransition(BaseModel):
     expected_version: int = Field(ge=1)
     resolution: Optional[str] = Field(default=None, max_length=4000)
     root_cause: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("root_cause")
+    @classmethod
+    def normalize_root_cause(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = re.sub(r"[\s-]+", "_", value.strip().upper())
+        if normalized not in ROOT_CAUSE_CATEGORIES:
+            raise ValueError("root_cause must be an approved categorical code.")
+        return normalized
+
     note: Optional[str] = Field(default=None, max_length=1000)
 
 
@@ -744,24 +768,24 @@ def get_reconciliation_recurrence_summary(
         ReconciliationInvestigation.source_type.asc(),
     ).limit(limit).all()
 
+    normalized_root_cause = func.upper(func.trim(ReconciliationInvestigation.root_cause))
     root_cause_rows = db.query(
-        func.lower(func.trim(ReconciliationInvestigation.root_cause)).label("root_cause"),
+        normalized_root_cause.label("root_cause"),
         func.count(ReconciliationInvestigation.id).label("case_count"),
         func.count(func.distinct(ReconciliationInvestigation.candidate_type)).label("exception_types"),
         func.sum(ReconciliationInvestigation.reopen_count).label("reopen_count"),
         func.sum(case((ReconciliationInvestigation.resolution_quality_status == "REJECTED", 1), else_=0)).label("rejected_reviews"),
     ).filter(
         ReconciliationInvestigation.status == "RESOLVED",
-        ReconciliationInvestigation.root_cause.is_not(None),
-        func.trim(ReconciliationInvestigation.root_cause) != "",
+        normalized_root_cause.in_(ROOT_CAUSE_CATEGORIES),
         ReconciliationInvestigation.resolved_at >= resolved_since,
     ).group_by(
-        func.lower(func.trim(ReconciliationInvestigation.root_cause)),
+        normalized_root_cause,
     ).having(
         func.count(ReconciliationInvestigation.id) >= min_occurrences,
     ).order_by(
         func.count(ReconciliationInvestigation.id).desc(),
-        func.lower(func.trim(ReconciliationInvestigation.root_cause)).asc(),
+        normalized_root_cause.asc(),
     ).limit(limit).all()
 
     return {
@@ -863,19 +887,19 @@ def _governance_report_payload(db: Session, *, period_start: datetime,
         ReconciliationInvestigation.source_type.asc(),
     ).limit(25).all()
 
+    normalized_root_cause = func.upper(func.trim(ReconciliationInvestigation.root_cause))
     cause_rows = db.query(
-        func.lower(func.trim(ReconciliationInvestigation.root_cause)).label("root_cause"),
+        normalized_root_cause.label("root_cause"),
         func.count(ReconciliationInvestigation.id).label("case_count"),
     ).filter(
         ReconciliationInvestigation.status == "RESOLVED",
-        ReconciliationInvestigation.root_cause.is_not(None),
-        func.trim(ReconciliationInvestigation.root_cause) != "",
+        normalized_root_cause.in_(ROOT_CAUSE_CATEGORIES),
         ReconciliationInvestigation.resolved_at >= period_start,
         ReconciliationInvestigation.resolved_at < period_end,
-    ).group_by(func.lower(func.trim(ReconciliationInvestigation.root_cause))).having(
+    ).group_by(normalized_root_cause).having(
         func.count(ReconciliationInvestigation.id) >= 2
     ).order_by(func.count(ReconciliationInvestigation.id).desc(),
-               func.lower(func.trim(ReconciliationInvestigation.root_cause)).asc()).limit(25).all()
+               normalized_root_cause.asc()).limit(25).all()
 
     active_filter = ReconciliationInvestigation.status.in_(("OPEN", "ASSIGNED", "IN_REVIEW"))
     active_count = db.query(func.count(ReconciliationInvestigation.id)).filter(active_filter).scalar() or 0

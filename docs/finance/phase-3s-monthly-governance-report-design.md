@@ -21,7 +21,7 @@ Each report freezes:
 - closure-quality status for cases resolved during the period, as observed at generation time;
 - on-time/late SLA outcomes for cases resolved during the period where an SLA deadline exists;
 - recurring exception patterns grouped by candidate type and source type;
-- recurring human-recorded root-cause labels, normalized only for case and outer whitespace;
+- recurring root-cause categories from an allow-listed code set only; free-text and unknown legacy values are excluded;
 - active backlog at generation time, including severity, overdue and missing-SLA counts.
 
 The report stores aggregate counts and allow-listed categorical labels only. It must not include investigation titles, summaries, resolutions, notes, patient identifiers, bank references, source IDs, user identities, or notification payloads.
@@ -59,3 +59,14 @@ The monthly snapshot is now implemented with:
 - tenant-local sandbox purge classification that temporarily disables and restores the append-only guard during controlled scrubbing.
 
 The implementation test covers monthly aggregates, recurrence, closure quality, SLA results, backlog-at-generation, payload minimization, digest correctness, duplicate/current-month rejection and database-level immutability.
+
+
+## Root-cause data minimization
+
+Investigation root causes are categorical codes, not free text. Accepted values are
+`DUPLICATE_REFERENCE`, `VENDOR_MISMATCH`, `AMOUNT_MISMATCH`,
+`PAYMENT_ALLOCATION_ERROR`, `MISSING_SUPPORTING_DOCUMENT`,
+`BANK_STATEMENT_DATA_ERROR`, `PROCESS_CONTROL_GAP`, and `OTHER`.
+The API normalizes case, surrounding whitespace, spaces and hyphens before validation.
+Recurrence analytics and monthly snapshots include only these approved categories;
+unknown legacy values are excluded and are never copied into aggregate report payloads.
