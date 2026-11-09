@@ -227,6 +227,14 @@ class SupplierPaymentRequestReview(BaseModel):
     approved: bool
     review_notes: str = Field(min_length=3, max_length=2000)
 
+    @field_validator("review_notes")
+    @classmethod
+    def normalize_review_notes(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 3:
+            raise ValueError("review_notes must contain at least three non-whitespace characters.")
+        return normalized
+
 
 class SupplierPaymentRequestExecute(BaseModel):
     payment_date: datetime

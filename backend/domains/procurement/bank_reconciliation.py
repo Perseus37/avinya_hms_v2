@@ -14,7 +14,7 @@ from collections import defaultdict
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -116,6 +116,14 @@ class SupplierPaymentBankMatchCreate(BaseModel):
     supplier_payment_id: int = Field(gt=0)
     amount_paise: int = Field(gt=0)
     reason: str = Field(min_length=5, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 5:
+            raise ValueError("reason must contain at least five non-whitespace characters.")
+        return normalized
 
 
 class SupplierPaymentBankMatchResponse(BaseModel):

@@ -809,3 +809,24 @@ def test_supplier_invoice_uploader_cannot_approve_own_invoice():
 
     assert error.value.status_code == 403
     assert "uploader cannot approve" in error.value.detail.lower()
+
+def test_financial_reasons_reject_whitespace_only_values():
+    import pytest
+    from pydantic import ValidationError
+    from backend.domains.procurement.bank_reconciliation import SupplierPaymentBankMatchCreate
+    from backend.domains.procurement.schemas import SupplierPaymentRequestReview
+    from backend.domains.procurement.investigations import InvestigationTransition
+
+    with pytest.raises(ValidationError):
+        SupplierPaymentBankMatchCreate(
+            supplier_payment_id=1, amount_paise=100, reason="     "
+        )
+    with pytest.raises(ValidationError):
+        SupplierPaymentRequestReview(approved=True, review_notes="   ")
+    for payload in (
+        {"to_status": "RESOLVED", "expected_version": 1, "resolution": "   "},
+        {"to_status": "DISMISSED", "expected_version": 1, "note": "   "},
+    ):
+        with pytest.raises(ValidationError):
+            InvestigationTransition.model_validate(payload)
+

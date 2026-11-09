@@ -73,7 +73,9 @@ def adjudicate_expense(
     if payload.status not in {ExpenseStatusEnum.APPROVED, ExpenseStatusEnum.REJECTED}:
         raise HTTPException(status_code=422, detail="Adjudication can only approve or reject an expense.")
 
-    if payload.status == ExpenseStatusEnum.REJECTED and not payload.rejection_reason:
+    if payload.status == ExpenseStatusEnum.REJECTED and not (
+        payload.rejection_reason and payload.rejection_reason.strip()
+    ):
         raise HTTPException(status_code=400, detail="Rejection reason is mandatory.")
 
     expense.status = payload.status
@@ -81,7 +83,7 @@ def adjudicate_expense(
         expense.approved_by_id = current_user.id
         expense.approved_at = datetime.now(timezone.utc)
     elif payload.status == ExpenseStatusEnum.REJECTED:
-        expense.rejection_reason = payload.rejection_reason
+        expense.rejection_reason = payload.rejection_reason.strip()
 
     expense.updated_by_id = current_user.id
     db.commit()

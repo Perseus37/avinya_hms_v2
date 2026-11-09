@@ -74,6 +74,11 @@ class InvestigationTransition(BaseModel):
     resolution: Optional[str] = Field(default=None, max_length=4000)
     root_cause: Optional[str] = Field(default=None, max_length=120)
 
+    @field_validator("resolution", "note")
+    @classmethod
+    def normalize_required_text(cls, value: Optional[str]) -> Optional[str]:
+        return value.strip() if value is not None else None
+
     @field_validator("root_cause")
     @classmethod
     def normalize_root_cause(cls, value: Optional[str]) -> Optional[str]:
@@ -396,9 +401,12 @@ def transition_reconciliation_investigation(
     }
     if payload.to_status not in allowed.get(row.status, set()):
         raise HTTPException(status_code=409, detail=f"Transition from {row.status} to {payload.to_status} is not allowed.")
-    if payload.to_status == "RESOLVED" and not payload.resolution:
+    if payload.to_status == "RESOLVED" and not (payload.resolution and payload.resolution.strip()):
         raise HTTPException(status_code=422, detail="A resolution note is required to resolve an investigation.")
-    if payload.to_status == "DISMISSED" and not (payload.resolution or payload.note):
+    if payload.to_status == "DISMISSED" and not (
+        (payload.resolution and payload.resolution.strip())
+        or (payload.note and payload.note.strip())
+    ):
         raise HTTPException(status_code=422, detail="A reason is required to dismiss an investigation.")
     old_status = row.status
     row.status = payload.to_status

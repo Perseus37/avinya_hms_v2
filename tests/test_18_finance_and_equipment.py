@@ -202,3 +202,35 @@ def test_04_expense_adjudication_and_payment_are_single_transitions(
         params={"receipt_reference": "BANK-REF-TWICE"},
     )
     assert repeated_payment.status_code == 400
+
+def test_expense_rejection_rejects_whitespace_only_reason(
+    client, superuser_headers, multi_tenant_env
+):
+    draft = client.post(
+        "/v1/api/finance/ap/expenses",
+        headers=superuser_headers,
+        json={
+            "category": "UTILITY",
+            "title": "Whitespace rejection reason test",
+            "amount_paise": 25000,
+            "vendor_name": "Reason Validation Vendor",
+        },
+    )
+    assert draft.status_code == 201
+    expense_id = draft.json()["id"]
+
+    DefaultSession = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with DefaultSession() as db:
+        doctor = db.query(User).filter(User.email == "doctor@default.com").one()
+        expense = db.get(ExpenseRecord, expense_id)
+        expense.created_by_id = doctor.id
+        db.commit()
+
+    rejected = client.patch(
+        f"/v1/api/finance/ap/expenses/{expense_id}/adjudicate",
+        headers=superuser_headers,
+        json={"status": "REJECTED", "rejection_reason": "     "},
+    )
+    assert rejected.status_code == 400
+    assert "mandatory" in rejected.json()["message"].lower()
+
