@@ -928,3 +928,74 @@ def test_reconciliation_candidate_cursor_preserves_as_of_and_rejects_conflicts()
         _decode_reconciliation_candidate_cursor(cursor, date(2026, 11, 9))
     assert error.value.status_code == 422
 
+
+
+def test_supplier_payment_request_cancellation_enforces_actor_and_state_rules():
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.router import cancel_supplier_payment_request
+
+    class FakeQuery:
+        def __init__(self, row):
+            self.row = row
+        def options(self, *_args):
+            return self
+        def filter(self, *_args):
+            return self
+        def with_for_update(self):
+            return self
+        def one_or_none(self):
+            return self.row
+
+    class FakePermissionResult:
+        def __init__(self, allowed):
+            self.allowed = allowed
+        def scalar_one_or_none(self):
+            return 1 if self.allowed else None
+
+    class FakeDb:
+        def __init__(self, row, approver=False):
+            self.row = row
+            self.approver = approver
+            self.committed = False
+        def query(self, *_args):
+            return FakeQuery(self.row)
+        def execute(self, *_args):
+            return FakePermissionResult(self.approver)
+        def commit(self):
+            self.committed = True
+
+    requester = SimpleNamespace(id=10)
+    pending = SimpleNamespace(id=1, requested_by_id=10, status="PENDING", updated_by_id=None)
+    db = FakeDb(pending)
+    result = cancel_supplier_payment_request(1, db, requester)
+    assert result.status == "CANCELLED"
+    assert pending.updated_by_id == 10
+    assert db.committed is True
+
+    approved = SimpleNamespace(id=2, requested_by_id=10, status="APPROVED", updated_by_id=None)
+    with pytest.raises(HTTPException) as requester_error:
+        cancel_supplier_payment_request(2, FakeDb(approved), requester)
+    assert requester_error.value.status_code == 403
+
+    approver = SimpleNamespace(id=20)
+    approver_db = FakeDb(approved, approver=True)
+    result = cancel_supplier_payment_request(2, approver_db, approver)
+    assert result.status == "CANCELLED"
+    assert approved.updated_by_id == 20
+
+    for terminal_status in ("EXECUTED", "REJECTED", "CANCELLED"):
+        terminal = SimpleNamespace(
+            id=3, requested_by_id=10, status=terminal_status, updated_by_id=None
+        )
+        with pytest.raises(HTTPException) as terminal_error:
+            cancel_supplier_payment_request(3, FakeDb(terminal, approver=True), approver)
+        assert terminal_error.value.status_code == 409
+
+    other_pending = SimpleNamespace(
+        id=4, requested_by_id=99, status="PENDING", updated_by_id=None
+    )
+    with pytest.raises(HTTPException) as ownership_error:
+        cancel_supplier_payment_request(4, FakeDb(other_pending), requester)
+    assert ownership_error.value.status_code == 403
