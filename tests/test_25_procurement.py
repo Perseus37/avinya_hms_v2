@@ -596,7 +596,8 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     events_after_reopen = client.get(
         f"/v1/api/procurement/reconciliation/investigations/{case['id']}/events",
         headers=superuser_headers,
-    )    assert events_after_reopen.status_code == 200, events_after_reopen.text
+    )
+    assert events_after_reopen.status_code == 200, events_after_reopen.text
     reopened_event = events_after_reopen.json()[0]
     assert reopened_event["event_type"] == "REOPENED"
     reopened_details = reopened_event["details"]
