@@ -578,7 +578,7 @@ def test_escalation_policy_history_is_bounded_and_reports_filtered_total(multi_t
 
         try:
             list_escalation_policies(
-                active_only=False, page=1, page_size=101, db=db, _=actor
+                active_only=False, page=1, page_size=100000, db=db, _=actor
             )
         except HTTPException as exc:
             assert exc.status_code == 400
