@@ -999,3 +999,59 @@ def test_supplier_payment_request_cancellation_enforces_actor_and_state_rules():
     with pytest.raises(HTTPException) as ownership_error:
         cancel_supplier_payment_request(4, FakeDb(other_pending), requester)
     assert ownership_error.value.status_code == 403
+
+
+
+def test_supplier_payment_request_listing_is_paginated_and_bounded():
+    from types import SimpleNamespace
+
+    from backend.domains.procurement.router import list_supplier_payment_requests
+
+    rows = [SimpleNamespace(id=value) for value in range(1, 4)]
+
+    class FakeQuery:
+        def __init__(self):
+            self.offset_value = None
+            self.limit_value = None
+            self.filtered = []
+        def options(self, *_args):
+            return self
+        def filter(self, expression):
+            self.filtered.append(expression)
+            return self
+        def count(self):
+            return 23
+        def order_by(self, *_args):
+            return self
+        def offset(self, value):
+            self.offset_value = value
+            return self
+        def limit(self, value):
+            self.limit_value = value
+            return self
+        def all(self):
+            assert self.offset_value == 20
+            assert self.limit_value == 10
+            return rows
+
+    query = FakeQuery()
+
+    class FakeDb:
+        def query(self, *_args):
+            return query
+
+    result = list_supplier_payment_requests(
+        status_filter="PENDING",
+        vendor_id=7,
+        page=3,
+        page_size=10,
+        db=FakeDb(),
+    )
+
+    assert result == {
+        "items": rows,
+        "total": 23,
+        "page": 3,
+        "page_size": 10,
+    }
+    assert len(query.filtered) == 2
