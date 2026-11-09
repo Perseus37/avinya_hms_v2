@@ -966,7 +966,7 @@ def test_supplier_payment_request_cancellation_enforces_actor_and_state_rules():
         def commit(self):
             self.committed = True
 
-    requester = SimpleNamespace(id=10)
+    requester = SimpleNamespace(id=10, is_superuser=False)
     pending = SimpleNamespace(id=1, requested_by_id=10, status="PENDING", updated_by_id=None)
     db = FakeDb(pending)
     result = cancel_supplier_payment_request(1, db, requester)
@@ -979,7 +979,7 @@ def test_supplier_payment_request_cancellation_enforces_actor_and_state_rules():
         cancel_supplier_payment_request(2, FakeDb(approved), requester)
     assert requester_error.value.status_code == 403
 
-    approver = SimpleNamespace(id=20)
+    approver = SimpleNamespace(id=20, is_superuser=False)
     approver_db = FakeDb(approved, approver=True)
     result = cancel_supplier_payment_request(2, approver_db, approver)
     assert result.status == "CANCELLED"
