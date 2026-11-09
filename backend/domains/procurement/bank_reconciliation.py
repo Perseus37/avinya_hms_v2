@@ -381,10 +381,13 @@ def list_reconciliation_candidates(
     lines = db.query(BankStatementLine).order_by(BankStatementLine.id).offset(source_offset).limit(source_cap + 1).all()
     more_lines = len(lines) > source_cap
     lines = lines[:source_cap]
+    line_ids = [line.id for line in lines]
     line_matches = dict(
         db.query(
             SupplierPaymentBankMatch.statement_line_id,
             func.coalesce(func.sum(SupplierPaymentBankMatch.amount_paise), 0),
+        ).filter(
+            SupplierPaymentBankMatch.statement_line_id.in_(line_ids)
         ).group_by(SupplierPaymentBankMatch.statement_line_id).all()
     )
     for line in lines:
@@ -412,10 +415,13 @@ def list_reconciliation_candidates(
     payments = db.query(SupplierPayment).order_by(SupplierPayment.id).offset(source_offset).limit(source_cap + 1).all()
     more_payments = len(payments) > source_cap
     payments = payments[:source_cap]
+    payment_ids = [payment.id for payment in payments]
     payment_matches = dict(
         db.query(
             SupplierPaymentBankMatch.supplier_payment_id,
             func.coalesce(func.sum(SupplierPaymentBankMatch.amount_paise), 0),
+        ).filter(
+            SupplierPaymentBankMatch.supplier_payment_id.in_(payment_ids)
         ).group_by(SupplierPaymentBankMatch.supplier_payment_id).all()
     )
     reference_groups = defaultdict(list)
