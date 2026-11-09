@@ -678,8 +678,11 @@ def test_reconciliation_escalation_configuration_and_self_service_preferences(
         headers=superuser_headers,
     )
     assert active.status_code == 200, active.text
+    active_payload = active.json()
+    assert active_payload["total"] == 1
+    assert active_payload["page"] == 1
     active_high = [
-        item for item in active.json()
+        item for item in active_payload["items"]
         if item["severity"] == "HIGH" and item["trigger"] == "WARNING"
     ]
     assert len(active_high) == 1
