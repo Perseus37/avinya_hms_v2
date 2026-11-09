@@ -282,3 +282,19 @@ def test_security_event_source_fetch_orders_by_event_time_not_insert_id(client, 
     )
     assert response.status_code == 200
     assert response.json()["events"][0]["details"]["reason_code"] == "newer-event-time"
+
+def test_security_event_merge_uses_numeric_id_for_equal_timestamp_ties():
+    from backend.domains.audit.router import SiemEvent, _security_event_sort_key
+
+    timestamp = datetime(2026, 11, 8, 12, 0, tzinfo=timezone.utc)
+    events = [
+        SiemEvent(event_id="AUDIT-PRIV-9", timestamp=timestamp, category="PRIVACY_CONSENT",
+                  severity="INFO", action="ALLOW"),
+        SiemEvent(event_id="AUDIT-PRIV-10", timestamp=timestamp, category="PRIVACY_CONSENT",
+                  severity="INFO", action="ALLOW"),
+    ]
+
+    ordered = sorted(events, key=_security_event_sort_key, reverse=True)
+
+    assert [event.event_id for event in ordered] == ["AUDIT-PRIV-10", "AUDIT-PRIV-9"]
+

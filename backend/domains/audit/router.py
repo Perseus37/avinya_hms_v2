@@ -85,6 +85,15 @@ def _validate_event_filters(
     return normalized_category, normalized_severity
 
 
+def _security_event_sort_key(event: SiemEvent) -> tuple[datetime, str, int]:
+    """Match per-source SQL ordering when merging events across ledgers.
+
+    Event IDs are category-prefixed numeric database IDs. Comparing the complete
+    identifier as text would put suffix 9 after suffix 10 and break stable paging.
+    """
+    return event.timestamp, event.category, int(event.event_id.rsplit("-", 1)[1])
+
+
 def _collect_security_events(
     db: Session,
     *,
@@ -285,7 +294,7 @@ def _collect_security_events(
                 )
 
     # Stable tie-breakers prevent records with identical timestamps moving between pages.
-    events.sort(key=lambda e: (e.timestamp, e.category, e.event_id), reverse=True)
+    events.sort(key=_security_event_sort_key, reverse=True)
     paginated = events[offset : offset + limit]
     return total, paginated
 
