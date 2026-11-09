@@ -224,6 +224,8 @@ def test_security_event_total_and_offset_are_global_across_sources(client, super
         "from_time=2026-11-02T00:00:00Z&to_time=2026-11-01T00:00:00Z",
         "category=NOT_A_SECURITY_CATEGORY",
         "severity=EXTREME",
+        "category=%20%20%20",
+        "severity=%20%20%20",
     ],
 )
 def test_security_event_query_rejects_invalid_filters(client, superuser_headers, query):

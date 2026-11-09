@@ -72,8 +72,12 @@ def _validate_event_filters(
 ) -> tuple[Optional[str], Optional[str]]:
     if from_time and to_time and from_time > to_time:
         raise HTTPException(status_code=400, detail="from_time must not be later than to_time.")
-    normalized_category = category.strip().upper() if category else None
-    normalized_severity = severity.strip().upper() if severity else None
+    normalized_category = category.strip().upper() if category is not None else None
+    normalized_severity = severity.strip().upper() if severity is not None else None
+    if category is not None and not normalized_category:
+        raise HTTPException(status_code=400, detail="Category filter must not be blank.")
+    if severity is not None and not normalized_severity:
+        raise HTTPException(status_code=400, detail="Severity filter must not be blank.")
     if normalized_category and normalized_category not in AUDIT_EVENT_CATEGORIES:
         raise HTTPException(status_code=400, detail="Unsupported security event category.")
     if normalized_severity and normalized_severity not in AUDIT_EVENT_SEVERITIES:
