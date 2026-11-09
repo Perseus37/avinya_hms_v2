@@ -8,13 +8,13 @@ import json
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.core.database import get_db
-from backend.core.dependencies import RequirePermission, get_current_user
+from backend.core.dependencies import RequirePermission, get_current_user, validate_pagination
 from backend.domains.identity.models import Role, User
 from backend.domains.procurement.models import (
     ReconciliationEscalationPolicy,
@@ -106,19 +106,31 @@ def create_escalation_policy(
     return _policy_payload(policy)
 
 
-@router.get("/reconciliation/escalation-policies", response_model=list[dict])
+@router.get("/reconciliation/escalation-policies", response_model=dict)
 def list_escalation_policies(
     active_only: bool = False,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
+    page, page_size = validate_pagination(page, page_size)
     query = db.query(ReconciliationEscalationPolicy)
     if active_only:
         query = query.filter(ReconciliationEscalationPolicy.is_active.is_(True))
-    rows = query.order_by(ReconciliationEscalationPolicy.severity,
-                          ReconciliationEscalationPolicy.trigger,
-                          ReconciliationEscalationPolicy.version.desc()).all()
-    return [_policy_payload(row) for row in rows]
+    total = query.count()
+    rows = query.order_by(
+        ReconciliationEscalationPolicy.severity,
+        ReconciliationEscalationPolicy.trigger,
+        ReconciliationEscalationPolicy.version.desc(),
+        ReconciliationEscalationPolicy.id.desc(),
+    ).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "items": [_policy_payload(row) for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.get("/reconciliation/notification-preferences/me", response_model=list[dict])
