@@ -623,7 +623,7 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
     assert events.status_code == 200, events.text
     # Event history is intentionally newest-first to support stable before_id pagination.
     assert [event["event_type"] for event in events.json()] == [
-        "REOPENED", "STATUS_CHANGED", "STATUS_CHANGED", "OPENED"
+        "STATUS_CHANGED", "REOPENED", "STATUS_CHANGED", "STATUS_CHANGED", "OPENED"
     ]
 
 
