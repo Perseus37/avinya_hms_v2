@@ -776,3 +776,36 @@ def test_reconciliation_candidate_cursor_rejects_offsets_outside_database_range(
 
     assert exc.value.status_code == 422
     assert exc.value.detail == "Invalid reconciliation candidate cursor."
+
+
+
+def test_supplier_invoice_uploader_cannot_approve_own_invoice():
+    from types import SimpleNamespace
+
+    import pytest
+    from fastapi import HTTPException
+
+    from backend.domains.procurement.models import VendorInvoiceStatusEnum
+    from backend.domains.procurement.router import approve_vendor_invoice
+
+    actor = SimpleNamespace(id=41)
+    invoice = SimpleNamespace(
+        id=77,
+        created_by_id=actor.id,
+        linked_expense_id=None,
+        status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+    )
+
+    class FakeResult:
+        def scalar_one_or_none(self):
+            return invoice
+
+    class FakeDb:
+        def execute(self, _statement):
+            return FakeResult()
+
+    with pytest.raises(HTTPException) as error:
+        approve_vendor_invoice(77, FakeDb(), actor)
+
+    assert error.value.status_code == 403
+    assert "uploader cannot approve" in error.value.detail.lower()
