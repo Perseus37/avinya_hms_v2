@@ -421,3 +421,61 @@ def test_investigation_root_cause_accepts_only_approved_categories():
         pass
     else:
         raise AssertionError("Free-text root causes must be rejected")
+
+def test_escalation_evaluator_excludes_recipients_without_finance_read(multi_tenant_env):
+    from backend.core.dependencies import user_has_permission
+    from backend.domains.identity.models import Role, User, UserRole
+    from backend.domains.procurement.escalation_engine import evaluate_reconciliation_escalations
+    from backend.domains.procurement.models import (
+        ReconciliationEscalationPolicy,
+        ReconciliationInvestigation,
+        ReconciliationNotificationOutbox,
+        ReconciliationSLAPolicy,
+    )
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    now = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        recipient = db.query(User).filter(User.email == "nurse@default.com").one()
+        assert not user_has_permission(db, recipient, "finance:read")
+        role = Role(code="RECON-NO-FINANCE-READ", name="No finance read")
+        db.add(role)
+        db.flush()
+        db.add(UserRole(user_id=recipient.id, role_id=role.id))
+        sla = ReconciliationSLAPolicy(
+            severity="HIGH", version=92, target_minutes=60, warning_percent=80,
+            is_active=False, created_by_id=actor.id,
+        )
+        db.add(sla)
+        db.flush()
+        policy = ReconciliationEscalationPolicy(
+            severity="HIGH", trigger="BREACHED", version=1, enabled=True,
+            delay_minutes=0, recipient_role_ids=json.dumps([role.id]),
+            channels='["IN_APP"]', is_active=True, created_by_id=actor.id,
+        )
+        case = ReconciliationInvestigation(
+            external_key="test-no-finance-read-recipient",
+            candidate_type="UNMATCHED_BANK_DEBIT",
+            source_type="BANK_STATEMENT_LINE", source_id=99301,
+            title="Restricted notification test",
+            summary="A user without finance read must not receive case metadata.",
+            severity="HIGH", status="OPEN", opened_by_id=actor.id,
+            opened_at=now-timedelta(hours=2), updated_at=now,
+            sla_policy_id=sla.id, sla_policy_version=92,
+            sla_target_minutes=60, sla_warning_percent=80,
+            sla_started_at=now-timedelta(hours=2),
+            sla_due_at=now-timedelta(minutes=1), version=1,
+        )
+        db.add_all([policy, case])
+        db.commit()
+
+        result = evaluate_reconciliation_escalations(db, now=now)
+        assert result["created"] == 0
+        assert result["no_finance_read_recipients"] == 1
+        db.commit()
+        assert db.query(ReconciliationNotificationOutbox).filter_by(
+            recipient_user_id=recipient.id,
+            investigation_id=case.id,
+        ).count() == 0
+

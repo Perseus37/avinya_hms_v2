@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.core.database import get_db
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import RequirePermission
 from backend.domains.identity.models import User
 from backend.domains.procurement.models import ReconciliationNotificationOutbox
 
@@ -44,7 +44,7 @@ def list_my_reconciliation_notifications(
     before_id: int | None = None,
     limit: int = 30,
     db: Session = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(RequirePermission("finance:read")),
 ):
     if before_id is not None and before_id <= 0:
         raise HTTPException(status_code=422, detail="before_id must be positive.")
@@ -77,7 +77,7 @@ def list_my_reconciliation_notifications(
 def mark_my_reconciliation_notification_read(
     notification_id: int,
     db: Session = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(RequirePermission("finance:read")),
 ):
     row = db.query(ReconciliationNotificationOutbox).filter(
         ReconciliationNotificationOutbox.id == notification_id,

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.core.dependencies import user_has_permission
 from backend.domains.identity.models import User, UserRole, UserStatusEnum
 from backend.domains.procurement.models import (
     ReconciliationEscalationPolicy,
@@ -93,6 +94,7 @@ def evaluate_reconciliation_escalations(
         "created": 0,
         "duplicates": 0,
         "no_active_recipients": 0,
+        "no_finance_read_recipients": 0,
         "opted_out": 0,
     }
 
@@ -122,9 +124,16 @@ def evaluate_reconciliation_escalations(
             if not recipients:
                 counts["no_active_recipients"] += 1
                 continue
+            authorized_recipients = [
+                recipient for recipient in recipients
+                if user_has_permission(db, recipient, "finance:read")
+            ]
+            if not authorized_recipients:
+                counts["no_finance_read_recipients"] += 1
+                continue
 
             event_type = "SLA_WARNING" if trigger == "WARNING" else "SLA_BREACHED"
-            for recipient in recipients:
+            for recipient in authorized_recipients:
                 counts["recipients_considered"] += 1
                 preference = db.query(ReconciliationNotificationPreference).filter_by(
                     user_id=recipient.id,
