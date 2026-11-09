@@ -345,3 +345,37 @@ def test_event_filter_time_normalization_treats_naive_as_utc():
     assert normalized_naive == naive.replace(tzinfo=timezone.utc)
     assert normalized_aware == aware
 
+def test_siem_webhook_pins_validated_dns_address_to_connection(
+    client, superuser_headers, monkeypatch
+):
+    import socket
+    import httpcore._backends.sync
+
+    resolver_calls = []
+    connected_hosts = []
+
+    def changing_dns(host, port, *args, **kwargs):
+        resolver_calls.append(host)
+        # A second lookup would return loopback; the actual connection must
+        # use the public address validated by the first lookup.
+        answer = "8.8.8.8" if len(resolver_calls) == 1 else "127.0.0.1"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (answer, port or 443))]
+
+    def record_connection(self, host, port, timeout=None, local_address=None, socket_options=None):
+        connected_hosts.append(host)
+        raise OSError("synthetic connection stop")
+
+    monkeypatch.setattr(socket, "getaddrinfo", changing_dns)
+    monkeypatch.setattr(
+        httpcore._backends.sync.SyncBackend, "connect_tcp", record_connection
+    )
+
+    response = client.post(
+        "/v1/api/audit/siem/webhook-test",
+        headers=superuser_headers,
+        json={"webhook_url": "https://siem.example.test/webhook"},
+    )
+    assert response.status_code == 502
+    assert resolver_calls == ["siem.example.test"]
+    assert connected_hosts == ["8.8.8.8"]
+

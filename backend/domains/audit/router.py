@@ -546,31 +546,51 @@ def test_siem_webhook_connectivity(
         )
 
     try:
-        addr_info = socket.getaddrinfo(hostname, None)
-        for _, _, _, _, sockaddr in addr_info:
-            ip_str = sockaddr[0]
-            try:
-                ip_obj = ipaddress.ip_address(ip_str)
-                cgnat = ipaddress.ip_network("100.64.0.0/10")
-                if (
-                    not ip_obj.is_global
-                    or ip_obj in cgnat
-                    or ip_obj.is_private
-                    or ip_obj.is_loopback
-                    or ip_obj.is_link_local
-                    or ip_obj.is_multicast
-                    or ip_obj.is_reserved
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="SSRF Protection: Webhook destination resolves to a restricted internal or link-local address.",
-                    )
-            except ValueError:
-                pass
-    except socket.gaierror:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        addr_info = socket.getaddrinfo(
+            hostname, port, type=socket.SOCK_STREAM
+        )
+    except (socket.gaierror, ValueError, OSError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot resolve webhook host '{hostname}'.",
+            detail=f"Cannot resolve or parse webhook host '{hostname}'.",
+        ) from exc
+
+    # Validate every DNS answer, then pin the actual TCP connection to these
+    # exact addresses. The TLS layer still receives the original hostname for
+    # certificate verification and SNI.
+    resolved_addresses: list[str] = []
+    cgnat = ipaddress.ip_network("100.64.0.0/10")
+    for _, _, _, _, sockaddr in addr_info:
+        ip_str = sockaddr[0]
+        try:
+            ip_obj = ipaddress.ip_address(ip_str)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="SSRF Protection: DNS returned an invalid address.",
+            ) from exc
+        if (
+            not ip_obj.is_global
+            or ip_obj in cgnat
+            or ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="SSRF Protection: Webhook destination resolves to a restricted internal or link-local address.",
+            )
+        normalized_ip = str(ip_obj)
+        if normalized_ip not in resolved_addresses:
+            resolved_addresses.append(normalized_ip)
+
+    if not resolved_addresses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot resolve webhook host to a usable address.",
         )
 
     test_payload = {
@@ -584,8 +604,54 @@ def test_siem_webhook_connectivity(
     if payload.auth_header:
         headers["Authorization"] = payload.auth_header
 
+    class PinnedNetworkBackend:
+        """Resolve TCP connections only to the addresses validated above."""
+
+        def __init__(self, addresses: list[str]):
+            from httpcore._backends.sync import SyncBackend
+            self._backend = SyncBackend()
+            self._addresses = addresses
+
+        def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+            normalized_host = host.lower().rstrip(".")
+            if normalized_host != hostname.rstrip(".") or not self._addresses:
+                raise OSError("Connection host does not match the validated webhook host.")
+            last_error = None
+            for address in self._addresses:
+                try:
+                    return self._backend.connect_tcp(
+                        address, port, timeout=timeout,
+                        local_address=local_address, socket_options=socket_options,
+                    )
+                except OSError as exc:
+                    last_error = exc
+            raise last_error or OSError("No validated webhook address could be connected.")
+
+        def connect_unix_socket(self, path, timeout=None, socket_options=None):
+            return self._backend.connect_unix_socket(
+                path, timeout=timeout, socket_options=socket_options
+            )
+
+        def sleep(self, seconds):
+            return self._backend.sleep(seconds)
+
+    class PinnedHTTPTransport(httpx.HTTPTransport):
+        def __init__(self, addresses: list[str]):
+            import httpcore
+            import ssl
+            super().__init__(verify=ssl.create_default_context(), trust_env=False)
+            self._pool.close()
+            self._pool = httpcore.ConnectionPool(
+                ssl_context=ssl.create_default_context(),
+                network_backend=PinnedNetworkBackend(addresses),
+            )
+
     try:
-        with httpx.Client(timeout=5.0) as client:
+        transport = PinnedHTTPTransport(resolved_addresses)
+        with httpx.Client(
+            transport=transport, timeout=5.0, trust_env=False,
+            follow_redirects=False,
+        ) as client:
             resp = client.post(payload.webhook_url, json=test_payload, headers=headers)
             return {
                 "success": resp.is_success,
