@@ -70,6 +70,7 @@ def test_reconciliation_candidate_discovery_returns_continuation_cursor(multi_te
 
     engine = multi_tenant_env["tenant_engines"]["hms_default"]
     statements = []
+
     def capture_sql(conn, cursor, statement, parameters, context, executemany):
         if "procurement_supplier_payment_bank_matches" in statement:
             statements.append(statement.lower())
@@ -77,26 +78,28 @@ def test_reconciliation_candidate_discovery_returns_continuation_cursor(multi_te
     event.listen(engine, "before_cursor_execute", capture_sql)
     try:
         with Session(engine) as db:
-        actor = db.query(User).filter(User.email == "admin@default.com").one()
-        batch = BankStatementBatch(
-            account_key="CURSOR-TEST", account_label="Test account",
-            statement_reference="CURSOR-TEST-STATEMENT", period_start=date(2026, 1, 1),
-            period_end=date(2026, 1, 31), opening_balance_paise=0,
-            closing_balance_paise=100100, imported_by_id=actor.id)
-        db.add(batch)
-        db.flush()
-        db.add_all([BankStatementLine(
-            batch_id=batch.id, account_key="CURSOR-TEST",
-            bank_transaction_id=f"CURSOR-TXN-{n:04d}", transaction_date=date(2026, 1, 15),
-            direction="CREDIT", amount_paise=100, bank_reference=f"CURSOR-REF-{n:04d}")
-            for n in range(1001)])
-        db.commit()
-        first = list_reconciliation_candidates(as_of=date(2026, 2, 1), limit=100, cursor=None, db=db, _=actor)
-        second = list_reconciliation_candidates(
-            as_of=date(2026, 2, 1), limit=100, cursor=first["next_cursor"], db=db, _=actor)
+            actor = db.query(User).filter(User.email == "admin@default.com").one()
+            batch = BankStatementBatch(
+                account_key="CURSOR-TEST", account_label="Test account",
+                statement_reference="CURSOR-TEST-STATEMENT", period_start=date(2026, 1, 1),
+                period_end=date(2026, 1, 31), opening_balance_paise=0,
+                closing_balance_paise=100100, imported_by_id=actor.id)
+            db.add(batch)
+            db.flush()
+            db.add_all([BankStatementLine(
+                batch_id=batch.id, account_key="CURSOR-TEST",
+                bank_transaction_id=f"CURSOR-TXN-{n:04d}", transaction_date=date(2026, 1, 15),
+                direction="CREDIT", amount_paise=100, bank_reference=f"CURSOR-REF-{n:04d}")
+                for n in range(1001)])
+            db.commit()
+            first = list_reconciliation_candidates(
+                as_of=date(2026, 2, 1), limit=100, cursor=None, db=db, _=actor)
+            second = list_reconciliation_candidates(
+                as_of=date(2026, 2, 1), limit=100, cursor=first["next_cursor"], db=db, _=actor)
             assert len(first["items"]) == len(second["items"]) == 100
             assert first["truncated"] and first["next_cursor"]
             assert second["items"][0]["source_id"] != first["items"][0]["source_id"]
+
         aggregate_queries = [
             statement for statement in statements
             if "group by" in statement
