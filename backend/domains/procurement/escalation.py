@@ -160,11 +160,27 @@ def update_my_notification_preferences(
             user_id=actor.id, event_type=item.event_type, channel=item.channel
         ).with_for_update().one_or_none()
         if row is None:
-            row = ReconciliationNotificationPreference(
+            new_row = ReconciliationNotificationPreference(
                 user_id=actor.id, event_type=item.event_type, channel=item.channel,
                 enabled=item.enabled, updated_at=now, updated_by_id=actor.id,
             )
-            db.add(row)
+            try:
+                with db.begin_nested():
+                    db.add(new_row)
+                    db.flush()
+                row = new_row
+            except IntegrityError:
+                # Another request may have inserted the unique preference after
+                # our initial SELECT. Roll back only the savepoint and update
+                # the committed winner instead of returning an unhandled 500.
+                row = db.query(ReconciliationNotificationPreference).filter_by(
+                    user_id=actor.id, event_type=item.event_type, channel=item.channel
+                ).with_for_update().one_or_none()
+                if row is None:
+                    raise
+                row.enabled = item.enabled
+                row.updated_at = now
+                row.updated_by_id = actor.id
         else:
             row.enabled = item.enabled
             row.updated_at = now

@@ -486,7 +486,7 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
         "/v1/api/procurement/reconciliation/investigations",
         headers=superuser_headers,
         json={
-            "candidate_type": "UNMATCHED_BANK_DEBIT",
+            "candidate_type": "OTHER_CLASSIFICATION",
             "source_type": "BANK_STATEMENT_LINE",
             "source_id": line_id,
             "title": "Duplicate case",
@@ -894,4 +894,27 @@ def test_bank_statement_import_checks_existing_transaction_ids_in_batches(
 
     assert response.status_code == 201, response.text
     assert len(duplicate_check_queries) == 1
+
+def test_reconciliation_candidate_cursor_preserves_as_of_and_rejects_conflicts():
+    import base64
+    from datetime import date
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.bank_reconciliation import (
+        _decode_reconciliation_candidate_cursor,
+    )
+
+    cursor = base64.urlsafe_b64encode(
+        json.dumps({
+            "source_offset": 1000,
+            "candidate_offset": 0,
+            "as_of": "2026-11-08",
+        }).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    assert _decode_reconciliation_candidate_cursor(cursor, None) == (
+        1000, 0, date(2026, 11, 8)
+    )
+    with pytest.raises(HTTPException) as error:
+        _decode_reconciliation_candidate_cursor(cursor, date(2026, 11, 9))
+    assert error.value.status_code == 422
 

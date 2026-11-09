@@ -479,3 +479,54 @@ def test_escalation_evaluator_excludes_recipients_without_finance_read(multi_ten
             investigation_id=case.id,
         ).count() == 0
 
+def test_reconciliation_dashboard_retains_resolution_activity_after_reopen(multi_tenant_env):
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.investigations import get_reconciliation_finance_dashboard
+    from backend.domains.procurement.models import (
+        ReconciliationInvestigation,
+        ReconciliationInvestigationEvent,
+    )
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    now = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        case = ReconciliationInvestigation(
+            external_key="dashboard-resolved-then-reopened",
+            candidate_type="UNMATCHED_BANK_DEBIT",
+            source_type="BANK_STATEMENT_LINE", source_id=99501,
+            title="Resolved then reopened",
+            summary="Historical dashboard activity must remain visible.",
+            severity="HIGH", status="IN_REVIEW", opened_by_id=actor.id,
+            opened_at=now-timedelta(days=3), updated_at=now,
+            resolution=None, root_cause=None, resolved_at=None,
+            reopen_count=1, version=3,
+        )
+        db.add(case)
+        db.flush()
+        db.add_all([
+            ReconciliationInvestigationEvent(
+                investigation_id=case.id, event_type="STATUS_CHANGED",
+                from_status="IN_REVIEW", to_status="RESOLVED",
+                actor_user_id=actor.id,
+                details=json.dumps({"root_cause": "DUPLICATE_REFERENCE"}),
+                occurred_at=now-timedelta(days=2),
+            ),
+            ReconciliationInvestigationEvent(
+                investigation_id=case.id, event_type="REOPENED",
+                from_status="RESOLVED", to_status="IN_REVIEW",
+                actor_user_id=actor.id, details='{"reason":"reopened for follow-up"}',
+                occurred_at=now-timedelta(days=1),
+            ),
+        ])
+        db.commit()
+
+        dashboard = get_reconciliation_finance_dashboard(
+            db=db, window_days=30, queue_limit=10
+        )
+        assert dashboard["period_activity"]["resolved"] >= 1
+        assert {
+            "root_cause": "DUPLICATE_REFERENCE",
+            "resolved_cases": 1,
+        } in dashboard["period_activity"]["root_causes"]
+

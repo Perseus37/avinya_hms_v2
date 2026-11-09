@@ -271,14 +271,15 @@ def create_reconciliation_investigation(
     source = db.get(_source_model(payload.source_type), payload.source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Reconciliation source record not found.")
-    external_key = f"{payload.candidate_type}:{payload.source_type}:{payload.source_id}"
+    external_key = f"{payload.source_type}:{payload.source_id}"
     now = datetime.now(timezone.utc)
     policy = db.query(ReconciliationSLAPolicy).filter(
         ReconciliationSLAPolicy.severity == payload.severity,
         ReconciliationSLAPolicy.is_active.is_(True),
     ).one_or_none()
     existing = db.query(ReconciliationInvestigation).filter(
-        ReconciliationInvestigation.external_key == external_key
+        ReconciliationInvestigation.source_type == payload.source_type,
+        ReconciliationInvestigation.source_id == payload.source_id,
     ).one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail={

@@ -374,6 +374,30 @@ def list_bank_statement_line_matches(
 
 
 
+def _decode_reconciliation_candidate_cursor(
+    cursor: str,
+    requested_as_of: Optional[date],
+) -> tuple[int, int, date]:
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+        source_offset = int(decoded["source_offset"])
+        candidate_offset = int(decoded["candidate_offset"])
+        cursor_as_of = date.fromisoformat(decoded["as_of"])
+        if requested_as_of is not None and requested_as_of != cursor_as_of:
+            raise ValueError("Cursor as_of does not match the requested date.")
+        source_cap = 1000
+        if (
+            source_offset < 0
+            or source_offset > (2**63 - 1)
+            or candidate_offset < 0
+            or source_offset % source_cap
+        ):
+            raise ValueError("Invalid cursor position")
+        return source_offset, candidate_offset, cursor_as_of
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid reconciliation candidate cursor.") from exc
+
+
 @router.get("/reconciliation/candidates", response_model=dict)
 def list_reconciliation_candidates(
     as_of: Optional[date] = Query(default=None),
@@ -387,6 +411,7 @@ def list_reconciliation_candidates(
     These are indicators only: no candidate is a fraud finding, accounting
     classification, or automatically created/closed investigation.
     """
+    requested_as_of = as_of
     as_of = as_of or date.today()
     candidates = []
     source_cap = 1000
@@ -395,21 +420,9 @@ def list_reconciliation_candidates(
     # Direct unit callers may see FastAPI's Query sentinel as the Python default.
     # Only decode an actual cursor string; HTTP requests supply str or None.
     if isinstance(cursor, str) and cursor:
-        try:
-            decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
-            source_offset = int(decoded["source_offset"])
-            candidate_offset = int(decoded["candidate_offset"])
-            # PostgreSQL OFFSET is a signed 64-bit integer. Reject forged or
-            # corrupted cursors before the value reaches the database driver.
-            if (
-                source_offset < 0
-                or source_offset > (2**63 - 1)
-                or candidate_offset < 0
-                or source_offset % source_cap
-            ):
-                raise ValueError("Invalid cursor position")
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError) as exc:
-            raise HTTPException(status_code=422, detail="Invalid reconciliation candidate cursor.") from exc
+        source_offset, candidate_offset, as_of = _decode_reconciliation_candidate_cursor(
+            cursor, requested_as_of
+        )
 
     lines = db.query(BankStatementLine).order_by(BankStatementLine.id).offset(source_offset).limit(source_cap + 1).all()
     more_lines = len(lines) > source_cap
@@ -509,9 +522,17 @@ def list_reconciliation_candidates(
     next_candidate_offset = candidate_offset + len(page_items)
     has_more_sources = more_lines or more_payments or more_overdue
     if next_candidate_offset < len(candidates):
-        next_position = {"source_offset": source_offset, "candidate_offset": next_candidate_offset}
+        next_position = {
+            "source_offset": source_offset,
+            "candidate_offset": next_candidate_offset,
+            "as_of": as_of.isoformat(),
+        }
     elif has_more_sources:
-        next_position = {"source_offset": source_offset + source_cap, "candidate_offset": 0}
+        next_position = {
+            "source_offset": source_offset + source_cap,
+            "candidate_offset": 0,
+            "as_of": as_of.isoformat(),
+        }
     else:
         next_position = None
     next_cursor = None
