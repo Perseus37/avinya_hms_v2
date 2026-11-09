@@ -240,3 +240,45 @@ def test_security_event_stream_normalizes_supported_filters(client, superuser_he
     )
     assert response.status_code == 200
     assert "application/x-ndjson" in response.headers["content-type"]
+
+
+
+def test_security_event_source_fetch_orders_by_event_time_not_insert_id(client, superuser_headers):
+    """A late insert with an older event time must not displace a newer event."""
+    from datetime import timedelta
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.privacy.models import PrivacyDecisionAudit
+    from sqlalchemy.orm import Session
+
+    engine = tenant_engine_pool.get_engine("hms_default")
+    now = datetime.now(timezone.utc)
+    with Session(bind=engine) as session:
+        session.add(
+            PrivacyDecisionAudit(
+                actor_user_id=1,
+                data_use_point="audit.timestamp.ordering",
+                mode="ENFORCE",
+                result="ALLOW",
+                reason_code="newer-event-time",
+                occurred_at=now,
+            )
+        )
+        session.commit()
+        session.add(
+            PrivacyDecisionAudit(
+                actor_user_id=1,
+                data_use_point="audit.timestamp.ordering",
+                mode="ENFORCE",
+                result="ALLOW",
+                reason_code="older-event-time-late-insert",
+                occurred_at=now - timedelta(days=30),
+            )
+        )
+        session.commit()
+
+    response = client.get(
+        "/v1/api/audit/security-events?category=PRIVACY_CONSENT&limit=1&offset=0",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200
+    assert response.json()["events"][0]["details"]["reason_code"] == "newer-event-time"

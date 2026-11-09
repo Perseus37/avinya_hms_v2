@@ -142,7 +142,7 @@ def _collect_security_events(
             q = q.where(PrivacyDecisionAudit.occurred_at >= from_time)
         if to_time:
             q = q.where(PrivacyDecisionAudit.occurred_at <= to_time)
-        p_audits = db.execute(q.order_by(desc(PrivacyDecisionAudit.id)).limit(fetch_limit)).scalars().all()
+        p_audits = db.execute(q.order_by(desc(PrivacyDecisionAudit.occurred_at), desc(PrivacyDecisionAudit.id)).limit(fetch_limit)).scalars().all()
 
         for pa in p_audits:
             sev = "INFO"
@@ -181,7 +181,7 @@ def _collect_security_events(
             q_bg = q_bg.where(BreakGlassGrant.created_at >= from_time)
         if to_time:
             q_bg = q_bg.where(BreakGlassGrant.created_at <= to_time)
-        bg_records = db.execute(q_bg.order_by(desc(BreakGlassGrant.id)).limit(fetch_limit)).scalars().all()
+        bg_records = db.execute(q_bg.order_by(desc(BreakGlassGrant.created_at), desc(BreakGlassGrant.id)).limit(fetch_limit)).scalars().all()
 
         for bg in bg_records:
             sev = "CRITICAL"
@@ -218,7 +218,7 @@ def _collect_security_events(
             q_br = q_br.where(PrivacyDataBreachIncident.created_at >= from_time)
         if to_time:
             q_br = q_br.where(PrivacyDataBreachIncident.created_at <= to_time)
-        breaches = db.execute(q_br.order_by(desc(PrivacyDataBreachIncident.id)).limit(fetch_limit)).scalars().all()
+        breaches = db.execute(q_br.order_by(desc(PrivacyDataBreachIncident.created_at), desc(PrivacyDataBreachIncident.id)).limit(fetch_limit)).scalars().all()
 
         for br in breaches:
             sev = br.severity.value if hasattr(br.severity, "value") else str(br.severity)
@@ -260,7 +260,7 @@ def _collect_security_events(
             q_ret = q_ret.where(PrivacyRetentionRunLedger.executed_at >= from_time)
         if to_time:
             q_ret = q_ret.where(PrivacyRetentionRunLedger.executed_at <= to_time)
-        runs = db.execute(q_ret.order_by(desc(PrivacyRetentionRunLedger.id)).limit(fetch_limit)).scalars().all()
+        runs = db.execute(q_ret.order_by(desc(PrivacyRetentionRunLedger.executed_at), desc(PrivacyRetentionRunLedger.id)).limit(fetch_limit)).scalars().all()
 
         for ret in runs:
             sev = "INFO" if ret.dry_run else "MEDIUM"
