@@ -389,6 +389,9 @@ def test_reconciliation_candidate_discovery_classifies_all_source_indicators():
         def group_by(self, *_args):
             return self
 
+        def having(self, *_args):
+            return self
+
         def all(self):
             return self.rows
 
