@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from backend.core.database import get_db
-from backend.core.dependencies import RequirePermission
-from backend.domains.identity.models import User
+from backend.core.dependencies import RequirePermission, user_has_permission
+from backend.domains.identity.models import User, UserStatusEnum
 from backend.domains.procurement.models import VendorInvoice
 from backend.domains.finance.models import (
     ExpenseCategoryEnum,
@@ -59,6 +59,13 @@ def adjudicate_expense(
         raise HTTPException(
             status_code=409,
             detail=f"Cannot adjudicate an expense in '{expense.status.value}' state. Only PENDING_APPROVAL expenses can be adjudicated.",
+        )
+
+    # Maker-checker: the user who created an expense cannot decide it.
+    if expense.created_by_id is not None and expense.created_by_id == current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Expense creators cannot approve or reject their own expenses.",
         )
 
     if payload.status not in {ExpenseStatusEnum.APPROVED, ExpenseStatusEnum.REJECTED}:
@@ -113,6 +120,12 @@ def create_recurring_expense(
     current_user: User = Depends(RequirePermission("finance:write"))
 ):
     """Sets up a periodic expense schedule (e.g., Monthly Rent)."""
+    if payload.auto_approve and not user_has_permission(db, current_user, "finance:approve"):
+        raise HTTPException(
+            status_code=403,
+            detail="finance:approve permission is required to configure recurring auto-approval.",
+        )
+
     template = RecurringExpenseTemplate(
         **payload.model_dump(),
         created_by_id=current_user.id
@@ -144,14 +157,29 @@ def process_due_recurring_expenses(
 
     generated_count = 0
     for t in templates:
-        # Generate the expense
-        status_val = ExpenseStatusEnum.APPROVED if t.auto_approve else ExpenseStatusEnum.PENDING_APPROVAL
+        # Auto-approval is a pre-authorized action by the template creator.
+        # Re-check the creator's current status and approval permission so revoked
+        # access cannot continue approving future recurring expenses.
+        authorizer = db.get(User, t.created_by_id) if t.created_by_id is not None else None
+        auto_approval_authorized = bool(
+            t.auto_approve
+            and authorizer is not None
+            and authorizer.status == UserStatusEnum.ACTIVE
+            and user_has_permission(db, authorizer, "finance:approve")
+        )
+        status_val = (
+            ExpenseStatusEnum.APPROVED
+            if auto_approval_authorized
+            else ExpenseStatusEnum.PENDING_APPROVAL
+        )
         expense = ExpenseRecord(
             category=t.category,
             title=f"{t.title} - {now.strftime('%b %Y')}",
             amount_paise=t.amount_paise,
             vendor_name=t.vendor_name,
             status=status_val,
+            approved_by_id=authorizer.id if auto_approval_authorized else None,
+            approved_at=now if auto_approval_authorized else None,
             recurring_template_id=t.id,
             due_date=now + relativedelta(days=7) # Default 7 day grace period
         )
