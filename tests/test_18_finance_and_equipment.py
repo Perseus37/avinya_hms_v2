@@ -32,7 +32,7 @@ def test_01_accounts_payable_maker_checker_workflow(client, superuser_headers):
         json={"status": "REJECTED", "rejection_reason": "Duplicate invoice submitted by vendor"}
     )
     assert self_reject.status_code == 403
-    assert "creators cannot" in self_reject.json()["detail"].lower()
+    assert "creators cannot" in self_reject.json()["message"].lower()
 
 
 def test_02_recurring_expense_cron_generation(client, superuser_headers, multi_tenant_env):
