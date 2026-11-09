@@ -64,6 +64,21 @@ AUDIT_EVENT_CATEGORIES = frozenset({
 AUDIT_EVENT_SEVERITIES = frozenset({"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"})
 
 
+def _normalize_event_filter_times(
+    from_time: Optional[datetime],
+    to_time: Optional[datetime],
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Treat naive filter timestamps as UTC and normalize aware values to UTC."""
+    def normalize(value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    return normalize(from_time), normalize(to_time)
+
+
 def _validate_event_filters(
     from_time: Optional[datetime],
     to_time: Optional[datetime],
@@ -315,6 +330,7 @@ def get_security_events(
     actor: User = Depends(RequirePermission("privacy:read")),
 ):
     """Returns normalized security audit logs formatted for SOC/SIEM inspection."""
+    from_time, to_time = _normalize_event_filter_times(from_time, to_time)
     category, severity = _validate_event_filters(from_time, to_time, category, severity)
     total, events = _collect_security_events(
         db,
@@ -419,6 +435,7 @@ def list_security_audit_exports(
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("privacy:read")),
 ):
+    from_time, to_time = _normalize_event_filter_times(from_time, to_time)
     category, _ = _validate_event_filters(from_time, to_time, category)
     stmt = select(SecurityAuditExportRegister)
     if before_id is not None:

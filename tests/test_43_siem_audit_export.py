@@ -320,3 +320,28 @@ def test_siem_webhook_rejects_malformed_ipv6_url(client, superuser_headers):
     assert response.status_code == 400
     assert response.json()["message"] == "Invalid webhook URL."
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "from_time=2026-11-01T00:00:00Z&to_time=2026-11-02T00:00:00",
+        "from_time=2026-11-01T00:00:00&to_time=2026-11-02T00:00:00Z",
+    ],
+)
+def test_security_event_filters_accept_mixed_timezone_inputs(client, superuser_headers, query):
+    response = client.get(
+        f"/v1/api/audit/security-events?{query}",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200
+
+
+def test_event_filter_time_normalization_treats_naive_as_utc():
+    from backend.domains.audit.router import _normalize_event_filter_times
+
+    naive = datetime(2026, 11, 1, 12, 0)
+    aware = datetime(2026, 11, 1, 13, 0, tzinfo=timezone.utc)
+    normalized_naive, normalized_aware = _normalize_event_filter_times(naive, aware)
+
+    assert normalized_naive == naive.replace(tzinfo=timezone.utc)
+    assert normalized_aware == aware
+
