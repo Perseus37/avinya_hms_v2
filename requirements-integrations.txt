@@ -1,0 +1,2 @@
+azure-communication-email>=1.1.0,<2
+boto3>=1.43.114,<2

@@ -1,0 +1,116 @@
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+:root {
+  --bg-app: #090d16;
+  --bg-card: #0f172a;
+  --bg-elevated: #1e293b;
+  --border-dim: #1e293b;
+  --border-bright: #334155;
+  --text-main: #f8fafc;
+  --text-dim: #94a3b8;
+  --cyan-accent: #38bdf8;
+  --emerald-accent: #34d399;
+  --rose-alert: #f43f5e;
+  --amber-warning: #fbbf24;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', sans-serif;
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  height: 100vh;
+  width: 100vw;
+}
+
+/* Custom scrollbars for high-density clinical lists */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #090d16;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* =========================================================================
+   STATUTORY PRINTING MEDIA STYLES
+   Ensures window.print() only prints the target slip/document, never the app
+   ========================================================================= */
+@media print {
+  /* Hide the rest of the application chrome */
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    height: auto !important;
+    width: 100% !important;
+    overflow: visible !important;
+  }
+
+  header, nav, aside, .no-print, button, input, select {
+    display: none !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .print-area, .print-area * {
+    visibility: visible !important;
+  }
+
+  .print-area {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 24px !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Printable wristband / barcode formatting */
+  .print-wristband {
+    width: 320px !important;
+    padding: 12px !important;
+    border: 2px dashed #000000 !important;
+    color: #000000 !important;
+    background: #ffffff !important;
+  }
+
+  /* Dark mode text inversion for physical printer */
+  .print-area .text-slate-100,
+  .print-area .text-slate-200,
+  .print-area .text-slate-300,
+  .print-area .text-slate-400,
+  .print-area .text-slate-500,
+  .print-area .text-white {
+    color: #111827 !important;
+  }
+
+  .print-area .bg-slate-900,
+  .print-area .bg-slate-950,
+  .print-area .bg-slate-800 {
+    background: #ffffff !important;
+    border-color: #d1d5db !important;
+  }
+
+  .print-area .border-slate-800,
+  .print-area .border-slate-700 {
+    border-color: #e5e7eb !important;
+  }
+}

@@ -1,0 +1,222 @@
+import os
+from typing import Optional
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
+
+
+class Settings(BaseSettings):
+
+    ENVIRONMENT: str
+    DEVELOPMENT_AUTO_CREATE_SCHEMA: bool
+    CONTROL_PLANE_MASTER_KEY: Optional[str] = None
+    CONTROL_PLANE_LEGACY_MASTER_KEY_ENABLED: bool = False
+    CONTROL_PLANE_ACCESS_TOKEN_MINUTES: int = Field(default=15, ge=5, le=60)
+    LOGIN_LOCKOUT_MINUTES: int = Field(default=15, ge=1, le=1440)
+    MFA_REQUIRED_FOR_PRIVILEGED: bool = True
+    PRIVACY_ALLOW_AUDIT_ONLY: bool = False
+    PRIVACY_ALLOW_RETENTION_DRY_RUN: bool = False
+    PRIVACY_ALLOW_RETENTION_EXECUTE: bool = False
+    ENABLE_PRODUCTION_API_DOCS: bool = False
+    TRUSTED_PROXY_IPS: str = ""
+    WS_MAX_CONNECTIONS: int = Field(default=100, ge=1, le=10000)
+    WS_MAX_WAITING_ROOM_CONNECTIONS: int = Field(default=25, ge=1, le=10000)
+    BREAK_GLASS_MAX_REQUESTS_PER_DAY: int = Field(default=5, ge=1, le=100)
+    HL7_TLS_CERT_FILE: Optional[str] = None
+    HL7_TLS_KEY_FILE: Optional[str] = None
+    HL7_CLIENT_IDLE_TIMEOUT_SECONDS: int = Field(default=300, ge=1, le=3600)
+    HL7_LISTEN_HOST: str = "127.0.0.1"
+    HL7_PORT: int = Field(default=2575, gt=0, le=65535)
+    TENANT_URL_TEMPLATE: Optional[str] = None
+    API_PORT: int = Field(gt=0, le=65535)
+    API_SERVICE_HOST: str
+    CONTROL_PLANE_PORT: int = Field(gt=0, le=65535)
+    GUNICORN_WORKERS: int = Field(gt=0)
+    TENANT_DATABASE_PREFIX: str = Field(
+        min_length=1, max_length=13, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    APP_TIMEZONE: str
+    MAX_PAGE_SIZE: int = Field(gt=0)
+    MIGRATION_PREVIEW_ROWS: int = Field(gt=0)
+    MIGRATION_PREVIEW_ERROR_LIMIT: int = Field(gt=0)
+    MIGRATION_MAX_UPLOAD_BYTES: int = Field(gt=0)
+    ATTACHMENTS_STORAGE_DIR: str = "attachments"
+    MAX_ATTACHMENT_UPLOAD_BYTES: int = Field(gt=0)
+    CLAMD_HOST: str = "clamav"
+    CLAMD_PORT: int = Field(default=3310, gt=0, le=65535)
+    CLAMD_TIMEOUT_SECONDS: int = Field(default=60, ge=1, le=300)
+    MIGRATION_MAX_EXPRESSION_DEPTH: int = Field(gt=0)
+    MIGRATION_MAX_INPUTS: int = Field(gt=0)
+    BACKUP_INTERVAL_SECONDS: int = Field(gt=0)
+    BACKUP_OUTPUT_DIR: str
+    VAULT_POLL_INTERVAL_SECONDS: int = Field(gt=0)
+    
+    # 1. Platform & Default Tenant Identity
+    PLATFORM_NAME: str
+    BASE_DOMAIN: str
+    DEFAULT_TENANT_SLUG: str
+    DEFAULT_HOSPITAL_NAME: str
+    DEFAULT_BRANCH_CODE: str
+    VERSION: str
+
+    # 2. Atomic PostgreSQL Settings 
+    POSTGRES_USER: str
+    POSTGRES_PASSWORD: str
+    POSTGRES_DB: str
+    POSTGRES_HOST: str
+    POSTGRES_PORT: int
+    CONTROL_PLANE_DB_NAME: str
+
+    # 3. Atomic Redis Settings
+    REDIS_HOST: str
+    REDIS_PORT: int
+    REDIS_DB: int
+    REDIS_PASSWORD: str
+
+    # 4. Security & Initial Seed
+    SECRET_KEY: str = Field(min_length=32)
+    ENVELOPE_ENCRYPTION_PREVIOUS_SECRET_KEY: Optional[str] = None
+    ENVELOPE_ENCRYPTION_PREVIOUS_SALT: Optional[str] = None
+    MASTER_ONBOARDING_KEY: str = Field(min_length=16)
+    ALGORITHM: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int
+    CORS_ORIGINS: str
+    SEED_ADMIN_EMAIL: str
+    SEED_ADMIN_PASSWORD: str
+    ENVELOPE_ENCRYPTION_SALT: str
+
+    # 5. SMTP & Backup Settings
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM: str
+    MAIL_PROVIDER: str
+    AWS_SES_REGION: Optional[str] = None
+    AZURE_COMMUNICATION_CONNECTION_STRING: Optional[str] = None
+    AZURE_COMMUNICATION_SENDER: Optional[str] = None
+
+    @field_validator("MAIL_PROVIDER")
+    @classmethod
+    def validate_mail_provider(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"smtp", "aws_ses", "azure_communication_services"}:
+            raise ValueError(
+                "MAIL_PROVIDER must be smtp, aws_ses, or azure_communication_services."
+            )
+        return normalized
+
+    @field_validator("POSTGRES_HOST")
+    @classmethod
+    def resolve_postgres_host(cls, value: str) -> str:
+        """Auto-resolves Docker container service names to 127.0.0.1 when running natively on the host in dev/test (N-50)."""
+        if value.strip().lower() in {"db", "postgres"}:
+            if os.getenv("ENVIRONMENT", "development").strip().lower() not in {"production", "prod", "staging"}:
+                import socket
+                try:
+                    socket.gethostbyname(value)
+                except OSError:
+                    return "127.0.0.1"
+        return value
+
+    @field_validator("REDIS_HOST")
+    @classmethod
+    def resolve_redis_host(cls, value: str) -> str:
+        """Auto-resolves Docker container service names to 127.0.0.1 when running natively on the host in dev/test (N-50)."""
+        if value.strip().lower() in {"redis", "redis-cache"}:
+            if os.getenv("ENVIRONMENT", "development").strip().lower() not in {"production", "prod", "staging"}:
+                import socket
+                try:
+                    socket.gethostbyname(value)
+                except OSError:
+                    return "127.0.0.1"
+        return value
+
+    @field_validator("CLAMD_HOST")
+    @classmethod
+    def resolve_clamd_host(cls, value: str) -> str:
+        """Auto-resolves Docker container service names to 127.0.0.1 when running natively on the host in dev/test (N-50)."""
+        if value.strip().lower() in {"clamav"}:
+            if os.getenv("ENVIRONMENT", "development").strip().lower() not in {"production", "prod", "staging"}:
+                import socket
+                try:
+                    socket.gethostbyname(value)
+                except OSError:
+                    return "127.0.0.1"
+        return value
+
+    BACKUP_ENCRYPTION_SALT: str
+    BACKUP_OFFHOST_ENABLED: bool = False
+    BACKUP_OFFHOST_REMOTE_DIR: Optional[str] = None
+    BACKUP_OFFHOST_S3_BUCKET: Optional[str] = None
+    BACKUP_OFFHOST_S3_ENDPOINT_URL: Optional[str] = None
+    BACKUP_OFFHOST_S3_REGION: Optional[str] = None
+    BACKUP_OFFHOST_S3_ACCESS_KEY: Optional[str] = None
+    BACKUP_OFFHOST_S3_SECRET_KEY: Optional[str] = None
+    BACKUP_OFFHOST_S3_PREFIX: str = "backups"
+
+    @model_validator(mode="after")
+    def block_privacy_audit_mode_in_production(self):
+        if (
+            self.is_production()
+            and (
+                self.PRIVACY_ALLOW_AUDIT_ONLY
+                or self.PRIVACY_ALLOW_RETENTION_DRY_RUN
+                or self.PRIVACY_ALLOW_RETENTION_EXECUTE
+            )
+        ):
+            raise ValueError(
+                "Privacy audit-only and retention dry-run must be disabled in production."
+            )
+        return self
+
+    # Telemetry and Observability (M-13)
+    METRICS_SCRAPE_TOKEN: Optional[str] = None
+
+    # Payment keys
+    STRIPE_SECRET_KEY: Optional[str] = None
+    STRIPE_WEBHOOK_SECRET: Optional[str] = None
+
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT.strip().lower() in {"production", "prod", "staging"}
+
+    @property
+    def DATABASE_URL(self) -> str:
+        """Dynamically constructs the URL from POSTGRES_* variables so 'db' and 'api' never mismatch."""
+        return URL.create(
+            drivername="postgresql+psycopg2",
+            username=self.POSTGRES_USER,
+            password=self.POSTGRES_PASSWORD,
+            host=self.POSTGRES_HOST,
+            port=self.POSTGRES_PORT,
+            database=self.POSTGRES_DB,
+        ).render_as_string(hide_password=False)
+
+    @property
+    def REDIS_URL(self) -> str:
+        return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+
+    @property
+    def PROJECT_NAME(self) -> str:
+        return self.PLATFORM_NAME
+
+    def tenant_url(self, slug: str) -> str:
+        """Return the public base URL for a tenant using one deployment setting."""
+        template = self.TENANT_URL_TEMPLATE
+        if template:
+            return template.replace("{slug}", slug).replace(
+                "{BASE_DOMAIN}", self.BASE_DOMAIN
+            )
+
+        if self.is_production():
+            return f"https://{slug}.{self.BASE_DOMAIN}"
+        return f"http://{slug}.{self.BASE_DOMAIN}:{self.API_PORT}"
+
+    @property
+    def API_INTERNAL_URL(self) -> str:
+        return f"http://{self.API_SERVICE_HOST}:{self.API_PORT}"
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+
+settings = Settings()

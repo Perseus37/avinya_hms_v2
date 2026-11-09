@@ -1,0 +1,84 @@
+# Reconciliation Investigation Lifecycle Foundation
+
+## Purpose
+
+The source-candidate endpoint identifies records requiring human reconciliation review. This slice adds a durable case lifecycle without automatically deciding accounting outcomes or treating indicators as fraud.
+
+## Data model
+
+- `procurement_reconciliation_investigations` stores one case per stable candidate/source identity.
+- Source identity is polymorphic (`source_type`, `source_id`) and deliberately does not create a foreign key into bank/payment tables. This avoids coupling the investigation retention lifecycle to operational source deletion.
+- `external_key` is unique and prevents duplicate cases for the same candidate type and source record.
+- Severity, status, assignment, resolution, root-cause label, and optimistic version are stored on the case.
+- `procurement_reconciliation_investigation_events` records opening, assignment and status transitions. Database triggers prevent event updates/deletes on PostgreSQL and SQLite.
+
+No patient data, raw account numbers, bank statement descriptions, or full source snapshots are copied into an investigation. The caller supplies a short title, summary, and optional source reference.
+
+## API
+
+- `POST /api/procurement/reconciliation/investigations` — open a case from an existing bank statement line, supplier payment, or supplier payment request (`finance:write`).
+- `GET /api/procurement/reconciliation/investigations` — paginated case list with status, severity, and assignee filters (`finance:read`).
+- `PATCH /api/procurement/reconciliation/investigations/{id}/assign` — assign/reassign an open case with optimistic version check (`finance:write`).
+- `PATCH /api/procurement/reconciliation/investigations/{id}/transition` — move case to review, resolved, or dismissed with optimistic version check (`finance:approve`).
+- `GET /api/procurement/reconciliation/investigations/{id}/events` — append-only case history (`finance:read`).
+
+Allowed transitions:
+
+- OPEN → ASSIGNED (assignment) or IN_REVIEW or DISMISSED
+- ASSIGNED → IN_REVIEW or DISMISSED
+- IN_REVIEW → RESOLVED or DISMISSED
+- RESOLVED and DISMISSED are terminal in this first slice.
+
+A resolution note is mandatory for RESOLVED; a reason is mandatory for DISMISSED. A case's version increments on every mutation; stale writes return HTTP 409. Assignment and transition changes append an actor/time event in the same transaction.
+
+
+## Severity-based SLA policy foundation
+
+- `POST /api/procurement/reconciliation/sla-policies` creates a new policy version for a severity (`finance:approve`).
+- `GET /api/procurement/reconciliation/sla-policies` lists policy history; `active_only=true` returns the currently active policy per severity (`finance:read`).
+- `GET /api/procurement/reconciliation/sla-summary` reports open cases with/without an SLA and overdue counts by severity (`finance:read`).
+- Policy versions are retained. A new policy deactivates the previous version for that severity and increments the version number.
+- New investigations snapshot the active policy ID, version, target minutes, warning percentage, start time and due time. Later policy changes do not rewrite existing case deadlines.
+- Case payloads expose `sla_state`: `NOT_CONFIGURED`, `ON_TRACK`, `WARNING`, `BREACHED`, `CLOSED_ON_TIME` or `CLOSED_LATE`.
+- The initial clock measures elapsed wall-clock minutes. It does not pause for weekends, holidays, reassignment, customer/vendor response or other workflow states. No background worker or automatic escalation is implied; overdue state is calculated when read.
+- Cases opened before an active policy exists retain `NOT_CONFIGURED`; policy creation does not retroactively assign deadlines.
+
+Migration `e7b4c2d9a610` adds the versioned policy table and nullable per-case snapshot fields. The foreign key is restrictive so a policy referenced by a case cannot be deleted.
+
+## Limitations and follow-up gates
+
+- Candidate discovery remains read-only. Case creation is an explicit human action; this slice does not auto-create cases or infer severity/root cause.
+- No reopen workflow yet; reopening needs explicit reason, authority, and a new lifecycle event.
+- No SLA clock, escalation/notifications, manager dashboard, monthly snapshot report, closure-quality analytics, or audit-export register in this slice.
+- Source references are not hard foreign keys; source availability must be checked by the application when opening a case.
+- Event rows are append-only, but this is not a complete cryptographic/tamper-evident audit chain.
+- Tenant isolation depends on the existing tenant-schema database routing and must be validated in integration tests.
+- No legal retention periods or statutory erasure claims are made.
+
+## Migration
+
+`b8d3f6a1c920` follows the clean mainline source foundation `a7c4e9d2f610`. It does not import the diverged feature branch's migration ancestry.
+
+
+## Closure quality and controlled reopening
+
+The follow-on migration `d6a9c2f4e810` adds closure governance without changing the original source-candidate model:
+
+- A resolved/dismissed case records the closing actor; resolved cases start with `NOT_REVIEWED` closure quality.
+- A separate finance approver can mark a resolved closure `APPROVED` or `REJECTED`. The person who resolved the case cannot review that closure.
+- A rejection requires a written review note. The decision, reviewer, timestamp and note are retained on the case and in the append-only event history.
+- A resolved case can be reopened only through the explicit reopen endpoint, with a reason and optimistic version. Reopening moves it to `IN_REVIEW`, increments `reopen_count`, clears the active closure review state and appends a `REOPENED` event containing the prior resolution context.
+- Dismissed cases remain terminal in this slice.
+
+New endpoints:
+
+- `PATCH /api/procurement/reconciliation/investigations/{id}/reopen` (`finance:approve`)
+- `PATCH /api/procurement/reconciliation/investigations/{id}/quality-review` (`finance:approve`)
+- `GET /api/procurement/reconciliation/investigations/quality-summary` (`finance:read`)
+
+The summary is a live aggregate of resolved closure-review states and reopen counts. It is not a monthly frozen report, automated quality score, or inferred root-cause analysis. Evidence-file upload/download remains deferred until private object-storage, malware scanning, retention, and download-audit contracts are confirmed.
+
+
+## Investigation event-history pagination
+
+The event-history endpoint returns at most 100 events by default (maximum 500), ordered by descending event ID. Continue with `before_id` set to the last event ID returned. This stable keyset pagination avoids loading an unbounded case history while preserving the existing list response shape.
