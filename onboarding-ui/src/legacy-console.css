@@ -1,3 +1,0 @@
-@import "tailwindcss" source(none);
-
-@source "../../backend/control_plane/api/routers/ui_console.py";

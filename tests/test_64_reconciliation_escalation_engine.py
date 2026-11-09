@@ -176,6 +176,17 @@ def test_reconciliation_finance_dashboard_returns_bounded_governance_aggregates(
             ),
         ]
         db.add_all(rows)
+        db.flush()
+        # Dashboard resolution activity is sourced from the immutable lifecycle ledger.
+        db.add(ReconciliationInvestigationEvent(
+            investigation_id=rows[1].id,
+            event_type="STATUS_CHANGED",
+            from_status="IN_REVIEW",
+            to_status="RESOLVED",
+            actor_user_id=actor.id,
+            details=json.dumps({"root_cause": "DUPLICATE_REFERENCE"}),
+            occurred_at=now - timedelta(days=1),
+        ))
         db.commit()
 
         dashboard = get_reconciliation_finance_dashboard(db=db, window_days=30, queue_limit=10)

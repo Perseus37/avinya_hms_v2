@@ -1,1 +1,0 @@
-"""Avinya HMS backend package."""
