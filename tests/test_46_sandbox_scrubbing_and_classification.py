@@ -557,8 +557,9 @@ def test_sandbox_purges_notification_config_audit_and_restores_immutability(clie
     with Session(bind=engine) as db:
         actor = db.execute(select(User).where(User.is_superuser == True)).scalars().first()
         assert actor is not None
+        actor_user_id = actor.id
         event = ReconciliationNotificationConfigEvent(
-            actor_user_id=actor.id,
+            actor_user_id=actor_user_id,
             event_type="SANDBOX_PURGE_REGRESSION",
             object_type="ESCALATION_POLICY",
             details="Must not survive sandbox sanitization",
@@ -576,7 +577,7 @@ def test_sandbox_purges_notification_config_audit_and_restores_immutability(clie
 
         # Recreate one row after sanitization and prove the append-only guard was restored.
         event = ReconciliationNotificationConfigEvent(
-            actor_user_id=actor.id,
+            actor_user_id=actor_user_id,
             event_type="SANDBOX_PURGE_TRIGGER_CHECK",
             object_type="ESCALATION_POLICY",
             details="Append-only guard must be active after purge",
