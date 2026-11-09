@@ -15,7 +15,7 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -470,29 +470,54 @@ def list_reconciliation_candidates(
             SupplierPaymentBankMatch.supplier_payment_id.in_(payment_ids)
         ).group_by(SupplierPaymentBankMatch.supplier_payment_id).all()
     )
+    # Detect normalized reference collisions across the complete supplier-payment
+    # ledger, not only within this 1,000-row cursor window. Restrict the aggregate
+    # to vendor/reference pairs represented in this page so query work stays bounded.
     reference_groups = defaultdict(list)
     for payment in payments:
-        matched = int(payment_matches.get(payment.id, 0) or 0)
-        if matched < int(payment.amount_paise):
-            candidates.append({
-                "candidate_type": "UNRECONCILED_SUPPLIER_PAYMENT" if matched == 0 else "PARTIALLY_RECONCILED_SUPPLIER_PAYMENT",
-                "source_id": payment.id,
-                "transaction_date": payment.payment_date.date().isoformat(),
-                "amount_paise": int(payment.amount_paise),
-                "matched_amount_paise": matched,
-                "remaining_amount_paise": int(payment.amount_paise) - matched,
-                "reference": payment.payment_reference,
-                "vendor_id": payment.vendor_id,
-            })
-        normalized = "".join(payment.payment_reference.casefold().split())
-        reference_groups[(payment.vendor_id, normalized)].append(payment)
-    for (vendor_id, normalized_reference), group in reference_groups.items():
-        if normalized_reference and len(group) > 1:
+        normalized = "".join(payment.payment_reference.split()).upper()
+        if normalized:
+            reference_groups[(payment.vendor_id, normalized)].append(payment)
+
+    if reference_groups:
+        normalized_reference = func.replace(
+            func.upper(func.trim(SupplierPayment.payment_reference)), " ", ""
+        )
+        pair_filters = [
+            and_(
+                SupplierPayment.vendor_id == vendor_id,
+                normalized_reference == reference,
+            )
+            for vendor_id, reference in reference_groups
+        ]
+        duplicate_aggregates = db.query(
+            SupplierPayment.vendor_id,
+            normalized_reference.label("normalized_reference"),
+            func.count(SupplierPayment.id).label("payment_count"),
+            func.min(SupplierPayment.id).label("first_payment_id"),
+        ).filter(
+            or_(*pair_filters)
+        ).group_by(
+            SupplierPayment.vendor_id, normalized_reference
+        ).having(
+            func.count(SupplierPayment.id) > 1
+        ).all()
+
+        current_page_ids = {payment.id for payment in payments}
+        for duplicate in duplicate_aggregates:
+            key = (duplicate.vendor_id, duplicate.normalized_reference)
+            page_group = reference_groups.get(key, [])
+            # Emit each tenant/vendor/reference collision once: on the source
+            # window containing its earliest payment. Later cursor windows do
+            # not repeat the same global collision candidate.
+            if duplicate.first_payment_id not in current_page_ids:
+                continue
             candidates.append({
                 "candidate_type": "POSSIBLE_DUPLICATE_PAYMENT_REFERENCE",
-                "source_ids": [row.id for row in group],
-                "vendor_id": vendor_id,
-                "reference": group[0].payment_reference,
+                "source_ids": [row.id for row in page_group],
+                "matching_payment_count": int(duplicate.payment_count),
+                "vendor_id": duplicate.vendor_id,
+                "reference": page_group[0].payment_reference,
                 "review_note": "Normalized reference collision only; manual review required and no duplicate/fraud conclusion is made.",
             })
 
@@ -543,7 +568,7 @@ def list_reconciliation_candidates(
 
     return {
         "items": page_items,
-        "total_candidates": len(candidates),
+        "window_candidate_count": len(candidates),
         "limit": limit,
         "truncated": next_cursor is not None,
         "next_cursor": next_cursor,
