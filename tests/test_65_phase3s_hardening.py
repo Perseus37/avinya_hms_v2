@@ -63,12 +63,20 @@ def test_reconciliation_investigation_events_support_keyset_pagination(multi_ten
 
 
 def test_reconciliation_candidate_discovery_returns_continuation_cursor(multi_tenant_env):
+    from sqlalchemy import event
     from backend.domains.identity.models import User
     from backend.domains.procurement.bank_reconciliation import list_reconciliation_candidates
     from backend.domains.procurement.models import BankStatementBatch, BankStatementLine
 
     engine = multi_tenant_env["tenant_engines"]["hms_default"]
-    with Session(engine) as db:
+    statements = []
+    def capture_sql(conn, cursor, statement, parameters, context, executemany):
+        if "procurement_supplier_payment_bank_matches" in statement:
+            statements.append(statement.lower())
+
+    event.listen(engine, "before_cursor_execute", capture_sql)
+    try:
+        with Session(engine) as db:
         actor = db.query(User).filter(User.email == "admin@default.com").one()
         batch = BankStatementBatch(
             account_key="CURSOR-TEST", account_label="Test account",
@@ -86,6 +94,14 @@ def test_reconciliation_candidate_discovery_returns_continuation_cursor(multi_te
         first = list_reconciliation_candidates(as_of=date(2026, 2, 1), limit=100, cursor=None, db=db, _=actor)
         second = list_reconciliation_candidates(
             as_of=date(2026, 2, 1), limit=100, cursor=first["next_cursor"], db=db, _=actor)
-        assert len(first["items"]) == len(second["items"]) == 100
-        assert first["truncated"] and first["next_cursor"]
-        assert second["items"][0]["source_id"] != first["items"][0]["source_id"]
+            assert len(first["items"]) == len(second["items"]) == 100
+            assert first["truncated"] and first["next_cursor"]
+            assert second["items"][0]["source_id"] != first["items"][0]["source_id"]
+        aggregate_queries = [
+            statement for statement in statements
+            if "group by" in statement
+        ]
+        assert any("statement_line_id in" in statement for statement in aggregate_queries)
+        assert any("supplier_payment_id in" in statement for statement in aggregate_queries)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_sql)
