@@ -7,7 +7,7 @@ from backend.domains.procurement.models import VendorInvoice
 
 
 def test_vendor_invoice_review_match_and_approval_are_end_to_end(
-    client, superuser_headers, multi_tenant_env, monkeypatch, tmp_path
+    client, superuser_headers, pharmacist_headers, multi_tenant_env, monkeypatch, tmp_path
 ):
     from backend.core.config import settings
 
@@ -63,7 +63,7 @@ def test_vendor_invoice_review_match_and_approval_are_end_to_end(
     upload = client.post(
         "/v1/api/procurement/invoices/upload-document",
         params={"vendor_id": vendor_id},
-        headers=superuser_headers,
+        headers=pharmacist_headers,
         files={"file": ("invoice.pdf", b"%PDF-1.7\nsynthetic invoice", "application/pdf")},
     )
     assert upload.status_code == 200, upload.text
