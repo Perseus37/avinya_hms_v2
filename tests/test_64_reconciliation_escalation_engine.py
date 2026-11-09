@@ -541,3 +541,47 @@ def test_reconciliation_dashboard_retains_resolution_activity_after_reopen(multi
             "resolved_cases": 1,
         } in dashboard["period_activity"]["root_causes"]
 
+def test_escalation_policy_history_is_bounded_and_reports_filtered_total(multi_tenant_env):
+    from fastapi import HTTPException
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.escalation import list_escalation_policies
+    from backend.domains.procurement.models import ReconciliationEscalationPolicy
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        db.add_all([
+            ReconciliationEscalationPolicy(
+                severity="LOW", trigger="WARNING", version=version,
+                enabled=version == 5, delay_minutes=version * 5,
+                recipient_role_ids="[]", channels='["IN_APP"]',
+                is_active=version == 5, created_by_id=actor.id,
+            )
+            for version in range(1, 6)
+        ])
+        db.commit()
+
+        second_page = list_escalation_policies(
+            active_only=False, page=2, page_size=2, db=db, _=actor
+        )
+        assert second_page["total"] == 5
+        assert second_page["page"] == 2
+        assert second_page["page_size"] == 2
+        assert [item["version"] for item in second_page["items"]] == [3, 2]
+
+        active = list_escalation_policies(
+            active_only=True, page=1, page_size=2, db=db, _=actor
+        )
+        assert active["total"] == 1
+        assert len(active["items"]) == 1
+        assert active["items"][0]["version"] == 5
+
+        try:
+            list_escalation_policies(
+                active_only=False, page=1, page_size=101, db=db, _=actor
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("Oversized escalation policy pages must be rejected")
+
