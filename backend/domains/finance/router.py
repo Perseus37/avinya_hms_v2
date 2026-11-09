@@ -51,7 +51,9 @@ def adjudicate_expense(
     current_user: User = Depends(RequirePermission("finance:approve"))
 ):
     """CFO/Admin approves or rejects a pending expense."""
-    expense = db.get(ExpenseRecord, expense_id)
+    expense = db.query(ExpenseRecord).filter(
+        ExpenseRecord.id == expense_id
+    ).with_for_update().one_or_none()
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found.")
     
@@ -94,7 +96,9 @@ def mark_expense_paid(
     current_user: User = Depends(RequirePermission("finance:pay"))
 ):
     """Records the actual cash/bank outflow for an APPROVED expense."""
-    expense = db.get(ExpenseRecord, expense_id)
+    expense = db.query(ExpenseRecord).filter(
+        ExpenseRecord.id == expense_id
+    ).with_for_update().one_or_none()
     if not expense or expense.status != ExpenseStatusEnum.APPROVED:
         raise HTTPException(status_code=400, detail="Only APPROVED expenses can be paid.")
 

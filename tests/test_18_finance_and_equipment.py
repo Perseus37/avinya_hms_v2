@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
 from sqlalchemy.orm import sessionmaker
 
+from backend.domains.identity.models import User
+
 from backend.domains.finance.models import (
     ExpenseRecord,
     ExpenseStatusEnum,
@@ -147,3 +149,56 @@ def test_03_expense_adjudication_cannot_bypass_payment_permission(client, superu
         json={"status": "PAID"},
     )
     assert paid_res.status_code == 422
+
+
+def test_04_expense_adjudication_and_payment_are_single_transitions(
+    client, superuser_headers, multi_tenant_env
+):
+    """Repeated adjudication/payment attempts cannot overwrite a completed state."""
+    draft_res = client.post(
+        "/v1/api/finance/ap/expenses",
+        headers=superuser_headers,
+        json={
+            "category": "UTILITY",
+            "title": "Single transition guard",
+            "amount_paise": 99000,
+            "vendor_name": "Concurrency Test Supplier",
+        },
+    )
+    assert draft_res.status_code == 201
+    expense_id = draft_res.json()["id"]
+
+    DefaultSession = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with DefaultSession() as db:
+        doctor = db.query(User).filter(User.email == "doctor@default.com").one()
+        expense = db.get(ExpenseRecord, expense_id)
+        expense.created_by_id = doctor.id
+        db.commit()
+
+    approval = client.patch(
+        f"/v1/api/finance/ap/expenses/{expense_id}/adjudicate",
+        headers=superuser_headers,
+        json={"status": "APPROVED"},
+    )
+    assert approval.status_code == 200
+
+    repeated_approval = client.patch(
+        f"/v1/api/finance/ap/expenses/{expense_id}/adjudicate",
+        headers=superuser_headers,
+        json={"status": "REJECTED", "rejection_reason": "Late review"},
+    )
+    assert repeated_approval.status_code == 409
+
+    payment = client.post(
+        f"/v1/api/finance/ap/expenses/{expense_id}/mark-paid",
+        headers=superuser_headers,
+        params={"receipt_reference": "BANK-REF-ONCE"},
+    )
+    assert payment.status_code == 200
+
+    repeated_payment = client.post(
+        f"/v1/api/finance/ap/expenses/{expense_id}/mark-paid",
+        headers=superuser_headers,
+        params={"receipt_reference": "BANK-REF-TWICE"},
+    )
+    assert repeated_payment.status_code == 400
