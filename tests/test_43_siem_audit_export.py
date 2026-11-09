@@ -289,9 +289,9 @@ def test_security_event_merge_uses_numeric_id_for_equal_timestamp_ties():
     timestamp = datetime(2026, 11, 8, 12, 0, tzinfo=timezone.utc)
     events = [
         SiemEvent(event_id="AUDIT-PRIV-9", timestamp=timestamp, category="PRIVACY_CONSENT",
-                  severity="INFO", action="ALLOW"),
+                  severity="INFO", action="ALLOW", details={}),
         SiemEvent(event_id="AUDIT-PRIV-10", timestamp=timestamp, category="PRIVACY_CONSENT",
-                  severity="INFO", action="ALLOW"),
+                  severity="INFO", action="ALLOW", details={}),
     ]
 
     ordered = sorted(events, key=_security_event_sort_key, reverse=True)
