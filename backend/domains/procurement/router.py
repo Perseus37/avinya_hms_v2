@@ -772,14 +772,17 @@ def create_supplier_payment_request(
 
 @router.get(
     "/supplier-payment-requests",
-    response_model=list[SupplierPaymentRequestResponse],
+    response_model=PaginatedResponse[SupplierPaymentRequestResponse],
 )
 def list_supplier_payment_requests(
     status_filter: Optional[str] = Query(default=None, alias="status", pattern="^(PENDING|APPROVED|REJECTED|EXECUTED|CANCELLED)$"),
     vendor_id: Optional[int] = Query(default=None, gt=0),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
+    page, page_size = validate_pagination(page, page_size)
     query = db.query(SupplierPaymentRequest).options(
         selectinload(SupplierPaymentRequest.allocations)
     )
@@ -787,10 +790,18 @@ def list_supplier_payment_requests(
         query = query.filter(SupplierPaymentRequest.status == status_filter)
     if vendor_id:
         query = query.filter(SupplierPaymentRequest.vendor_id == vendor_id)
-    return query.order_by(
+
+    total = query.count()
+    items = query.order_by(
         SupplierPaymentRequest.scheduled_date.asc(),
         SupplierPaymentRequest.id.asc(),
-    ).all()
+    ).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.patch(
