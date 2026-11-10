@@ -280,7 +280,9 @@ class PatientIndentIssueAllocation(Base):
     indent_item_id: Mapped[int] = mapped_column(ForeignKey("procurement_indent_items.id", ondelete="RESTRICT"), nullable=False)
     inventory_batch_id: Mapped[int] = mapped_column(ForeignKey("inventory_batches.id", ondelete="RESTRICT"), nullable=False)
     # Keep the historical line ID even if a fully returned invoice line is deleted.
-    invoice_line_item_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    invoice_line_item_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("invoice_line_items.id", ondelete="RESTRICT"), nullable=True
+    )
     issued_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     created_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))

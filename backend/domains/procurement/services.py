@@ -457,7 +457,11 @@ def return_patient_indent_stock(db: Session, indent: StoreIndent, return_request
         if matching_line:
             credit_value = return_item.return_quantity * matching_line.unit_price_paise
             if matching_line.quantity == return_item.return_quantity:
-                db.delete(matching_line)
+                # Keep the original invoice line as a zero-value audit trace; the
+                # allocation retains its immutable reference to this exact line.
+                matching_line.description = f"RETURNED: {matching_line.description}"
+                matching_line.total_price_paise = 0
+                matching_line.tax_amount_paise = 0
             else:
                 matching_line.quantity -= return_item.return_quantity
                 matching_line.total_price_paise -= credit_value

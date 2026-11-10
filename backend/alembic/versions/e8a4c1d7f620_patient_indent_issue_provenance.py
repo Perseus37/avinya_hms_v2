@@ -22,6 +22,7 @@ def upgrade() -> None:
         sa.Column("indent_item_id", sa.Integer(), nullable=False),
         sa.Column("inventory_batch_id", sa.Integer(), nullable=False),
         sa.Column("invoice_line_item_id", sa.Integer(), nullable=True),
+        sa.ForeignKeyConstraint(["invoice_line_item_id"], ["invoice_line_items.id"], ondelete="RESTRICT"),
         sa.Column("issued_quantity", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("created_by_id", sa.Integer(), nullable=True),
