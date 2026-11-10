@@ -288,3 +288,42 @@ def test_reconciliation_duplicate_payment_reference_detected_across_source_windo
             item["candidate_type"] == "POSSIBLE_DUPLICATE_PAYMENT_REFERENCE"
             for item in second["items"]
         )
+
+
+def test_investigation_create_rejects_unknown_or_mismatched_candidate_source_type():
+    from pydantic import ValidationError
+    from backend.domains.procurement.investigations import InvestigationCreate
+
+    base = {
+        "source_id": 1,
+        "title": "Reconciliation exception",
+        "summary": "A source requires a human reconciliation investigation.",
+        "severity": "MEDIUM",
+    }
+    valid_pairs = [
+        ("BANK_STATEMENT_LINE", "UNMATCHED_BANK_DEBIT"),
+        ("BANK_STATEMENT_LINE", "PARTIALLY_MATCHED_BANK_DEBIT"),
+        ("BANK_STATEMENT_LINE", "UNCLASSIFIED_BANK_CREDIT"),
+        ("SUPPLIER_PAYMENT", "UNRECONCILED_SUPPLIER_PAYMENT"),
+        ("SUPPLIER_PAYMENT", "PARTIALLY_RECONCILED_SUPPLIER_PAYMENT"),
+        ("SUPPLIER_PAYMENT", "POSSIBLE_DUPLICATE_PAYMENT_REFERENCE"),
+        ("SUPPLIER_PAYMENT_REQUEST", "OVERDUE_APPROVED_PAYMENT_REQUEST"),
+    ]
+    for source_type, candidate_type in valid_pairs:
+        payload = InvestigationCreate.model_validate({
+            **base, "source_type": source_type, "candidate_type": candidate_type,
+        })
+        assert payload.source_type == source_type
+        assert payload.candidate_type == candidate_type
+
+    invalid_pairs = [
+        ("BANK_STATEMENT_LINE", "OVERDUE_APPROVED_PAYMENT_REQUEST"),
+        ("SUPPLIER_PAYMENT", "UNMATCHED_BANK_DEBIT"),
+        ("SUPPLIER_PAYMENT_REQUEST", "POSSIBLE_DUPLICATE_PAYMENT_REFERENCE"),
+        ("SUPPLIER_PAYMENT", "ARBITRARY_FINANCE_EXCEPTION"),
+    ]
+    for source_type, candidate_type in invalid_pairs:
+        with pytest.raises(ValidationError):
+            InvestigationCreate.model_validate({
+                **base, "source_type": source_type, "candidate_type": candidate_type,
+            })

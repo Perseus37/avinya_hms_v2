@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy.orm import Session
 from sqlalchemy import case, cast, func
 from sqlalchemy.dialects.postgresql import JSONB
@@ -60,6 +60,29 @@ class InvestigationCreate(BaseModel):
     title: str = Field(min_length=5, max_length=180)
     summary: str = Field(min_length=10, max_length=4000)
     severity: str = Field(default="MEDIUM", pattern=r"^(LOW|MEDIUM|HIGH|CRITICAL)$")
+
+    @model_validator(mode="after")
+    def validate_candidate_source_pair(self):
+        allowed = {
+            "BANK_STATEMENT_LINE": {
+                "UNCLASSIFIED_BANK_CREDIT",
+                "UNMATCHED_BANK_DEBIT",
+                "PARTIALLY_MATCHED_BANK_DEBIT",
+            },
+            "SUPPLIER_PAYMENT": {
+                "UNRECONCILED_SUPPLIER_PAYMENT",
+                "PARTIALLY_RECONCILED_SUPPLIER_PAYMENT",
+                "POSSIBLE_DUPLICATE_PAYMENT_REFERENCE",
+            },
+            "SUPPLIER_PAYMENT_REQUEST": {
+                "OVERDUE_APPROVED_PAYMENT_REQUEST",
+            },
+        }
+        if self.candidate_type not in allowed[self.source_type]:
+            raise ValueError(
+                "candidate_type is not valid for the selected reconciliation source_type."
+            )
+        return self
 
 
 class InvestigationAssign(BaseModel):
