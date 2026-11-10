@@ -222,3 +222,69 @@ def test_governance_report_uses_resolution_event_history_after_reopen(multi_tena
     assert snapshot["recurring_recorded_root_causes"] == [
         {"root_cause": "TIMING_DIFFERENCE", "resolved_cases": 2}
     ]
+
+
+def test_reconciliation_duplicate_payment_reference_detected_across_source_windows(multi_tenant_env):
+    """A normalized duplicate spanning two 1,000-payment windows is emitted once."""
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import (
+        SupplierPayment, SupplierPaymentMethodEnum, VendorCategoryEnum, VendorMaster,
+    )
+    from backend.domains.procurement.bank_reconciliation import list_reconciliation_candidates
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        vendor = VendorMaster(
+            code="CROSS-WINDOW-DUP",
+            name="Cross-window duplicate test supplier",
+            category=VendorCategoryEnum.GENERAL_SUPPLIES,
+            contact_person="Test Contact",
+            phone="9999999999",
+            email="cross-window-duplicate@example.test",
+            address="Test address",
+            credit_period_days=30,
+            is_active=True,
+        )
+        db.add(vendor)
+        db.flush()
+
+        payment_date = datetime(2026, 1, 15, tzinfo=timezone.utc)
+        payments = []
+        for index in range(1001):
+            reference = (
+                "DUP REF 001" if index == 0
+                else "DUPREF001" if index == 1000
+                else f"CROSS-WINDOW-{index:04d}"
+            )
+            payments.append(SupplierPayment(
+                vendor_id=vendor.id,
+                payment_reference=reference,
+                payment_method=SupplierPaymentMethodEnum.BANK_TRANSFER,
+                payment_date=payment_date,
+                amount_paise=10000,
+                recorded_by_id=actor.id,
+            ))
+        db.add_all(payments)
+        db.commit()
+
+        first = list_reconciliation_candidates(
+            as_of=date(2026, 2, 1), limit=2000, cursor=None, db=db, _=actor,
+        )
+        assert first["next_cursor"] is not None
+        duplicate_candidates = [
+            item for item in first["items"]
+            if item["candidate_type"] == "POSSIBLE_DUPLICATE_PAYMENT_REFERENCE"
+        ]
+        assert len(duplicate_candidates) == 1
+        duplicate = duplicate_candidates[0]
+        assert duplicate["matching_payment_count"] == 2
+        assert duplicate["source_ids"] == [payments[0].id]
+
+        second = list_reconciliation_candidates(
+            as_of=date(2026, 2, 1), limit=2000, cursor=first["next_cursor"], db=db, _=actor,
+        )
+        assert not any(
+            item["candidate_type"] == "POSSIBLE_DUPLICATE_PAYMENT_REFERENCE"
+            for item in second["items"]
+        )
