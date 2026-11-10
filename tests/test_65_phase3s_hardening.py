@@ -297,7 +297,7 @@ def test_reconciliation_duplicate_payment_reference_detected_across_source_windo
         payments = []
         for index in range(1001):
             reference = (
-                "DUP REF 001" if index == 0
+                "DUP\tREF 001" if index == 0
                 else "DUPREF001" if index == 1000
                 else f"CROSS-WINDOW-{index:04d}"
             )

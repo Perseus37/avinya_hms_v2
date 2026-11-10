@@ -504,14 +504,18 @@ def list_reconciliation_candidates(
                 "reference": payment.payment_reference,
                 "vendor_id": payment.vendor_id,
             })
-        normalized = "".join(payment.payment_reference.split()).upper()
+        # Match the SQL normalization below exactly: remove ASCII whitespace
+        # (space, tab, LF, CR, vertical tab and form feed), then uppercase.
+        normalized = payment.payment_reference.translate(
+            str.maketrans("", "", " \t\n\r\v\f")
+        ).upper()
         if normalized:
             reference_groups[(payment.vendor_id, normalized)].append(payment)
 
     if reference_groups:
-        normalized_reference = func.replace(
-            func.upper(func.trim(SupplierPayment.payment_reference)), " ", ""
-        )
+        normalized_reference = func.upper(SupplierPayment.payment_reference)
+        for whitespace in (" ", "\t", "\n", "\r", "\v", "\f"):
+            normalized_reference = func.replace(normalized_reference, whitespace, "")
         duplicate_aggregates = []
         # Bound the OR expression tree and bind parameters on SQLite while
         # retaining set-based aggregation (rather than one query per reference).
