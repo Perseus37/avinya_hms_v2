@@ -515,8 +515,11 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
         "/v1/api/procurement/reconciliation/sla-policies?active_only=true",
         headers=superuser_headers,
     )
-    assert active_policies.status_code == 200
-    assert len([item for item in active_policies.json() if item["severity"] == "HIGH"]) == 1
+    assert active_policies.status_code == 200, active_policies.text
+    active_payload = active_policies.json()
+    assert active_payload["total"] == 1
+    assert active_payload["page"] == 1
+    assert len([item for item in active_payload["items"] if item["severity"] == "HIGH"]) == 1
     active_high_policy = next(item for item in active_policies.json() if item["severity"] == "HIGH")
     assert active_high_policy["version"] == 2
     unchanged_case = client.get(
