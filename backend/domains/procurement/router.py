@@ -456,10 +456,17 @@ def approve_vendor_invoice(invoice_id: int, db: Session = Depends(get_db), curre
 # --- Purchase Order Approval & PDF ---
 @router.patch("/purchase-orders/{po_id}/approve", response_model=POResponse)
 def approve_purchase_order(po_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:approve"))):
-    po = db.get(PurchaseOrder, po_id)
-    # FIX: Check for both DRAFT and SUBMITTED statuses
+    po = db.query(PurchaseOrder).filter(
+        PurchaseOrder.id == po_id
+    ).with_for_update().one_or_none()
     if not po or po.status not in [POStatusEnum.DRAFT, POStatusEnum.SUBMITTED]:
         raise HTTPException(status_code=400, detail="Only DRAFT or SUBMITTED purchase orders can be approved.")
+
+    if po.created_by_id is not None and po.created_by_id == current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Purchase order creators cannot approve their own purchase orders.",
+        )
 
     po.status = POStatusEnum.APPROVED
     po.approved_by_id = current_user.id

@@ -38,7 +38,7 @@ def test_vendor_invoice_review_match_and_approval_are_end_to_end(
 
     po_response = client.post(
         "/v1/api/procurement/purchase-orders",
-        headers=superuser_headers,
+        headers=pharmacist_headers,
         json={
             "vendor_id": vendor_id,
             "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
@@ -54,6 +54,12 @@ def test_vendor_invoice_review_match_and_approval_are_end_to_end(
     )
     assert po_response.status_code == 201, po_response.text
     po = po_response.json()
+    self_approval = client.patch(
+        f"/v1/api/procurement/purchase-orders/{po['id']}/approve",
+        headers=pharmacist_headers,
+    )
+    assert self_approval.status_code == 403
+
     approval = client.patch(
         f"/v1/api/procurement/purchase-orders/{po['id']}/approve",
         headers=superuser_headers,
