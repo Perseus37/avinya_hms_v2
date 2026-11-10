@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 
 from backend.core.database import get_db
-from backend.core.dependencies import RequirePermission, validate_pagination
+from backend.core.dependencies import RequirePermission, user_has_permission, validate_pagination
 from backend.domains.identity.models import User, UserStatusEnum
 from backend.domains.procurement.models import (
     BankStatementLine,
@@ -414,6 +414,8 @@ def assign_reconciliation_investigation(
         raise HTTPException(status_code=404, detail="Assignee not found.")
     if assignee.status != UserStatusEnum.ACTIVE:
         raise HTTPException(status_code=409, detail="Only active users can be assigned to reconciliation investigations.")
+    if not user_has_permission(db, assignee, "finance:read"):
+        raise HTTPException(status_code=409, detail="Assignees must have finance:read permission to access assigned investigations.")
     old_status = row.status
     row.assigned_to_id = payload.assigned_to_id
     if row.status == "OPEN":

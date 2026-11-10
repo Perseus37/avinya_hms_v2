@@ -34,6 +34,50 @@ def test_reconciliation_assignment_rejects_inactive_assignee(multi_tenant_env):
         assert case.assigned_to_id is None and case.version == 1
 
 
+def test_reconciliation_assignment_rejects_user_without_finance_read(multi_tenant_env):
+    from fastapi import HTTPException
+    from backend.domains.identity.models import User, UserStatusEnum
+    from backend.domains.procurement.investigations import InvestigationAssign, assign_reconciliation_investigation
+    from backend.domains.procurement.models import ReconciliationInvestigation
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        unprivileged = User(
+            login_id="unprivileged-recon-assignee",
+            email="unprivileged-recon-assignee@example.test",
+            hashed_password="test-only",
+            full_name="Unprivileged Assignee",
+            status=UserStatusEnum.ACTIVE,
+        )
+        case = ReconciliationInvestigation(
+            external_key="hardening-unprivileged-assignee",
+            candidate_type="UNMATCHED_BANK_DEBIT",
+            source_type="BANK_STATEMENT_LINE",
+            source_id=880003,
+            title="Unprivileged assignee regression",
+            summary="Regression case for rejecting assignees without finance read access.",
+            severity="HIGH",
+            status="OPEN",
+            opened_by_id=actor.id,
+            opened_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            version=1,
+        )
+        db.add_all([unprivileged, case])
+        db.commit()
+        with pytest.raises(HTTPException) as exc:
+            assign_reconciliation_investigation(
+                investigation_id=case.id,
+                payload=InvestigationAssign(assigned_to_id=unprivileged.id, expected_version=1),
+                db=db,
+                current_user=actor,
+            )
+        assert exc.value.status_code == 409
+        db.refresh(case)
+        assert case.assigned_to_id is None and case.version == 1
+
+
 def test_reconciliation_investigation_events_support_keyset_pagination(multi_tenant_env):
     from backend.domains.identity.models import User
     from backend.domains.procurement.investigations import list_reconciliation_investigation_events
