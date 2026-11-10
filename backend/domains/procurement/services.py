@@ -31,21 +31,37 @@ from backend.domains.reports.templates import render_sandboxed_template
 logger = logging.getLogger(__name__)
 
 def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: int):
-    """Atomic acceptance of goods: increments PO tracking and injects FEFO batches into Pharmacy."""
-    po = db.get(PurchaseOrder, grn.po_id)
+    """Atomically validate accepted quantities, update the PO, and provision pharmacy batches."""
+    po = db.query(PurchaseOrder).filter(
+        PurchaseOrder.id == grn.po_id
+    ).with_for_update().one_or_none()
+    if po is None or po.status not in {POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED}:
+        raise ValueError("Goods receipt requires an approved purchase order.")
+
+    po_items = db.query(PurchaseOrderItem).filter(
+        PurchaseOrderItem.po_id == po.id
+    ).with_for_update().all()
+    po_items_by_id = {item.id: item for item in po_items}
+    accepted_by_item = {}
+    for grn_item in grn.items:
+        po_item = po_items_by_id.get(grn_item.po_item_id)
+        if po_item is None:
+            raise ValueError("Goods receipt item does not belong to its purchase order.")
+        accepted_by_item[po_item.id] = accepted_by_item.get(po_item.id, 0) + grn_item.accepted_quantity
+    for item_id, accepted_quantity in accepted_by_item.items():
+        po_item = po_items_by_id[item_id]
+        if accepted_quantity > po_item.quantity_ordered - po_item.quantity_received:
+            raise ValueError("Accepted goods exceed the remaining purchase-order quantity.")
 
     all_po_items_fulfilled = True
-
     for grn_item in grn.items:
         if grn_item.accepted_quantity > 0:
-            # 1. Update PO received tracking
-            po_item = grn_item.po_item
+            po_item = po_items_by_id[grn_item.po_item_id]
             po_item.quantity_received += grn_item.accepted_quantity
 
             if po_item.quantity_received < po_item.quantity_ordered:
                 all_po_items_fulfilled = False
 
-            # 2. Automatically provision live Pharmacy stock batches if medication is linked
             if po_item.medication_id:
                 new_batch = InventoryBatch(
                     medication_id=po_item.medication_id,

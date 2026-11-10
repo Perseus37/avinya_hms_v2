@@ -110,6 +110,27 @@ def draft_purchase_order(payload: POCreate, db: Session = Depends(get_db), curre
 # --- Goods Receipt Note (GRN) ---
 @router.post("/grn", status_code=status.HTTP_201_CREATED)
 def receive_goods(payload: GRNCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
+    po = db.query(PurchaseOrder).filter(
+        PurchaseOrder.id == payload.po_id
+    ).with_for_update().one_or_none()
+    if po is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found.")
+    if po.status not in {POStatusEnum.APPROVED, POStatusEnum.PARTIALLY_RECEIVED}:
+        raise HTTPException(status_code=409, detail="Goods can only be received against an approved purchase order.")
+
+    po_items = db.query(PurchaseOrderItem).filter(
+        PurchaseOrderItem.po_id == po.id
+    ).with_for_update().all()
+    po_items_by_id = {item.id: item for item in po_items}
+    requested_by_item = {}
+    for item in payload.items:
+        po_item = po_items_by_id.get(item.po_item_id)
+        if po_item is None:
+            raise HTTPException(status_code=422, detail="Every GRN item must belong to the selected purchase order.")
+        requested_by_item[item.po_item_id] = requested_by_item.get(item.po_item_id, 0) + item.accepted_quantity
+        if requested_by_item[item.po_item_id] > po_item.quantity_ordered - po_item.quantity_received:
+            raise HTTPException(status_code=409, detail="Accepted GRN quantity exceeds the remaining purchase-order quantity.")
+
     grn = GoodsReceiptNote(
         grn_number=_generate_reference("GRN"),
         po_id=payload.po_id,
@@ -130,11 +151,17 @@ def receive_goods(payload: GRNCreate, db: Session = Depends(get_db), current_use
 
 @router.patch("/grn/{grn_id}/accept")
 def accept_goods(grn_id: int, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:approve"))):
-    grn = db.get(GoodsReceiptNote, grn_id)
+    grn = db.query(GoodsReceiptNote).filter(
+        GoodsReceiptNote.id == grn_id
+    ).with_for_update().one_or_none()
     if not grn or grn.status != GRNStatusEnum.PENDING_INSPECTION:
         raise HTTPException(status_code=400, detail="Invalid GRN or already processed.")
 
-    process_grn_acceptance(db, grn, current_user.id)
+    try:
+        process_grn_acceptance(db, grn, current_user.id)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     grn.status = GRNStatusEnum.ACCEPTED
     db.commit()
     return {"status": "success", "message": "Goods accepted into Pharmacy inventory."}

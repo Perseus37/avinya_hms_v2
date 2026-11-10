@@ -412,3 +412,99 @@ def test_investigation_resolution_data_is_allowed_only_on_closure_transition():
             "expected_version": 2,
             "resolution": "Still investigating.",
         })
+
+
+
+def test_grn_rejects_foreign_po_items_and_over_receipt(client, pharmacist_headers, superuser_headers):
+    """GRNs must reference their selected PO and cannot accept more than the ordered balance."""
+    from datetime import datetime, timedelta, timezone
+    import secrets
+
+    vendor = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": f"GRN-{secrets.token_hex(3).upper()}",
+            "name": "GRN Integrity Vendor",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Test Contact",
+            "phone": "9876543210",
+            "email": f"grn-{secrets.token_hex(3)}@example.test",
+            "address": "Test address",
+        },
+    )
+    assert vendor.status_code == 201, vendor.text
+
+    def create_approved_po(description):
+        response = client.post(
+            "/v1/api/procurement/purchase-orders",
+            headers=pharmacist_headers,
+            json={
+                "vendor_id": vendor.json()["id"],
+                "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
+                "payment_terms": "Net 30",
+                "items": [{"item_description": description, "quantity_ordered": 10, "unit_price_paise": 100}],
+            },
+        )
+        assert response.status_code == 201, response.text
+        po = response.json()
+        approved = client.patch(
+            f"/v1/api/procurement/purchase-orders/{po['id']}/approve",
+            headers=superuser_headers,
+        )
+        assert approved.status_code == 200, approved.text
+        return po
+
+    selected_po = create_approved_po("Selected PO item")
+    foreign_po = create_approved_po("Foreign PO item")
+    base_item = {
+        "batch_number": "GRN-INTEGRITY-01",
+        "expiry_date": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
+        "received_quantity": 10,
+        "accepted_quantity": 10,
+    }
+    foreign_item = client.post(
+        "/v1/api/procurement/grn",
+        headers=pharmacist_headers,
+        json={
+            "po_id": selected_po["id"],
+            "invoice_number": "GRN-FOREIGN-ITEM",
+            "invoice_date": datetime.now(timezone.utc).isoformat(),
+            "items": [{**base_item, "po_item_id": foreign_po["items"][0]["id"]}],
+        },
+    )
+    assert foreign_item.status_code == 422, foreign_item.text
+
+    over_receipt = client.post(
+        "/v1/api/procurement/grn",
+        headers=pharmacist_headers,
+        json={
+            "po_id": selected_po["id"],
+            "invoice_number": "GRN-OVER-RECEIPT",
+            "invoice_date": datetime.now(timezone.utc).isoformat(),
+            "items": [{
+                **base_item,
+                "po_item_id": selected_po["items"][0]["id"],
+                "received_quantity": 11,
+                "accepted_quantity": 11,
+            }],
+        },
+    )
+    assert over_receipt.status_code == 409, over_receipt.text
+
+    accepted_exceeds_received = client.post(
+        "/v1/api/procurement/grn",
+        headers=pharmacist_headers,
+        json={
+            "po_id": selected_po["id"],
+            "invoice_number": "GRN-INVALID-QUANTITY",
+            "invoice_date": datetime.now(timezone.utc).isoformat(),
+            "items": [{
+                **base_item,
+                "po_item_id": selected_po["items"][0]["id"],
+                "received_quantity": 5,
+                "accepted_quantity": 6,
+            }],
+        },
+    )
+    assert accepted_exceeds_received.status_code == 422, accepted_exceeds_received.text

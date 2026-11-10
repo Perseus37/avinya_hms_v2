@@ -65,18 +65,31 @@ class POResponse(BaseModel):
 
 # --- Goods Receipt Note (GRN) ---
 class GRNItemCreate(BaseModel):
-    po_item_id: int
-    batch_number: str
+    po_item_id: int = Field(gt=0)
+    batch_number: str = Field(min_length=1, max_length=50)
     expiry_date: datetime
-    received_quantity: int = Field(ge=0)
+    received_quantity: int = Field(gt=0)
     accepted_quantity: int = Field(ge=0)
-    rejection_reason: Optional[str] = None
+    rejection_reason: Optional[str] = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def accepted_quantity_does_not_exceed_received(self):
+        if self.accepted_quantity > self.received_quantity:
+            raise ValueError("Accepted quantity cannot exceed received quantity.")
+        return self
 
 class GRNCreate(BaseModel):
-    po_id: int
-    invoice_number: str
+    po_id: int = Field(gt=0)
+    invoice_number: str = Field(min_length=1, max_length=100)
     invoice_date: datetime
-    items: List[GRNItemCreate]
+    items: List[GRNItemCreate] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def unique_purchase_order_items(self):
+        item_ids = [item.po_item_id for item in self.items]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("A GRN may contain each purchase-order item only once.")
+        return self
 
 # --- Vendor Invoices (Donut AI Integration) ---
 class VendorInvoiceItemResponse(BaseModel):
