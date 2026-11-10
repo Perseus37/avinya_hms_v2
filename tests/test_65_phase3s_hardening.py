@@ -429,7 +429,7 @@ def test_grn_rejects_foreign_po_items_and_over_receipt(client, pharmacist_header
             "category": "PHARMACEUTICALS",
             "contact_person": "Test Contact",
             "phone": "9876543210",
-            "email": f"grn-{secrets.token_hex(3)}@example.test",
+            "email": f"grn-{secrets.token_hex(3)}@example.com",
             "address": "Test address",
         },
     )
