@@ -119,6 +119,12 @@ class InvestigationTransition(BaseModel):
 
     note: Optional[str] = Field(default=None, max_length=1000)
 
+    @model_validator(mode="after")
+    def prevent_closure_data_during_review(self):
+        if self.to_status == "IN_REVIEW" and (self.resolution is not None or self.root_cause is not None):
+            raise ValueError("resolution and root_cause may only be recorded when an investigation is closed.")
+        return self
+
 
 class InvestigationReopen(BaseModel):
     expected_version: int = Field(ge=1)
@@ -469,6 +475,14 @@ def transition_reconciliation_investigation(
     else:
         row.resolved_at = None
         row.closed_by_id = None
+        if payload.to_status == "IN_REVIEW":
+            # Keep closure-only fields empty while the investigation is active.
+            row.resolution = None
+            row.root_cause = None
+            row.resolution_quality_status = "NOT_REVIEWED"
+            row.resolution_quality_reviewed_by_id = None
+            row.resolution_quality_reviewed_at = None
+            row.resolution_quality_note = None
     row.version += 1
     row.updated_at = datetime.now(timezone.utc)
     _append_event(db, row, event_type="STATUS_CHANGED", actor_id=current_user.id,

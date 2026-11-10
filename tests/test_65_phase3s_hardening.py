@@ -327,3 +327,44 @@ def test_investigation_create_rejects_unknown_or_mismatched_candidate_source_typ
             InvestigationCreate.model_validate({
                 **base, "source_type": source_type, "candidate_type": candidate_type,
             })
+
+
+
+def test_investigation_transition_rejects_closure_data_while_entering_review():
+    from pydantic import ValidationError
+    from backend.domains.procurement.investigations import InvestigationTransition
+
+    valid = InvestigationTransition(to_status="IN_REVIEW", expected_version=1)
+    assert valid.to_status == "IN_REVIEW"
+
+    for closure_fields in (
+        {"resolution": "Payment matched with bank evidence."},
+        {"root_cause": "TIMING_DIFFERENCE"},
+        {"resolution": "Payment matched with bank evidence.", "root_cause": "TIMING_DIFFERENCE"},
+    ):
+        with pytest.raises(ValidationError):
+            InvestigationTransition.model_validate({
+                "to_status": "IN_REVIEW",
+                "expected_version": 1,
+                **closure_fields,
+            })
+
+
+def test_investigation_resolution_data_is_allowed_only_on_closure_transition():
+    from pydantic import ValidationError
+    from backend.domains.procurement.investigations import InvestigationTransition
+
+    resolved = InvestigationTransition(
+        to_status="RESOLVED",
+        expected_version=2,
+        resolution="Payment reconciled against bank statement.",
+        root_cause="TIMING_DIFFERENCE",
+    )
+    assert resolved.root_cause == "TIMING_DIFFERENCE"
+
+    with pytest.raises(ValidationError):
+        InvestigationTransition.model_validate({
+            "to_status": "IN_REVIEW",
+            "expected_version": 2,
+            "resolution": "Still investigating.",
+        })
