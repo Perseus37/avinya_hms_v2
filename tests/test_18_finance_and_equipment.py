@@ -203,6 +203,52 @@ def test_04_expense_adjudication_and_payment_are_single_transitions(
     )
     assert repeated_payment.status_code == 400
 
+def test_mark_expense_paid_validates_and_normalizes_receipt_reference(client, superuser_headers, multi_tenant_env):
+    draft = client.post(
+        "/v1/api/finance/ap/expenses",
+        headers=superuser_headers,
+        json={"category": "UTILITY", "title": "Receipt validation", "amount_paise": 12000},
+    )
+    assert draft.status_code == 201
+    expense_id = draft.json()["id"]
+
+    DefaultSession = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with DefaultSession() as db:
+        doctor = db.query(User).filter(User.email == "doctor@default.com").one()
+        expense = db.get(ExpenseRecord, expense_id)
+        expense.created_by_id = doctor.id
+        db.commit()
+
+    approved = client.patch(
+        f"/v1/api/finance/ap/expenses/{expense_id}/adjudicate",
+        headers=superuser_headers,
+        json={"status": "APPROVED"},
+    )
+    assert approved.status_code == 200
+
+    blank = client.post(
+        f"/v1/api/finance/ap/expenses/{expense_id}/mark-paid",
+        headers=superuser_headers,
+        params={"receipt_reference": "   "},
+    )
+    assert blank.status_code == 422
+
+    oversized = client.post(
+        f"/v1/api/finance/ap/expenses/{expense_id}/mark-paid",
+        headers=superuser_headers,
+        params={"receipt_reference": "R" * 101},
+    )
+    assert oversized.status_code == 422
+
+    paid = client.post(
+        f"/v1/api/finance/ap/expenses/{expense_id}/mark-paid",
+        headers=superuser_headers,
+        params={"receipt_reference": "  BANK-REF-VALID  "},
+    )
+    assert paid.status_code == 200
+    assert paid.json()["receipt_reference"] == "BANK-REF-VALID"
+
+
 def test_expense_rejection_rejects_whitespace_only_reason(
     client, superuser_headers, multi_tenant_env
 ):

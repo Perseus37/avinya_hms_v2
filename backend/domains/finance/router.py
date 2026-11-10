@@ -93,7 +93,7 @@ def adjudicate_expense(
 @router.post("/expenses/{expense_id}/mark-paid")
 def mark_expense_paid(
     expense_id: int,
-    receipt_reference: str,
+    receipt_reference: str = Query(..., min_length=1, max_length=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("finance:pay"))
 ):
@@ -103,6 +103,12 @@ def mark_expense_paid(
     ).with_for_update().one_or_none()
     if not expense or expense.status != ExpenseStatusEnum.APPROVED:
         raise HTTPException(status_code=400, detail="Only APPROVED expenses can be paid.")
+
+    normalized_receipt_reference = receipt_reference.strip()
+    if not normalized_receipt_reference:
+        raise HTTPException(status_code=422, detail="receipt_reference must not be blank.")
+    if len(normalized_receipt_reference) > 100:
+        raise HTTPException(status_code=422, detail="receipt_reference must not exceed 100 characters.")
 
     supplier_invoice = db.query(VendorInvoice.id).filter(
         VendorInvoice.linked_expense_id == expense.id
@@ -114,7 +120,7 @@ def mark_expense_paid(
         )
 
     expense.status = ExpenseStatusEnum.PAID
-    expense.receipt_reference = receipt_reference
+    expense.receipt_reference = normalized_receipt_reference
     expense.updated_by_id = current_user.id
     db.commit()
     return expense
