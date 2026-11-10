@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 from dateutil.relativedelta import relativedelta
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, func
 from fastapi import HTTPException
 
 from backend.core.database import tenant_engine_pool
@@ -17,6 +17,8 @@ from backend.domains.procurement.models import (
     PurchaseOrderItem,
     POStatusEnum,
     GRNStatusEnum,
+    PurchaseReturnRecord,
+    PurchaseReturnItem,
     VendorInvoice,
     VendorInvoiceItem,
     VendorInvoiceStatusEnum,
@@ -292,8 +294,15 @@ def issue_patient_indent(db: Session, indent: StoreIndent, issue_request: list, 
     indent.status = IndentStatusEnum.FULFILLED if all_fulfilled else IndentStatusEnum.PARTIALLY_FULFILLED
     indent.approved_by_id = current_user_id
 
-def process_purchase_return(db: Session, vendor_id: int, grn_id: int, return_items: list, current_user_id: int):
-    """Processes a return only against the specified vendor's accepted GRN."""
+def process_purchase_return(
+    db: Session,
+    vendor_id: int,
+    grn_id: int,
+    return_items: list,
+    current_user_id: int,
+    remarks: str | None = None,
+):
+    """Process a vendor return with cumulative GRN quantity controls and immutable detail records."""
     grn = db.query(GoodsReceiptNote).filter(
         GoodsReceiptNote.id == grn_id
     ).with_for_update().one_or_none()
@@ -307,6 +316,7 @@ def process_purchase_return(db: Session, vendor_id: int, grn_id: int, return_ite
             detail="Purchase return requires the specified vendor's accepted GRN.",
         )
 
+    validated_items = []
     total_credit_paise = 0
     for item in return_items:
         grn_item = db.execute(
@@ -319,7 +329,15 @@ def process_purchase_return(db: Session, vendor_id: int, grn_id: int, return_ite
                 status_code=400,
                 detail="GRN item does not belong to the specified goods receipt.",
             )
-
+        already_returned = db.execute(
+            select(func.coalesce(func.sum(PurchaseReturnItem.return_quantity), 0))
+            .where(PurchaseReturnItem.grn_item_id == grn_item.id)
+        ).scalar_one()
+        if already_returned + item.return_quantity > grn_item.accepted_quantity:
+            raise HTTPException(
+                status_code=409,
+                detail="Return quantity exceeds the remaining accepted quantity for this GRN item.",
+            )
         if not grn_item.created_batch_id:
             raise HTTPException(status_code=400, detail="GRN item has no associated inventory batch.")
 
@@ -331,11 +349,37 @@ def process_purchase_return(db: Session, vendor_id: int, grn_id: int, return_ite
         if not batch or batch.stock_quantity < item.return_quantity:
             raise HTTPException(status_code=409, detail="Insufficient current stock to process return to vendor.")
 
-        batch.stock_quantity -= item.return_quantity
-        total_credit_paise += item.return_quantity * batch.unit_price_paise
+        line_amount_paise = item.return_quantity * grn_item.unit_price_paise
+        total_credit_paise += line_amount_paise
+        validated_items.append((item, grn_item, batch, line_amount_paise))
 
-    # Generate Accounts Payable Debit Note (Negative Expense).
-    debit_note = ExpenseRecord(
+    if total_credit_paise > 2_147_483_647:
+        raise HTTPException(status_code=422, detail="Purchase return credit exceeds the supported debit-note amount.")
+
+    return_record = PurchaseReturnRecord(
+        grn_id=grn.id,
+        vendor_id=vendor_id,
+        remarks=remarks,
+        total_credit_paise=total_credit_paise,
+        created_by_id=current_user_id,
+    )
+    db.add(return_record)
+    db.flush()
+
+    for item, grn_item, batch, line_amount_paise in validated_items:
+        batch.stock_quantity -= item.return_quantity
+        db.add(PurchaseReturnItem(
+            return_id=return_record.id,
+            grn_item_id=grn_item.id,
+            inventory_batch_id=batch.id,
+            return_quantity=item.return_quantity,
+            unit_price_paise=grn_item.unit_price_paise,
+            amount_paise=line_amount_paise,
+            return_reason=item.return_reason,
+            created_by_id=current_user_id,
+        ))
+
+    db.add(ExpenseRecord(
         category=ExpenseCategoryEnum.PHARMACY_STOCK,
         title=f"Purchase Return / Debit Note for GRN: {grn.id}",
         amount_paise=-total_credit_paise,
@@ -343,9 +387,11 @@ def process_purchase_return(db: Session, vendor_id: int, grn_id: int, return_ite
         approved_by_id=current_user_id,
         approved_at=datetime.now(timezone.utc),
         vendor_name=grn.purchase_order.vendor.name,
+        receipt_reference=f"PURCHASE-RETURN-{return_record.id}",
         created_by_id=current_user_id,
-    )
-    db.add(debit_note)
+    ))
+    return return_record
+
 
 def return_patient_indent_stock(db: Session, indent: StoreIndent, return_request: list, current_user_id: int):
     """Processes ward returns, restores FEFO batch stock, and credits the patient's DRAFT invoice."""

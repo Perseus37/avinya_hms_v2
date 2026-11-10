@@ -217,15 +217,32 @@ class IndentReturnRequest(BaseModel):
 
 # --- Purchase Returns / Debit Notes ---
 class PurchaseReturnItemCreate(BaseModel):
-    grn_item_id: int
+    grn_item_id: int = Field(gt=0)
     return_quantity: int = Field(gt=0)
-    return_reason: str = Field(min_length=5)
+    return_reason: str = Field(min_length=5, max_length=255)
+
+    @field_validator("return_reason")
+    @classmethod
+    def normalize_return_reason(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if len(normalized) < 5:
+            raise ValueError("Return reason must contain at least five non-whitespace characters.")
+        return normalized
+
 
 class PurchaseReturnCreate(BaseModel):
     grn_id: int = Field(gt=0)
     vendor_id: int = Field(gt=0)
     items: List[PurchaseReturnItemCreate] = Field(min_length=1, max_length=100)
-    remarks: Optional[str] = None
+    remarks: Optional[str] = Field(default=None, max_length=2000)
+
+    @field_validator("remarks")
+    @classmethod
+    def normalize_remarks(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
     @model_validator(mode="after")
     def unique_grn_items(self):

@@ -182,6 +182,50 @@ class GoodsReceiptItem(AuditMixin, Base):
     created_batch: Mapped[Optional["InventoryBatch"]] = relationship()
 
 
+class PurchaseReturnRecord(AuditMixin, Base):
+    """Auditable vendor return header tied to one accepted goods receipt."""
+    __tablename__ = "procurement_purchase_returns"
+    __table_args__ = (
+        CheckConstraint("total_credit_paise >= 0", name="ck_purchase_return_total_non_neg"),
+        Index("ix_purchase_return_grn", "grn_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    grn_id: Mapped[int] = mapped_column(ForeignKey("procurement_grn.id", ondelete="RESTRICT"), nullable=False)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    total_credit_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+
+    grn: Mapped["GoodsReceiptNote"] = relationship()
+    vendor: Mapped["VendorMaster"] = relationship()
+    items: Mapped[List["PurchaseReturnItem"]] = relationship(back_populates="purchase_return")
+
+
+class PurchaseReturnItem(AuditMixin, Base):
+    """Immutable item-level quantity, value and reason for a vendor return."""
+    __tablename__ = "procurement_purchase_return_items"
+    __table_args__ = (
+        CheckConstraint("return_quantity > 0", name="ck_purchase_return_item_qty_pos"),
+        CheckConstraint("unit_price_paise >= 0", name="ck_purchase_return_item_price_non_neg"),
+        CheckConstraint("amount_paise >= 0", name="ck_purchase_return_item_amount_non_neg"),
+        Index("ix_purchase_return_item_grn_item", "grn_item_id"),
+        Index("ix_purchase_return_item_return", "return_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    return_id: Mapped[int] = mapped_column(ForeignKey("procurement_purchase_returns.id", ondelete="RESTRICT"), nullable=False)
+    grn_item_id: Mapped[int] = mapped_column(ForeignKey("procurement_grn_items.id", ondelete="RESTRICT"), nullable=False)
+    inventory_batch_id: Mapped[int] = mapped_column(ForeignKey("inventory_batches.id", ondelete="RESTRICT"), nullable=False)
+    return_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_price_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    return_reason: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    purchase_return: Mapped["PurchaseReturnRecord"] = relationship(back_populates="items")
+    grn_item: Mapped["GoodsReceiptItem"] = relationship()
+    inventory_batch: Mapped["InventoryBatch"] = relationship()
+
+
 class StoreIndent(AuditMixin, Base):
     """Ward or Department request for consumables/medicines from the Central Pharmacy/Store either for ward stock or a specific patient."""
     __tablename__ = "procurement_indents"

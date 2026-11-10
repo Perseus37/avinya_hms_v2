@@ -645,7 +645,7 @@ def return_indent_stock(
 # --- Vendor Purchase Returns ---
 @router.post("/returns", status_code=status.HTTP_201_CREATED)
 def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
-    process_purchase_return(db, payload.vendor_id, payload.grn_id, payload.items, current_user.id)
+    process_purchase_return(db, payload.vendor_id, payload.grn_id, payload.items, current_user.id, payload.remarks)
     db.commit()
     return {"status": "success", "message": "Purchase return processed and Debit Note generated."}
 

@@ -1248,3 +1248,59 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
     )
     assert cross_grn_return.status_code == 400, cross_grn_return.text
     assert "does not belong" in cross_grn_return.json()["message"].lower()
+
+    from backend.domains.procurement.models import PurchaseReturnRecord, PurchaseReturnItem
+    from backend.domains.pharmacy.models import InventoryBatch
+
+    accepted_return = client.post(
+        "/v1/api/procurement/returns",
+        headers=pharmacist_headers,
+        json={
+            "grn_id": first_grn["id"],
+            "vendor_id": vendor.json()["id"],
+            "remarks": "Return approved by supplier.",
+            "items": [{
+                "grn_item_id": first_grn_item_id,
+                "return_quantity": 2,
+                "return_reason": "Damaged outer packaging",
+            }],
+        },
+    )
+    assert accepted_return.status_code == 201, accepted_return.text
+
+    with Session(engine) as db:
+        return_record = db.query(PurchaseReturnRecord).filter_by(
+            grn_id=first_grn["id"]
+        ).one()
+        return_line = db.query(PurchaseReturnItem).filter_by(
+            return_id=return_record.id
+        ).one()
+        assert return_record.remarks == "Return approved by supplier."
+        assert return_record.total_credit_paise == 1000
+        assert return_line.return_quantity == 2
+        assert return_line.return_reason == "Damaged outer packaging"
+        batch = db.get(InventoryBatch, return_line.inventory_batch_id)
+        batch.stock_quantity += 20
+        db.commit()
+
+    excessive_repeat_return = client.post(
+        "/v1/api/procurement/returns",
+        headers=pharmacist_headers,
+        json={
+            "grn_id": first_grn["id"],
+            "vendor_id": vendor.json()["id"],
+            "items": [{
+                "grn_item_id": first_grn_item_id,
+                "return_quantity": 9,
+                "return_reason": "Excess cumulative return",
+            }],
+        },
+    )
+    assert excessive_repeat_return.status_code == 409, excessive_repeat_return.text
+    assert "exceeds the remaining accepted quantity" in excessive_repeat_return.json()["message"].lower()
+
+    with Session(engine) as db:
+        assert db.query(PurchaseReturnItem).filter_by(
+            grn_item_id=first_grn_item_id
+        ).with_entities(__import__("sqlalchemy").func.sum(PurchaseReturnItem.return_quantity)).scalar() == 2
+
