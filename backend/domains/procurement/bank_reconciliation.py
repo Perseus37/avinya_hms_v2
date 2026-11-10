@@ -511,25 +511,32 @@ def list_reconciliation_candidates(
         normalized_reference = func.replace(
             func.upper(func.trim(SupplierPayment.payment_reference)), " ", ""
         )
-        pair_filters = [
-            and_(
-                SupplierPayment.vendor_id == vendor_id,
-                normalized_reference == reference,
+        duplicate_aggregates = []
+        # Bound the OR expression tree and bind parameters on SQLite while
+        # retaining set-based aggregation (rather than one query per reference).
+        reference_pairs = list(reference_groups)
+        for offset in range(0, len(reference_pairs), 100):
+            pair_filters = [
+                and_(
+                    SupplierPayment.vendor_id == vendor_id,
+                    normalized_reference == reference,
+                )
+                for vendor_id, reference in reference_pairs[offset:offset + 100]
+            ]
+            duplicate_aggregates.extend(
+                db.query(
+                    SupplierPayment.vendor_id,
+                    normalized_reference.label("normalized_reference"),
+                    func.count(SupplierPayment.id).label("payment_count"),
+                    func.min(SupplierPayment.id).label("first_payment_id"),
+                ).filter(
+                    or_(*pair_filters)
+                ).group_by(
+                    SupplierPayment.vendor_id, normalized_reference
+                ).having(
+                    func.count(SupplierPayment.id) > 1
+                ).all()
             )
-            for vendor_id, reference in reference_groups
-        ]
-        duplicate_aggregates = db.query(
-            SupplierPayment.vendor_id,
-            normalized_reference.label("normalized_reference"),
-            func.count(SupplierPayment.id).label("payment_count"),
-            func.min(SupplierPayment.id).label("first_payment_id"),
-        ).filter(
-            or_(*pair_filters)
-        ).group_by(
-            SupplierPayment.vendor_id, normalized_reference
-        ).having(
-            func.count(SupplierPayment.id) > 1
-        ).all()
 
         current_page_ids = {payment.id for payment in payments}
         for duplicate in duplicate_aggregates:
