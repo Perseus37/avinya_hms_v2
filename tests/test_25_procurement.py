@@ -495,7 +495,7 @@ def test_reconciliation_investigation_lifecycle_is_versioned_and_audited(client,
         "/v1/api/procurement/reconciliation/investigations",
         headers=superuser_headers,
         json={
-            "candidate_type": "OTHER_CLASSIFICATION",
+            "candidate_type": "UNMATCHED_BANK_DEBIT",
             "source_type": "BANK_STATEMENT_LINE",
             "source_id": line_id,
             "title": "Duplicate case",
