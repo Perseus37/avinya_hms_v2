@@ -45,7 +45,8 @@ from backend.domains.patients.models import Patient
 from backend.domains.encounters.models import EncounterTypeEnum, PatientEncounter, InpatientAdmission, AdmissionTypeEnum
 from backend.domains.clinical.models import ClinicalNote
 from backend.domains.billing.models import Invoice, InvoiceStatusEnum
-from backend.domains.privacy.models import PrivacyDataBreachIncident, PrivacyDecisionAudit
+from backend.domains.privacy.models import PrivacyDataBreachIncident, PrivacyDecisionAudit, PrivacyLegalHold
+from backend.domains.procurement.models import VendorCategoryEnum, VendorMaster
 from backend.scripts.restore_drill import run_restore_drill
 
 
@@ -268,9 +269,33 @@ def test_03_sandbox_scrubbing_clinical_notes_and_privacy_logs(client: TestClient
             reported_by_user_id=doc.id,
         )
         db.add(breach)
+        vendor = VendorMaster(
+            code="LIVE-VENDOR-001",
+            name="Confidential Supplier Pvt Ltd",
+            category=VendorCategoryEnum.PHARMACEUTICALS,
+            gstin="29ABCDE1234F1Z5",
+            pan="ABCDE1234F",
+            contact_person="Real Supplier Contact",
+            phone="+919876543210",
+            email="real.contact@confidential-supplier.example",
+            address="Confidential Supplier Address, Bengaluru",
+            bank_account_number="123456789012",
+            bank_ifsc="HDFC0001234",
+        )
+        db.add(vendor)
+        db.flush()
+        legal_hold = PrivacyLegalHold(
+            patient_id=pat_id,
+            data_category="CLINICAL_NOTES",
+            reason="Sensitive legal matter involving named patient",
+            hold_reference="LIVE-LEGAL-HOLD-REF-001",
+            created_by_user_id=doc.id,
+        )
+        db.add(legal_hold)
         db.commit()
         inv_id = inv.id
         cn_id = cn.id
+        vendor_id = vendor.id
 
     # 2. Scrub sandbox database
     scrub_sandbox_database("hms_apollo")
@@ -299,9 +324,23 @@ def test_03_sandbox_scrubbing_clinical_notes_and_privacy_logs(client: TestClient
         assert inv_after.notes == "Sandbox invoice"
         assert inv_after.discount_reason is None
 
-        # 6. Verify Privacy Breach incident purged
+        # 6. Verify privacy breach and legal-hold records are purged
         breaches_count = db.scalar(select(text("COUNT(*)")).select_from(text("privacy_data_breach_incidents")))
         assert breaches_count == 0
+        legal_holds_count = db.scalar(select(text("COUNT(*)")).select_from(text("privacy_legal_holds")))
+        assert legal_holds_count == 0
+
+        # 7. Verify supplier contact, tax, address, and payout details are scrubbed
+        vendor_after = db.get(VendorMaster, vendor_id)
+        assert vendor_after.name == f"Sandbox Vendor {vendor_id}"
+        assert vendor_after.gstin is None
+        assert vendor_after.pan is None
+        assert vendor_after.contact_person == "Sandbox Contact"
+        assert vendor_after.phone == "9000000000"
+        assert vendor_after.email == f"vendor_{vendor_id}@sandbox.local"
+        assert vendor_after.address == "Sandbox Supplier Address"
+        assert vendor_after.bank_account_number is None
+        assert vendor_after.bank_ifsc is None
 
 
 def test_04_control_plane_operator_roles_and_mpi_audit(client: TestClient):

@@ -50,7 +50,6 @@ MASTER_AND_CONFIG_TABLES: frozenset[str] = frozenset({
     "permissions",
     "physical_examinations_master",
     "physical_rooms_master",
-    "privacy_legal_holds",
     "privacy_policy_revisions",
     "privacy_retention_policies",
     "procurement_vendors",
@@ -75,6 +74,7 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "hl7_integration_logs",
     "federation_transfer_logs",
     "privacy_decision_audits",
+    "privacy_legal_holds",
     "privacy_retention_run_ledgers",
     "patient_data_rights_requests",
     "privacy_data_breach_incidents",
@@ -669,6 +669,25 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     SET anesthesia_notes = 'Sandbox anesthesia notes',
                         operative_findings = 'Sandbox operative findings',
                         post_op_instructions = 'Sandbox post-op instructions'
+                """)
+            )
+            stats["scrubbed_tables"] += 1
+
+        # Supplier master rows remain available for procurement workflows, but
+        # contact, tax, address, and payout details must not survive cloning.
+        if "procurement_vendors" in table_names:
+            session.execute(
+                text("""
+                    UPDATE procurement_vendors
+                    SET name = 'Sandbox Vendor ' || id,
+                        gstin = NULL,
+                        pan = NULL,
+                        contact_person = 'Sandbox Contact',
+                        phone = '9000000000',
+                        email = 'vendor_' || id || '@sandbox.local',
+                        address = 'Sandbox Supplier Address',
+                        bank_account_number = NULL,
+                        bank_ifsc = NULL
                 """)
             )
             stats["scrubbed_tables"] += 1
