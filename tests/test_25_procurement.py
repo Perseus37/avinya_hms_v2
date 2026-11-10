@@ -1126,3 +1126,112 @@ def test_bank_statement_match_history_is_paginated_but_totals_cover_all_matches(
     assert result["items"][0]["id"] == 2
     assert result["matched_amount_paise"] == 1250
     assert result["remaining_amount_paise"] == 750
+
+
+def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
+    client, pharmacist_headers, superuser_headers
+):
+    vendor = client.post(
+        "/v1/api/procurement/vendors",
+        headers=pharmacist_headers,
+        json={
+            "code": "VND-RETURN-SCOPE",
+            "name": "Return Scope Vendor",
+            "category": "PHARMACEUTICALS",
+            "contact_person": "Test Contact",
+            "phone": "9876543210",
+            "email": "returns@example.com",
+            "address": "Test Address",
+        },
+    )
+    assert vendor.status_code == 201, vendor.text
+
+    po = client.post(
+        "/v1/api/procurement/purchase-orders",
+        headers=pharmacist_headers,
+        json={
+            "vendor_id": vendor.json()["id"],
+            "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
+            "payment_terms": "Net 30",
+            "items": [
+                {
+                    "item_description": "Return scope test item",
+                    "quantity_ordered": 20,
+                    "unit_price_paise": 500,
+                }
+            ],
+        },
+    )
+    assert po.status_code == 201, po.text
+    assert client.patch(
+        f"/v1/api/procurement/purchase-orders/{po.json()['id']}/approve",
+        headers=superuser_headers,
+    ).status_code == 200
+
+    def create_grn(invoice_number, batch_number):
+        response = client.post(
+            "/v1/api/procurement/grn",
+            headers=pharmacist_headers,
+            json={
+                "po_id": po.json()["id"],
+                "invoice_number": invoice_number,
+                "invoice_date": datetime.now(timezone.utc).isoformat(),
+                "items": [
+                    {
+                        "po_item_id": po.json()["items"][0]["id"],
+                        "batch_number": batch_number,
+                        "expiry_date": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
+                        "received_quantity": 10,
+                        "accepted_quantity": 10,
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    first_grn = create_grn("RETURN-INV-1", "RETURN-BATCH-1")
+    pending_return = client.post(
+        "/v1/api/procurement/returns",
+        headers=pharmacist_headers,
+        json={
+            "grn_id": first_grn["id"],
+            "vendor_id": vendor.json()["id"],
+            "items": [
+                {
+                    "grn_item_id": first_grn["items"][0]["id"],
+                    "return_quantity": 1,
+                    "return_reason": "Damaged packaging",
+                }
+            ],
+        },
+    )
+    assert pending_return.status_code == 400, pending_return.text
+
+    assert client.patch(
+        f"/v1/api/procurement/grn/{first_grn['id']}/accept",
+        headers=superuser_headers,
+    ).status_code == 200
+    second_grn = create_grn("RETURN-INV-2", "RETURN-BATCH-2")
+    assert client.patch(
+        f"/v1/api/procurement/grn/{second_grn['id']}/accept",
+        headers=superuser_headers,
+    ).status_code == 200
+
+    cross_grn_return = client.post(
+        "/v1/api/procurement/returns",
+        headers=pharmacist_headers,
+        json={
+            "grn_id": first_grn["id"],
+            "vendor_id": vendor.json()["id"],
+            "items": [
+                {
+                    "grn_item_id": second_grn["items"][0]["id"],
+                    "return_quantity": 1,
+                    "return_reason": "Damaged packaging",
+                }
+            ],
+        },
+    )
+    assert cross_grn_return.status_code == 400, cross_grn_return.text
+    assert "does not belong" in cross_grn_return.json()["message"].lower()

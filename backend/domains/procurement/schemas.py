@@ -222,10 +222,17 @@ class PurchaseReturnItemCreate(BaseModel):
     return_reason: str = Field(min_length=5)
 
 class PurchaseReturnCreate(BaseModel):
-    grn_id: int
-    vendor_id: int
-    items: List[PurchaseReturnItemCreate]
+    grn_id: int = Field(gt=0)
+    vendor_id: int = Field(gt=0)
+    items: List[PurchaseReturnItemCreate] = Field(min_length=1, max_length=100)
     remarks: Optional[str] = None
+
+    @model_validator(mode="after")
+    def unique_grn_items(self):
+        item_ids = [item.grn_item_id for item in self.items]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("Each GRN item may appear only once in a purchase return.")
+        return self
 
 
 class SupplierPaymentRequestAllocationCreate(BaseModel):
