@@ -172,23 +172,30 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
     if abs(calculated_gross - invoice.total_amount_paise) > 100:
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
-    # Rule 2: PO Line Item Validation
+    # Rule 2: Aggregate invoice quantities by PO line before comparing limits.
+    po_lines_by_id = {line.id: line for line in po.items}
+    invoiced_by_po_line = {}
     for item in invoice.items:
-        if not item.po_item_id:
+        if not item.po_item_id or item.po_item_id not in po_lines_by_id:
             return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        po_line = next((line for line in po.items if line.id == item.po_item_id), None)
-        if not po_line:
-            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        if item.quantity > po_line.quantity_ordered:
-            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        if receipt:
-            received_quantity = sum(
-                receipt_item.accepted_quantity
-                for receipt_item in receipt.items
-                if receipt_item.po_item_id == po_line.id
+        invoiced_by_po_line[item.po_item_id] = (
+            invoiced_by_po_line.get(item.po_item_id, 0) + item.quantity
+        )
+
+    received_by_po_line = {}
+    if receipt:
+        for receipt_item in receipt.items:
+            received_by_po_line[receipt_item.po_item_id] = (
+                received_by_po_line.get(receipt_item.po_item_id, 0)
+                + receipt_item.accepted_quantity
             )
-            if item.quantity > received_quantity:
-                return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+
+    for item in invoice.items:
+        po_line = po_lines_by_id[item.po_item_id]
+        if invoiced_by_po_line[item.po_item_id] > po_line.quantity_ordered:
+            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+        if receipt and invoiced_by_po_line[item.po_item_id] > received_by_po_line.get(po_line.id, 0):
+            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
         # Flag variance if invoiced unit price strictly exceeds PO unit price
         if item.unit_price_paise > po_line.unit_price_paise:

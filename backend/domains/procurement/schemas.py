@@ -153,6 +153,9 @@ class VendorInvoiceReview(BaseModel):
             raise ValueError("Invoice discount cannot exceed its subtotal.")
         if sum(item.total_price_paise for item in self.items) != self.subtotal_paise:
             raise ValueError("Invoice subtotal must equal the sum of its line-item totals.")
+        po_item_ids = [item.po_item_id for item in self.items if item.po_item_id is not None]
+        if len(po_item_ids) != len(set(po_item_ids)):
+            raise ValueError("Each purchase-order line may appear only once on an invoice.")
         if self.due_date < self.invoice_date:
             raise ValueError("Invoice due date cannot be earlier than its invoice date.")
         return self

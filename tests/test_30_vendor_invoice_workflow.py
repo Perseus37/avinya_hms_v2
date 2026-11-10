@@ -151,6 +151,24 @@ def test_vendor_invoice_review_match_and_approval_are_end_to_end(
     )
     assert over_quantity_match.status_code == 200
     assert over_quantity_match.json()["status"] == "PENDING_VERIFICATION"
+
+    duplicate_po_line_review = {
+        **review_payload,
+        "subtotal_paise": 400,
+        "tax_amount_paise": 72,
+        "total_amount_paise": 472,
+        "items": [
+            {**review_payload["items"][0], "quantity": 2, "total_price_paise": 200},
+            {**review_payload["items"][0], "quantity": 2, "total_price_paise": 200},
+        ],
+    }
+    duplicate_po_line_response = client.patch(
+        f"/v1/api/procurement/invoices/{invoice_id}/review",
+        headers=superuser_headers,
+        json=duplicate_po_line_review,
+    )
+    assert duplicate_po_line_response.status_code == 422
+
     corrected_review = client.patch(
         f"/v1/api/procurement/invoices/{invoice_id}/review",
         headers=superuser_headers,
