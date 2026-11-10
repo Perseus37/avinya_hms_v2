@@ -451,6 +451,9 @@ def return_patient_indent_stock(db: Session, indent: StoreIndent, return_request
             allocation_id=allocation.id, return_quantity=return_item.return_quantity,
             created_by_id=current_user_id,
         ))
+        # The session may disable autoflush; make this return visible to the next
+        # duplicate allocation entry in the same request before summing its ledger.
+        db.flush()
         if matching_line:
             credit_value = return_item.return_quantity * matching_line.unit_price_paise
             if matching_line.quantity == return_item.return_quantity:

@@ -627,7 +627,7 @@ def issue_indent_stock(indent_id: int, payload: IndentIssueRequest, db: Session 
 def list_patient_indent_issue_allocations(
     indent_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("wards:read")),
+    _: User = Depends(RequirePermission("wards:write")),
 ):
     """Return durable issue allocations needed to submit safe patient returns."""
     indent = db.get(StoreIndent, indent_id)
