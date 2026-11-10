@@ -186,7 +186,7 @@ def test_n99_production_alertmanager_recipient_enforcement(tmp_path):
         render_alertmanager_config(env_file=bad_email_env, output_file=out_file)
 
 
-def test_n100_procurement_purchase_order_html_print(client, superuser_headers):
+def test_n100_procurement_purchase_order_html_print(client, superuser_headers, pharmacist_headers):
     """
     N-100: GET /api/procurement/purchase-orders/{id}/print?format=html must render HTML
     without crashing due to missing HTMLResponse import.
@@ -214,7 +214,7 @@ def test_n100_procurement_purchase_order_html_print(client, superuser_headers):
     # 2. Create purchase order
     po_res = client.post(
         "/v1/api/procurement/purchase-orders",
-        headers=superuser_headers,
+        headers=pharmacist_headers,
         json={
             "vendor_id": vendor_id,
             "delivery_due_date": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
