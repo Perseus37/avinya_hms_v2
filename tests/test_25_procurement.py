@@ -147,10 +147,10 @@ def test_patient_indent_returns_require_original_allocation_and_credit_exact_bat
     from backend.domains.pharmacy.models import InventoryBatch
     from backend.domains.procurement.models import PatientIndentReturnEvent
 
-    patient = client.post("/v1/api/patients", headers=doctor_headers, json={
+    patient = client.post("/v1/api/patients", headers=superuser_headers, json={
         "full_name": "Indent Provenance Patient", "date_of_birth": "1991-01-01T00:00:00Z", "gender": "MALE"
     }).json()
-    encounter = client.post("/v1/api/adt/encounters", headers=doctor_headers, json={
+    encounter = client.post("/v1/api/adt/encounters", headers=superuser_headers, json={
         "patient_id": patient["id"], "encounter_type": "IPD", "primary_doctor_id": 2, "department_id": 1
     }).json()
     medication = client.post("/v1/api/pharmacy/medications", headers=pharmacist_headers, json={
@@ -181,23 +181,23 @@ def test_patient_indent_returns_require_original_allocation_and_credit_exact_bat
 
     discovered = client.get(
         f"/v1/api/procurement/indents/patient/{indent['id']}/issue-allocations",
-        headers=doctor_headers,
+        headers=superuser_headers,
     )
     assert discovered.status_code == 200
     assert {row["allocation_id"] for row in discovered.json()} == {
         allocation_a["allocation_id"], allocation_b["allocation_id"]
     }
 
-    invalid = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/return", headers=doctor_headers, json={
+    invalid = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/return", headers=superuser_headers, json={
         "items": [{"indent_item_id": item_id, "allocation_id": allocation_a["allocation_id"] + 999999, "return_quantity": 1}]
     })
     assert invalid.status_code == 400
 
-    returned = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/return", headers=doctor_headers, json={
+    returned = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/return", headers=superuser_headers, json={
         "items": [{"indent_item_id": item_id, "allocation_id": allocation_b["allocation_id"], "return_quantity": 2}]
     })
     assert returned.status_code == 200, returned.text
-    excessive = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/return", headers=doctor_headers, json={
+    excessive = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/return", headers=superuser_headers, json={
         "items": [{"indent_item_id": item_id, "allocation_id": allocation_b["allocation_id"], "return_quantity": 3}]
     })
     assert excessive.status_code == 409
