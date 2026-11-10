@@ -469,8 +469,11 @@ def approve_vendor_invoice(invoice_id: int, db: Session = Depends(get_db), curre
             status_code=403,
             detail="The invoice uploader cannot approve their own supplier invoice.",
         )
-    if not invoice or invoice.status not in [VendorInvoiceStatusEnum.MATCHED_APPROVED, VendorInvoiceStatusEnum.PRICE_VARIANCE_FLAGGED]:
-        raise HTTPException(status_code=400, detail="Invoice must be matched or flagged before financial approval.")
+    if not invoice or invoice.status != VendorInvoiceStatusEnum.MATCHED_APPROVED:
+        raise HTTPException(
+            status_code=409,
+            detail="Only invoices with a successful three-way match can be financially approved; price variances require a separately authorized resolution.",
+        )
 
     invoice.status = VendorInvoiceStatusEnum.MATCHED_APPROVED
     invoice.verified_by_id = current_user.id

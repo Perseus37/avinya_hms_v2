@@ -176,6 +176,50 @@ def test_vendor_invoice_review_match_and_approval_are_end_to_end(
     )
     assert corrected_review.status_code == 200
 
+    variance_payload = {
+        **review_payload,
+        "subtotal_paise": 202,
+        "total_amount_paise": 238,
+        "items": [
+            {
+                **review_payload["items"][0],
+                "unit_price_paise": 101,
+                "total_price_paise": 202,
+            }
+        ],
+    }
+    variance_review = client.patch(
+        f"/v1/api/procurement/invoices/{invoice_id}/review",
+        headers=superuser_headers,
+        json=variance_payload,
+    )
+    assert variance_review.status_code == 200, variance_review.text
+    variance_reconciliation = client.patch(
+        f"/v1/api/procurement/invoices/{invoice_id}/reconcile",
+        headers=superuser_headers,
+    )
+    assert variance_reconciliation.status_code == 200, variance_reconciliation.text
+    assert variance_reconciliation.json()["status"] == "PRICE_VARIANCE_FLAGGED"
+
+    variance_approval = client.post(
+        f"/v1/api/procurement/invoices/{invoice_id}/approve",
+        headers=superuser_headers,
+    )
+    assert variance_approval.status_code == 409, variance_approval.text
+    tenant_session = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with tenant_session() as db:
+        variance_invoice = db.get(VendorInvoice, invoice_id)
+        assert variance_invoice.status == "PRICE_VARIANCE_FLAGGED"
+        assert variance_invoice.linked_expense_id is None
+        assert db.query(ExpenseRecord).count() == 0
+
+    corrected_review = client.patch(
+        f"/v1/api/procurement/invoices/{invoice_id}/review",
+        headers=superuser_headers,
+        json=review_payload,
+    )
+    assert corrected_review.status_code == 200, corrected_review.text
+
     reconciliation = client.patch(
         f"/v1/api/procurement/invoices/{invoice_id}/reconcile",
         headers=superuser_headers,
