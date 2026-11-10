@@ -269,6 +269,38 @@ class StoreIndentItem(AuditMixin, Base):
     indent: Mapped["StoreIndent"] = relationship(back_populates="items")
     medication: Mapped["MedicationMaster"] = relationship()
 
+class PatientIndentIssueAllocation(Base):
+    """Immutable provenance for one patient-indent issue from one inventory batch."""
+    __tablename__ = "procurement_patient_indent_issue_allocations"
+    __table_args__ = (
+        CheckConstraint("issued_quantity > 0", name="ck_patient_indent_alloc_issued_pos"),
+        Index("ix_patient_indent_alloc_item_batch", "indent_item_id", "inventory_batch_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    indent_item_id: Mapped[int] = mapped_column(ForeignKey("procurement_indent_items.id", ondelete="RESTRICT"), nullable=False)
+    inventory_batch_id: Mapped[int] = mapped_column(ForeignKey("inventory_batches.id", ondelete="RESTRICT"), nullable=False)
+    # Keep the historical line ID even if a fully returned invoice line is deleted.
+    invoice_line_item_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    issued_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+
+
+class PatientIndentReturnEvent(Base):
+    """Append-only return ledger; returned quantity is derived from these events."""
+    __tablename__ = "procurement_patient_indent_return_events"
+    __table_args__ = (
+        CheckConstraint("return_quantity > 0", name="ck_patient_indent_return_qty_pos"),
+        Index("ix_patient_indent_return_allocation", "allocation_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    allocation_id: Mapped[int] = mapped_column(ForeignKey("procurement_patient_indent_issue_allocations.id", ondelete="RESTRICT"), nullable=False)
+    return_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    allocation: Mapped["PatientIndentIssueAllocation"] = relationship()
+
+
 class VendorInvoice(AuditMixin, Base):
     """Vendor tax invoice uploaded for procurement settlement and 3-way matching."""
     __tablename__ = "procurement_vendor_invoices"

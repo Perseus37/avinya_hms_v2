@@ -17,7 +17,7 @@ from backend.domains.procurement.models import (
     GoodsReceiptNote, GoodsReceiptItem, GRNStatusEnum,
     VendorInvoice, VendorInvoiceItem, VendorInvoiceStatusEnum,
     ProcurementDocumentDownloadAudit,
-    StoreIndent, StoreIndentItem, IndentStatusEnum,
+    StoreIndent, StoreIndentItem, PatientIndentIssueAllocation, PatientIndentReturnEvent, IndentStatusEnum,
     SupplierPaymentMethodEnum, SupplierPayment, SupplierPaymentAllocation,
     SupplierPaymentRequest, SupplierPaymentRequestAllocation,
 )
@@ -615,13 +615,45 @@ def raise_patient_indent(payload: StoreIndentCreate, db: Session = Depends(get_d
 
 @router.post("/indents/patient/{indent_id}/issue")
 def issue_indent_stock(indent_id: int, payload: IndentIssueRequest, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:write"))):
-    indent = db.query(StoreIndent).options(joinedload(StoreIndent.encounter), joinedload(StoreIndent.items)).filter(StoreIndent.id == indent_id).first()
+    indent = db.query(StoreIndent).options(joinedload(StoreIndent.encounter), joinedload(StoreIndent.items)).filter(StoreIndent.id == indent_id).with_for_update(of=StoreIndent).first()
     if not indent or indent.status in [IndentStatusEnum.FULFILLED, IndentStatusEnum.CANCELLED]:
         raise HTTPException(status_code=400, detail="Invalid indent or already fully fulfilled.")
 
-    issue_patient_indent(db, indent, payload.items, current_user.id)
+    allocations = issue_patient_indent(db, indent, payload.items, current_user.id)
     db.commit()
-    return {"status": "success", "message": "Indent fulfilled and billed to patient encounter."}
+    return {"status": "success", "message": "Indent fulfilled and billed to patient encounter.", "allocations": allocations}
+
+@router.get("/indents/patient/{indent_id}/issue-allocations")
+def list_patient_indent_issue_allocations(
+    indent_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("wards:read")),
+):
+    """Return durable issue allocations needed to submit safe patient returns."""
+    indent = db.get(StoreIndent, indent_id)
+    if not indent or not indent.encounter_id:
+        raise HTTPException(status_code=404, detail="Patient indent not found.")
+    rows = db.execute(
+        select(
+            PatientIndentIssueAllocation,
+            func.coalesce(func.sum(PatientIndentReturnEvent.return_quantity), 0).label("returned_quantity"),
+        )
+        .join(StoreIndentItem, StoreIndentItem.id == PatientIndentIssueAllocation.indent_item_id)
+        .outerjoin(PatientIndentReturnEvent, PatientIndentReturnEvent.allocation_id == PatientIndentIssueAllocation.id)
+        .where(StoreIndentItem.indent_id == indent.id)
+        .group_by(PatientIndentIssueAllocation.id)
+        .order_by(PatientIndentIssueAllocation.id)
+    ).all()
+    return [{
+        "allocation_id": allocation.id,
+        "indent_item_id": allocation.indent_item_id,
+        "batch_id": allocation.inventory_batch_id,
+        "issued_quantity": allocation.issued_quantity,
+        "returned_quantity": returned_quantity,
+        "remaining_quantity": allocation.issued_quantity - returned_quantity,
+        "invoice_line_item_id": allocation.invoice_line_item_id,
+    } for allocation, returned_quantity in rows]
+
 
 @router.post("/indents/patient/{indent_id}/return")
 def return_indent_stock(
@@ -633,7 +665,7 @@ def return_indent_stock(
     indent = db.query(StoreIndent).options(
         joinedload(StoreIndent.encounter),
         joinedload(StoreIndent.items)
-    ).filter(StoreIndent.id == indent_id).first()
+    ).filter(StoreIndent.id == indent_id).with_for_update(of=StoreIndent).first()
 
     if not indent or indent.status not in [IndentStatusEnum.FULFILLED, IndentStatusEnum.PARTIALLY_FULFILLED]:
         raise HTTPException(status_code=400, detail="Can only return stock from fulfilled or partially fulfilled indents.")

@@ -137,6 +137,83 @@ def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_he
     assert issue_res.status_code == 200, f"Indent issue failed: {issue_res.text}"
 
 
+
+def test_patient_indent_returns_require_original_allocation_and_credit_exact_batch_line(
+    client, doctor_headers, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    """Returns must restore the issued batch and reverse its own invoice line."""
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.billing.models import InvoiceLineItem
+    from backend.domains.pharmacy.models import InventoryBatch
+    from backend.domains.procurement.models import PatientIndentReturnEvent
+
+    patient = client.post("/v1/api/patients", headers=doctor_headers, json={
+        "full_name": "Indent Provenance Patient", "date_of_birth": "1991-01-01T00:00:00Z", "gender": "MALE"
+    }).json()
+    encounter = client.post("/v1/api/adt/encounters", headers=doctor_headers, json={
+        "patient_id": patient["id"], "encounter_type": "IPD", "primary_doctor_id": 2, "department_id": 1
+    }).json()
+    medication = client.post("/v1/api/pharmacy/medications", headers=pharmacist_headers, json={
+        "code": "MED_IND_PROV", "brand_name": "Provenance Drug", "generic_name": "Generic",
+        "form": "TABLET", "strength": "10mg"
+    }).json()
+    batch_a = client.post("/v1/api/pharmacy/inventory/batches", headers=pharmacist_headers, json={
+        "medication_id": medication["id"], "batch_number": "PROV-A", "expiry_date": "2028-01-01T00:00:00Z",
+        "stock_quantity": 50, "unit_price_paise": 1000
+    }).json()
+    batch_b = client.post("/v1/api/pharmacy/inventory/batches", headers=pharmacist_headers, json={
+        "medication_id": medication["id"], "batch_number": "PROV-B", "expiry_date": "2028-06-01T00:00:00Z",
+        "stock_quantity": 20, "unit_price_paise": 1500
+    }).json()
+    indent = client.post("/v1/api/procurement/indents/patient", headers=superuser_headers, json={
+        "requesting_department_id": 1, "encounter_id": encounter["id"],
+        "items": [{"medication_id": medication["id"], "requested_quantity": 10}]
+    }).json()
+    item_id = indent["items"][0]["id"]
+    issued = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/issue", headers=pharmacist_headers, json={
+        "items": [
+            {"indent_item_id": item_id, "batch_id": batch_a["id"], "issue_quantity": 6},
+            {"indent_item_id": item_id, "batch_id": batch_b["id"], "issue_quantity": 4},
+        ]
+    })
+    assert issued.status_code == 200, issued.text
+    allocation_a, allocation_b = issued.json()["allocations"]
+
+    discovered = client.get(
+        f"/v1/api/procurement/indents/patient/{indent['id']}/issue-allocations",
+        headers=doctor_headers,
+    )
+    assert discovered.status_code == 200
+    assert {row["allocation_id"] for row in discovered.json()} == {
+        allocation_a["allocation_id"], allocation_b["allocation_id"]
+    }
+
+    invalid = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/return", headers=doctor_headers, json={
+        "items": [{"indent_item_id": item_id, "allocation_id": allocation_a["allocation_id"] + 999999, "return_quantity": 1}]
+    })
+    assert invalid.status_code == 400
+
+    returned = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/return", headers=doctor_headers, json={
+        "items": [{"indent_item_id": item_id, "allocation_id": allocation_b["allocation_id"], "return_quantity": 2}]
+    })
+    assert returned.status_code == 200, returned.text
+    excessive = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/return", headers=doctor_headers, json={
+        "items": [{"indent_item_id": item_id, "allocation_id": allocation_b["allocation_id"], "return_quantity": 3}]
+    })
+    assert excessive.status_code == 409
+
+    DefaultSession = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with DefaultSession() as db:
+        assert db.get(InventoryBatch, batch_a["id"]).stock_quantity == 44
+        assert db.get(InventoryBatch, batch_b["id"]).stock_quantity == 18
+        events = db.query(PatientIndentReturnEvent).filter_by(allocation_id=allocation_b["allocation_id"]).all()
+        assert sum(event.return_quantity for event in events) == 2
+        lines = db.query(InvoiceLineItem).filter(InvoiceLineItem.description.contains(f"[IndentItem:{item_id}]")).all()
+        line_a = next(line for line in lines if "Batch: PROV-A" in line.description)
+        line_b = next(line for line in lines if "Batch: PROV-B" in line.description)
+        assert (line_a.quantity, line_a.unit_price_paise) == (6, 1000)
+        assert (line_b.quantity, line_b.unit_price_paise) == (2, 1500)
+
 def test_supplier_payment_request_contract_requires_exact_invoice_allocation_total():
     import pytest
     from pydantic import ValidationError

@@ -209,7 +209,7 @@ class IndentIssueRequest(BaseModel):
 
 class IndentReturnItem(BaseModel):
     indent_item_id: int
-    batch_id: int
+    allocation_id: int = Field(gt=0)
     return_quantity: int = Field(gt=0)
 
 class IndentReturnRequest(BaseModel):

@@ -10,6 +10,8 @@ from backend.core.database import tenant_engine_pool
 from backend.domains.procurement.models import (
     StoreIndent,
     StoreIndentItem,
+    PatientIndentIssueAllocation,
+    PatientIndentReturnEvent,
     IndentStatusEnum,
     GoodsReceiptNote,
     GoodsReceiptItem,
@@ -225,74 +227,79 @@ def post_invoice_to_accounts_payable(db: Session, invoice: VendorInvoice, curren
     invoice.linked_expense_id = expense.id
 
 def issue_patient_indent(db: Session, indent: StoreIndent, issue_request: list, current_user_id: int):
-    """Fulfills indent, decrements FEFO stock, and auto-bills the patient's active encounter."""
+    """Issue from locked stock and persist exact batch and invoice-line provenance."""
     invoice = None
     if indent.encounter_id:
-        stmt_inv = select(Invoice).where(
+        invoice = db.execute(select(Invoice).where(
             Invoice.encounter_id == indent.encounter_id,
             Invoice.status == InvoiceStatusEnum.DRAFT
-        ).with_for_update()
-        invoice = db.execute(stmt_inv).scalar_one_or_none()
-
+        ).with_for_update()).scalar_one_or_none()
         if not invoice:
             import secrets
-            date_prefix = datetime.now(timezone.utc).strftime("%Y%m%d")
             invoice = Invoice(
-                invoice_number=f"INV-{date_prefix}-{secrets.token_hex(6).upper()}",
-                patient_id=indent.encounter.patient_id,
-                encounter_id=indent.encounter_id,
-                status=InvoiceStatusEnum.DRAFT,
-                total_amount_paise=0,
-                amount_paid_paise=0
+                invoice_number=f"INV-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{secrets.token_hex(6).upper()}",
+                patient_id=indent.encounter.patient_id, encounter_id=indent.encounter_id,
+                status=InvoiceStatusEnum.DRAFT, total_amount_paise=0, amount_paid_paise=0
             )
             db.add(invoice)
             db.flush()
 
     total_billed_paise = 0
-    all_fulfilled = True
-
+    created_allocations = []
     for issue_item in issue_request:
-        indent_item = next((i for i in indent.items if i.id == issue_item.indent_item_id), None)
+        indent_item = db.execute(select(StoreIndentItem).where(
+            StoreIndentItem.id == issue_item.indent_item_id,
+            StoreIndentItem.indent_id == indent.id,
+        ).with_for_update()).scalar_one_or_none()
         if not indent_item:
             raise HTTPException(status_code=404, detail=f"Indent item {issue_item.indent_item_id} not found.")
-
         if indent_item.issued_quantity + issue_item.issue_quantity > indent_item.requested_quantity:
             raise HTTPException(status_code=400, detail="Cannot issue more than requested quantity.")
-
-        batch = db.execute(select(InventoryBatch).where(InventoryBatch.id == issue_item.batch_id).with_for_update()).scalar_one_or_none()
+        batch = db.execute(select(InventoryBatch).where(
+            InventoryBatch.id == issue_item.batch_id
+        ).with_for_update()).scalar_one_or_none()
         if not batch or batch.medication_id != indent_item.medication_id:
             raise HTTPException(status_code=400, detail="Invalid batch for requested medication.")
-
         if batch.stock_quantity < issue_item.issue_quantity:
             raise HTTPException(status_code=409, detail=f"Insufficient stock in batch {batch.batch_number}.")
 
-        # Decrement physical stock
         batch.stock_quantity -= issue_item.issue_quantity
         indent_item.issued_quantity += issue_item.issue_quantity
-
-        if indent_item.issued_quantity < indent_item.requested_quantity:
-            all_fulfilled = False
-
-        # Auto-bill to patient invoice
+        line_item = None
         if invoice:
             med = db.get(MedicationMaster, indent_item.medication_id)
             line_cost = issue_item.issue_quantity * batch.unit_price_paise
             total_billed_paise += line_cost
-
             line_item = InvoiceLineItem(
                 invoice_id=invoice.id,
                 description=f"WARD ISSUE: {med.brand_name} - Batch: {batch.batch_number} [IndentItem:{indent_item.id}]",
                 quantity=issue_item.issue_quantity,
                 unit_price_paise=batch.unit_price_paise,
-                total_price_paise=line_cost
+                total_price_paise=line_cost,
             )
             db.add(line_item)
+            db.flush()
+        allocation = PatientIndentIssueAllocation(
+            indent_item_id=indent_item.id,
+            inventory_batch_id=batch.id,
+            invoice_line_item_id=line_item.id if line_item else None,
+            issued_quantity=issue_item.issue_quantity,
+            created_by_id=current_user_id,
+        )
+        db.add(allocation)
+        db.flush()
+        created_allocations.append({
+            "allocation_id": allocation.id, "indent_item_id": indent_item.id,
+            "batch_id": batch.id, "issued_quantity": allocation.issued_quantity,
+            "invoice_line_item_id": allocation.invoice_line_item_id,
+        })
 
     if invoice:
         invoice.total_amount_paise += total_billed_paise
-
+    all_fulfilled = all(item.issued_quantity >= item.requested_quantity for item in indent.items)
     indent.status = IndentStatusEnum.FULFILLED if all_fulfilled else IndentStatusEnum.PARTIALLY_FULFILLED
     indent.approved_by_id = current_user_id
+    return created_allocations
 
 def process_purchase_return(
     db: Session,
@@ -394,61 +401,73 @@ def process_purchase_return(
 
 
 def return_patient_indent_stock(db: Session, indent: StoreIndent, return_request: list, current_user_id: int):
-    """Processes ward returns, restores FEFO batch stock, and credits the patient's DRAFT invoice."""
+    """Return only against the original issue allocation and credit its exact invoice line."""
     invoice = None
     if indent.encounter_id:
-        stmt_inv = select(Invoice).where(
+        invoice = db.execute(select(Invoice).where(
             Invoice.encounter_id == indent.encounter_id,
             Invoice.status == InvoiceStatusEnum.DRAFT
-        ).with_for_update()
-        invoice = db.execute(stmt_inv).scalar_one_or_none()
-
-    total_credit_paise = 0
+        ).with_for_update()).scalar_one_or_none()
 
     for return_item in return_request:
-        indent_item = next((i for i in indent.items if i.id == return_item.indent_item_id), None)
+        indent_item = db.execute(select(StoreIndentItem).where(
+            StoreIndentItem.id == return_item.indent_item_id,
+            StoreIndentItem.indent_id == indent.id,
+        ).with_for_update()).scalar_one_or_none()
         if not indent_item:
             raise HTTPException(status_code=404, detail=f"Indent item {return_item.indent_item_id} not found.")
+        allocation = db.execute(select(PatientIndentIssueAllocation).where(
+            PatientIndentIssueAllocation.id == return_item.allocation_id,
+            PatientIndentIssueAllocation.indent_item_id == indent_item.id,
+        ).with_for_update()).scalar_one_or_none()
+        if not allocation:
+            raise HTTPException(status_code=400, detail="Issue allocation does not belong to this indent item.")
+        already_returned = db.execute(select(func.coalesce(func.sum(PatientIndentReturnEvent.return_quantity), 0)).where(
+            PatientIndentReturnEvent.allocation_id == allocation.id
+        )).scalar_one()
+        if already_returned + return_item.return_quantity > allocation.issued_quantity:
+            raise HTTPException(status_code=409, detail="Return quantity exceeds the remaining quantity in this issue allocation.")
 
-        if return_item.return_quantity > indent_item.issued_quantity:
-            raise HTTPException(status_code=400, detail="Cannot return more stock than was issued.")
-
-        batch = db.execute(select(InventoryBatch).where(InventoryBatch.id == return_item.batch_id).with_for_update()).scalar_one_or_none()
+        batch = db.execute(select(InventoryBatch).where(
+            InventoryBatch.id == allocation.inventory_batch_id
+        ).with_for_update()).scalar_one_or_none()
         if not batch or batch.medication_id != indent_item.medication_id:
-            raise HTTPException(status_code=400, detail="Invalid batch for the returned medication.")
+            raise HTTPException(status_code=409, detail="The original issue batch is unavailable or no longer matches the medication.")
+        if indent_item.issued_quantity < return_item.return_quantity:
+            raise HTTPException(status_code=409, detail="Return quantity exceeds the indent item's remaining issued quantity.")
 
-        # 1. Restore physical stock and decrement issued tracking
+        matching_line = None
+        if invoice and allocation.invoice_line_item_id is not None:
+            matching_line = db.execute(select(InvoiceLineItem).where(
+                InvoiceLineItem.id == allocation.invoice_line_item_id,
+                InvoiceLineItem.invoice_id == invoice.id,
+            ).with_for_update()).scalar_one_or_none()
+            if matching_line is None or matching_line.quantity < return_item.return_quantity:
+                raise HTTPException(status_code=409, detail="The original invoice line is unavailable for this return.")
+
         batch.stock_quantity += return_item.return_quantity
         indent_item.issued_quantity -= return_item.return_quantity
-
-        # 2. Credit the patient's DRAFT invoice by reversing the specific line item
-        if invoice:
-            exact_tag = f"[IndentItem:{indent_item.id}]"
-            matching_line = next((li for li in invoice.line_items if exact_tag in li.description), None)
-
-            if matching_line:
-                credit_value = return_item.return_quantity * matching_line.unit_price_paise
-                total_credit_paise += credit_value
-
-                if matching_line.quantity <= return_item.return_quantity:
-                    if matching_line in invoice.line_items:
-                        invoice.line_items.remove(matching_line)
-                    db.delete(matching_line)
-                else:
-                    matching_line.quantity -= return_item.return_quantity
-                    matching_line.total_price_paise -= credit_value
-                    if matching_line.gst_rate_percent and matching_line.gst_rate_percent > 0:
-                        matching_line.tax_amount_paise = round(
-                            (matching_line.total_price_paise * matching_line.gst_rate_percent) / 100
-                        )
+        db.add(PatientIndentReturnEvent(
+            allocation_id=allocation.id, return_quantity=return_item.return_quantity,
+            created_by_id=current_user_id,
+        ))
+        if matching_line:
+            credit_value = return_item.return_quantity * matching_line.unit_price_paise
+            if matching_line.quantity == return_item.return_quantity:
+                db.delete(matching_line)
+            else:
+                matching_line.quantity -= return_item.return_quantity
+                matching_line.total_price_paise -= credit_value
+                if matching_line.gst_rate_percent and matching_line.gst_rate_percent > 0:
+                    matching_line.tax_amount_paise = round(
+                        (matching_line.total_price_paise * matching_line.gst_rate_percent) / 100
+                    )
 
     if invoice:
         db.flush()
         recalculate_invoice_totals(invoice)
         if invoice.discount_amount_paise and invoice.discount_amount_paise > invoice.total_amount_paise:
             invoice.discount_amount_paise = invoice.total_amount_paise
-
-    # Re-evaluate Indent Status
     if all(i.issued_quantity == 0 for i in indent.items):
         indent.status = IndentStatusEnum.PENDING
     else:
