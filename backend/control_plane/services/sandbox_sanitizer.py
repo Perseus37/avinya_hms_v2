@@ -286,6 +286,28 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                 session.execute(text(f'DELETE FROM "{tbl}"'))
                 stats["purged_tables"] += 1
 
+        if session.bind.dialect.name == "postgresql":
+            for tbl in ("procurement_purchase_returns", "procurement_purchase_return_items"):
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable
+                        BEFORE UPDATE OR DELETE ON "{tbl}"
+                        FOR EACH ROW EXECUTE FUNCTION prevent_purchase_return_mutation()
+                    """))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in ("procurement_purchase_returns", "procurement_purchase_return_items"):
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_update
+                        BEFORE UPDATE ON "{tbl}"
+                        BEGIN SELECT RAISE(ABORT, 'Purchase return audit records are immutable'); END
+                    """))
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_delete
+                        BEFORE DELETE ON "{tbl}"
+                        BEGIN SELECT RAISE(ABORT, 'Purchase return audit records are immutable'); END
+                    """))
+
         # Delete child rows first; requests reference executed payment ledger rows.
         for tbl in (
             "procurement_supplier_payment_bank_matches",
