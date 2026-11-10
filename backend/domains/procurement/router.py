@@ -710,11 +710,11 @@ def create_supplier_payment_request(
     normalized_reference = reference.casefold()
     duplicate_payment = db.query(SupplierPayment.id).filter(
         SupplierPayment.vendor_id == vendor.id,
-        func.lower(SupplierPayment.payment_reference) == normalized_reference,
+        func.upper(func.trim(SupplierPayment.payment_reference)) == normalized_reference.upper(),
     ).first()
     duplicate_request = db.query(SupplierPaymentRequest.id).filter(
         SupplierPaymentRequest.vendor_id == vendor.id,
-        func.lower(SupplierPaymentRequest.payment_reference) == normalized_reference,
+        func.upper(func.trim(SupplierPaymentRequest.payment_reference)) == normalized_reference.upper(),
     ).first()
     if duplicate_payment or duplicate_request:
         raise HTTPException(status_code=409, detail="This supplier payment reference has already been used.")
