@@ -271,3 +271,29 @@ def test_invoice_review_requires_consistent_totals(client, superuser_headers, mo
         },
     )
     assert invalid_review.status_code == 422
+
+    inconsistent_line_total = client.patch(
+        f"/v1/api/procurement/invoices/{upload.json()['invoice_id']}/review",
+        headers=superuser_headers,
+        json={
+            "invoice_number": "INV-BAD-LINE-TOTAL",
+            "invoice_date": datetime.now(timezone.utc).isoformat(),
+            "due_date": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+            "subtotal_paise": 50,
+            "tax_amount_paise": 9,
+            "discount_paise": 0,
+            "total_amount_paise": 59,
+            "items": [
+                {
+                    "item_description": "Test supply",
+                    "batch_number": "BATCH-001",
+                    "expiry_date": datetime.now(timezone.utc).isoformat(),
+                    "quantity": 1,
+                    "unit_price_paise": 100,
+                    "tax_percentage": 18,
+                    "total_price_paise": 50,
+                }
+            ],
+        },
+    )
+    assert inconsistent_line_total.status_code == 422

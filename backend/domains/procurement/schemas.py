@@ -133,6 +133,12 @@ class VendorInvoiceItemReview(BaseModel):
     tax_percentage: int = Field(ge=0, le=100)
     total_price_paise: int = Field(ge=0)
 
+    @model_validator(mode="after")
+    def validate_line_total(self):
+        if self.quantity * self.unit_price_paise != self.total_price_paise:
+            raise ValueError("Invoice line total must equal quantity multiplied by unit price before tax.")
+        return self
+
 class VendorInvoiceReview(BaseModel):
     po_id: Optional[int] = None
     grn_id: Optional[int] = None
