@@ -162,12 +162,12 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
     receipt = db.get(GoodsReceiptNote, invoice.grn_id)
-        if (
-            not receipt
-            or receipt.po_id != po.id
-            or receipt.status != GRNStatusEnum.ACCEPTED
-        ):
-            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+    if (
+        not receipt
+        or receipt.po_id != po.id
+        or receipt.status != GRNStatusEnum.ACCEPTED
+    ):
+        return VendorInvoiceStatusEnum.PENDING_VERIFICATION
     calculated_gross = invoice.subtotal_paise + invoice.tax_amount_paise - invoice.discount_paise
 
     # Rule 1: Mathematical Integrity Tolerance (+/- 100 paise)
