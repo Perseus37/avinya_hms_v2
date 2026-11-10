@@ -1190,12 +1190,23 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
         assert response.status_code == 201, response.text
         return response.json()
 
-    first_grn = create_grn("RETURN-INV-1", "RETURN-BATCH-1")
     from sqlalchemy.orm import Session
-    from backend.domains.procurement.models import GoodsReceiptItem
+    from backend.domains.procurement.models import GoodsReceiptItem, PurchaseOrderItem
+    from backend.domains.pharmacy.models import MedicationMaster, MedicationFormEnum
 
     engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        medication = MedicationMaster(
+            code="MED-RETURN-SCOPE", brand_name="Return Scope",
+            generic_name="Return Scope Generic", form=MedicationFormEnum.TABLET,
+            strength="500mg",
+        )
+        db.add(medication)
+        db.flush()
+        db.get(PurchaseOrderItem, po.json()["items"][0]["id"]).medication_id = medication.id
+        db.commit()
 
+    first_grn = create_grn("RETURN-INV-1", "RETURN-BATCH-1")
     def get_grn_item_id(grn_id):
         with Session(engine) as db:
             return db.query(GoodsReceiptItem.id).filter(

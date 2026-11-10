@@ -188,6 +188,7 @@ class PurchaseReturnRecord(AuditMixin, Base):
     __table_args__ = (
         CheckConstraint("total_credit_paise >= 0", name="ck_purchase_return_total_non_neg"),
         Index("ix_purchase_return_grn", "grn_id"),
+        Index("ix_purchase_return_vendor", "vendor_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -210,6 +211,7 @@ class PurchaseReturnItem(AuditMixin, Base):
         CheckConstraint("amount_paise >= 0", name="ck_purchase_return_item_amount_non_neg"),
         Index("ix_purchase_return_item_grn_item", "grn_item_id"),
         Index("ix_purchase_return_item_return", "return_id"),
+        Index("ix_purchase_return_item_batch", "inventory_batch_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

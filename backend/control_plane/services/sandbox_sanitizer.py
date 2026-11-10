@@ -92,6 +92,8 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "procurement_reconciliation_notification_config_events",
     "procurement_reconciliation_notification_outbox",
     "procurement_reconciliation_governance_reports",
+    "procurement_purchase_returns",
+    "procurement_purchase_return_items",
     "break_glass_uses",
     "break_glass_grants",
     "service_workflow_events",
@@ -217,15 +219,17 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
             "procurement_supplier_payment_request_allocations",
             "procurement_supplier_payment_requests",
             "procurement_supplier_payments",
+            "procurement_purchase_returns",
+            "procurement_purchase_return_items",
         }
         # Sandbox clones discard financial transaction data. Temporarily remove only
         # the append-only guards while purging, then restore them before proceeding.
         if session.bind.dialect.name == "postgresql":
-            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations"):
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations", "procurement_purchase_returns", "procurement_purchase_return_items"):
                 if tbl in table_names:
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
         elif session.bind.dialect.name == "sqlite":
-            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations"):
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations", "procurement_purchase_returns", "procurement_purchase_return_items"):
                 if tbl in table_names:
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
@@ -275,6 +279,12 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                 if tbl in table_names:
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+
+        # Vendor return audit records are purge-only in sandbox clones; delete children first.
+        for tbl in ("procurement_purchase_return_items", "procurement_purchase_returns"):
+            if tbl in table_names:
+                session.execute(text(f'DELETE FROM "{tbl}"'))
+                stats["purged_tables"] += 1
 
         # Delete child rows first; requests reference executed payment ledger rows.
         for tbl in (

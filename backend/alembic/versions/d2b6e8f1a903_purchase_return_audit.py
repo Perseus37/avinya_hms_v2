@@ -19,7 +19,7 @@ def upgrade() -> None:
         sa.Column("grn_id", sa.Integer(), sa.ForeignKey("procurement_grn.id", ondelete="RESTRICT"), nullable=False),
         sa.Column("vendor_id", sa.Integer(), sa.ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False),
         sa.Column("remarks", sa.Text(), nullable=True),
-        sa.Column("total_credit_paise", sa.BigInteger(), nullable=False),
+        sa.Column("total_credit_paise", sa.BigInteger().with_variant(sa.Integer(), "sqlite"), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("created_by_id", sa.Integer(), nullable=True),
@@ -27,6 +27,7 @@ def upgrade() -> None:
         sa.CheckConstraint("total_credit_paise >= 0", name="ck_purchase_return_total_non_neg"),
     )
     op.create_index("ix_purchase_return_grn", RETURN_TABLE, ["grn_id"])
+    op.create_index("ix_purchase_return_vendor", RETURN_TABLE, ["vendor_id"])
 
     op.create_table(
         ITEM_TABLE,
@@ -35,8 +36,8 @@ def upgrade() -> None:
         sa.Column("grn_item_id", sa.Integer(), sa.ForeignKey("procurement_grn_items.id", ondelete="RESTRICT"), nullable=False),
         sa.Column("inventory_batch_id", sa.Integer(), sa.ForeignKey("inventory_batches.id", ondelete="RESTRICT"), nullable=False),
         sa.Column("return_quantity", sa.Integer(), nullable=False),
-        sa.Column("unit_price_paise", sa.BigInteger(), nullable=False),
-        sa.Column("amount_paise", sa.BigInteger(), nullable=False),
+        sa.Column("unit_price_paise", sa.BigInteger().with_variant(sa.Integer(), "sqlite"), nullable=False),
+        sa.Column("amount_paise", sa.BigInteger().with_variant(sa.Integer(), "sqlite"), nullable=False),
         sa.Column("return_reason", sa.String(length=255), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
@@ -48,6 +49,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_purchase_return_item_grn_item", ITEM_TABLE, ["grn_item_id"])
     op.create_index("ix_purchase_return_item_return", ITEM_TABLE, ["return_id"])
+    op.create_index("ix_purchase_return_item_batch", ITEM_TABLE, ["inventory_batch_id"])
 
     if op.get_bind().dialect.name == "postgresql":
         op.execute("""
@@ -87,8 +89,10 @@ def downgrade() -> None:
         for table in (RETURN_TABLE, ITEM_TABLE):
             op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_immutable_update")
             op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_immutable_delete")
+    op.drop_index("ix_purchase_return_item_batch", table_name=ITEM_TABLE)
     op.drop_index("ix_purchase_return_item_return", table_name=ITEM_TABLE)
     op.drop_index("ix_purchase_return_item_grn_item", table_name=ITEM_TABLE)
     op.drop_table(ITEM_TABLE)
+    op.drop_index("ix_purchase_return_vendor", table_name=RETURN_TABLE)
     op.drop_index("ix_purchase_return_grn", table_name=RETURN_TABLE)
     op.drop_table(RETURN_TABLE)
