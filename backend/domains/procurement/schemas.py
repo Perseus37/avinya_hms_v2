@@ -2,6 +2,8 @@ from datetime import date, datetime
 import re
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+MAX_PAISE_AMOUNT = 9_223_372_036_854_775_807
+
 from backend.domains.procurement.models import (
     VendorCategoryEnum,
     POStatusEnum,
@@ -200,7 +202,7 @@ class PurchaseReturnCreate(BaseModel):
 
 class SupplierPaymentRequestAllocationCreate(BaseModel):
     invoice_id: int = Field(gt=0)
-    amount_paise: int = Field(gt=0)
+    amount_paise: int = Field(gt=0, le=MAX_PAISE_AMOUNT)
 
 
 class SupplierPaymentRequestCreate(BaseModel):
@@ -216,7 +218,7 @@ class SupplierPaymentRequestCreate(BaseModel):
             raise ValueError("payment_reference must use 2-100 ASCII letters, digits, spaces, or ._/- characters.")
         return normalized.upper()
     scheduled_date: date
-    amount_paise: int = Field(gt=0)
+    amount_paise: int = Field(gt=0, le=MAX_PAISE_AMOUNT)
     notes: Optional[str] = Field(default=None, max_length=2000)
     allocations: List[SupplierPaymentRequestAllocationCreate] = Field(min_length=1, max_length=100)
 

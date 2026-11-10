@@ -31,6 +31,7 @@ from backend.domains.procurement.models import (
 )
 
 router = APIRouter()
+MAX_PAISE_AMOUNT = 9_223_372_036_854_775_807
 
 
 class BankStatementLineImport(BaseModel):
@@ -38,7 +39,7 @@ class BankStatementLineImport(BaseModel):
     transaction_date: date
     value_date: Optional[date] = None
     direction: str
-    amount_paise: int = Field(gt=0)
+    amount_paise: int = Field(gt=0, le=MAX_PAISE_AMOUNT)
     bank_reference: Optional[str] = Field(default=None, max_length=160)
     description: Optional[str] = Field(default=None, max_length=500)
 
@@ -57,8 +58,8 @@ class BankStatementImport(BaseModel):
     statement_reference: str = Field(min_length=1, max_length=120)
     period_start: date
     period_end: date
-    opening_balance_paise: int
-    closing_balance_paise: int
+    opening_balance_paise: int = Field(ge=-MAX_PAISE_AMOUNT, le=MAX_PAISE_AMOUNT)
+    closing_balance_paise: int = Field(ge=-MAX_PAISE_AMOUNT, le=MAX_PAISE_AMOUNT)
     lines: List[BankStatementLineImport] = Field(min_length=1, max_length=5000)
 
     @model_validator(mode="after")
@@ -114,7 +115,7 @@ class BankStatementBatchResponse(BaseModel):
 
 class SupplierPaymentBankMatchCreate(BaseModel):
     supplier_payment_id: int = Field(gt=0)
-    amount_paise: int = Field(gt=0)
+    amount_paise: int = Field(gt=0, le=MAX_PAISE_AMOUNT)
     reason: str = Field(min_length=5, max_length=1000)
 
     @field_validator("reason")

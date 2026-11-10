@@ -5,6 +5,7 @@ from sqlalchemy import (
     DDL,
     event,
     Boolean,
+    BigInteger,
     CheckConstraint,
     Date,
     DateTime,
@@ -25,6 +26,9 @@ from backend.core.database import Base
 from backend.domains.identity.models import Department, User
 from backend.domains.encounters.models import PatientEncounter
 from backend.domains.pharmacy.models import MedicationMaster, InventoryBatch
+
+# PostgreSQL needs 64-bit paise values; SQLite INTEGER already stores signed 64-bit values.
+PAISE_AMOUNT_TYPE = BigInteger().with_variant(Integer, "sqlite")
 # from backend.domains.procurement.models import VendorMaster, PurchaseOrder, GoodsReceiptNote
 
 
@@ -335,7 +339,7 @@ class SupplierPayment(AuditMixin, Base):
     payment_reference: Mapped[str] = mapped_column(String(100), nullable=False)
     payment_method: Mapped[SupplierPaymentMethodEnum] = mapped_column(Enum(SupplierPaymentMethodEnum), nullable=False)
     payment_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     recorded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
     allocations: Mapped[List["SupplierPaymentAllocation"]] = relationship(back_populates="payment")
@@ -353,7 +357,7 @@ class SupplierPaymentAllocation(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     payment_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=False)
     invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
-    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     payment: Mapped["SupplierPayment"] = relationship(back_populates="allocations")
 
 
@@ -373,7 +377,7 @@ class SupplierPaymentRequest(AuditMixin, Base):
     payment_reference: Mapped[str] = mapped_column(String(100), nullable=False)
     payment_method: Mapped[SupplierPaymentMethodEnum] = mapped_column(Enum(SupplierPaymentMethodEnum), nullable=False)
     scheduled_date: Mapped[date] = mapped_column(Date, nullable=False)
-    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
     requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
@@ -400,7 +404,7 @@ class SupplierPaymentRequestAllocation(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     request_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payment_requests.id", ondelete="RESTRICT"), nullable=False)
     invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
-    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     request: Mapped["SupplierPaymentRequest"] = relationship(back_populates="allocations")
 
 class BankStatementBatch(Base):
@@ -419,8 +423,8 @@ class BankStatementBatch(Base):
     statement_reference: Mapped[str] = mapped_column(String(120), nullable=False)
     period_start: Mapped[date] = mapped_column(Date, nullable=False)
     period_end: Mapped[date] = mapped_column(Date, nullable=False)
-    opening_balance_paise: Mapped[int] = mapped_column(Integer, nullable=False)
-    closing_balance_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    opening_balance_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    closing_balance_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     imported_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -443,7 +447,7 @@ class BankStatementLine(Base):
     transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
     value_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     direction: Mapped[str] = mapped_column(String(8), nullable=False)
-    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     bank_reference: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
@@ -461,7 +465,7 @@ class SupplierPaymentBankMatch(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     statement_line_id: Mapped[int] = mapped_column(ForeignKey("procurement_bank_statement_lines.id", ondelete="RESTRICT"), nullable=False)
     supplier_payment_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=False)
-    amount_paise: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     matched_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     matched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     reason: Mapped[str] = mapped_column(String(1000), nullable=False)
