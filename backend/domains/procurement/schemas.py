@@ -159,6 +159,12 @@ class VendorInvoiceReview(BaseModel):
             raise ValueError("Invoice discount cannot exceed its subtotal.")
         if sum(item.total_price_paise for item in self.items) != self.subtotal_paise:
             raise ValueError("Invoice subtotal must equal the sum of its line-item totals.")
+        expected_tax_paise = sum(
+            (item.total_price_paise * item.tax_percentage + 50) // 100
+            for item in self.items
+        )
+        if expected_tax_paise != self.tax_amount_paise:
+            raise ValueError("Invoice tax must equal the sum of rounded line-item taxes.")
         po_item_ids = [item.po_item_id for item in self.items if item.po_item_id is not None]
         if len(po_item_ids) != len(set(po_item_ids)):
             raise ValueError("Each purchase-order line may appear only once on an invoice.")

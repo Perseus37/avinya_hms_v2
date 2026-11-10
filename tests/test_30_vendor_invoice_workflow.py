@@ -297,3 +297,55 @@ def test_invoice_review_requires_consistent_totals(client, superuser_headers, mo
         },
     )
     assert inconsistent_line_total.status_code == 422
+
+    inconsistent_line_tax = client.patch(
+        f"/v1/api/procurement/invoices/{upload.json()['invoice_id']}/review",
+        headers=superuser_headers,
+        json={
+            "invoice_number": "INV-BAD-LINE-TAX",
+            "invoice_date": datetime.now(timezone.utc).isoformat(),
+            "due_date": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+            "subtotal_paise": 200,
+            "tax_amount_paise": 0,
+            "discount_paise": 0,
+            "total_amount_paise": 200,
+            "items": [
+                {
+                    "item_description": "Test supply",
+                    "batch_number": "BATCH-001",
+                    "expiry_date": datetime.now(timezone.utc).isoformat(),
+                    "quantity": 2,
+                    "unit_price_paise": 100,
+                    "tax_percentage": 18,
+                    "total_price_paise": 200,
+                }
+            ],
+        },
+    )
+    assert inconsistent_line_tax.status_code == 422
+
+    valid_rounded_line_tax = client.patch(
+        f"/v1/api/procurement/invoices/{upload.json()['invoice_id']}/review",
+        headers=superuser_headers,
+        json={
+            "invoice_number": "INV-VALID-LINE-TAX",
+            "invoice_date": datetime.now(timezone.utc).isoformat(),
+            "due_date": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
+            "subtotal_paise": 200,
+            "tax_amount_paise": 36,
+            "discount_paise": 0,
+            "total_amount_paise": 236,
+            "items": [
+                {
+                    "item_description": "Test supply",
+                    "batch_number": "BATCH-001",
+                    "expiry_date": datetime.now(timezone.utc).isoformat(),
+                    "quantity": 2,
+                    "unit_price_paise": 100,
+                    "tax_percentage": 18,
+                    "total_price_paise": 200,
+                }
+            ],
+        },
+    )
+    assert valid_rounded_line_tax.status_code == 200, valid_rounded_line_tax.text
