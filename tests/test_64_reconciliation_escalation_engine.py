@@ -632,3 +632,58 @@ def test_sla_policy_history_is_bounded_and_reports_filtered_total(multi_tenant_e
             assert exc.status_code == 400
         else:
             raise AssertionError("Oversized SLA policy pages must be rejected")
+
+
+def test_notification_configuration_audit_preserves_subject_id_when_user_is_deleted(multi_tenant_env):
+    from sqlalchemy import update
+    from sqlalchemy.exc import DBAPIError
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.models import ReconciliationNotificationConfigEvent
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        subject = User(
+            login_id="audit-subject-delete-test",
+            email="audit-subject-delete-test@example.invalid",
+            hashed_password="not-a-real-password-hash",
+            full_name="Audit Subject Delete Test",
+        )
+        db.add(subject)
+        db.flush()
+        subject_id = subject.id
+        event = ReconciliationNotificationConfigEvent(
+            actor_user_id=actor.id,
+            subject_user_id=subject_id,
+            event_type="PREFERENCE_UPDATED",
+            object_type="NOTIFICATION_PREFERENCE",
+            object_id=1,
+            details='{"channel":"IN_APP","enabled":false}',
+        )
+        db.add(event)
+        db.commit()
+        event_id = event.id
+
+        db.delete(subject)
+        db.commit()
+        db.expire_all()
+        retained = db.query(ReconciliationNotificationConfigEvent).filter_by(id=event_id).one()
+        assert retained.subject_user_id == subject_id
+
+        try:
+            db.execute(
+                update(ReconciliationNotificationConfigEvent)
+                .where(ReconciliationNotificationConfigEvent.id == event_id)
+                .values(details='{"tampered":true}')
+            )
+            db.commit()
+            raise AssertionError("Notification configuration audit UPDATE must remain blocked")
+        except DBAPIError:
+            db.rollback()
+
+        try:
+            db.delete(retained)
+            db.commit()
+            raise AssertionError("Notification configuration audit DELETE must remain blocked")
+        except DBAPIError:
+            db.rollback()

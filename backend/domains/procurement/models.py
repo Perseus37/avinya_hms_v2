@@ -623,7 +623,8 @@ class ReconciliationNotificationConfigEvent(Base):
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    subject_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Preserve the historical subject identifier after user deletion; audit rows are immutable.
+    subject_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     event_type: Mapped[str] = mapped_column(String(40), nullable=False)
     object_type: Mapped[str] = mapped_column(String(32), nullable=False)
     object_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

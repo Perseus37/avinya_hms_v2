@@ -56,7 +56,8 @@ def upgrade() -> None:
         "procurement_reconciliation_notification_config_events",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("actor_user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="RESTRICT"), nullable=False),
-        sa.Column("subject_user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
+        # Historical subject ID is intentionally not an FK: deletion must not mutate immutable audit evidence.
+        sa.Column("subject_user_id", sa.Integer(), nullable=True),
         sa.Column("event_type", sa.String(40), nullable=False),
         sa.Column("object_type", sa.String(32), nullable=False),
         sa.Column("object_id", sa.Integer(), nullable=True),
