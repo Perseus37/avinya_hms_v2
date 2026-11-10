@@ -144,7 +144,7 @@ def receive_goods(payload: GRNCreate, db: Session = Depends(get_db), current_use
     db.flush()
 
     for item in payload.items:
-        db.add(GoodsReceiptItem(**item.model_dump(), grn_id=grn.id, unit_price_paise=0, created_by_id=current_user.id))
+        db.add(GoodsReceiptItem(**item.model_dump(), grn_id=grn.id, unit_price_paise=po_items_by_id[item.po_item_id].unit_price_paise, created_by_id=current_user.id))
 
     db.commit()
     return {"status": "success", "id": grn.id, "grn_number": grn.grn_number}
