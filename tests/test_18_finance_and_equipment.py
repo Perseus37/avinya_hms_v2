@@ -280,3 +280,27 @@ def test_expense_rejection_rejects_whitespace_only_reason(
     assert rejected.status_code == 400
     assert "mandatory" in rejected.json()["message"].lower()
 
+
+
+def test_expense_amounts_cannot_exceed_database_integer_capacity(client, superuser_headers):
+    """Expense and recurring templates reject values beyond PostgreSQL INTEGER."""
+    too_large = 2_147_483_648
+    expense = client.post(
+        "/v1/api/finance/ap/expenses",
+        headers=superuser_headers,
+        json={"category": "UTILITY", "title": "Oversized expense", "amount_paise": too_large},
+    )
+    assert expense.status_code == 422
+
+    recurring = client.post(
+        "/v1/api/finance/ap/recurring-templates",
+        headers=superuser_headers,
+        json={
+            "category": "UTILITY",
+            "title": "Oversized recurring expense",
+            "amount_paise": too_large,
+            "frequency": "MONTHLY",
+            "next_generation_date": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    assert recurring.status_code == 422
