@@ -363,6 +363,7 @@ def stream_security_events(
     actor: User = Depends(RequirePermission("privacy:read")),
 ):
     """Streams newline-delimited JSON (NDJSON) security logs for automated SIEM log shippers."""
+    from_time, to_time = _normalize_event_filter_times(from_time, to_time)
     category, severity = _validate_event_filters(from_time, to_time, category, severity)
 
     _, events = _collect_security_events(

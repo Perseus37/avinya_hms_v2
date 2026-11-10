@@ -379,3 +379,19 @@ def test_siem_webhook_pins_validated_dns_address_to_connection(
     assert resolver_calls == ["siem.example.test"]
     assert connected_hosts == ["8.8.8.8"]
 
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "from_time=2026-11-01T00:00:00Z&to_time=2026-11-02T00:00:00",
+        "from_time=2026-11-01T00:00:00&to_time=2026-11-02T00:00:00Z",
+    ],
+)
+def test_security_event_stream_accepts_mixed_timezone_inputs(client, superuser_headers, query):
+    response = client.get(
+        f"/v1/api/audit/stream?{query}",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200
+    assert "application/x-ndjson" in response.headers["content-type"]
