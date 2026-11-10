@@ -1129,7 +1129,7 @@ def test_bank_statement_match_history_is_paginated_but_totals_cover_all_matches(
 
 
 def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
-    client, pharmacist_headers, superuser_headers
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
 ):
     vendor = client.post(
         "/v1/api/procurement/vendors",
@@ -1191,6 +1191,18 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
         return response.json()
 
     first_grn = create_grn("RETURN-INV-1", "RETURN-BATCH-1")
+    from sqlalchemy.orm import Session
+    from backend.domains.procurement.models import GoodsReceiptItem
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+
+    def get_grn_item_id(grn_id):
+        with Session(engine) as db:
+            return db.query(GoodsReceiptItem.id).filter(
+                GoodsReceiptItem.grn_id == grn_id
+            ).scalar()
+
+    first_grn_item_id = get_grn_item_id(first_grn["id"])
     pending_return = client.post(
         "/v1/api/procurement/returns",
         headers=pharmacist_headers,
@@ -1199,7 +1211,7 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
             "vendor_id": vendor.json()["id"],
             "items": [
                 {
-                    "grn_item_id": first_grn["items"][0]["id"],
+                    "grn_item_id": first_grn_item_id,
                     "return_quantity": 1,
                     "return_reason": "Damaged packaging",
                 }
@@ -1213,6 +1225,7 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
         headers=superuser_headers,
     ).status_code == 200
     second_grn = create_grn("RETURN-INV-2", "RETURN-BATCH-2")
+    second_grn_item_id = get_grn_item_id(second_grn["id"])
     assert client.patch(
         f"/v1/api/procurement/grn/{second_grn['id']}/accept",
         headers=superuser_headers,
@@ -1226,7 +1239,7 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
             "vendor_id": vendor.json()["id"],
             "items": [
                 {
-                    "grn_item_id": second_grn["items"][0]["id"],
+                    "grn_item_id": second_grn_item_id,
                     "return_quantity": 1,
                     "return_reason": "Damaged packaging",
                 }
