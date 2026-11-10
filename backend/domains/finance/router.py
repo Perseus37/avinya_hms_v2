@@ -123,6 +123,7 @@ def mark_expense_paid(
     expense.receipt_reference = normalized_receipt_reference
     expense.updated_by_id = current_user.id
     db.commit()
+    db.refresh(expense)
     return expense
 
 @router.post("/recurring-templates", status_code=status.HTTP_201_CREATED)
