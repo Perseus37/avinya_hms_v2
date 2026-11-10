@@ -53,14 +53,10 @@ def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: 
         if accepted_quantity > po_item.quantity_ordered - po_item.quantity_received:
             raise ValueError("Accepted goods exceed the remaining purchase-order quantity.")
 
-    all_po_items_fulfilled = True
     for grn_item in grn.items:
         if grn_item.accepted_quantity > 0:
             po_item = po_items_by_id[grn_item.po_item_id]
             po_item.quantity_received += grn_item.accepted_quantity
-
-            if po_item.quantity_received < po_item.quantity_ordered:
-                all_po_items_fulfilled = False
 
             if po_item.medication_id:
                 new_batch = InventoryBatch(
@@ -75,6 +71,9 @@ def process_grn_acceptance(db: Session, grn: GoodsReceiptNote, current_user_id: 
                 db.flush()
                 grn_item.created_batch_id = new_batch.id
 
+    all_po_items_fulfilled = all(
+        item.quantity_received >= item.quantity_ordered for item in po_items
+    )
     po.status = POStatusEnum.COMPLETED if all_po_items_fulfilled else POStatusEnum.PARTIALLY_RECEIVED
 
 def trigger_donut_invoice_extraction(db_name: str, invoice_id: int, document_path: str):
