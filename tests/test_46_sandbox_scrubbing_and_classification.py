@@ -333,6 +333,7 @@ def test_03_sandbox_scrubbing_clinical_notes_and_privacy_logs(client: TestClient
         # 7. Verify supplier contact, tax, address, and payout details are scrubbed
         vendor_after = db.get(VendorMaster, vendor_id)
         assert vendor_after.name == f"Sandbox Vendor {vendor_id}"
+        assert vendor_after.code == f"SBX-VENDOR-{vendor_id}"
         assert vendor_after.gstin is None
         assert vendor_after.pan is None
         assert vendor_after.contact_person == "Sandbox Contact"

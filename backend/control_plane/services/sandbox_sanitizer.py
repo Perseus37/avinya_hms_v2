@@ -679,7 +679,8 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
             session.execute(
                 text("""
                     UPDATE procurement_vendors
-                    SET name = 'Sandbox Vendor ' || id,
+                    SET code = 'SBX-VENDOR-' || id,
+                        name = 'Sandbox Vendor ' || id,
                         gstin = NULL,
                         pan = NULL,
                         contact_person = 'Sandbox Contact',
