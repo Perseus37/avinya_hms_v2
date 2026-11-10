@@ -585,3 +585,50 @@ def test_escalation_policy_history_is_bounded_and_reports_filtered_total(multi_t
         else:
             raise AssertionError("Oversized escalation policy pages must be rejected")
 
+
+
+def test_sla_policy_history_is_bounded_and_reports_filtered_total(multi_tenant_env):
+    from fastapi import HTTPException
+    from backend.domains.identity.models import User
+    from backend.domains.procurement.investigations import list_reconciliation_sla_policies
+    from backend.domains.procurement.models import ReconciliationSLAPolicy
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        actor = db.query(User).filter(User.email == "admin@default.com").one()
+        baseline_total = db.query(ReconciliationSLAPolicy).count()
+        baseline_active = db.query(ReconciliationSLAPolicy).filter(
+            ReconciliationSLAPolicy.is_active.is_(True)
+        ).count()
+        db.add_all([
+            ReconciliationSLAPolicy(
+                severity="LOW", version=version,
+                target_minutes=version * 10, warning_percent=80,
+                is_active=version == 5, created_by_id=actor.id,
+            )
+            for version in range(1, 6)
+        ])
+        db.commit()
+
+        second_page = list_reconciliation_sla_policies(
+            active_only=False, page=2, page_size=2, db=db, _=actor
+        )
+        assert second_page["total"] == baseline_total + 5
+        assert second_page["page"] == 2
+        assert second_page["page_size"] == 2
+        assert len(second_page["items"]) == 2
+
+        active = list_reconciliation_sla_policies(
+            active_only=True, page=1, page_size=2, db=db, _=actor
+        )
+        assert active["total"] == baseline_active + 1
+        assert all(item["is_active"] for item in active["items"])
+
+        try:
+            list_reconciliation_sla_policies(
+                active_only=False, page=1, page_size=100000, db=db, _=actor
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("Oversized SLA policy pages must be rejected")
