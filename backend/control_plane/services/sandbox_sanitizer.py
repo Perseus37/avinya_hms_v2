@@ -200,6 +200,17 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
         inspector = inspect(session.connection())
         table_names = set(inspector.get_table_names())
 
+        # Fail closed before any destructive work. A newly introduced table may
+        # contain live identifiers or credentials; silently skipping it would
+        # invalidate the sanitizer's zero-leakage guarantee.
+        unclassified_tables = get_unclassified_tables(table_names)
+        if unclassified_tables:
+            names = ", ".join(sorted(unclassified_tables))
+            raise RuntimeError(
+                f"Sandbox sanitization blocked: unclassified tenant tables: {names}. "
+                "Classify each table before retrying."
+            )
+
         # 1. PURGE SENSITIVE LOGS, SESSIONS, AND SECURITY TOKENS
         immutable_finance_tables = {
             "procurement_supplier_payment_allocations",

@@ -106,6 +106,23 @@ def test_01_table_classification_matrix_coverage():
     assert caught == {"future_unregistered_patient_data"}
 
 
+def test_sandbox_scrubbing_fails_closed_for_unclassified_tables():
+    """Unknown tables must block scrubbing before any tenant data is modified."""
+    engine = tenant_engine_pool.get_engine("hms_apollo")
+    table_name = "future_unregistered_patient_data"
+    with engine.begin() as connection:
+        connection.execute(text(f'CREATE TABLE "{table_name}" (id INTEGER PRIMARY KEY, patient_name TEXT)'))
+
+    try:
+        with pytest.raises(RuntimeError, match="unclassified tenant tables.*future_unregistered_patient_data"):
+            scrub_sandbox_database("hms_apollo")
+        with engine.connect() as connection:
+            assert connection.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar_one() == 0
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
+
+
 def test_02_sandbox_scrubbing_credentials_sessions_and_mfa(client: TestClient):
     """
     R-02 / F-02: Verify that scrubbing completely resets user credentials, removes MFA secrets,
