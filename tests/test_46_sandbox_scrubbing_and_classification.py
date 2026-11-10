@@ -106,7 +106,7 @@ def test_01_table_classification_matrix_coverage():
     assert caught == {"future_unregistered_patient_data"}
 
 
-def test_sandbox_scrubbing_fails_closed_for_unclassified_tables():
+def test_sandbox_scrubbing_fails_closed_for_unclassified_tables(multi_tenant_env):
     """Unknown tables must block scrubbing before any tenant data is modified."""
     engine = tenant_engine_pool.get_engine("hms_apollo")
     table_name = "future_unregistered_patient_data"
