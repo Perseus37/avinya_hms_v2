@@ -222,22 +222,35 @@ def create_reconciliation_sla_policy(
     }
 
 
-@router.get("/reconciliation/sla-policies", response_model=list[dict])
+@router.get("/reconciliation/sla-policies", response_model=dict)
 def list_reconciliation_sla_policies(
     active_only: bool = Query(default=False),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1),
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("finance:read")),
 ):
+    page, page_size = validate_pagination(page, page_size)
     query = db.query(ReconciliationSLAPolicy)
     if active_only:
         query = query.filter(ReconciliationSLAPolicy.is_active.is_(True))
-    rows = query.order_by(ReconciliationSLAPolicy.severity, ReconciliationSLAPolicy.version.desc()).all()
-    return [{
-        "id": row.id, "severity": row.severity, "version": row.version,
-        "target_minutes": row.target_minutes, "warning_percent": row.warning_percent,
-        "is_active": row.is_active, "created_by_id": row.created_by_id,
-        "created_at": row.created_at,
-    } for row in rows]
+    total = query.count()
+    rows = query.order_by(
+        ReconciliationSLAPolicy.severity,
+        ReconciliationSLAPolicy.version.desc(),
+        ReconciliationSLAPolicy.id.desc(),
+    ).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "items": [{
+            "id": row.id, "severity": row.severity, "version": row.version,
+            "target_minutes": row.target_minutes, "warning_percent": row.warning_percent,
+            "is_active": row.is_active, "created_by_id": row.created_by_id,
+            "created_at": row.created_at,
+        } for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.get("/reconciliation/sla-summary", response_model=dict)
