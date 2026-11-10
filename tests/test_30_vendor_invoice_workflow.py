@@ -66,6 +66,32 @@ def test_vendor_invoice_review_match_and_approval_are_end_to_end(
     )
     assert approval.status_code == 200, approval.text
 
+    grn_response = client.post(
+        "/v1/api/procurement/grn",
+        headers=pharmacist_headers,
+        json={
+            "po_id": po["id"],
+            "invoice_number": "INV-MANUAL-001",
+            "invoice_date": datetime.now(timezone.utc).isoformat(),
+            "items": [
+                {
+                    "po_item_id": po["items"][0]["id"],
+                    "batch_number": "BATCH-001",
+                    "expiry_date": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
+                    "received_quantity": 2,
+                    "accepted_quantity": 2,
+                }
+            ],
+        },
+    )
+    assert grn_response.status_code == 201, grn_response.text
+    grn_id = grn_response.json()["id"]
+    grn_acceptance = client.patch(
+        f"/v1/api/procurement/grn/{grn_id}/accept",
+        headers=superuser_headers,
+    )
+    assert grn_acceptance.status_code == 200, grn_acceptance.text
+
     upload = client.post(
         "/v1/api/procurement/invoices/upload-document",
         params={"vendor_id": vendor_id},
@@ -175,6 +201,20 @@ def test_vendor_invoice_review_match_and_approval_are_end_to_end(
         json=review_payload,
     )
     assert corrected_review.status_code == 200
+    missing_grn_match = client.patch(
+        f"/v1/api/procurement/invoices/{invoice_id}/reconcile",
+        headers=superuser_headers,
+    )
+    assert missing_grn_match.status_code == 200
+    assert missing_grn_match.json()["status"] == "PENDING_VERIFICATION"
+
+    review_payload["grn_id"] = grn_id
+    corrected_review = client.patch(
+        f"/v1/api/procurement/invoices/{invoice_id}/review",
+        headers=superuser_headers,
+        json=review_payload,
+    )
+    assert corrected_review.status_code == 200, corrected_review.text
 
     variance_payload = {
         **review_payload,

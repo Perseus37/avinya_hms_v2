@@ -157,9 +157,11 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
         }
     ):
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-    receipt = None
-    if invoice.grn_id:
-        receipt = db.get(GoodsReceiptNote, invoice.grn_id)
+    # A financial three-way match requires an accepted goods receipt.
+    if not invoice.grn_id:
+        return VendorInvoiceStatusEnum.PENDING_VERIFICATION
+
+    receipt = db.get(GoodsReceiptNote, invoice.grn_id)
         if (
             not receipt
             or receipt.po_id != po.id
