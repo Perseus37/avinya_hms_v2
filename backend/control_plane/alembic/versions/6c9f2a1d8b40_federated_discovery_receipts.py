@@ -64,11 +64,6 @@ def upgrade() -> None:
         ["expires_at"],
     )
     op.create_index(
-        "ix_federated_discovery_receipts_expiry",
-        "federated_discovery_receipts",
-        ["expires_at"],
-    )
-    op.create_index(
         "ix_federated_discovery_receipts_destination",
         "federated_discovery_receipts",
         ["destination_branch_code", "expires_at"],
@@ -78,10 +73,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index(
         "ix_federated_discovery_receipts_destination",
-        table_name="federated_discovery_receipts",
-    )
-    op.drop_index(
-        "ix_federated_discovery_receipts_expiry",
         table_name="federated_discovery_receipts",
     )
     op.drop_index(
