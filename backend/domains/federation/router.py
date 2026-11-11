@@ -462,29 +462,42 @@ def discover_and_aggregate_patient_across_branches(
                 "share_demographics": policy.federation_share_demographics
             }
 
-    # F-03: ThreadPoolExecutor with isolated sessions and non-blocking timeout shutdown
+    # F-03: Isolated worker sessions with explicit source completeness. A timeout
+    # or worker exception must never be silently represented as a complete response.
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(pointers)))
+    ptr_to_future = {}
+    failed_source_branches: list[str] = []
+    source_success_count = 0
     try:
-        ptr_to_future = {
-            ptr: executor.submit(_fetch_branch_data, ptr, branch_to_db.get(ptr.branch_code))
-            for ptr in pointers
-        }
-        done, not_done = concurrent.futures.wait(
+        for ptr in pointers:
+            branch_db_name = branch_to_db.get(ptr.branch_code)
+            if not branch_db_name:
+                failed_source_branches.append(ptr.branch_code)
+                continue
+            ptr_to_future[ptr] = executor.submit(
+                _fetch_branch_data, ptr, branch_db_name
+            )
+        _, not_done = concurrent.futures.wait(
             ptr_to_future.values(),
             timeout=5.0,
             return_when=concurrent.futures.ALL_COMPLETED,
         )
-        for f in not_done:
-            f.cancel()
+        timed_out = set(not_done)
+        for future in timed_out:
+            future.cancel()
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
 
     for ptr in pointers:
         future = ptr_to_future.get(ptr)
-        if not future or not future.done() or future.cancelled():
+        if future is None:
+            continue
+        if future in timed_out or not future.done() or future.cancelled():
+            failed_source_branches.append(ptr.branch_code)
             continue
         try:
             result = future.result()
+            source_success_count += 1
             if result:
                 # EMERGENCY_ALLERGIES_ONLY may contribute allergy summaries,
                 # never patient demographics.
@@ -498,9 +511,26 @@ def discover_and_aggregate_patient_across_branches(
                     if alg_data["key"] not in merged_allergies:
                         merged_allergies[alg_data["key"]] = alg_data["summary"]
         except Exception:
-            pass  # Node timed out or failed circuit breaker
+            # Do not expose exception details or PHI; report only the affected
+            # branch identity to the authenticated federation caller.
+            failed_source_branches.append(ptr.branch_code)
 
+    # Keep branch identifiers deterministic and avoid duplicate failure entries.
+    failed_source_branches = sorted(set(failed_source_branches))
+    source_failure_count = len(failed_source_branches)
     if latest_demographics is None and not allergies_only_source_found:
+        if source_failure_count:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "message": "Federated discovery could not verify every indexed source.",
+                    "source_count": len(pointers),
+                    "source_success_count": source_success_count,
+                    "source_failure_count": source_failure_count,
+                    "is_partial": True,
+                    "failed_source_branches": failed_source_branches,
+                },
+            )
         raise HTTPException(
             status_code=404,
             detail="No shareable patient records found across permitted hospital branches.",
@@ -522,6 +552,11 @@ def discover_and_aggregate_patient_across_branches(
         emergency_contact_name=demographics.emergency_contact_name if demographics else None,
         emergency_contact_phone=demographics.emergency_contact_phone if demographics else None,
         active_allergies=list(merged_allergies.values()),
+        source_count=len(pointers),
+        source_success_count=source_success_count,
+        source_failure_count=source_failure_count,
+        is_partial=source_failure_count > 0,
+        failed_source_branches=failed_source_branches,
     )
 
 
