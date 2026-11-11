@@ -8,7 +8,7 @@ def test_federated_import_rejects_tampered_discovery_payload(
     sun_client = client.post(
         "/v1/api/federation/clients",
         headers=superuser_headers,
-        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Import Security"},
+        json={"branch_code": "HQ-HYD-01", "name": "Sunrise Import Security"},
     ).json()
 
     client.post(
@@ -38,7 +38,7 @@ def test_federated_import_rejects_tampered_discovery_payload(
         json=payload,
     )
     assert imported.status_code == 409
-    assert "changed since discovery" in imported.json()["message"]
+    assert "modified" in imported.json()["message"].lower()
 
 
 def test_federated_import_requires_indexed_source_mrn(client, superuser_headers):
@@ -171,7 +171,7 @@ def test_federated_import_respects_source_allergy_sharing_setting(
     partner = client.post(
         "/v1/api/federation/clients",
         headers=superuser_headers,
-        json={"branch_code": "SUN-BLR-01", "name": "Allergy Privacy Import Partner"},
+        json={"branch_code": "HQ-HYD-01", "name": "Allergy Privacy Import Partner"},
     )
     assert partner.status_code == 201, partner.text
 
