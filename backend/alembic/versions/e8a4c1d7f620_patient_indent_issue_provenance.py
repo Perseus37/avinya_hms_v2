@@ -21,6 +21,25 @@ def upgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
         op.execute("ALTER TYPE indentstatusenum ADD VALUE IF NOT EXISTS 'PARTIALLY_FULFILLED'")
 
+    # The tenant schema stores this enum as VARCHAR. Its previous maximum
+    # label length was 9 (CANCELLED); PARTIALLY_FULFILLED needs 19 characters.
+    if op.get_bind().dialect.name == "postgresql":
+        op.alter_column(
+            "procurement_indents",
+            "status",
+            existing_type=sa.String(length=9),
+            type_=sa.String(length=19),
+            existing_nullable=False,
+        )
+    elif op.get_bind().dialect.name == "sqlite":
+        with op.batch_alter_table("procurement_indents") as batch_op:
+            batch_op.alter_column(
+                "status",
+                existing_type=sa.String(length=9),
+                type_=sa.String(length=19),
+                existing_nullable=False,
+            )
+
     op.create_table(
         ALLOCATIONS,
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
