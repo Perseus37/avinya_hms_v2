@@ -1,4 +1,5 @@
 export type WorkspaceId =
+  | "overview"
   | "registration"
   | "patient-record"
   | "opd-queue"
@@ -194,4 +195,3 @@ export interface HardwarePrinterBackendConfig {
   status?: string;
   is_default?: boolean;
 }
-

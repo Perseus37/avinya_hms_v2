@@ -128,8 +128,16 @@ caps.
   one attached data disk for combined storage, or mount different disks at
   those paths for separate storage. `ATTACHMENTS_STORAGE_DIR` must match the
   container mount (`/app/attachments` in the supplied Compose file).
-  Procurement invoice files are now retained there under tenant-specific
-  directories; include them in encrypted host backups and verify restoration.
+  The API and worker run as the non-root `avinya` user. After building the
+  production image, create the host attachment directory owned by that image
+  user's numeric UID/GID (obtain them with
+  `docker run --rm --entrypoint id avinya-hms-api:<VERSION> avinya`) and
+  restrict it to that owner, for example `install -d -o <UID> -g <GID> -m 0700
+  "$ATTACHMENTS_HOST_PATH"`. Do not make the directory world-writable. The
+  application creates tenant and branding subdirectories with mode 0700.
+  Procurement invoice files and tenant branding logo/favicon assets are retained
+  there under tenant-specific directories; include them in encrypted host
+  backups and verify restoration.
   Uploads are limited to PDF/PNG/JPEG and 20 MiB by default. Before an invoice
   is persisted or sent to OCR, the API scans it with the private ClamAV Compose
   service; a detected threat is rejected, and scanner errors fail closed.

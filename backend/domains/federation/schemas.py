@@ -40,11 +40,11 @@ class FederatedAllergySummary(BaseModel):
 
 
 class FederatedPatientSummaryResponse(BaseModel):
-    source_mrn: str
+    source_mrn: Optional[str] = None
     abha_number: Optional[str] = None
-    full_name: str
-    date_of_birth: datetime
-    gender: GenderEnum
+    full_name: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    gender: Optional[GenderEnum] = None
     blood_group: Optional[BloodGroupEnum] = None
     phone_number: Optional[str] = None
     email: Optional[EmailStr] = None

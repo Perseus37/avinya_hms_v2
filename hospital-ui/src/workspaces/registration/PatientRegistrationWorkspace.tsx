@@ -1331,7 +1331,7 @@ export const PatientRegistrationWorkspace: React.FC = () => {
                 <div className="flex items-center justify-between border-b border-slate-300 pb-1.5">
                   <div>
                     <div className="font-black text-xs uppercase tracking-wider text-slate-900">
-                      Avinya Healthcare Apex
+                      {hospitalProfile.name || "HEALTHCARE FACILITY"}
                     </div>
                     <div className="text-[9px] text-slate-600 font-mono">UHID Wristband & Patient ID</div>
                   </div>

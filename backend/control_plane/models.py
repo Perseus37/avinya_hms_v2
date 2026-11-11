@@ -45,6 +45,8 @@ class TenantRegistry(ControlBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     hospital_name: Mapped[str] = mapped_column(String(150), nullable=False)
     branch_code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    # Assigned only by trusted control-plane provisioning; never inferred from branch-code text.
+    corporate_group_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     subdomain_slug: Mapped[str] = mapped_column(String(63), unique=True, nullable=False, index=True)
     db_name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     admin_email: Mapped[str] = mapped_column(String(255), nullable=False)

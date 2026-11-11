@@ -1,3 +1,4 @@
+import ipaddress
 import re
 import jwt
 from collections import OrderedDict
@@ -93,7 +94,7 @@ class TenantEngineRegistry:
                 oldest_engine.dispose()
 
             from sqlalchemy.pool import NullPool
-            
+
             # ARCH-001 / PR-05: Prevent connection pool exhaustion across 4x Gunicorn workers and enforce DB timeouts
             url = build_db_url(db_name)
             tenant_engine = create_engine(
@@ -118,18 +119,45 @@ tenant_engine_pool = TenantEngineRegistry()
 redis_pool = redis.ConnectionPool.from_url(settings.REDIS_URL, decode_responses=True)
 
 
+def _request_from_trusted_proxy(request: Request) -> bool:
+    """Return true only when the immediate peer matches configured trusted proxy IPs/CIDRs."""
+    client_host = request.client.host if request.client else None
+    if not client_host:
+        return False
+    try:
+        client_ip = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+
+    for entry in (getattr(settings, "TRUSTED_PROXY_IPS", "") or "").split(","):
+        candidate = entry.strip()
+        if not candidate:
+            continue
+        try:
+            if client_ip in ipaddress.ip_network(candidate, strict=False):
+                return True
+        except ValueError:
+            # Invalid entries fail closed; they never grant proxy trust.
+            continue
+    return False
+
+
 def extract_subdomain_slug(request: Request) -> str:
-    """Extracts the tenant slug from X-Hospital-Subdomain header, Bearer JWT, or Host subdomain."""
-    # SEC-002: Restrict X-Hospital-Subdomain header extraction to internal networks
-    # Prevents external attackers from spoofing tenant routing
+    """Resolve tenant routing from an allowed override, trusted proxy host, or direct Host."""
+    # Header override is reserved for explicitly enabled internal/test environments.
     header_override = request.headers.get("X-Hospital-Subdomain")
     is_test_env = getattr(settings, "ENVIRONMENT", "") in ("development", "testing")
-    
+
     if header_override and (getattr(settings, "ALLOW_HEADER_TENANT_OVERRIDE", False) or is_test_env):
         return header_override.strip().lower()
 
-    # Host subdomain routing (fastest path for production web traffic: e.g. <subdomain>.domain.com)
-    raw_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+    # X-Forwarded-Host is attacker-controlled unless the immediate peer is trusted.
+    forwarded_host = request.headers.get("x-forwarded-host")
+    raw_host = (
+        forwarded_host
+        if forwarded_host and _request_from_trusted_proxy(request)
+        else request.headers.get("host", "")
+    )
     host = raw_host.split(",")[0].split(":")[0].strip().lower()
     if host and host != settings.BASE_DOMAIN and host.endswith(f".{settings.BASE_DOMAIN}"):
         slug = host[: -(len(settings.BASE_DOMAIN) + 1)]
@@ -232,6 +260,11 @@ def get_db(request: Request):
     engine = tenant_engine_pool.get_engine(ctx.db_name)
     TenantSession = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db: Session = TenantSession()
+    # Security invariant: tenant-local ORM writes must carry the resolved branch identity.
+    # Model-level guards use this trusted session metadata to prevent a tenant from
+    # minting federation credentials for an arbitrary branch code.
+    db.info["tenant_branch_code"] = ctx.branch_code
+    db.info["tenant_subdomain_slug"] = ctx.subdomain_slug
     try:
         yield db
     finally:

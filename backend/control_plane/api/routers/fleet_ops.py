@@ -78,6 +78,8 @@ class EntitlementsUpdateRequest(BaseModel):
     enabled_modules: Dict[str, bool]
     quota_limits: Dict[str, int]
     federation_sharing_mode: Optional[str] = None
+    # Omit to leave unchanged; pass null to clear; a non-empty value assigns a trusted group.
+    corporate_group_id: Optional[str] = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
     maintenance_mode: bool = False
     maintenance_notice: Optional[str] = None
 
@@ -205,6 +207,7 @@ def list_registered_tenants(
                 "id": t.id,
                 "hospital_name": t.hospital_name,
                 "branch_code": t.branch_code,
+                "corporate_group_id": t.corporate_group_id,
                 "subdomain_slug": t.subdomain_slug,
                 "tenant_url": settings.tenant_url(t.subdomain_slug),
                 "db_name": t.db_name,
@@ -443,6 +446,12 @@ def update_tenant_entitlements_and_quotas(
     )
 
     tenant.quota_limits_json = json.dumps(payload.quota_limits)
+    if "corporate_group_id" in payload.model_fields_set:
+        tenant.corporate_group_id = (
+            payload.corporate_group_id.strip().upper()
+            if payload.corporate_group_id is not None
+            else None
+        )
     tenant.maintenance_mode = payload.maintenance_mode
     tenant.maintenance_notice = payload.maintenance_notice
 
@@ -450,7 +459,10 @@ def update_tenant_entitlements_and_quotas(
         ControlPlaneAuditLog(
             action="UPDATE_ENTITLEMENTS",
             target_slug=slug.lower(),
-            details=f"Model: {payload.pricing_model}, Fee: INR {tenant.base_license_fee_paise // 100}, Maintenance: {payload.maintenance_mode}",
+            details=(
+                f"Model: {payload.pricing_model}, Fee: INR {tenant.base_license_fee_paise // 100}, "
+                f"Maintenance: {payload.maintenance_mode}, Corporate group: {tenant.corporate_group_id or 'UNASSIGNED'}"
+            ),
         )
     )
     control_db.commit()
@@ -461,6 +473,7 @@ def update_tenant_entitlements_and_quotas(
         "pricing_model": getattr(tenant, "pricing_model_string", "BUNDLE_TOTAL_HOSPITAL"),
         "billing_cycle": getattr(tenant, "billing_cycle_string", "ANNUAL_LICENSE"),
         "base_license_fee_paise": tenant.base_license_fee_paise,
+        "corporate_group_id": tenant.corporate_group_id,
         "maintenance_mode": tenant.maintenance_mode,
     }
 

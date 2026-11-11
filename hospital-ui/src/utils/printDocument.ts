@@ -1,7 +1,7 @@
 import { HospitalPrinterDevice } from "../core/context/HospitalConfigContext";
 
 /**
- * Avinya Isolated Printing Utility
+ * Tenant-aware isolated printing utility
  * Renders statutory slips, multi-dimension wristbands, thermal tokens, and clinical summaries
  * in an isolated DOM, ensuring only the target clinical document is printed, never application chrome.
  */
@@ -29,7 +29,7 @@ export interface PrintDocumentOptions {
 
 export function printDocument(htmlContent: string, options: PrintDocumentOptions = {}): void {
   const {
-    title = "Avinya Healthcare Document",
+    title = "Healthcare Document",
     docType = "THERMAL_TOKEN",
     wristbandConfig = {},
     thermalConfig = {},
@@ -38,7 +38,7 @@ export function printDocument(htmlContent: string, options: PrintDocumentOptions
 
   if (printerDevice) {
     console.info(
-      `[Avinya Hardware Dispatch] Printing '${title}' on '${printerDevice.name}' via ${printerDevice.connectionType} ` +
+      `[Print Dispatch] Printing '${title}' on '${printerDevice.name}' via ${printerDevice.connectionType} ` +
       `(${printerDevice.ipAddress ? `${printerDevice.ipAddress}:${printerDevice.port || 9100}` : "Direct Attached"}) ` +
       `Protocol: ${printerDevice.protocol} Media: ${printerDevice.mediaWidthMm}x${printerDevice.mediaHeightMm || "Roll"}mm`
     );

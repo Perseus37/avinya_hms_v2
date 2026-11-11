@@ -1,10 +1,10 @@
 from logging.config import fileConfig
 from pathlib import Path
-import sys
 import os
+import sys
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 from sqlalchemy.engine import make_url
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -21,6 +21,19 @@ if config.config_file_name:
     fileConfig(config.config_file_name)
 
 target_metadata = ControlBase.metadata
+
+
+def _configure_postgresql_migration_limits(connection) -> None:
+    """Apply transaction-local safety limits to this migration connection."""
+    connection.execute(
+        text("SELECT set_config('lock_timeout', :value, true)"),
+        {"value": os.environ.get("ALEMBIC_LOCK_TIMEOUT", "5s").strip()},
+    )
+    connection.execute(
+        text("SELECT set_config('statement_timeout', :value, true)"),
+        {"value": os.environ.get("ALEMBIC_STATEMENT_TIMEOUT", "30min").strip()},
+    )
+
 
 def get_database_url() -> str:
     # Programmatic callers target individual databases through this config.
@@ -69,6 +82,12 @@ def run_migrations_online() -> None:
                 compare_type=True,
             )
             with context.begin_transaction():
+                if connection.dialect.name == "postgresql":
+                    _configure_postgresql_migration_limits(connection)
+                    connection.execute(
+                        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                        {"lock_key": 0x4156594E414D4947},
+                    )
                 context.run_migrations()
     finally:
         connectable.dispose()

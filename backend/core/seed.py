@@ -59,6 +59,8 @@ GRANULAR_PERMISSIONS = [
     ("billing:read", "View patient invoices and payment receipts", "Billing"),
     ("billing:write", "Create invoices, append catalog items, and record payments", "Billing"),
     ("billing:reverse", "Void invoices, remove line items, and reverse payments", "Billing"),
+    # Tenant configuration and white-label identity
+    ("config:write", "Manage tenant branding and application configuration", "IAM"),
     # IAM & User Administration
     ("iam:read", "View users, roles, departments, and permissions", "IAM"),
     ("iam:write", "Create/update users, doctors, roles, and assign permissions", "IAM"),
@@ -184,6 +186,10 @@ def seed_universal_hospital_data(
     perm_map = ensure_permissions_exist(db)
 
     if db.query(User).first():
+        # Idempotently grant the tenant-branding permission to existing system admins.
+        existing_admin_role = db.query(Role).filter(Role.code == "ROLE_ADMIN").first()
+        if existing_admin_role and perm_map["config:write"] not in existing_admin_role.permissions:
+            existing_admin_role.permissions.append(perm_map["config:write"])
         db.commit()
         return False
 

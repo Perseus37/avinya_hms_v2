@@ -362,7 +362,7 @@ def upgrade_single_database(db_name: str) -> str:
 def migrate_default_canary(message: str | None = None) -> None:
     """
     STAGE 1: Migrates ONLY the configured default tenant (Canary DB).
-    Generates a new revision if unversioned model changes are detected.
+    Applies checked-in revisions only; unversioned schema changes stop the canary.
     """
     default_db_name = (
         f"{settings.TENANT_DATABASE_PREFIX}{settings.DEFAULT_TENANT_SLUG}"
@@ -383,31 +383,25 @@ def migrate_default_canary(message: str | None = None) -> None:
         print(f"[*] Applying existing revisions to '{default_db_name}'...")
         command.upgrade(cfg, "head")
 
-    # 2. Check for unversioned model changes in the canary database.
+    # 2. Refuse unversioned schema changes. Migration files must be generated,
+    # reviewed, committed, and shipped with the application release before
+    # any production database applies them.
     diffs = detect_schema_diff(default_db_url, Base.metadata)
-    if not diffs:
-        rev = get_current_db_revision(default_db_url)
-        print(f"[✓] '{default_db_name}' is already up-to-date at revision: {rev}")
-    else:
-        print(f"\n[!] Detected {len(diffs)} schema change(s) on '{default_db_name}':")
-        for d in diffs[:10]:
-            print(f"    -> {d}")
-        if len(diffs) > 10:
-            print(f"    ... and {len(diffs) - 10} more.")
+    if diffs:
+        preview = "\n".join(f"    -> {diff}" for diff in diffs[:10])
+        remaining = len(diffs) - 10
+        suffix = f"\n    ... and {remaining} more." if remaining > 0 else ""
+        raise RuntimeError(
+            f"Canary '{default_db_name}' has {len(diffs)} unversioned schema "
+            "difference(s). No migration was generated or applied. Generate a "
+            "revision in the development workflow with Alembic autogenerate, "
+            "review the operations (including data migration and lock impact), "
+            "commit the migration, deploy that release, and rerun the canary.\n"
+            f"Detected differences:\n{preview}{suffix}"
+        )
 
-        comment = message
-        if not comment:
-            # OPS-002: Prevent interactive hanging in Docker/CI environments
-            print("[x] CRITICAL: Unversioned schema changes detected but no --message was provided.")
-            print("    Run manually: docker compose run --rm api python backend/scripts/migrate.py -m 'your_comment'")
-            sys.exit(1)
-
-        print(f"[*] Generating Alembic revision: '{comment}'...")
-        command.revision(cfg, message=comment, autogenerate=True)
-
-        print(f"[*] Upgrading ONLY '{default_db_name}' to new head...")
-        new_rev = upgrade_single_database(default_db_name)
-        print(f"[✓] Canary database '{default_db_name}' upgraded to revision: {new_rev}")
+    rev = get_current_db_revision(default_db_url)
+    print(f"[✓] '{default_db_name}' is already at checked-in revision: {rev}")
 
     print("\n[i] Other hospital databases were NOT touched.")
     print(f"    Once you verify '{default_db_name}', push to the fleet with:")
@@ -567,7 +561,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Stage 2: Push verified head revision to all tenant DBs",
     )
     parser.add_argument("--tenant", type=str, default=None, help="Push head revision to one specific tenant slug")
-    parser.add_argument("-m", "--message", type=str, default=None, help="Revision comment (non-interactive)")
+    parser.add_argument("-m", "--message", type=str, default=None, help="Deprecated compatibility flag; canary never generates migration files")
     args = parser.parse_args(argv)
 
     if args.fleet or args.tenant:

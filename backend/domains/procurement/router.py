@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import select, func
 from typing import Optional
 from backend.core.database import get_db, resolve_tenant_context
+from backend.core.document_responses import pdf_attachment_response
 from backend.core.date_ranges import resolve_record_date_window
 from backend.core.dependencies import RequirePermission, user_has_permission, validate_pagination
 from backend.core.export import stream_csv_response, chunked_query_fetcher
@@ -342,7 +343,14 @@ def download_vendor_invoice_document(
         document_path,
         media_type=media_type,
         filename=f"vendor-invoice-{invoice.id}{document_path.suffix.lower()}",
-        headers={"X-Content-Type-Options": "nosniff"},
+        headers={
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Content-Type-Options": "nosniff",
+            "X-Download-Options": "noopen",
+            "Cross-Origin-Resource-Policy": "same-origin",
+        },
     )
 
 @router.get("/invoices", response_model=PaginatedResponse[VendorInvoiceResponse])
@@ -578,12 +586,7 @@ def print_purchase_order(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    filename = f"{po.po_number}.pdf"
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-    )
+    return pdf_attachment_response(pdf_bytes, f"{po.po_number}.pdf")
 
 # --- Internal Store Indents ---
 @router.post("/indents/patient", response_model=StoreIndentResponse, status_code=status.HTTP_201_CREATED)
