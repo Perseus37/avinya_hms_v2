@@ -723,22 +723,6 @@ def import_federated_patient_locally(
     if receipt.destination_branch_code != tenant.branch_code:
         raise HTTPException(status_code=403, detail="Federated discovery receipt belongs to another destination branch.")
 
-    # Confirm the source MRN remains indexed only after the receipt is bound to
-    # this destination. The receipt's exact pointer snapshot is checked below.
-    source_pointers = control_db.execute(
-        select(GlobalPatientPointer).where(
-            GlobalPatientPointer.source_mrn == payload.source_mrn,
-            GlobalPatientPointer.branch_code != tenant.branch_code,
-        )
-    ).scalars().all()
-    if not source_pointers:
-        raise HTTPException(status_code=404, detail="Federated source patient is not currently indexed.")
-    if len(source_pointers) > 1:
-        raise HTTPException(
-            status_code=409,
-            detail="Federated source MRN maps to multiple branches; rediscover the patient before import.",
-        )
-
     now = datetime.now(timezone.utc)
     expires_at = receipt.expires_at
     if expires_at.tzinfo is None:
@@ -802,12 +786,16 @@ def import_federated_patient_locally(
             detail="Partial federated discovery cannot be imported; retry discovery when all sources are available.",
         )
 
-    # The source MRN was confirmed against the index before receipt validation.
-    source_pointer = source_pointers[0]
+    # Resolve the exact source pointer bound into the verified receipt. MRNs are
+    # tenant-local identifiers and may legitimately collide across branches; do
+    # not reject a valid receipt merely because another branch uses the same MRN.
+    source_pointer = control_db.get(GlobalPatientPointer, receipt.source_pointer_id)
     if (
-        source_pointer.id != receipt.source_pointer_id
+        not source_pointer
+        or source_pointer.source_mrn != payload.source_mrn
+        or source_pointer.branch_code == tenant.branch_code
     ):
-        raise HTTPException(status_code=409, detail="Federated source pointer changed; rediscover before import.")
+        raise HTTPException(status_code=409, detail="Federated source pointer no longer matches the discovery receipt.")
     source_registry = control_db.execute(
         select(TenantRegistry).where(
             TenantRegistry.branch_code == source_pointer.branch_code,
