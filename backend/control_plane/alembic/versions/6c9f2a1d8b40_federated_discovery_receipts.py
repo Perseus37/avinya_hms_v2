@@ -52,6 +52,11 @@ def upgrade() -> None:
         ["calling_node_id"],
     )
     op.create_index(
+        "ix_federated_discovery_receipts_source_pointer_id",
+        "federated_discovery_receipts",
+        ["source_pointer_id"],
+    )
+    op.create_index(
         "ix_federated_discovery_receipts_destination_branch_code",
         "federated_discovery_receipts",
         ["destination_branch_code"],
@@ -79,6 +84,10 @@ def downgrade() -> None:
     )
     op.drop_index(
         "ix_federated_discovery_receipts_destination_branch_code",
+        table_name="federated_discovery_receipts",
+    )
+    op.drop_index(
+        "ix_federated_discovery_receipts_source_pointer_id",
         table_name="federated_discovery_receipts",
     )
     op.drop_index(
