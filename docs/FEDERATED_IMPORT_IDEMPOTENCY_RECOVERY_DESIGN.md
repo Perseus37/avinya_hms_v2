@@ -125,3 +125,62 @@ Never return a generic success for `INDEX_SYNC_PENDING`. Never return a generic 
 - Independent review and explicit project-owner approval are recorded.
 
 This design does not resolve AUD-004. Signed clinician actor verification, source-side clinician authorization, and governance decisions remain separate release blockers. No merge, deployment, production data operation, or emergency federation authorization is implied.
+
+## 9. Mandatory design clarifications from independent review
+
+These requirements are mandatory for implementation; they replace any optional interpretation of lease/version metadata in Section 3.
+
+### 9.1 Receipt expiry and durable-operation recovery
+
+- The two-minute discovery receipt remains an authorization artifact only. An expired receipt must never authorize a new source read, disclosure, or destination commit.
+- A retry may resume an already claimed durable operation only after the caller presents a fresh, fully validated discovery receipt that resolves to the same destination branch, source pointer ID, source branch identity, and protocol version. The derived idempotency key must therefore be unchanged.
+- The retry path must first load the durable operation by that validated identity. It must not use the fresh receipt to create a second operation or change the original source identity.
+- If rediscovery is impossible because the source is unavailable or no longer authorizes disclosure, an authorized operator may inspect non-PHI operation metadata and audit evidence. The operator must not synthesize a receipt, bypass source authorization, or mark an uncertain operation complete. The only permitted outcomes are a verifiable reconciliation from already committed destination provenance, a documented restricted/quarantined state under Section 9.3, or `RECONCILIATION_REQUIRED`.
+- Operator actions require least-privilege access, dual control for any patient-data-affecting action, immutable audit, reason code, and evidence reference.
+
+### 9.2 Mandatory fencing against stale workers
+
+- Every claimed operation has a monotonically increasing integer generation/fencing token. Every lease reclaim increments it atomically.
+- Every state transition uses a database compare-and-swap predicate over operation ID, expected state, and current generation. A zero-row update means the worker is stale and must stop.
+- Lease acquisition/reclaim is transactional and uses database time. A worker may renew only while it still owns the current generation and the lease has not expired.
+- Before any destination-side patient/allergy commit and before any pointer-sync side effect, the worker must prove current generation ownership. The destination-side correlation record must store the generation or equivalent operation version and enforce that a stale generation cannot overwrite a newer one.
+- A stale worker must not perform side effects merely because it can still reach the destination database. If cross-database fencing cannot be enforced atomically, use a destination-side durable fencing row/claim checked in the same destination transaction as the side effect.
+- Tests must pause an old worker, expire/reclaim its lease, let a new worker advance the operation, then resume the old worker and prove it cannot commit patient rows, overwrite provenance, or publish a pointer.
+
+### 9.3 Source-policy revocation after destination commit
+
+Policy decisions before and after destination commit are distinct:
+
+- **Before destination commit:** current source consent, sharing mode, data-use decision, and patient active status must be revalidated. If disallowed, no destination patient/allergy clone may be committed; record a denied/rejected outcome with source-side audit.
+- **After destination commit but before completion:** do not mark the operation complete solely because the clone exists. Re-evaluate current source policy before any new disclosure or pointer publication. If sharing is revoked, transition to a dedicated restricted/revoked state (proposed `SOURCE_ACCESS_REVOKED_AFTER_COMMIT`) and prevent pointer publication or further refresh.
+- The already committed destination copy must not be silently deleted, silently retained as an ordinary active imported record, or automatically overwritten. Quarantine/restrict it from ordinary clinical use pending a governed decision. Preserve clinical safety and immutable audit; any retention, restriction, correction, or deletion must follow applicable legal/clinical retention rules and an authorized, audited workflow.
+- If source policy cannot be checked because the source is unavailable, fail closed for new disclosure and pointer publication; retain the durable state as pending/reconciliation-required and do not infer permission.
+- Define an explicit governance owner and retention policy for quarantined copies before production rollout. This design does not itself decide legal retention or authorize deletion.
+
+### 9.4 Provenance identity is separate from demographic identity
+
+- A destination row is an exact retry result only when a durable destination provenance/correlation record proves the same destination branch, source pointer ID, source branch identity, protocol version, and import operation.
+- ABHA, phone, date of birth, and name may be used for clinical identity conflict detection or human reconciliation, but never as proof that a row is the clone created by this import operation.
+- If demographics or ABHA match a destination patient whose provenance belongs to another source pointer or operation, return a stable identity-conflict/reconciliation outcome. Do not silently reuse, merge, or overwrite that patient.
+- Different source pointers remain distinct import identities even when all demographic fields match. Local patient uniqueness constraints remain independent from federation idempotency.
+
+### 9.5 Additional required PostgreSQL tests
+
+Add explicit PostgreSQL integration/failure-injection coverage for:
+- expired original receipt followed by a fresh valid receipt for the same source pointer and destination, proving one durable operation and one clone;
+- expired receipt with no fresh authorization, proving no new source read or destination write;
+- source unavailable during recovery and operator reconciliation, proving no fabricated authorization or false completion;
+- lease expiry/reclaim with monotonically increasing fencing token and a resumed stale worker;
+- stale worker blocked from destination commit, provenance update, and pointer publication;
+- source policy revoked before commit, proving no clone;
+- source policy revoked after destination commit, proving restricted/quarantined state and no pointer publication;
+- source unavailable after destination commit, proving no new disclosure and no false completion;
+- same ABHA/demographics associated with a different source pointer, proving identity conflict rather than patient reuse;
+- same source pointer and same destination with new receipt, proving exact idempotent recovery;
+- same source pointer to a different destination, proving separate operation identity.
+
+All concurrency tests must use PostgreSQL with independent sessions and preferably separate application workers/processes. SQLite-only tests do not satisfy this requirement.
+
+## 10. Implementation stop conditions
+
+Do not begin runtime implementation until the project owner has explicitly accepted this design direction and the following are settled: destination-side fencing mechanism, quarantined-copy governance/retention owner, operator dual-control permissions, and the stable API outcome contract. D-11 (whether local cross-branch imports are within AUD-004) remains a separate governance decision and is not answered by this document.
