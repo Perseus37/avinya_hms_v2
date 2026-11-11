@@ -747,6 +747,7 @@ def import_federated_patient_locally(
                 GlobalPatientPointer.branch_code != tenant.branch_code,
             )
             .order_by(GlobalPatientPointer.last_clinical_update_at.desc())
+            .with_for_update()
         ).scalars().all()
     else:
         raise HTTPException(status_code=409, detail="Federated discovery receipt has an unsupported selector.")
