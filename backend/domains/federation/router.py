@@ -56,7 +56,7 @@ def sync_patient_pointer(
     has_critical_allergies: bool = False,
     tenant_db: Optional[Session] = None,
     actor_user_id: int | None = None,
-) -> bool | None:
+) -> bool:
     """
     Updates the Central Discovery Index whenever a hospital registers or updates a patient,
     while respecting both Patient-level Privacy Opt-Out and Hospital-level Federation Sovereignty.
@@ -93,7 +93,7 @@ def sync_patient_pointer(
             if pointer:
                 control_db.delete(pointer)
                 control_db.commit()
-            return
+            return True
 
         # 2. Hospital-Level Opt-Out (ISOLATED_SILO): Purge existing pointer and do not index
         if tenant_db is not None:
@@ -102,13 +102,13 @@ def sync_patient_pointer(
                 if pointer:
                     control_db.delete(pointer)
                     control_db.commit()
-                return
+                return True
             if (
                 policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY
                 and not has_critical_allergies
                 and not (pointer and pointer.has_critical_allergies)
             ):
-                return
+                return True
 
         if pointer:
             # Refresh every searchable identifier, including clearing identifiers
@@ -132,6 +132,7 @@ def sync_patient_pointer(
         return True
     except Exception:
         control_db.rollback()
+        raise
 
 
 # -----------------------------------------------------------------------------
@@ -267,7 +268,13 @@ def publish_local_patient_to_discovery_index(
         raise HTTPException(
             status_code=403, detail="Privacy policy does not permit sharing."
         )
-    return {"status": "success", "message": f"Patient pointer evaluated and synced for branch {tenant.branch_code}."}
+    return {
+        "status": "evaluated",
+        "message": (
+            f"Patient pointer evaluated for branch {tenant.branch_code}; "
+            "source sharing policy may suppress publication."
+        ),
+    }
 
 
 @router.get(
