@@ -55,10 +55,12 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
     multi_tenant_env,
     superuser_headers,
     apollo_admin_headers,
+    sunrise_admin_headers,
 ):
     """
-    Scenario 3: Hospital A (apollo) -> Hospital B (default): import the source
-    patient, then rediscover the current demographic record and merged allergies.
+    Scenario 3: Hospital A (apollo) -> Hospital B (default) -> Hospital C (sunrise).
+    Import A into B, update B, then discover from C and verify B's demographics
+    and the allergy union from A and B.
     """
     # The node issuing discovery must be the same branch that imports the
     # result. This binds the server-side receipt to the receiving tenant.
@@ -68,6 +70,12 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
         json={"branch_code": "HQ-HYD-01", "name": "Hyderabad Receiving Hospital"},
     ).json()
     fed_headers = {"X-Federation-API-Key": destination_node["raw_api_key"]}
+    sunrise_node = client.post(
+        "/v1/api/federation/clients",
+        headers=sunrise_admin_headers,
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Discovery Node"},
+    ).json()
+    sunrise_fed_headers = {"X-Federation-API-Key": sunrise_node["raw_api_key"]}
 
     p_apollo = client.post(
         "/v1/api/patients",
@@ -208,7 +216,7 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
 
     merged = client.get(
         "/v1/api/federation/patients/discover?abha_number=ABHA-MULTIHOP-01&purpose=CONTINUITY_OF_CARE",
-        headers=fed_headers,
+        headers=sunrise_fed_headers,
     )
     assert merged.status_code == 200
     body = merged.json()
