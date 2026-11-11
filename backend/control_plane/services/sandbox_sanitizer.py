@@ -50,10 +50,11 @@ MASTER_AND_CONFIG_TABLES: frozenset[str] = frozenset({
     "permissions",
     "physical_examinations_master",
     "physical_rooms_master",
-    "privacy_legal_holds",
     "privacy_policy_revisions",
     "privacy_retention_policies",
     "procurement_vendors",
+    "procurement_reconciliation_sla_policies",
+    "procurement_reconciliation_escalation_policies",
     "quality_indicator_benchmarks",
     "report_templates",
     "role_permissions",
@@ -73,14 +74,33 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "hl7_integration_logs",
     "federation_transfer_logs",
     "privacy_decision_audits",
+    "privacy_legal_holds",
     "privacy_retention_run_ledgers",
     "patient_data_rights_requests",
     "privacy_data_breach_incidents",
     "procurement_document_download_audits",
+    "procurement_supplier_payment_allocations",
+    "procurement_supplier_payment_request_allocations",
+    "procurement_supplier_payment_requests",
+    "procurement_supplier_payments",
+    "procurement_bank_statement_batches",
+    "procurement_bank_statement_lines",
+    "procurement_supplier_payment_bank_matches",
+    "procurement_reconciliation_investigations",
+    "procurement_reconciliation_investigation_events",
+    "procurement_reconciliation_notification_preferences",
+    "procurement_reconciliation_notification_config_events",
+    "procurement_reconciliation_notification_outbox",
+    "procurement_reconciliation_governance_reports",
+    "procurement_purchase_returns",
+    "procurement_purchase_return_items",
+    "procurement_patient_indent_issue_allocations",
+    "procurement_patient_indent_return_events",
     "break_glass_uses",
     "break_glass_grants",
     "service_workflow_events",
     "siem_audit_events",
+    "security_audit_export_register",
 })
 
 SCRUBBED_DATA_TABLES: frozenset[str] = frozenset({
@@ -184,11 +204,323 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
         inspector = inspect(session.connection())
         table_names = set(inspector.get_table_names())
 
+        # Fail closed before any destructive work. A newly introduced table may
+        # contain live identifiers or credentials; silently skipping it would
+        # invalidate the sanitizer's zero-leakage guarantee.
+        unclassified_tables = get_unclassified_tables(table_names)
+        if unclassified_tables:
+            names = ", ".join(sorted(unclassified_tables))
+            raise RuntimeError(
+                f"Sandbox sanitization blocked: unclassified tenant tables: {names}. "
+                "Classify each table before retrying."
+            )
+
         # 1. PURGE SENSITIVE LOGS, SESSIONS, AND SECURITY TOKENS
-        for tbl in PURGED_LOG_TABLES:
+        immutable_patient_indent_tables = {
+            "procurement_patient_indent_issue_allocations",
+            "procurement_patient_indent_return_events",
+        }
+        # Sandbox copies discard this provenance. Temporarily remove its append-only guards.
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_patient_indent_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_patient_indent_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+
+        immutable_finance_tables = {
+            "procurement_supplier_payment_allocations",
+            "procurement_supplier_payment_request_allocations",
+            "procurement_supplier_payment_requests",
+            "procurement_supplier_payments",
+            "procurement_purchase_returns",
+            "procurement_purchase_return_items",
+        }
+        # Sandbox clones discard financial transaction data. Temporarily remove only
+        # the append-only guards while purging, then restore them before proceeding.
+        if session.bind.dialect.name == "postgresql":
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations", "procurement_purchase_returns", "procurement_purchase_return_items"):
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations", "procurement_purchase_returns", "procurement_purchase_return_items"):
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+
+        immutable_investigation_tables = {
+            "procurement_reconciliation_investigation_events",
+            "procurement_reconciliation_notification_config_events",
+        }
+        immutable_governance_tables = {"procurement_reconciliation_governance_reports"}
+        immutable_audit_export_tables = {"security_audit_export_register"}
+        if session.bind.dialect.name == "postgresql":
+            if "security_audit_export_register" in table_names:
+                session.execute(text("DROP TRIGGER IF EXISTS trg_security_audit_export_no_mutation ON security_audit_export_register"))
+        elif session.bind.dialect.name == "sqlite" and "security_audit_export_register" in table_names:
+            session.execute(text("DROP TRIGGER IF EXISTS trg_security_audit_export_no_update"))
+            session.execute(text("DROP TRIGGER IF EXISTS trg_security_audit_export_no_delete"))
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_governance_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_governance_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_investigation_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_investigation_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+
+        immutable_bank_tables = {
+            "procurement_bank_statement_batches",
+            "procurement_bank_statement_lines",
+            "procurement_supplier_payment_bank_matches",
+        }
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_bank_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_bank_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+
+        # Delete patient return events before allocations because of RESTRICT FKs.
+        for tbl in ("procurement_patient_indent_return_events", "procurement_patient_indent_issue_allocations"):
+            if tbl in table_names:
+                session.execute(text(f'DELETE FROM "{tbl}"'))
+                stats["purged_tables"] += 1
+
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_patient_indent_tables:
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable
+                        BEFORE UPDATE OR DELETE ON "{tbl}"
+                        FOR EACH ROW EXECUTE FUNCTION prevent_patient_indent_ledger_mutation()
+                    """))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_patient_indent_tables:
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_update
+                        BEFORE UPDATE ON "{tbl}"
+                        BEGIN SELECT RAISE(ABORT, 'Patient indent provenance is immutable'); END
+                    """))
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_delete
+                        BEFORE DELETE ON "{tbl}"
+                        BEGIN SELECT RAISE(ABORT, 'Patient indent provenance is immutable'); END
+                    """))
+
+        # Vendor return audit records are purge-only in sandbox clones; delete children first.
+        for tbl in ("procurement_purchase_return_items", "procurement_purchase_returns"):
+            if tbl in table_names:
+                session.execute(text(f'DELETE FROM "{tbl}"'))
+                stats["purged_tables"] += 1
+
+        if session.bind.dialect.name == "postgresql":
+            for tbl in ("procurement_purchase_returns", "procurement_purchase_return_items"):
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable
+                        BEFORE UPDATE OR DELETE ON "{tbl}"
+                        FOR EACH ROW EXECUTE FUNCTION prevent_purchase_return_mutation()
+                    """))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in ("procurement_purchase_returns", "procurement_purchase_return_items"):
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_update
+                        BEFORE UPDATE ON "{tbl}"
+                        BEGIN SELECT RAISE(ABORT, 'Purchase return audit records are immutable'); END
+                    """))
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_delete
+                        BEFORE DELETE ON "{tbl}"
+                        BEGIN SELECT RAISE(ABORT, 'Purchase return audit records are immutable'); END
+                    """))
+
+        # Delete child rows first; requests reference executed payment ledger rows.
+        for tbl in (
+            "procurement_supplier_payment_bank_matches",
+            "procurement_bank_statement_lines",
+            "procurement_bank_statement_batches",
+            "procurement_supplier_payment_allocations",
+            "procurement_supplier_payment_request_allocations",
+            "procurement_supplier_payment_requests",
+            "procurement_supplier_payments",
+        ):
             if tbl in table_names:
                 session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
                 stats["purged_tables"] += 1
+
+        if session.bind.dialect.name == "postgresql":
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations"):
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable
+                        BEFORE UPDATE OR DELETE ON "{tbl}"
+                        FOR EACH ROW EXECUTE FUNCTION prevent_supplier_payment_mutation()
+                    """))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations"):
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_update
+                        BEFORE UPDATE ON "{tbl}"
+                        BEGIN
+                            SELECT RAISE(ABORT, 'Supplier payment ledger records are append-only');
+                        END
+                    """))
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_delete
+                        BEFORE DELETE ON "{tbl}"
+                        BEGIN
+                            SELECT RAISE(ABORT, 'Supplier payment ledger records are append-only');
+                        END
+                    """))
+
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_bank_tables:
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable
+                        BEFORE UPDATE OR DELETE ON "{tbl}"
+                        FOR EACH ROW EXECUTE FUNCTION prevent_bank_reconciliation_mutation()
+                    """))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_bank_tables:
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_update
+                        BEFORE UPDATE ON "{tbl}"
+                        BEGIN
+                            SELECT RAISE(ABORT, 'Bank statement and reconciliation records are append-only');
+                        END
+                    """))
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_delete
+                        BEFORE DELETE ON "{tbl}"
+                        BEGIN
+                            SELECT RAISE(ABORT, 'Bank statement and reconciliation records are append-only');
+                        END
+                    """))
+
+        # Outbox rows reference investigations with RESTRICT; purge them before cases.
+        if "procurement_reconciliation_notification_outbox" in table_names:
+            session.execute(text('DELETE FROM "procurement_reconciliation_notification_outbox"'))  # nosec B608
+            stats["purged_tables"] += 1
+
+        # Sandbox clones discard investigation content, but restore append-only protection.
+        for tbl in ("procurement_reconciliation_investigation_events", "procurement_reconciliation_investigations"):
+            if tbl in table_names:
+                session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
+                stats["purged_tables"] += 1
+
+        if session.bind.dialect.name == "postgresql":
+            if "procurement_reconciliation_investigation_events" in table_names:
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_investigation_events_immutable
+                    BEFORE UPDATE OR DELETE ON procurement_reconciliation_investigation_events
+                    FOR EACH ROW EXECUTE FUNCTION prevent_reconciliation_investigation_event_mutation()
+                """))
+        elif session.bind.dialect.name == "sqlite":
+            if "procurement_reconciliation_investigation_events" in table_names:
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_investigation_events_immutable_update
+                    BEFORE UPDATE ON procurement_reconciliation_investigation_events
+                    BEGIN SELECT RAISE(ABORT, 'Reconciliation investigation events are append-only'); END
+                """))
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_investigation_events_immutable_delete
+                    BEFORE DELETE ON procurement_reconciliation_investigation_events
+                    BEGIN SELECT RAISE(ABORT, 'Reconciliation investigation events are append-only'); END
+                """))
+        # This append-only audit table is purge-only in sandbox clones. Delete its
+        # rows after dropping the guard and before restoring append-only protection.
+        if "procurement_reconciliation_notification_config_events" in table_names:
+            session.execute(text('DELETE FROM "procurement_reconciliation_notification_config_events"'))  # nosec B608
+            stats["purged_tables"] += 1
+
+        if session.bind.dialect.name == "postgresql":
+            if "procurement_reconciliation_notification_config_events" in table_names:
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_notification_config_events_immutable
+                    BEFORE UPDATE OR DELETE ON procurement_reconciliation_notification_config_events
+                    FOR EACH ROW EXECUTE FUNCTION prevent_procurement_reconciliation_notification_config_events_mutation()
+                """))
+        elif session.bind.dialect.name == "sqlite":
+            if "procurement_reconciliation_notification_config_events" in table_names:
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_notification_config_events_immutable_update
+                    BEFORE UPDATE ON procurement_reconciliation_notification_config_events
+                    BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
+                """))
+                session.execute(text("""
+                    CREATE TRIGGER trg_procurement_reconciliation_notification_config_events_immutable_delete
+                    BEFORE DELETE ON procurement_reconciliation_notification_config_events
+                    BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
+                """))
+
+        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables - immutable_governance_tables - immutable_audit_export_tables - {"procurement_reconciliation_notification_outbox"}:
+            if tbl in table_names:
+                session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
+                stats["purged_tables"] += 1
+
+        if "procurement_reconciliation_governance_reports" in table_names:
+            session.execute(text('DELETE FROM "procurement_reconciliation_governance_reports"'))  # nosec B608
+            stats["purged_tables"] += 1
+        if session.bind.dialect.name == "postgresql" and "procurement_reconciliation_governance_reports" in table_names:
+            session.execute(text("""
+                CREATE TRIGGER trg_procurement_reconciliation_governance_reports_immutable
+                BEFORE UPDATE OR DELETE ON procurement_reconciliation_governance_reports
+                FOR EACH ROW EXECUTE FUNCTION prevent_reconciliation_governance_report_mutation()
+            """))
+        elif session.bind.dialect.name == "sqlite" and "procurement_reconciliation_governance_reports" in table_names:
+            session.execute(text("""
+                CREATE TRIGGER trg_procurement_reconciliation_governance_reports_immutable_update
+                BEFORE UPDATE ON procurement_reconciliation_governance_reports
+                BEGIN SELECT RAISE(ABORT, 'Monthly reconciliation governance reports are immutable'); END
+            """))
+            session.execute(text("""
+                CREATE TRIGGER trg_procurement_reconciliation_governance_reports_immutable_delete
+                BEFORE DELETE ON procurement_reconciliation_governance_reports
+                BEGIN SELECT RAISE(ABORT, 'Monthly reconciliation governance reports are immutable'); END
+            """))
+
+        if "security_audit_export_register" in table_names:
+            session.execute(text('DELETE FROM "security_audit_export_register"'))  # nosec B608
+            stats["purged_tables"] += 1
+            if session.bind.dialect.name == "postgresql":
+                session.execute(text("""
+                    CREATE TRIGGER trg_security_audit_export_no_mutation
+                    BEFORE UPDATE OR DELETE ON security_audit_export_register
+                    FOR EACH ROW EXECUTE FUNCTION prevent_security_audit_export_register_mutation()
+                """))
+            elif session.bind.dialect.name == "sqlite":
+                session.execute(text("""
+                    CREATE TRIGGER trg_security_audit_export_no_update
+                    BEFORE UPDATE ON security_audit_export_register
+                    BEGIN SELECT RAISE(ABORT, 'security audit export register is append-only'); END
+                """))
+                session.execute(text("""
+                    CREATE TRIGGER trg_security_audit_export_no_delete
+                    BEFORE DELETE ON security_audit_export_register
+                    BEGIN SELECT RAISE(ABORT, 'security audit export register is append-only'); END
+                """))
 
         # 2. WIPE USERS, PASSWORDS, AND MFA (N-37)
         if "users" in table_names:
@@ -414,6 +746,26 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     SET anesthesia_notes = 'Sandbox anesthesia notes',
                         operative_findings = 'Sandbox operative findings',
                         post_op_instructions = 'Sandbox post-op instructions'
+                """)
+            )
+            stats["scrubbed_tables"] += 1
+
+        # Supplier master rows remain available for procurement workflows, but
+        # contact, tax, address, and payout details must not survive cloning.
+        if "procurement_vendors" in table_names:
+            session.execute(
+                text("""
+                    UPDATE procurement_vendors
+                    SET code = 'SBX-VENDOR-' || id,
+                        name = 'Sandbox Vendor ' || id,
+                        gstin = NULL,
+                        pan = NULL,
+                        contact_person = 'Sandbox Contact',
+                        phone = '9000000000',
+                        email = 'vendor_' || id || '@sandbox.local',
+                        address = 'Sandbox Supplier Address',
+                        bank_account_number = NULL,
+                        bank_ifsc = NULL
                 """)
             )
             stats["scrubbed_tables"] += 1

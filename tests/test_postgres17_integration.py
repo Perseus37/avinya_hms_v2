@@ -64,6 +64,16 @@ def test_postgresql_17_migrations_match_control_and_tenant_metadata():
                         "alembic_version"
                     } == set(metadata.tables)
                     assert differences == []
+                    if metadata is Base.metadata:
+                        audit_trigger = connection.execute(text("""
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM pg_trigger
+                                WHERE tgname = 'trg_procurement_reconciliation_notification_config_events_immutable'
+                                  AND NOT tgisinternal
+                            )
+                        """)).scalar_one()
+                        assert audit_trigger is True
             finally:
                 engine.dispose()
     finally:

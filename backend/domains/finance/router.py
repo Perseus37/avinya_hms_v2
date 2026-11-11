@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from backend.core.database import get_db
-from backend.core.dependencies import RequirePermission
-from backend.domains.identity.models import User
+from backend.core.dependencies import RequirePermission, user_has_permission
+from backend.domains.identity.models import User, UserStatusEnum
+from backend.domains.procurement.models import VendorInvoice
 from backend.domains.finance.models import (
     ExpenseCategoryEnum,
     ExpenseRecord,
@@ -50,7 +51,9 @@ def adjudicate_expense(
     current_user: User = Depends(RequirePermission("finance:approve"))
 ):
     """CFO/Admin approves or rejects a pending expense."""
-    expense = db.get(ExpenseRecord, expense_id)
+    expense = db.query(ExpenseRecord).filter(
+        ExpenseRecord.id == expense_id
+    ).with_for_update().one_or_none()
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found.")
     
@@ -59,8 +62,20 @@ def adjudicate_expense(
             status_code=409,
             detail=f"Cannot adjudicate an expense in '{expense.status.value}' state. Only PENDING_APPROVAL expenses can be adjudicated.",
         )
-    
-    if payload.status == ExpenseStatusEnum.REJECTED and not payload.rejection_reason:
+
+    # Maker-checker: the user who created an expense cannot decide it.
+    if expense.created_by_id is not None and expense.created_by_id == current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Expense creators cannot approve or reject their own expenses.",
+        )
+
+    if payload.status not in {ExpenseStatusEnum.APPROVED, ExpenseStatusEnum.REJECTED}:
+        raise HTTPException(status_code=422, detail="Adjudication can only approve or reject an expense.")
+
+    if payload.status == ExpenseStatusEnum.REJECTED and not (
+        payload.rejection_reason and payload.rejection_reason.strip()
+    ):
         raise HTTPException(status_code=400, detail="Rejection reason is mandatory.")
 
     expense.status = payload.status
@@ -68,7 +83,7 @@ def adjudicate_expense(
         expense.approved_by_id = current_user.id
         expense.approved_at = datetime.now(timezone.utc)
     elif payload.status == ExpenseStatusEnum.REJECTED:
-        expense.rejection_reason = payload.rejection_reason
+        expense.rejection_reason = payload.rejection_reason.strip()
 
     expense.updated_by_id = current_user.id
     db.commit()
@@ -78,19 +93,37 @@ def adjudicate_expense(
 @router.post("/expenses/{expense_id}/mark-paid")
 def mark_expense_paid(
     expense_id: int,
-    receipt_reference: str,
+    receipt_reference: str = Query(..., min_length=1, max_length=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("finance:pay"))
 ):
     """Records the actual cash/bank outflow for an APPROVED expense."""
-    expense = db.get(ExpenseRecord, expense_id)
+    expense = db.query(ExpenseRecord).filter(
+        ExpenseRecord.id == expense_id
+    ).with_for_update().one_or_none()
     if not expense or expense.status != ExpenseStatusEnum.APPROVED:
         raise HTTPException(status_code=400, detail="Only APPROVED expenses can be paid.")
-    
+
+    normalized_receipt_reference = receipt_reference.strip()
+    if not normalized_receipt_reference:
+        raise HTTPException(status_code=422, detail="receipt_reference must not be blank.")
+    if len(normalized_receipt_reference) > 100:
+        raise HTTPException(status_code=422, detail="receipt_reference must not exceed 100 characters.")
+
+    supplier_invoice = db.query(VendorInvoice.id).filter(
+        VendorInvoice.linked_expense_id == expense.id
+    ).first()
+    if supplier_invoice:
+        raise HTTPException(
+            status_code=409,
+            detail="Supplier invoice payables must be settled through the supplier payment request approval and execution workflow.",
+        )
+
     expense.status = ExpenseStatusEnum.PAID
-    expense.receipt_reference = receipt_reference
+    expense.receipt_reference = normalized_receipt_reference
     expense.updated_by_id = current_user.id
     db.commit()
+    db.refresh(expense)
     return expense
 
 @router.post("/recurring-templates", status_code=status.HTTP_201_CREATED)
@@ -100,6 +133,12 @@ def create_recurring_expense(
     current_user: User = Depends(RequirePermission("finance:write"))
 ):
     """Sets up a periodic expense schedule (e.g., Monthly Rent)."""
+    if payload.auto_approve and not user_has_permission(db, current_user, "finance:approve"):
+        raise HTTPException(
+            status_code=403,
+            detail="finance:approve permission is required to configure recurring auto-approval.",
+        )
+
     template = RecurringExpenseTemplate(
         **payload.model_dump(),
         created_by_id=current_user.id
@@ -131,14 +170,29 @@ def process_due_recurring_expenses(
 
     generated_count = 0
     for t in templates:
-        # Generate the expense
-        status_val = ExpenseStatusEnum.APPROVED if t.auto_approve else ExpenseStatusEnum.PENDING_APPROVAL
+        # Auto-approval is a pre-authorized action by the template creator.
+        # Re-check the creator's current status and approval permission so revoked
+        # access cannot continue approving future recurring expenses.
+        authorizer = db.get(User, t.created_by_id) if t.created_by_id is not None else None
+        auto_approval_authorized = bool(
+            t.auto_approve
+            and authorizer is not None
+            and authorizer.status == UserStatusEnum.ACTIVE
+            and user_has_permission(db, authorizer, "finance:approve")
+        )
+        status_val = (
+            ExpenseStatusEnum.APPROVED
+            if auto_approval_authorized
+            else ExpenseStatusEnum.PENDING_APPROVAL
+        )
         expense = ExpenseRecord(
             category=t.category,
             title=f"{t.title} - {now.strftime('%b %Y')}",
             amount_paise=t.amount_paise,
             vendor_name=t.vendor_name,
             status=status_val,
+            approved_by_id=authorizer.id if auto_approval_authorized else None,
+            approved_at=now if auto_approval_authorized else None,
             recurring_template_id=t.id,
             due_date=now + relativedelta(days=7) # Default 7 day grace period
         )

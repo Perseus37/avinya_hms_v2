@@ -45,7 +45,8 @@ from backend.domains.patients.models import Patient
 from backend.domains.encounters.models import EncounterTypeEnum, PatientEncounter, InpatientAdmission, AdmissionTypeEnum
 from backend.domains.clinical.models import ClinicalNote
 from backend.domains.billing.models import Invoice, InvoiceStatusEnum
-from backend.domains.privacy.models import PrivacyDataBreachIncident, PrivacyDecisionAudit
+from backend.domains.privacy.models import PrivacyDataBreachIncident, PrivacyDecisionAudit, PrivacyLegalHold
+from backend.domains.procurement.models import VendorCategoryEnum, VendorMaster
 from backend.scripts.restore_drill import run_restore_drill
 
 
@@ -104,6 +105,23 @@ def test_01_table_classification_matrix_coverage():
     mock_tables = all_known_tables | {"future_unregistered_patient_data"}
     caught = get_unclassified_tables(mock_tables)
     assert caught == {"future_unregistered_patient_data"}
+
+
+def test_sandbox_scrubbing_fails_closed_for_unclassified_tables(multi_tenant_env):
+    """Unknown tables must block scrubbing before any tenant data is modified."""
+    engine = tenant_engine_pool.get_engine("hms_apollo")
+    table_name = "future_unregistered_patient_data"
+    with engine.begin() as connection:
+        connection.execute(text(f'CREATE TABLE "{table_name}" (id INTEGER PRIMARY KEY, patient_name TEXT)'))
+
+    try:
+        with pytest.raises(RuntimeError, match="unclassified tenant tables.*future_unregistered_patient_data"):
+            scrub_sandbox_database("hms_apollo")
+        with engine.connect() as connection:
+            assert connection.execute(text(f'SELECT COUNT(*) FROM "{table_name}"')).scalar_one() == 0
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{table_name}"'))
 
 
 def test_02_sandbox_scrubbing_credentials_sessions_and_mfa(client: TestClient):
@@ -251,9 +269,33 @@ def test_03_sandbox_scrubbing_clinical_notes_and_privacy_logs(client: TestClient
             reported_by_user_id=doc.id,
         )
         db.add(breach)
+        vendor = VendorMaster(
+            code="LIVE-VENDOR-001",
+            name="Confidential Supplier Pvt Ltd",
+            category=VendorCategoryEnum.PHARMACEUTICALS,
+            gstin="29ABCDE1234F1Z5",
+            pan="ABCDE1234F",
+            contact_person="Real Supplier Contact",
+            phone="+919876543210",
+            email="real.contact@confidential-supplier.example",
+            address="Confidential Supplier Address, Bengaluru",
+            bank_account_number="123456789012",
+            bank_ifsc="HDFC0001234",
+        )
+        db.add(vendor)
+        db.flush()
+        legal_hold = PrivacyLegalHold(
+            patient_id=pat_id,
+            data_category="CLINICAL_NOTES",
+            reason="Sensitive legal matter involving named patient",
+            hold_reference="LIVE-LEGAL-HOLD-REF-001",
+            created_by_user_id=doc.id,
+        )
+        db.add(legal_hold)
         db.commit()
         inv_id = inv.id
         cn_id = cn.id
+        vendor_id = vendor.id
 
     # 2. Scrub sandbox database
     scrub_sandbox_database("hms_apollo")
@@ -282,9 +324,24 @@ def test_03_sandbox_scrubbing_clinical_notes_and_privacy_logs(client: TestClient
         assert inv_after.notes == "Sandbox invoice"
         assert inv_after.discount_reason is None
 
-        # 6. Verify Privacy Breach incident purged
+        # 6. Verify privacy breach and legal-hold records are purged
         breaches_count = db.scalar(select(text("COUNT(*)")).select_from(text("privacy_data_breach_incidents")))
         assert breaches_count == 0
+        legal_holds_count = db.scalar(select(text("COUNT(*)")).select_from(text("privacy_legal_holds")))
+        assert legal_holds_count == 0
+
+        # 7. Verify supplier contact, tax, address, and payout details are scrubbed
+        vendor_after = db.get(VendorMaster, vendor_id)
+        assert vendor_after.name == f"Sandbox Vendor {vendor_id}"
+        assert vendor_after.code == f"SBX-VENDOR-{vendor_id}"
+        assert vendor_after.gstin is None
+        assert vendor_after.pan is None
+        assert vendor_after.contact_person == "Sandbox Contact"
+        assert vendor_after.phone == "9000000000"
+        assert vendor_after.email == f"vendor_{vendor_id}@sandbox.local"
+        assert vendor_after.address == "Sandbox Supplier Address"
+        assert vendor_after.bank_account_number is None
+        assert vendor_after.bank_ifsc is None
 
 
 def test_04_control_plane_operator_roles_and_mpi_audit(client: TestClient):
@@ -547,3 +604,51 @@ def test_09_sandbox_scrubbing_ancillary_and_random_password(client: TestClient):
         diag_row = db.execute(text(f"SELECT clinical_remarks FROM encounter_diagnoses WHERE encounter_id = {enc_id}")).first()
         assert diag_row is not None
         assert diag_row[0] == "Sandbox diagnostic evaluation"
+
+
+def test_sandbox_purges_notification_config_audit_and_restores_immutability(client):
+    from sqlalchemy.exc import DBAPIError
+    from backend.domains.procurement.models import ReconciliationNotificationConfigEvent
+
+    engine = tenant_engine_pool.get_engine("hms_apollo")
+    with Session(bind=engine) as db:
+        actor = db.execute(select(User).where(User.is_superuser == True)).scalars().first()
+        assert actor is not None
+        actor_user_id = actor.id
+        event = ReconciliationNotificationConfigEvent(
+            actor_user_id=actor_user_id,
+            event_type="SANDBOX_PURGE_REGRESSION",
+            object_type="ESCALATION_POLICY",
+            details="Must not survive sandbox sanitization",
+        )
+        db.add(event)
+        db.commit()
+        event_id = event.id
+
+    scrub_sandbox_database("hms_apollo")
+
+    with Session(bind=engine) as db:
+        assert db.query(ReconciliationNotificationConfigEvent).filter(
+            ReconciliationNotificationConfigEvent.id == event_id
+        ).count() == 0
+
+        # Recreate one row after sanitization and prove the append-only guard was restored.
+        event = ReconciliationNotificationConfigEvent(
+            actor_user_id=actor_user_id,
+            event_type="SANDBOX_PURGE_TRIGGER_CHECK",
+            object_type="ESCALATION_POLICY",
+            details="Append-only guard must be active after purge",
+        )
+        db.add(event)
+        db.commit()
+        with pytest.raises(DBAPIError):
+            db.execute(
+                text("""
+                    UPDATE procurement_reconciliation_notification_config_events
+                    SET details = 'tampered'
+                    WHERE id = :event_id
+                """),
+                {"event_id": event.id},
+            )
+            db.commit()
+        db.rollback()

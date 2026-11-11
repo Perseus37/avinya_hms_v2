@@ -1,9 +1,13 @@
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum as PyEnum
 from typing import List, Optional
 from sqlalchemy import (
+    DDL,
+    event,
     Boolean,
+    BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -13,6 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,6 +26,9 @@ from backend.core.database import Base
 from backend.domains.identity.models import Department, User
 from backend.domains.encounters.models import PatientEncounter
 from backend.domains.pharmacy.models import MedicationMaster, InventoryBatch
+
+# PostgreSQL needs 64-bit paise values; SQLite INTEGER already stores signed 64-bit values.
+PAISE_AMOUNT_TYPE = BigInteger().with_variant(Integer, "sqlite")
 # from backend.domains.procurement.models import VendorMaster, PurchaseOrder, GoodsReceiptNote
 
 
@@ -50,6 +58,7 @@ class GRNStatusEnum(str, PyEnum):
 class IndentStatusEnum(str, PyEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
+    PARTIALLY_FULFILLED = "PARTIALLY_FULFILLED"
     FULFILLED = "FULFILLED"
     CANCELLED = "CANCELLED"
 
@@ -174,6 +183,52 @@ class GoodsReceiptItem(AuditMixin, Base):
     created_batch: Mapped[Optional["InventoryBatch"]] = relationship()
 
 
+class PurchaseReturnRecord(AuditMixin, Base):
+    """Auditable vendor return header tied to one accepted goods receipt."""
+    __tablename__ = "procurement_purchase_returns"
+    __table_args__ = (
+        CheckConstraint("total_credit_paise >= 0", name="ck_purchase_return_total_non_neg"),
+        Index("ix_purchase_return_grn", "grn_id"),
+        Index("ix_purchase_return_vendor", "vendor_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    grn_id: Mapped[int] = mapped_column(ForeignKey("procurement_grn.id", ondelete="RESTRICT"), nullable=False)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    total_credit_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+
+    grn: Mapped["GoodsReceiptNote"] = relationship()
+    vendor: Mapped["VendorMaster"] = relationship()
+    items: Mapped[List["PurchaseReturnItem"]] = relationship(back_populates="purchase_return")
+
+
+class PurchaseReturnItem(AuditMixin, Base):
+    """Immutable item-level quantity, value and reason for a vendor return."""
+    __tablename__ = "procurement_purchase_return_items"
+    __table_args__ = (
+        CheckConstraint("return_quantity > 0", name="ck_purchase_return_item_qty_pos"),
+        CheckConstraint("unit_price_paise >= 0", name="ck_purchase_return_item_price_non_neg"),
+        CheckConstraint("amount_paise >= 0", name="ck_purchase_return_item_amount_non_neg"),
+        Index("ix_purchase_return_item_grn_item", "grn_item_id"),
+        Index("ix_purchase_return_item_return", "return_id"),
+        Index("ix_purchase_return_item_batch", "inventory_batch_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    return_id: Mapped[int] = mapped_column(ForeignKey("procurement_purchase_returns.id", ondelete="RESTRICT"), nullable=False)
+    grn_item_id: Mapped[int] = mapped_column(ForeignKey("procurement_grn_items.id", ondelete="RESTRICT"), nullable=False)
+    inventory_batch_id: Mapped[int] = mapped_column(ForeignKey("inventory_batches.id", ondelete="RESTRICT"), nullable=False)
+    return_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_price_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    return_reason: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    purchase_return: Mapped["PurchaseReturnRecord"] = relationship(back_populates="items")
+    grn_item: Mapped["GoodsReceiptItem"] = relationship()
+    inventory_batch: Mapped["InventoryBatch"] = relationship()
+
+
 class StoreIndent(AuditMixin, Base):
     """Ward or Department request for consumables/medicines from the Central Pharmacy/Store either for ward stock or a specific patient."""
     __tablename__ = "procurement_indents"
@@ -214,6 +269,43 @@ class StoreIndentItem(AuditMixin, Base):
 
     indent: Mapped["StoreIndent"] = relationship(back_populates="items")
     medication: Mapped["MedicationMaster"] = relationship()
+
+class PatientIndentIssueAllocation(Base):
+    """Immutable provenance for one patient-indent issue from one inventory batch."""
+    __tablename__ = "procurement_patient_indent_issue_allocations"
+    __table_args__ = (
+        CheckConstraint("issued_quantity > 0", name="ck_patient_indent_alloc_issued_pos"),
+        Index("ix_patient_indent_alloc_item_batch", "indent_item_id", "inventory_batch_id"),
+        Index("ix_patient_indent_alloc_invoice_line_item_id", "invoice_line_item_id"),
+        Index("ix_patient_indent_alloc_created_by_id", "created_by_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    indent_item_id: Mapped[int] = mapped_column(ForeignKey("procurement_indent_items.id", ondelete="RESTRICT"), nullable=False)
+    inventory_batch_id: Mapped[int] = mapped_column(ForeignKey("inventory_batches.id", ondelete="RESTRICT"), nullable=False)
+    # Keep the historical line ID even if a fully returned invoice line is deleted.
+    invoice_line_item_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("invoice_line_items.id", ondelete="RESTRICT"), nullable=True
+    )
+    issued_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+
+
+class PatientIndentReturnEvent(Base):
+    """Append-only return ledger; returned quantity is derived from these events."""
+    __tablename__ = "procurement_patient_indent_return_events"
+    __table_args__ = (
+        CheckConstraint("return_quantity > 0", name="ck_patient_indent_return_qty_pos"),
+        Index("ix_patient_indent_return_allocation", "allocation_id"),
+        Index("ix_patient_indent_return_created_by_id", "created_by_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    allocation_id: Mapped[int] = mapped_column(ForeignKey("procurement_patient_indent_issue_allocations.id", ondelete="RESTRICT"), nullable=False)
+    return_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    allocation: Mapped["PatientIndentIssueAllocation"] = relationship()
+
 
 class VendorInvoice(AuditMixin, Base):
     """Vendor tax invoice uploaded for procurement settlement and 3-way matching."""
@@ -303,3 +395,404 @@ class VendorInvoiceItem(AuditMixin, Base):
     total_price_paise: Mapped[int] = mapped_column(Integer, nullable=False)
 
     invoice: Mapped["VendorInvoice"] = relationship(back_populates="items")
+
+
+class SupplierPaymentMethodEnum(str, PyEnum):
+    BANK_TRANSFER = "BANK_TRANSFER"
+    UPI = "UPI"
+    CHEQUE = "CHEQUE"
+    CASH = "CASH"
+    CARD = "CARD"
+    NEFT = "NEFT"
+    RTGS = "RTGS"
+    IMPS = "IMPS"
+    OTHER = "OTHER"
+
+
+class SupplierPayment(AuditMixin, Base):
+    """Recorded supplier outflow; invoice allocations are the settlement source of truth."""
+    __tablename__ = "procurement_supplier_payments"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "payment_reference", name="uq_supplier_payment_vendor_reference"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_amount_positive"),
+        Index("ix_supplier_payment_vendor_date", "vendor_id", "payment_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    payment_reference: Mapped[str] = mapped_column(String(100), nullable=False)
+    payment_method: Mapped[SupplierPaymentMethodEnum] = mapped_column(Enum(SupplierPaymentMethodEnum), nullable=False)
+    payment_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recorded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    allocations: Mapped[List["SupplierPaymentAllocation"]] = relationship(back_populates="payment")
+
+
+class SupplierPaymentAllocation(Base):
+    """Positive, append-only invoice allocation for a recorded supplier payment."""
+    __tablename__ = "procurement_supplier_payment_allocations"
+    __table_args__ = (
+        UniqueConstraint("payment_id", "invoice_id", name="uq_supplier_payment_invoice_allocation"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_allocation_positive"),
+        Index("ix_supplier_payment_allocation_invoice", "invoice_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    payment_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    payment: Mapped["SupplierPayment"] = relationship(back_populates="allocations")
+
+
+class SupplierPaymentRequest(AuditMixin, Base):
+    """Scheduled supplier outflow awaiting independent approval and execution."""
+    __tablename__ = "procurement_supplier_payment_requests"
+    __table_args__ = (
+        UniqueConstraint("vendor_id", "payment_reference", name="uq_supplier_payment_request_reference"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_request_amount_positive"),
+        CheckConstraint("status IN ('PENDING','APPROVED','REJECTED','EXECUTED','CANCELLED')", name="ck_supplier_payment_request_status"),
+        Index("ix_supplier_payment_request_status_date", "status", "scheduled_date"),
+        UniqueConstraint("executed_payment_id", name="uq_supplier_payment_request_executed_payment"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False)
+    payment_reference: Mapped[str] = mapped_column(String(100), nullable=False)
+    payment_method: Mapped[SupplierPaymentMethodEnum] = mapped_column(Enum(SupplierPaymentMethodEnum), nullable=False)
+    scheduled_date: Mapped[date] = mapped_column(Date, nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True)
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    executed_payment_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=True
+    )
+    executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    allocations: Mapped[List["SupplierPaymentRequestAllocation"]] = relationship(back_populates="request")
+
+
+class SupplierPaymentRequestAllocation(Base):
+    """Invoice balance reserved by a pending or approved payment request."""
+    __tablename__ = "procurement_supplier_payment_request_allocations"
+    __table_args__ = (
+        UniqueConstraint("request_id", "invoice_id", name="uq_supplier_payment_request_invoice"),
+        CheckConstraint("amount_paise > 0", name="ck_supplier_payment_request_allocation_positive"),
+        Index("ix_supplier_payment_request_allocation_invoice", "invoice_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payment_requests.id", ondelete="RESTRICT"), nullable=False)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    request: Mapped["SupplierPaymentRequest"] = relationship(back_populates="allocations")
+
+class BankStatementBatch(Base):
+    """Immutable bank statement import envelope; account_key is an opaque tenant-local alias."""
+    __tablename__ = "procurement_bank_statement_batches"
+    __table_args__ = (
+        UniqueConstraint("account_key", "statement_reference", name="uq_bank_statement_account_reference"),
+        CheckConstraint("period_end >= period_start", name="ck_bank_statement_period_valid"),
+        Index("ix_bank_statement_period", "period_start", "period_end"),
+        Index("ix_bank_statement_imported_by", "imported_by_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    account_label: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    statement_reference: Mapped[str] = mapped_column(String(120), nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    opening_balance_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    closing_balance_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    imported_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class BankStatementLine(Base):
+    """Immutable bank transaction line; only DEBIT lines may be matched to supplier outflows."""
+    __tablename__ = "procurement_bank_statement_lines"
+    __table_args__ = (
+        UniqueConstraint("account_key", "bank_transaction_id", name="uq_bank_statement_transaction_identity"),
+        CheckConstraint("direction IN ('DEBIT','CREDIT')", name="ck_bank_statement_direction"),
+        CheckConstraint("amount_paise > 0", name="ck_bank_statement_amount_positive"),
+        Index("ix_bank_statement_line_batch_date", "batch_id", "transaction_date"),
+        Index("ix_bank_statement_line_direction_date", "direction", "transaction_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[int] = mapped_column(ForeignKey("procurement_bank_statement_batches.id", ondelete="RESTRICT"), nullable=False)
+    account_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    bank_transaction_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
+    value_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    bank_reference: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+
+class SupplierPaymentBankMatch(Base):
+    """Append-only manual allocation between a bank debit and a supplier payment."""
+    __tablename__ = "procurement_supplier_payment_bank_matches"
+    __table_args__ = (
+        UniqueConstraint("statement_line_id", "supplier_payment_id", name="uq_bank_match_line_payment"),
+        CheckConstraint("amount_paise > 0", name="ck_bank_match_amount_positive"),
+        Index("ix_bank_match_payment", "supplier_payment_id"),
+        Index("ix_bank_match_actor_time", "matched_by_id", "matched_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    statement_line_id: Mapped[int] = mapped_column(ForeignKey("procurement_bank_statement_lines.id", ondelete="RESTRICT"), nullable=False)
+    supplier_payment_id: Mapped[int] = mapped_column(ForeignKey("procurement_supplier_payments.id", ondelete="RESTRICT"), nullable=False)
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    matched_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    matched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+
+
+
+class ReconciliationInvestigation(Base):
+    """Tenant-scoped human investigation opened from a reconciliation source indicator."""
+    __tablename__ = "procurement_reconciliation_investigations"
+    __table_args__ = (
+        UniqueConstraint("external_key", name="uq_recon_investigation_external_key"),
+        CheckConstraint("severity IN ('LOW','MEDIUM','HIGH','CRITICAL')", name="ck_recon_investigation_severity"),
+        CheckConstraint("status IN ('OPEN','ASSIGNED','IN_REVIEW','RESOLVED','DISMISSED')", name="ck_recon_investigation_status"),
+        CheckConstraint("version >= 1", name="ck_recon_investigation_version_positive"),
+        CheckConstraint("reopen_count >= 0", name="ck_recon_investigation_reopen_count_nonneg"),
+        CheckConstraint("resolution_quality_status IN ('NOT_REVIEWED','APPROVED','REJECTED')", name="ck_recon_investigation_quality_status"),
+        Index("ix_recon_investigation_status_severity", "status", "severity"),
+        Index("ix_recon_investigation_opened_by", "opened_by_id"),
+        Index("ix_recon_investigation_closed_by", "closed_by_id"),
+        Index("ix_recon_investigation_quality_reviewer", "resolution_quality_reviewed_by_id"),
+        Index("ix_recon_investigation_sla_policy", "sla_policy_id"),
+        Index("ix_recon_investigation_sla_due_status", "status", "sla_due_at"),
+        Index("ix_recon_investigation_assignee_status", "assigned_to_id", "status"),
+        Index("ix_recon_investigation_source", "source_type", "source_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    external_key: Mapped[str] = mapped_column(String(220), nullable=False)
+    candidate_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_reference: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    title: Mapped[str] = mapped_column(String(180), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(12), nullable=False, default="MEDIUM")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    opened_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    assigned_to_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    resolution: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    root_cause: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    reopen_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    resolution_quality_status: Mapped[str] = mapped_column(String(16), nullable=False, default="NOT_REVIEWED", server_default="NOT_REVIEWED")
+    resolution_quality_reviewed_by_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    resolution_quality_reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_quality_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sla_policy_id: Mapped[Optional[int]] = mapped_column(ForeignKey("procurement_reconciliation_sla_policies.id", ondelete="RESTRICT"), nullable=True)
+    sla_policy_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sla_target_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sla_warning_percent: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    sla_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class ReconciliationSLAPolicy(Base):
+    """Versioned severity-based SLA policy; new cases snapshot its values."""
+    __tablename__ = "procurement_reconciliation_sla_policies"
+    __table_args__ = (
+        UniqueConstraint("severity", "version", name="uq_recon_sla_severity_version"),
+        CheckConstraint("severity IN ('LOW','MEDIUM','HIGH','CRITICAL')", name="ck_recon_sla_severity"),
+        CheckConstraint("target_minutes > 0", name="ck_recon_sla_target_positive"),
+        CheckConstraint("warning_percent BETWEEN 1 AND 99", name="ck_recon_sla_warning_percent"),
+        CheckConstraint("version >= 1", name="ck_recon_sla_version_positive"),
+        Index("uq_recon_sla_active_severity", "severity", unique=True,
+              sqlite_where=text("is_active = 1"),
+              postgresql_where=text("is_active = true")),
+        Index("ix_recon_sla_created_by", "created_by_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    severity: Mapped[str] = mapped_column(String(12), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    warning_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=80, server_default="80")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ReconciliationInvestigationEvent(Base):
+    """Append-only event history for investigation assignment and lifecycle transitions."""
+    __tablename__ = "procurement_reconciliation_investigation_events"
+    __table_args__ = (
+        Index("ix_recon_investigation_event_case_time", "investigation_id", "occurred_at"),
+        Index("ix_recon_investigation_event_actor_time", "actor_user_id", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    investigation_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_reconciliation_investigations.id", ondelete="RESTRICT"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    from_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    to_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ReconciliationEscalationPolicy(Base):
+    """Versioned tenant-local escalation rule; currently configuration only."""
+    __tablename__ = "procurement_reconciliation_escalation_policies"
+    __table_args__ = (
+        UniqueConstraint("severity", "trigger", "version", name="uq_recon_escalation_version"),
+        CheckConstraint("severity IN ('LOW','MEDIUM','HIGH','CRITICAL')", name="ck_recon_escalation_severity"),
+        CheckConstraint("trigger IN ('WARNING','BREACHED')", name="ck_recon_escalation_trigger"),
+        CheckConstraint("version >= 1", name="ck_recon_escalation_version_positive"),
+        CheckConstraint("delay_minutes >= 0", name="ck_recon_escalation_delay_nonneg"),
+        Index("uq_recon_escalation_active", "severity", "trigger", unique=True,
+              sqlite_where=text("is_active = 1"),
+              postgresql_where=text("is_active = true")),
+        Index("ix_recon_escalation_created_by", "created_by_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    severity: Mapped[str] = mapped_column(String(12), nullable=False)
+    trigger: Mapped[str] = mapped_column(String(12), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    delay_minutes: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    recipient_role_ids: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    channels: Mapped[str] = mapped_column(Text, nullable=False, server_default='["IN_APP"]')
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ReconciliationNotificationPreference(Base):
+    """A user's own notification choice for one event and delivery channel."""
+    __tablename__ = "procurement_reconciliation_notification_preferences"
+    __table_args__ = (
+        UniqueConstraint("user_id", "event_type", "channel", name="uq_recon_notification_preference"),
+        CheckConstraint("event_type IN ('SLA_WARNING','SLA_BREACHED')", name="ck_recon_notification_event"),
+        CheckConstraint("channel IN ('IN_APP','EMAIL','SMS','PUSH')", name="ck_recon_notification_channel"),
+        Index("ix_recon_notification_pref_updated_by", "updated_by_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    channel: Mapped[str] = mapped_column(String(12), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+
+
+class ReconciliationNotificationConfigEvent(Base):
+    """Append-only audit for escalation policy and preference changes."""
+    __tablename__ = "procurement_reconciliation_notification_config_events"
+    __table_args__ = (
+        Index("ix_recon_notification_config_actor_time", "actor_user_id", "occurred_at"),
+        Index("ix_recon_notification_config_subject", "subject_user_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    # Preserve the historical subject identifier after user deletion; audit rows are immutable.
+    subject_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    object_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    object_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    details: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class ReconciliationNotificationOutbox(Base):
+    """Durable, tenant-local in-app notification intent; delivery is a later stage."""
+    __tablename__ = "procurement_reconciliation_notification_outbox"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_recon_notification_outbox_idempotency"),
+        CheckConstraint("event_type IN ('SLA_WARNING','SLA_BREACHED')", name="ck_recon_outbox_event"),
+        CheckConstraint("channel = 'IN_APP'", name="ck_recon_outbox_channel"),
+        CheckConstraint("status IN ('PENDING','PROCESSING','DELIVERED','RETRY','DEAD_LETTER','SUPPRESSED')", name="ck_recon_outbox_status"),
+        Index("ix_recon_outbox_recipient_created", "recipient_user_id", "created_at"),
+        Index("ix_recon_outbox_recipient_read_created", "recipient_user_id", "read_at", "created_at"),
+        Index("ix_recon_outbox_status_available", "status", "available_at"),
+        Index("ix_recon_outbox_investigation", "investigation_id"),
+        Index("ix_recon_outbox_policy", "policy_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    idempotency_key: Mapped[str] = mapped_column(String(220), nullable=False)
+    investigation_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_reconciliation_investigations.id", ondelete="RESTRICT"), nullable=False
+    )
+    policy_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_reconciliation_escalation_policies.id", ondelete="RESTRICT"), nullable=False
+    )
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    recipient_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    channel: Mapped[str] = mapped_column(String(12), nullable=False, server_default="IN_APP")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="PENDING")
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReconciliationGovernanceReport(Base):
+    """Immutable, tenant-local monthly governance snapshot; payload contains aggregates only."""
+    __tablename__ = "procurement_reconciliation_governance_reports"
+    __table_args__ = (
+        UniqueConstraint("report_month", name="uq_recon_governance_report_month"),
+        CheckConstraint("schema_version >= 1", name="ck_recon_governance_schema_version"),
+        Index("ix_recon_governance_generated_at", "generated_at"),
+        Index("ix_recon_governance_generated_by", "generated_by_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_month: Mapped[str] = mapped_column(String(7), nullable=False)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    generated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+# Keep metadata-created SQLite databases immutable too (unit/integration test parity).
+event.listen(
+    ReconciliationGovernanceReport.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_procurement_reconciliation_governance_reports_immutable_update
+        BEFORE UPDATE ON procurement_reconciliation_governance_reports
+        BEGIN SELECT RAISE(ABORT, 'Monthly reconciliation governance reports are immutable'); END
+        """
+    ).execute_if(dialect="sqlite"),
+)
+event.listen(
+    ReconciliationGovernanceReport.__table__,
+    "after_create",
+    DDL(
+        """
+        CREATE TRIGGER trg_procurement_reconciliation_governance_reports_immutable_delete
+        BEFORE DELETE ON procurement_reconciliation_governance_reports
+        BEGIN SELECT RAISE(ABORT, 'Monthly reconciliation governance reports are immutable'); END
+        """
+    ).execute_if(dialect="sqlite"),
+)
