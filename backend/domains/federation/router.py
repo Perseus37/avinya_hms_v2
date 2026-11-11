@@ -467,7 +467,7 @@ def discover_and_aggregate_patient_across_branches(
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(pointers)))
     ptr_to_future = {}
     failed_source_branches: list[str] = []
-    source_success_count = 0
+    successful_source_branches: set[str] = set()
     try:
         for ptr in pointers:
             branch_db_name = branch_to_db.get(ptr.branch_code)
@@ -497,7 +497,7 @@ def discover_and_aggregate_patient_across_branches(
             continue
         try:
             result = future.result()
-            source_success_count += 1
+            successful_source_branches.add(ptr.branch_code)
             if result:
                 # EMERGENCY_ALLERGIES_ONLY may contribute allergy summaries,
                 # never patient demographics.
@@ -518,13 +518,15 @@ def discover_and_aggregate_patient_across_branches(
     # Keep branch identifiers deterministic and avoid duplicate failure entries.
     failed_source_branches = sorted(set(failed_source_branches))
     source_failure_count = len(failed_source_branches)
+    source_success_count = len(successful_source_branches)
+    source_count = len(branch_codes)
     if latest_demographics is None and not allergies_only_source_found:
         if source_failure_count:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
                     "message": "Federated discovery could not verify every indexed source.",
-                    "source_count": len(pointers),
+                    "source_count": source_count,
                     "source_success_count": source_success_count,
                     "source_failure_count": source_failure_count,
                     "is_partial": True,
@@ -552,7 +554,7 @@ def discover_and_aggregate_patient_across_branches(
         emergency_contact_name=demographics.emergency_contact_name if demographics else None,
         emergency_contact_phone=demographics.emergency_contact_phone if demographics else None,
         active_allergies=list(merged_allergies.values()),
-        source_count=len(pointers),
+        source_count=source_count,
         source_success_count=source_success_count,
         source_failure_count=source_failure_count,
         is_partial=source_failure_count > 0,
