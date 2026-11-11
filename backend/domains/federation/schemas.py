@@ -40,6 +40,13 @@ class FederatedAllergySummary(BaseModel):
 
 
 class FederatedPatientSummaryResponse(BaseModel):
+    # Additive source-completeness metadata: callers can distinguish a complete
+    # discovery from a response assembled while one or more branches were unavailable.
+    source_count: int = 0
+    source_success_count: int = 0
+    source_failure_count: int = 0
+    is_partial: bool = False
+    failed_source_branches: list[str] = Field(default_factory=list)
     source_mrn: Optional[str] = None
     abha_number: Optional[str] = None
     full_name: Optional[str] = None
