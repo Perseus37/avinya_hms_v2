@@ -696,6 +696,19 @@ def import_federated_patient_locally(
     """Import an authenticated discovery result without trusting client-supplied clinical fields."""
     tenant = resolve_tenant_context(request)
 
+    # Allergy-only emergency responses deliberately contain no demographic identity
+    # and must never be accepted as patient-import payloads.
+    if (
+        not payload.source_mrn
+        or not payload.full_name
+        or payload.date_of_birth is None
+        or payload.gender is None
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="A demographics-authorized discovery result is required for patient import.",
+        )
+
     # Completeness metadata in the request body is caller-controlled. Import is
     # permitted only with a short-lived receipt minted by this server after a
     # complete discovery, bound to this node, destination branch and exact result.
@@ -769,19 +782,6 @@ def import_federated_patient_locally(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Partial federated discovery cannot be imported; retry discovery when all sources are available.",
-        )
-
-    # Allergy-only emergency responses deliberately contain no demographic identity
-    # and must never be accepted as patient-import payloads.
-    if (
-        not payload.source_mrn
-        or not payload.full_name
-        or payload.date_of_birth is None
-        or payload.gender is None
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail="A demographics-authorized discovery result is required for patient import.",
         )
 
     # The import is valid only when the supplied source MRN is currently indexed to
