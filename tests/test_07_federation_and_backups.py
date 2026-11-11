@@ -63,12 +63,14 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
       2. Import patient into Hospital B ('default'), update address, and chart Sulfa allergy (ALG_SULFA).
       3. Discover patient from Hospital C ('sunrise') -> receives newest address from B + BOTH allergies (A + B).
     """
-    sun_client = client.post(
+    # The node issuing discovery must be the same branch that imports the
+    # result. This binds the server-side receipt to the receiving tenant.
+    destination_node = client.post(
         "/v1/api/federation/clients",
-        headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Hospital"},
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "Hyderabad Receiving Hospital"},
     ).json()
-    fed_headers = {"X-Federation-API-Key": sun_client["raw_api_key"]}
+    fed_headers = {"X-Federation-API-Key": destination_node["raw_api_key"]}
 
     p_apollo = client.post(
         "/v1/api/patients",
@@ -92,6 +94,36 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
         "/v1/api/federation/patients/discover?phone_number=9777788888&purpose=CONTINUITY_OF_CARE",
         headers=fed_headers,
     ).json()
+
+    assert disc_from_a.get("discovery_receipt")
+
+    # Caller-supplied completeness flags and edited summaries cannot replace
+    # the server-issued receipt or alter the exact discovered result.
+    without_receipt = dict(disc_from_a)
+    without_receipt.pop("discovery_receipt")
+    no_receipt = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=without_receipt,
+    )
+    assert no_receipt.status_code == 409
+
+    tampered_summary = dict(disc_from_a)
+    tampered_summary["address"] = "Client-forged address"
+    tampered = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=tampered_summary,
+    )
+    assert tampered.status_code == 409
+    assert "modified" in tampered.json()["message"].lower()
+
+    wrong_destination = client.post(
+        "/v1/api/federation/patients/import",
+        headers=apollo_admin_headers,
+        json=disc_from_a,
+    )
+    assert wrong_destination.status_code == 403
 
     p_default = client.post(
         "/v1/api/federation/patients/import",
@@ -516,6 +548,8 @@ def test_09_federation_import_enforces_corporate_group_policy(
         )
         assert imported.status_code == 403
         assert "cross-group" in imported.json()["message"].lower()
+        assert imported.status_code == 403
+        assert "cross-group" in imported.json()["message"].lower()
 
         # Matching explicit group IDs permit the same import even though branch
         # codes have different prefixes (HQ vs APOLLO).
@@ -541,7 +575,7 @@ def test_09_federation_import_enforces_corporate_group_policy(
         allowed = client.post(
             "/v1/api/federation/patients/import",
             headers=superuser_headers,
-            json=discovered.json(),
+            json=allowed_discovery.json(),
         )
         assert allowed.status_code == 201
     finally:
@@ -786,4 +820,4 @@ def test_federated_patient_import_rejects_partial_discovery(
     )
 
     assert response.status_code == 409
-    assert "partial federated discovery" in response.json()["message"].lower()
+    assert "discovery receipt" in response.json()["message"].lower()
