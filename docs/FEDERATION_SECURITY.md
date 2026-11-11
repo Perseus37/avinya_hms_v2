@@ -160,7 +160,7 @@ A successful `CONTINUITY_OF_CARE` discovery that has demographic authorization a
 - the authenticated federation node and its destination branch;
 - the exact ABHA or normalized-phone selector hash;
 - the complete indexed pointer snapshot (pointer IDs, branch codes, source MRNs, and pointer update timestamps);
-- the selected demographic source pointer and patient MRN;
+- the selected demographic source pointer;
 - a canonical digest of the complete discovery response, including the allergy summary.
 
 The import endpoint requires the receipt, verifies expiry and node status, requires the same destination branch, recomputes the selector and current pointer snapshot, checks the exact response digest, and then repeats the source patient, privacy, and sharing-policy checks. A changed index or modified response requires rediscovery. The raw receipt is never stored or logged.
