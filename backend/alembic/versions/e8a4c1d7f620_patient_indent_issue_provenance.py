@@ -5,6 +5,7 @@ Revises: e1a3c7b5d902
 """
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision = "e8a4c1d7f620"
 down_revision = "d2b6e8f1a903"
@@ -21,14 +22,25 @@ def upgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
         op.execute("ALTER TYPE indentstatusenum ADD VALUE IF NOT EXISTS 'PARTIALLY_FULFILLED'")
 
-    # The tenant schema stores this enum as VARCHAR. Its previous maximum
-    # label length was 9 (CANCELLED); PARTIALLY_FULFILLED needs 19 characters.
+    # PostgreSQL ORM metadata uses the native indentstatusenum type.
+    # Widening a VARCHAR alone leaves schema parity broken; cast the existing
+    # labels into the enum after ensuring the new partial-fulfilment label exists.
     if op.get_bind().dialect.name == "postgresql":
+        indent_status_enum = postgresql.ENUM(
+            "PENDING",
+            "APPROVED",
+            "PARTIALLY_FULFILLED",
+            "FULFILLED",
+            "CANCELLED",
+            name="indentstatusenum",
+            create_type=False,
+        )
         op.alter_column(
             "procurement_indents",
             "status",
-            existing_type=sa.String(length=9),
-            type_=sa.String(length=19),
+            existing_type=sa.String(length=19),
+            type_=indent_status_enum,
+            postgresql_using="status::text::indentstatusenum",
             existing_nullable=False,
         )
     elif op.get_bind().dialect.name == "sqlite":
