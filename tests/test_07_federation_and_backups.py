@@ -757,7 +757,7 @@ def test_federated_discovery_returns_explicit_partial_status_on_worker_error(
     )
 
     assert response.status_code == 503
-    detail = response.json()["detail"]
+    detail = response.json()["message"]
     assert detail["is_partial"] is True
     assert detail["source_count"] == 1
     assert detail["source_failure_count"] == 1
