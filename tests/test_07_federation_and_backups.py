@@ -1,6 +1,7 @@
-from cryptography.fernet import Fernet, InvalidToken
-from datetime import datetime, timezone
 import hashlib
+from datetime import datetime, timezone
+
+from cryptography.fernet import Fernet, InvalidToken
 import pytest
 from sqlalchemy.orm import sessionmaker
 
@@ -50,7 +51,7 @@ def test_02_invalid_federation_api_key_format_returns_401(client):
     assert res.status_code == 401
 
 
-def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
+def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
     client,
     multi_tenant_env,
     superuser_headers,
