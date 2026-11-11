@@ -762,3 +762,28 @@ def test_federated_discovery_returns_explicit_partial_status_on_worker_error(
     assert detail["source_count"] == 1
     assert detail["source_failure_count"] == 1
     assert detail["failed_source_branches"]
+
+
+
+def test_federated_patient_import_rejects_partial_discovery(
+    client, apollo_admin_headers
+):
+    """AUD-003: an incomplete discovery envelope cannot become a patient clone."""
+    response = client.post(
+        "/v1/api/federation/patients/import",
+        headers=apollo_admin_headers,
+        json={
+            "source_mrn": "PARTIAL-SOURCE-001",
+            "full_name": "Partial Discovery Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+            "source_count": 2,
+            "source_success_count": 1,
+            "source_failure_count": 1,
+            "is_partial": True,
+            "failed_source_branches": ["SUN-BLR-01"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert "partial federated discovery" in response.json()["message"].lower()
