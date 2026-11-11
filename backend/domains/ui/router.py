@@ -52,6 +52,7 @@ from backend.control_plane.models import ControlPlaneAuditLog, TenantRegistry
 from backend.domains.procurement.documents import scan_file_with_clamav
 from backend.domains.privacy.runtime import (
     calculate_patient_age,
+    commit_without_expiring,
     evaluate_tenant_data_use,
     evaluate_tenant_data_use_for_patients,
 )
@@ -676,15 +677,36 @@ def get_patient_summary_card(
     patient = db.get(Patient, patient_id)
     if not patient or not patient.is_active:
         raise HTTPException(status_code=404, detail="Active patient not found.")
+    patient_age = calculate_patient_age(patient.date_of_birth)
     decision = evaluate_tenant_data_use(
         db,
         data_use_point="patients.mpi.read",
         patient_id=patient.id,
         actor_user_id=current_user.id,
-        patient_age=calculate_patient_age(patient.date_of_birth),
+        patient_age=patient_age,
+        commit_audit=False,
     )
     if not decision.allowed:
+        commit_without_expiring(db)
         raise HTTPException(status_code=403, detail="Privacy policy does not permit this patient disclosure.")
+
+    section_access = {
+        point: evaluate_tenant_data_use(
+            db,
+            data_use_point=point,
+            patient_id=patient.id,
+            actor_user_id=current_user.id,
+            patient_age=patient_age,
+            commit_audit=False,
+        )
+        for point in (
+            "adt.admissions.search",
+            "patients.allergies.read",
+            "clinical.encounter.vitals.read",
+            "clinical.encounter.diagnoses.read",
+        )
+    }
+    commit_without_expiring(db)
 
     now = date.today()
     age_years = None
@@ -695,16 +717,18 @@ def get_patient_summary_card(
 
     # 1. Active Inpatient Admission
     active_admission = None
-    admission = (
-        db.query(InpatientAdmission)
-        .join(PatientEncounter)
-        .filter(
-            PatientEncounter.patient_id == patient_id,
-            InpatientAdmission.discharge_time.is_(None),
+    admission = None
+    if section_access["adt.admissions.search"].allowed:
+        admission = (
+            db.query(InpatientAdmission)
+            .join(PatientEncounter)
+            .filter(
+                PatientEncounter.patient_id == patient_id,
+                InpatientAdmission.discharge_time.is_(None),
+            )
+            .order_by(InpatientAdmission.id.desc())
+            .first()
         )
-        .order_by(InpatientAdmission.id.desc())
-        .first()
-    )
     if admission:
         bed = db.get(Bed, admission.current_bed_id) if admission.current_bed_id else None
         room = db.get(PhysicalRoom, bed.room_id) if bed and bed.room_id else None
@@ -726,6 +750,7 @@ def get_patient_summary_card(
         db.query(PatientAllergy)
         .filter(PatientAllergy.patient_id == patient_id, PatientAllergy.is_active == True)
         .all()
+        if section_access["patients.allergies.read"].allowed else []
     )
     allergy_list = [
         {
@@ -742,7 +767,7 @@ def get_patient_summary_card(
     latest_vitals = None
     encounters = db.query(PatientEncounter.id).filter(PatientEncounter.patient_id == patient_id).all()
     enc_ids = [e[0] for e in encounters]
-    if enc_ids:
+    if enc_ids and section_access["clinical.encounter.vitals.read"].allowed:
         vital = (
             db.query(EncounterVital)
             .filter(EncounterVital.encounter_id.in_(enc_ids))
@@ -769,7 +794,7 @@ def get_patient_summary_card(
 
     # 4. Active Diagnoses
     diagnoses = []
-    if enc_ids:
+    if enc_ids and section_access["clinical.encounter.diagnoses.read"].allowed:
         active_diag = (
             db.query(EncounterDiagnosis)
             .filter(EncounterDiagnosis.encounter_id.in_(enc_ids))
@@ -1358,15 +1383,46 @@ def get_patient_timeline(
     patient = db.get(Patient, patient_id)
     if not patient or not patient.is_active:
         raise HTTPException(status_code=404, detail="Active patient not found.")
+    patient_age = calculate_patient_age(patient.date_of_birth)
     decision = evaluate_tenant_data_use(
         db,
         data_use_point="patients.mpi.read",
         patient_id=patient.id,
         actor_user_id=current_user.id,
-        patient_age=calculate_patient_age(patient.date_of_birth),
+        patient_age=patient_age,
+        commit_audit=False,
     )
     if not decision.allowed:
+        commit_without_expiring(db)
         raise HTTPException(status_code=403, detail="Privacy policy does not permit this patient disclosure.")
+
+    category_access = {
+        "CLINICAL": evaluate_tenant_data_use(
+            db, data_use_point="opd.appointments.search", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+        "ADMISSION": evaluate_tenant_data_use(
+            db, data_use_point="adt.admissions.search", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+        "TRIAGE": evaluate_tenant_data_use(
+            db, data_use_point="clinical.encounter.vitals.read", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+        "LAB": evaluate_tenant_data_use(
+            db, data_use_point="diagnostics.orders.search", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+        "MEDICATION": evaluate_tenant_data_use(
+            db, data_use_point="pharmacy.prescriptions.search", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+        "BILLING": evaluate_tenant_data_use(
+            db, data_use_point="billing.payments.read", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+    }
+    commit_without_expiring(db)
 
     events: List[PatientTimelineEvent] = []
 
@@ -1581,6 +1637,12 @@ def get_patient_timeline(
                 )
             )
 
+    # Keep each event category behind its own active privacy decision.
+    events = [
+        event for event in events
+        if event.category == "REGISTRATION"
+        or category_access[event.category].allowed
+    ]
     # Sort descending (newest milestone first)
     events.sort(key=lambda x: x.timestamp, reverse=True)
     return events
