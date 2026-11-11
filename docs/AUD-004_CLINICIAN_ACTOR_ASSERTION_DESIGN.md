@@ -383,3 +383,48 @@ After the decisions in Section 12 and proposed defaults in Section 18 are approv
 8. **Controlled rollout:** feature flag off by default, partner-by-partner non-production validation, operational monitoring and rollback plan, then explicit multi-owner release approval.
 
 Exit requires all AC-01 through AC-16 satisfied, no unresolved High/Critical security findings, documented revocation and incident runbooks, and explicit release approval. Until then AUD-004 remains open and release-blocking.
+
+
+## 20. Approval decision register
+
+**Purpose:** provide a reviewable record for the owners who must approve the AUD-004 trust model before implementation. This register is intentionally unapproved. No owner, approval date, or policy decision is inferred by this document's authors.
+
+Record each decision in the project governance system and link the approved record here. A verbal agreement or a passing CI run does not close a decision.
+
+| ID | Decision requiring explicit approval | Proposed starting position | Accountable approver(s) | Evidence required | Status |
+|---|---|---|---|---|---|
+| D-01 | Who is authorized to issue clinician identity assertions for a participating hospital? | Each hospital's Avinya backend, registered per branch, may issue workforce identity assertions for its own authenticated users | Hospital identity owner; Avinya identity/security owner | Written issuer-responsibility agreement, onboarding and termination process | PENDING |
+| D-02 | What does the issuer's clinician statement actually guarantee? | It guarantees authenticated account identity, current local affiliation/status, and locally recorded actor class; it does not claim independent medical-license verification | Hospital identity owner; clinical governance | Signed claim-assurance definition and evidence-source inventory | PENDING |
+| D-03 | Which clinician classes and actions are eligible? | Explicit doctor, nurse, and allied-health classes with action-specific allow-lists; no generic clinician wildcard | Clinical governance; source data owner | Approved actor-class/action/purpose/scope matrix | PENDING |
+| D-04 | Is external professional registration verification mandatory for any action? | Treat local DoctorProfile registration fields as hospital-asserted only; require a trusted registry integration if independent verification is required | Clinical governance; legal/privacy owner | Jurisdiction-specific credential evidence and freshness policy | PENDING |
+| D-05 | What source-side authorization policy controls remote access? | Source makes an independent decision for issuer, mapped actor, action, patient/resource, purpose, destination, and minimum scope | Source hospital clinical/data owner; security owner | Versioned authorization matrix, deny rules, policy ownership and test cases | PENDING |
+| D-06 | Which purposes are permitted at launch? | A small versioned enum limited to explicitly approved continuity-of-care workflows; no arbitrary caller-supplied purpose strings | Privacy officer; clinical governance; legal owner | Approved purpose vocabulary, lawful-use mapping, and data-scope matrix | PENDING |
+| D-07 | Which signing algorithm and key custody model are production requirements? | One fixed asymmetric algorithm supported by all participants; per-branch private key in managed KMS/HSM or equivalent protected signer | Security/platform owner; infrastructure owner | Cryptographic interoperability test, key custody/backup/rotation/revocation runbook | PENDING |
+| D-08 | How are issuers, branches, keys, and partner relationships onboarded and revoked? | Out-of-band, dual-controlled source trust administration; no self-service trust based only on presented token metadata | Federation operations owner; security owner | Partner verification checklist, operator permissions, audit trail, revocation drill | PENDING |
+| D-09 | What are assertion/challenge lifetimes, clock-skew limits, and urgent revocation SLAs? | Maximum 120-second assertion and challenge lifetimes as initial proposal; online status checks for high-risk actions; explicit urgent-revocation target | Security owner; partner operations; identity governance | Measured clock assumptions, status freshness design, tested SLA and escalation path | PENDING |
+| D-10 | What retry/idempotency behavior is permitted after challenge claim or partial failure? | One-operation challenge; no challenge reset; retry only through a separately reviewed idempotency rule that cannot cause a second disclosure | Security/architecture owner; data owner | State-transition specification, concurrency tests, fault-injection evidence | PENDING |
+| D-11 | Does AUD-004 cover local imports as well as remote discovery/import? | Do not silently narrow scope; explicitly decide whether every source-data access/import path requires source-verifiable human actor attribution | Security owner; privacy officer; clinical governance | Complete route/data-flow inventory and signed scope decision | PENDING |
+| D-12 | What audit fields, retention, and access controls are required? | Source-local append-only actor and decision audit; no bearer token or unnecessary PHI; retention set by approved policy | Privacy officer; records/audit owner; security owner | Approved event schema, retention schedule, audit access model, failure-handling review | PENDING |
+| D-13 | What is the emergency/break-glass boundary? | Emergency federation stays disabled and outside this implementation until a separate design is approved | Clinical-safety owner; security owner; privacy/legal owner | Separate threat model, emergency workflow, retrospective review and alerting requirements | PENDING |
+| D-14 | What constitutes authorization to pilot and release? | Feature flag off by default; partner-by-partner non-production validation; no production enablement until all acceptance criteria and owner sign-offs pass | Security, clinical-safety, privacy, identity-governance, and operations owners | Recorded approvals, independent review, test evidence, runbooks, rollback plan | PENDING |
+
+### 20.1 Required approval record
+
+For each decision D-01 through D-14, record:
+
+- Decision ID and exact approved wording.
+- Decision: **APPROVED**, **REJECTED**, or **DEFERRED**. A deferred decision must include an owner and due date.
+- Named accountable approver(s), role, and organization.
+- Date, governance/ticket/minutes reference, and evidence links.
+- Any approved deviation from the proposed default, including threat-model impact and required compensating controls.
+- Version of this design and protocol schema to which the decision applies.
+
+Do not mark a decision approved solely because a proposed default is repeated in a review comment. The accountable owner must explicitly accept the responsibility and evidence listed above.
+
+### 20.2 Decision completion gate
+
+Implementation planning may begin only when D-01 through D-14 have an explicit disposition and no unresolved decision affects the intended implementation scope. A deferred item blocks the affected capability; it cannot be converted into an implicit default by engineering.
+
+Before any production pilot, all applicable decisions must be approved, AC-01 through AC-16 must have evidence, and the independent review and release approvals in Section 11 must be complete.
+
+**Current decision state: all D-01 through D-14 are PENDING. AUD-004 remains open and release-blocking.**
