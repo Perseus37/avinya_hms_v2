@@ -230,8 +230,7 @@ def test_federated_import_respects_source_allergy_sharing_setting(
             assert copied_allergies == 0
     finally:
         with Session(source_engine) as source_db:
-            policy = source_db.query(HospitalPolicySetting).first()
-            if policy is not None:
-                policy.federation_share_allergies = original_setting
-                source_db.commit()
+            policy = _get_branch_policy(source_db)
+            policy.federation_share_allergies = original_setting
+            source_db.commit()
 
