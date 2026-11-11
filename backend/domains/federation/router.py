@@ -668,8 +668,6 @@ def discover_and_aggregate_patient_across_branches(
             selector_hash=_selector_sha256(selector_type, selector_value),
             pointer_snapshot_hash=_pointer_snapshot_sha256(pointers),
             source_pointer_id=selected_source_pointer.id,
-            source_branch_code=selected_source_pointer.branch_code,
-            source_mrn=selected_source_pointer.source_mrn,
             summary_hash=_summary_sha256(response_payload),
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=2),
         )
@@ -718,8 +716,6 @@ def import_federated_patient_locally(
         raise HTTPException(status_code=409, detail="Federated discovery receipt is invalid or expired.")
     if receipt.destination_branch_code != tenant.branch_code:
         raise HTTPException(status_code=403, detail="Federated discovery receipt belongs to another destination branch.")
-    if receipt.source_mrn != payload.source_mrn:
-        raise HTTPException(status_code=409, detail="Federated discovery receipt does not match the source patient.")
     if receipt.summary_hash != _summary_sha256(payload):
         raise HTTPException(status_code=409, detail="Federated discovery result was modified; rediscover before import.")
 
@@ -761,8 +757,7 @@ def import_federated_patient_locally(
         raise HTTPException(status_code=409, detail="Federated source index changed since discovery; rediscover before import.")
     if not any(
         pointer.id == receipt.source_pointer_id
-        and pointer.branch_code == receipt.source_branch_code
-        and pointer.source_mrn == receipt.source_mrn
+        and pointer.source_mrn == payload.source_mrn
         for pointer in current_pointers
     ):
         raise HTTPException(status_code=409, detail="Federated source pointer no longer matches the discovery receipt.")
@@ -808,8 +803,6 @@ def import_federated_patient_locally(
     source_pointer = source_pointers[0]
     if (
         source_pointer.id != receipt.source_pointer_id
-        or source_pointer.branch_code != receipt.source_branch_code
-        or source_pointer.source_mrn != receipt.source_mrn
     ):
         raise HTTPException(status_code=409, detail="Federated source pointer changed; rediscover before import.")
     source_registry = control_db.execute(
