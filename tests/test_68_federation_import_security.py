@@ -155,3 +155,82 @@ def test_federation_reindexes_changed_phone_and_abha_identifiers(
         response = client.get(current_lookup, headers=headers)
         assert response.status_code == 200, response.text
         assert response.json()["source_mrn"] == patient.json()["mrn"]
+
+def test_federated_import_respects_source_allergy_sharing_setting(
+    client,
+    multi_tenant_env,
+    superuser_headers,
+    apollo_admin_headers,
+    sunrise_admin_headers,
+):
+    """Import must not copy allergies when the source branch disables allergy sharing."""
+    from sqlalchemy.orm import Session
+    from backend.domains.patients.models import PatientAllergy
+    from backend.domains.policies.models import HospitalPolicySetting
+
+    partner = client.post(
+        "/v1/api/federation/clients",
+        headers=sunrise_admin_headers,
+        json={"branch_code": "SUN-BLR-01", "name": "Allergy Privacy Import Partner"},
+    )
+    assert partner.status_code == 201, partner.text
+
+    source_patient = client.post(
+        "/v1/api/patients",
+        headers=apollo_admin_headers,
+        json={
+            "full_name": "Allergy Sharing Disabled Patient",
+            "date_of_birth": "1987-06-07T00:00:00Z",
+            "gender": "FEMALE",
+            "phone_number": "9000077766",
+            "abha_number": "ABHA-ALLERGY-OPT-OUT-01",
+        },
+    )
+    assert source_patient.status_code == 201, source_patient.text
+    source_patient_id = source_patient.json()["id"]
+
+    allergy = client.post(
+        f"/v1/api/patients/{source_patient_id}/allergies",
+        headers=apollo_admin_headers,
+        json={"allergy_id": 1, "severity": "SEVERE", "reaction": "Source-only allergy"},
+    )
+    assert allergy.status_code == 201, allergy.text
+
+    source_engine = multi_tenant_env["tenant_engines"]["hms_apollo"]
+    with Session(source_engine) as source_db:
+        policy = source_db.query(HospitalPolicySetting).first()
+        assert policy is not None
+        original_setting = policy.federation_share_allergies
+        policy.federation_share_allergies = False
+        source_db.commit()
+
+    try:
+        discovered = client.get(
+            "/v1/api/federation/patients/discover?abha_number=ABHA-ALLERGY-OPT-OUT-01&purpose=CONTINUITY_OF_CARE",
+            headers={"X-Federation-API-Key": partner.json()["raw_api_key"]},
+        )
+        assert discovered.status_code == 200, discovered.text
+        assert discovered.json()["active_allergies"] == []
+
+        imported = client.post(
+            "/v1/api/federation/patients/import",
+            headers=superuser_headers,
+            json=discovered.json(),
+        )
+        assert imported.status_code == 201, imported.text
+
+        destination_engine = multi_tenant_env["tenant_engines"]["hms_default"]
+        with Session(destination_engine) as destination_db:
+            copied_allergies = (
+                destination_db.query(PatientAllergy)
+                .filter(PatientAllergy.patient_id == imported.json()["id"])
+                .count()
+            )
+            assert copied_allergies == 0
+    finally:
+        with Session(source_engine) as source_db:
+            policy = source_db.query(HospitalPolicySetting).first()
+            if policy is not None:
+                policy.federation_share_allergies = original_setting
+                source_db.commit()
+

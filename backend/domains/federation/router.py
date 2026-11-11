@@ -638,11 +638,21 @@ def import_federated_patient_locally(
                 detail="Federated patient data changed since discovery; rediscover before importing.",
             )
 
-        source_allergies = source_db.execute(
-            select(PatientAllergy, AllergyMaster)
-            .join(AllergyMaster, PatientAllergy.allergy_id == AllergyMaster.id)
-            .where(PatientAllergy.patient_id == source_patient.id, PatientAllergy.is_active.is_(True))
-        ).all()
+        # Import must apply the same source-controlled allergy-sharing setting
+        # as discovery. Re-reading the source database is required for integrity,
+        # but must not turn a disabled data category into an implicit disclosure.
+        source_allergies = (
+            source_db.execute(
+                select(PatientAllergy, AllergyMaster)
+                .join(AllergyMaster, PatientAllergy.allergy_id == AllergyMaster.id)
+                .where(
+                    PatientAllergy.patient_id == source_patient.id,
+                    PatientAllergy.is_active.is_(True),
+                )
+            ).all()
+            if source_policy.federation_share_allergies
+            else []
+        )
 
         # Record every validated import request, including idempotent retries where
         # the destination already has the patient. Source and destination databases
