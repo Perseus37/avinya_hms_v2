@@ -358,7 +358,10 @@ def discover_and_aggregate_patient_across_branches(
             detail="Remote emergency federation is disabled pending verified requester authorization.",
         )
 
-    stmt = select(GlobalPatientPointer)
+    # Discovery is for remote sources; exclude the requesting/destination branch.
+    stmt = select(GlobalPatientPointer).where(
+        GlobalPatientPointer.branch_code != calling_node.branch_code
+    )
     if abha_number:
         stmt = stmt.where(GlobalPatientPointer.abha_number == abha_number)
         identifier_used = f"abha:{abha_number}"
@@ -719,7 +722,10 @@ def import_federated_patient_locally(
         selector_hash = _selector_sha256("ABHA", payload.abha_number)
         current_pointers = control_db.execute(
             select(GlobalPatientPointer)
-            .where(GlobalPatientPointer.abha_number == payload.abha_number)
+            .where(
+                GlobalPatientPointer.abha_number == payload.abha_number,
+                GlobalPatientPointer.branch_code != tenant.branch_code,
+            )
             .order_by(GlobalPatientPointer.last_clinical_update_at.desc())
             .with_for_update()
         ).scalars().all()
@@ -729,7 +735,10 @@ def import_federated_patient_locally(
         selector_hash = _selector_sha256("PHONE", payload.phone_number)
         current_pointers = control_db.execute(
             select(GlobalPatientPointer)
-            .where(GlobalPatientPointer.phone_hash == normalize_phone_hash(payload.phone_number))
+            .where(
+                GlobalPatientPointer.phone_hash == normalize_phone_hash(payload.phone_number),
+                GlobalPatientPointer.branch_code != tenant.branch_code,
+            )
             .order_by(GlobalPatientPointer.last_clinical_update_at.desc())
         ).scalars().all()
     else:
