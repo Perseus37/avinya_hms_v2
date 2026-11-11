@@ -1,7 +1,7 @@
 import hashlib
 import json
-from datetime import datetime, timedelta, timezone
 import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -43,8 +43,6 @@ def normalize_phone_hash(phone_number: Optional[str]) -> str:
     if not digits:
         digits = "0000000000"
     return hashlib.sha256(digits.encode("utf-8")).hexdigest()
-
-
 
 
 def _canonical_sha256(value: dict) -> str:
