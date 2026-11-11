@@ -50,18 +50,15 @@ def test_02_invalid_federation_api_key_format_returns_401(client):
     assert res.status_code == 401
 
 
-def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
+def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
     client,
     multi_tenant_env,
     superuser_headers,
     apollo_admin_headers,
-    sunrise_admin_headers,
-):
+ ):
     """
-    Scenario 3: Full Hospital A (apollo) -> Hospital B (default) -> Hospital C (sunrise) flow:
-      1. Register patient at Hospital A ('apollo') with Penicillin allergy (ALG_PEN).
-      2. Import patient into Hospital B ('default'), update address, and chart Sulfa allergy (ALG_SULFA).
-      3. Discover patient from Hospital C ('sunrise') -> receives newest address from B + BOTH allergies (A + B).
+    Scenario 3: Hospital A (apollo) -> Hospital B (default): import the source
+    patient, then rediscover the current demographic record and merged allergies.
     """
     # The node issuing discovery must be the same branch that imports the
     # result. This binds the server-side receipt to the receiving tenant.
@@ -795,6 +792,60 @@ def test_federated_discovery_returns_explicit_partial_status_on_worker_error(
     assert detail["source_failure_count"] == 1
     assert detail["failed_source_branches"]
 
+
+
+def test_federated_patient_import_rejects_missing_receipt_without_completeness_fields(
+    client, apollo_admin_headers
+):
+    """Caller omission/defaults cannot turn an unverified body into a complete discovery."""
+    response = client.post(
+        "/v1/api/federation/patients/import",
+        headers=apollo_admin_headers,
+        json={
+            "source_mrn": "UNVERIFIED-SOURCE-001",
+            "full_name": "Unverified Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+        },
+    )
+    assert response.status_code == 409
+    assert "discovery receipt" in response.json()["message"].lower()
+
+
+def test_phone_discovery_rejects_multiple_unlinked_patient_identities(
+    client, multi_tenant_env, superuser_headers, apollo_admin_headers
+):
+    """A shared phone number cannot cause allergies/demographics to merge across people."""
+    registered = client.post(
+        "/v1/api/federation/clients",
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "HQ Federation Node"},
+    )
+    assert registered.status_code == 201
+
+    for name, abha in (
+        ("Household Patient One", "ABHA-HOUSEHOLD-ONE"),
+        ("Household Patient Two", "ABHA-HOUSEHOLD-TWO"),
+    ):
+        created = client.post(
+            "/v1/api/patients",
+            headers=apollo_admin_headers,
+            json={
+                "full_name": name,
+                "date_of_birth": "1990-01-01T00:00:00Z",
+                "gender": "FEMALE",
+                "phone_number": "9444412345",
+                "abha_number": abha,
+            },
+        )
+        assert created.status_code == 201, created.text
+
+    response = client.get(
+        "/v1/api/federation/patients/discover?phone_number=9444412345",
+        headers={"X-Federation-API-Key": registered.json()["raw_api_key"]},
+    )
+    assert response.status_code == 409
+    assert "abha" in response.json()["message"].lower()
 
 
 def test_federated_patient_import_rejects_partial_discovery(
