@@ -150,3 +150,21 @@ may intentionally suppress publication.
 These completeness and persistence semantics do not change the separate release
 gate for clinician attribution. Remote emergency federation remains disabled until
 a source-verified, signed actor assertion is implemented and independently reviewed.
+
+
+## Complete discovery receipts for patient import (AUD-003)
+
+Patient import must not rely on caller-supplied `is_partial`, `source_failure_count`, or related counters. These fields are response metadata, not authorization evidence.
+
+A successful discovery that has demographic authorization and has verified every indexed source issues a short-lived (two-minute) opaque receipt. The control-plane database stores only the SHA-256 hash of the random receipt token and binds it to:
+- the authenticated federation node and its destination branch;
+- the exact ABHA or normalized-phone selector hash;
+- the complete indexed pointer snapshot (pointer IDs, branch codes, source MRNs, and pointer update timestamps);
+- the selected demographic source pointer and patient MRN;
+- a canonical digest of the complete discovery response, including the allergy summary.
+
+The import endpoint requires the receipt, verifies expiry and node status, requires the same destination branch, recomputes the selector and current pointer snapshot, checks the exact response digest, and then repeats the source patient, privacy, and sharing-policy checks. A changed index or modified response requires rediscovery. The raw receipt is never stored or logged.
+
+Receipts are intentionally reusable during their short lifetime so a client can safely retry the existing idempotent import flow after a transient failure. They do not bypass destination user permission checks, source policy checks, current source-patient validation, or the separate clinician-level actor assertion requirement. Partial or allergy-only discovery responses never receive an import receipt.
+
+This receipt protocol establishes discovery completeness and response integrity; it does not authenticate the human clinician. AUD-004 remains unresolved, and remote emergency federation remains disabled pending its separate actor-assertion protocol and independent security review.
