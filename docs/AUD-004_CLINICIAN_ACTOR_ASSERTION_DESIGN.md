@@ -637,3 +637,65 @@ These controls are useful but do not satisfy AUD-004 because they do not indepen
 - GAP-07 is required to make human attribution meaningful and auditable.
 - No code, schema, migration, or runtime behavior was changed by this read-only assessment.
 - All D-01 through D-14 remain pending. AUD-004 remains release-blocking.
+
+## 24. Federation access-surface inventory and route coverage
+
+**Review basis:** read-only inspection of `main` for `backend/domains/federation/router.py`, `backend/domains/patients/router.py`, `backend/domains/federation/models.py`, `backend/domains/federation/schemas.py`, `backend/control_plane/models.py`, and `backend/main.py`. This section records the route and call paths found in those files; it is not a repository-wide static-analysis certificate.
+
+### 24.1 Federation router surface
+
+The federation router is mounted on both the root FastAPI application and the mounted V1 application. Consequently, the same router operations are reachable through the root `/api/...` path and the `/v1/api/...` path. Both aliases must receive identical security dependencies and tests.
+
+| Operation | Route | Current authentication / behavior observed | AUD-004 disposition |
+|---|---|---|---|
+| Register partner | `POST /api/federation/clients` | Tenant-local `RequirePermission("iam:write")`; creates a tenant-local `FederatedClient` and a control-plane `FederatedNode` API key record. | Administrative trust onboarding; keep separate from clinician assertion issuance. Must become dual-controlled trust-registry onboarding before signed assertions are trusted. |
+| List partners | `GET /api/federation/clients` | Tenant-local `RequirePermission("iam:read")`. | Administrative metadata only; ensure secrets/public-key lifecycle metadata are appropriately restricted. |
+| Revoke partner | `DELETE /api/federation/clients/{client_id}` | Tenant-local `RequirePermission("iam:delete")`; disables local client and corresponding node when present. | Preserve immediate node revocation; extend to issuer/key/clinician trust status and ensure failure between the two database commits is reconciled. |
+| Publish local patient pointer | `POST /api/federation/patients/{patient_id}/publish-pointer` | Tenant-local `RequirePermission("patients:write")`; reads a patient in the caller's own tenant and calls `sync_patient_pointer`. | Not a remote patient disclosure path and does not itself require a foreign clinician assertion. Preserve local actor attribution and privacy policy. Its administrative ability to affect global discoverability still needs authorization/audit controls. |
+| Discover remote patient | `GET /api/federation/patients/discover` | `get_federated_node` validates the node API key; no human actor assertion. Pointer lookup and 404 behavior precede human verification. | **Direct AUD-004 protected operation.** Require source-verified challenge-bound actor assertion before selector-match disclosure or patient reads. |
+| Import remote patient | `POST /api/federation/patients/import` | Tenant-local `RequirePermission("patients:write")`; resolves a source pointer from submitted source MRN and reads the source tenant database. No node-key or clinician assertion is verified by the source in this route. | **Direct AUD-004 protected operation.** Must use a distinct import challenge/assertion bound to source pointer, destination branch, action, purpose, scope and transfer ID. |
+
+The root and V1 route aliases are not separate authorization models; they are the same router mounted twice. Tests must exercise both URL prefixes to prevent a security dependency being applied to only one alias.
+
+### 24.2 Patient lifecycle call paths affecting federation index
+
+The inspected patient router calls `sync_patient_pointer` during:
+- Patient registration.
+- Patient update.
+- Explicit pointer publication (through the federation router).
+- Allergy charting or reactivation.
+
+Patient deactivation directly deletes the matching `GlobalPatientPointer` from the control-plane database. Allergy deactivation currently changes the local `PatientAllergy.is_active` state but does not call `sync_patient_pointer`. This can leave the pointer's coarse `has_critical_allergies` metadata stale until another synchronization. Treat this as a pointer-integrity follow-up, not as evidence of unauthorized remote disclosure; source discovery still reads current source policy and allergy rows.
+
+The inspected `sync_patient_pointer` implementation also catches broad exceptions, rolls back, and returns without propagating the failure. This overlaps the separately tracked AUD-002 remediation in PR #19. Do not duplicate or silently alter that remediation in the AUD-004 implementation; reconcile against the final PR #19 merged code before implementing pointer-related changes.
+
+### 24.3 Model and data-boundary observations
+
+- `FederationTransferLog` is stored in each tenant database, references a source-tenant `Patient`, and records node ID/key prefix/branch snapshots where available. It has no verified issuer-scoped clinician subject or assertion decision fields in the inspected `main` model.
+- `FederatedNode` is a control-plane record keyed by branch with a single API-key hash/prefix and active flag. It is not a clinician trust registry.
+- `FederatedClient` is tenant-local and stores a partner API-key hash/prefix. It is not an asymmetric issuer-key registry.
+- `GlobalPatientPointer` is a control-plane locator (branch, source MRN, phone hash, ABHA, metadata), not a clinical record and not proof of requester authorization.
+- The import route performs a direct server-side source-tenant DB read after resolving a pointer. It must not be treated as safe merely because it is not an HTTP call to a remote source API; source-side actor authorization still has to be enforced at the trust boundary.
+- The patient router's local read, update, allergy and registration endpoints are tenant-local clinical operations. They continue to rely on local user/session authorization and privacy policy; this AUD-004 protocol should not be indiscriminately added to ordinary same-tenant reads.
+
+### 24.4 Required route-level validation matrix
+
+Implementation tests must cover at least:
+
+1. Both root and V1 aliases for discovery and import: missing assertion, invalid signature, wrong issuer/branch/node/audience/action/purpose/scope, expired assertion, unknown/revoked key, suspended clinician, stale affiliation, replayed challenge/jti, and unavailable trust/status/audit dependencies all deny without disclosure.
+2. Discovery: same externally observable challenge-creation shape/status for matching and non-matching selectors; no patient pointer lookup or source patient read before actor verification; exact retry does not redisclose a cached patient summary.
+3. Import: source MRN/pointer supplied or modified by caller cannot substitute for a valid import challenge; assertion must bind the exact source pointer and destination branch; discovery assertion cannot authorize import; changed source data requires a new authorized flow.
+4. Trust administration: partner registration/revocation, key rotation, issuer suspension, clinician mapping changes, dual-control approvals and partial failure between tenant/control-plane writes are audited and reconciled.
+5. Local operations: ordinary same-tenant patient CRUD/allergy operations remain governed by local session and privacy controls; no foreign issuer assertion is required for these local-only paths.
+6. Pointer lifecycle: patient opt-out, branch silo, patient deactivation, allergy severity escalation/de-escalation/deactivation, pointer synchronization failure and control-plane outage have deterministic, audited outcomes.
+7. Alias parity: security tests run against both `/api` and `/v1/api` routes, not only one mount.
+
+### 24.5 Coverage conclusion and sequencing constraint
+
+The inspected federation router exposes six operations, of which discovery and import are direct protected patient-data operations. Pointer publication is a local-tenant operation with cross-tenant discoverability impact. Partner administration is a trust lifecycle surface. The patient router also mutates the discovery index as part of local patient/allergy workflows.
+
+The highest-risk gap is not limited to the discovery route: **the import route independently reads source-tenant patient data and currently has no source-verified clinician assertion**. Discovery and import therefore require separate source authorization checks and separate challenge/action bindings.
+
+PR #19 is still an unmerged remediation branch and contains the newer discovery-receipt integrity work. The source-code observations in Sections 23–24 describe the inspected `main` baseline, not the unmerged PR #19 implementation. Before AUD-004 runtime work starts, rebase/review the combined implementation against the final merged PR #19 code and preserve its receipt validation. Do not implement actor authorization against a stale version of the discovery/import flow.
+
+No application code, migrations, configuration, or runtime behavior was changed by this route inventory. D-01 through D-14 remain pending; AUD-004 remains release-blocking.
