@@ -636,7 +636,7 @@ def test_retention_hard_delete_respects_immutable_federation_transfer_logs():
     assert result["candidate_count"] == 1
     assert result["affected_count"] == 0
     assert result["status"] == "SUCCESS"
-    assert db.execute.call_count == 8  # candidate query + all seven dependency checks
+    assert db.execute.call_count == 9  # legal holds + candidate query + seven dependency checks
 
 
 def test_retention_dependency_query_error_aborts_hard_delete():
@@ -655,7 +655,19 @@ def test_retention_dependency_query_error_aborts_hard_delete():
             return _Scalars()
 
     db = MagicMock()
-    db.execute.side_effect = [_Result(), RuntimeError("dependency table unavailable")]
+    class _EmptyScalars:
+        def all(self):
+            return []
+    class _EmptyResult:
+        def scalars(self):
+            return _EmptyScalars()
+
+    # Legal holds, candidate patient, then the first dependency check.
+    db.execute.side_effect = [
+        _EmptyResult(),
+        _Result(),
+        RuntimeError("dependency table unavailable"),
+    ]
 
     with pytest.raises(RuntimeError, match="dependency table unavailable"):
         execute_retention_category(
@@ -667,7 +679,7 @@ def test_retention_dependency_query_error_aborts_hard_delete():
             dry_run=False,
         )
 
-    assert db.execute.call_count == 2
+    assert db.execute.call_count == 3
 
 
 def test_federated_discovery_returns_explicit_partial_status_on_timeout(
@@ -704,7 +716,7 @@ def test_federated_discovery_returns_explicit_partial_status_on_timeout(
     )
 
     assert response.status_code == 503
-    detail = response.json()["detail"]
+    detail = response.json()["message"]
     assert detail["is_partial"] is True
     assert detail["source_count"] == 1
     assert detail["source_failure_count"] == 1
