@@ -26,8 +26,6 @@ def upgrade() -> None:
         sa.Column("selector_hash", sa.String(length=64), nullable=False),
         sa.Column("pointer_snapshot_hash", sa.String(length=64), nullable=False),
         sa.Column("source_pointer_id", sa.Integer(), nullable=False),
-        sa.Column("source_branch_code", sa.String(length=50), nullable=False),
-        sa.Column("source_mrn", sa.String(length=50), nullable=False),
         sa.Column("summary_hash", sa.String(length=64), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column(
