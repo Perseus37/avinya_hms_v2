@@ -1,13 +1,13 @@
 """Record patient-indent issue allocations and append-only returns.
 
 Revision ID: e8a4c1d7f620
-Revises: b7e4c9d2a610
+Revises: e1a3c7b5d902
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "e8a4c1d7f620"
-down_revision = "b7e4c9d2a610"
+down_revision = "e1a3c7b5d902"
 branch_labels = None
 depends_on = None
 
@@ -32,6 +32,8 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["created_by_id"], ["users.id"], ondelete="RESTRICT"),
     )
     op.create_index("ix_patient_indent_alloc_item_batch", ALLOCATIONS, ["indent_item_id", "inventory_batch_id"])
+    op.create_index("ix_patient_indent_alloc_invoice_line_item_id", ALLOCATIONS, ["invoice_line_item_id"])
+    op.create_index("ix_patient_indent_alloc_created_by_id", ALLOCATIONS, ["created_by_id"])
     op.create_table(
         RETURNS,
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -44,6 +46,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["created_by_id"], ["users.id"], ondelete="RESTRICT"),
     )
     op.create_index("ix_patient_indent_return_allocation", RETURNS, ["allocation_id"])
+    op.create_index("ix_patient_indent_return_created_by_id", RETURNS, ["created_by_id"])
 
     if op.get_bind().dialect.name == "postgresql":
         op.execute("""
@@ -83,7 +86,10 @@ def downgrade() -> None:
         for table in (ALLOCATIONS, RETURNS):
             op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_immutable_update")
             op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_immutable_delete")
+    op.drop_index("ix_patient_indent_return_created_by_id", table_name=RETURNS)
     op.drop_index("ix_patient_indent_return_allocation", table_name=RETURNS)
     op.drop_table(RETURNS)
+    op.drop_index("ix_patient_indent_alloc_created_by_id", table_name=ALLOCATIONS)
+    op.drop_index("ix_patient_indent_alloc_invoice_line_item_id", table_name=ALLOCATIONS)
     op.drop_index("ix_patient_indent_alloc_item_batch", table_name=ALLOCATIONS)
     op.drop_table(ALLOCATIONS)

@@ -94,6 +94,8 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "procurement_reconciliation_governance_reports",
     "procurement_purchase_returns",
     "procurement_purchase_return_items",
+    "procurement_patient_indent_issue_allocations",
+    "procurement_patient_indent_return_events",
     "break_glass_uses",
     "break_glass_grants",
     "service_workflow_events",
@@ -214,6 +216,21 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
             )
 
         # 1. PURGE SENSITIVE LOGS, SESSIONS, AND SECURITY TOKENS
+        immutable_patient_indent_tables = {
+            "procurement_patient_indent_issue_allocations",
+            "procurement_patient_indent_return_events",
+        }
+        # Sandbox copies discard this provenance. Temporarily remove its append-only guards.
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_patient_indent_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_patient_indent_tables:
+                if tbl in table_names:
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
+                    session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+
         immutable_finance_tables = {
             "procurement_supplier_payment_allocations",
             "procurement_supplier_payment_request_allocations",
@@ -279,6 +296,34 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                 if tbl in table_names:
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
+
+        # Delete patient return events before allocations because of RESTRICT FKs.
+        for tbl in ("procurement_patient_indent_return_events", "procurement_patient_indent_issue_allocations"):
+            if tbl in table_names:
+                session.execute(text(f'DELETE FROM "{tbl}"'))
+                stats["purged_tables"] += 1
+
+        if session.bind.dialect.name == "postgresql":
+            for tbl in immutable_patient_indent_tables:
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable
+                        BEFORE UPDATE OR DELETE ON "{tbl}"
+                        FOR EACH ROW EXECUTE FUNCTION prevent_patient_indent_ledger_mutation()
+                    """))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in immutable_patient_indent_tables:
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_update
+                        BEFORE UPDATE ON "{tbl}"
+                        BEGIN SELECT RAISE(ABORT, 'Patient indent provenance is immutable'); END
+                    """))
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_delete
+                        BEFORE DELETE ON "{tbl}"
+                        BEGIN SELECT RAISE(ABORT, 'Patient indent provenance is immutable'); END
+                    """))
 
         # Vendor return audit records are purge-only in sandbox clones; delete children first.
         for tbl in ("procurement_purchase_return_items", "procurement_purchase_returns"):

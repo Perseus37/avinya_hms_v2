@@ -275,6 +275,8 @@ class PatientIndentIssueAllocation(Base):
     __table_args__ = (
         CheckConstraint("issued_quantity > 0", name="ck_patient_indent_alloc_issued_pos"),
         Index("ix_patient_indent_alloc_item_batch", "indent_item_id", "inventory_batch_id"),
+        Index("ix_patient_indent_alloc_invoice_line_item_id", "invoice_line_item_id"),
+        Index("ix_patient_indent_alloc_created_by_id", "created_by_id"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     indent_item_id: Mapped[int] = mapped_column(ForeignKey("procurement_indent_items.id", ondelete="RESTRICT"), nullable=False)
@@ -294,6 +296,7 @@ class PatientIndentReturnEvent(Base):
     __table_args__ = (
         CheckConstraint("return_quantity > 0", name="ck_patient_indent_return_qty_pos"),
         Index("ix_patient_indent_return_allocation", "allocation_id"),
+        Index("ix_patient_indent_return_created_by_id", "created_by_id"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     allocation_id: Mapped[int] = mapped_column(ForeignKey("procurement_patient_indent_issue_allocations.id", ondelete="RESTRICT"), nullable=False)
