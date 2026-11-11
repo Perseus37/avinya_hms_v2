@@ -7,7 +7,7 @@ def test_federated_import_rejects_tampered_discovery_payload(
     """Federated import must not accept edited demographics from the caller."""
     sun_client = client.post(
         "/v1/api/federation/clients",
-        headers=sunrise_admin_headers,
+        headers=superuser_headers,
         json={"branch_code": "SUN-BLR-01", "name": "Sunrise Import Security"},
     ).json()
 
@@ -170,7 +170,7 @@ def test_federated_import_respects_source_allergy_sharing_setting(
 
     partner = client.post(
         "/v1/api/federation/clients",
-        headers=sunrise_admin_headers,
+        headers=superuser_headers,
         json={"branch_code": "SUN-BLR-01", "name": "Allergy Privacy Import Partner"},
     )
     assert partner.status_code == 201, partner.text
