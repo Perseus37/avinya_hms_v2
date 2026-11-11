@@ -41,8 +41,8 @@ def test_federated_import_rejects_tampered_discovery_payload(
     assert "modified" in imported.json()["message"].lower()
 
 
-def test_federated_import_requires_indexed_source_mrn(client, superuser_headers):
-    """The import endpoint must not become a generic patient-creation API."""
+def test_federated_import_rejects_unverified_payload_without_receipt(client, superuser_headers):
+    """An unverified body cannot probe the index or become a generic patient-creation API."""
     payload = {
         "source_mrn": "MRN-NOT-IN-DISCOVERY",
         "full_name": "Fabricated Patient",
@@ -63,8 +63,8 @@ def test_federated_import_requires_indexed_source_mrn(client, superuser_headers)
         headers=superuser_headers,
         json=payload,
     )
-    assert response.status_code == 404
-    assert "not currently indexed" in response.json()["message"]
+    assert response.status_code == 409
+    assert "discovery receipt" in response.json()["message"].lower()
 
 
 def test_federation_does_not_discover_patients_through_missing_phone_placeholder(
