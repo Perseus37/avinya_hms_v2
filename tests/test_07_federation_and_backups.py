@@ -548,8 +548,6 @@ def test_09_federation_import_enforces_corporate_group_policy(
         )
         assert imported.status_code == 403
         assert "cross-group" in imported.json()["message"].lower()
-        assert imported.status_code == 403
-        assert "cross-group" in imported.json()["message"].lower()
 
         # Matching explicit group IDs permit the same import even though branch
         # codes have different prefixes (HQ vs APOLLO).
