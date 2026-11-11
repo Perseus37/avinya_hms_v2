@@ -205,7 +205,7 @@ class IndentIssueItem(BaseModel):
     issue_quantity: int = Field(gt=0)
 
 class IndentIssueRequest(BaseModel):
-    items: List[IndentIssueItem]
+    items: List[IndentIssueItem] = Field(min_length=1, max_length=100)
 
 class IndentReturnItem(BaseModel):
     indent_item_id: int
@@ -213,7 +213,7 @@ class IndentReturnItem(BaseModel):
     return_quantity: int = Field(gt=0)
 
 class IndentReturnRequest(BaseModel):
-    items: List[IndentReturnItem]
+    items: List[IndentReturnItem] = Field(min_length=1, max_length=100)
 
 # --- Purchase Returns / Debit Notes ---
 class PurchaseReturnItemCreate(BaseModel):

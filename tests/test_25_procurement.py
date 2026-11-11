@@ -1517,3 +1517,13 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
             grn_item_id=first_grn_item_id
         ).with_entities(__import__("sqlalchemy").func.sum(PurchaseReturnItem.return_quantity)).scalar() == 2
 
+
+
+def test_patient_indent_issue_and_return_contract_rejects_empty_item_lists():
+    from pydantic import ValidationError
+    from backend.domains.procurement.schemas import IndentIssueRequest, IndentReturnRequest
+
+    with pytest.raises(ValidationError):
+        IndentIssueRequest.model_validate({"items": []})
+    with pytest.raises(ValidationError):
+        IndentReturnRequest.model_validate({"items": []})
