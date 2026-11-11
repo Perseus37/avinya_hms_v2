@@ -172,6 +172,7 @@ class FederatedDiscoveryReceipt(ControlBase):
     source_pointer_id: Mapped[int] = mapped_column(
         ForeignKey("global_patient_pointers.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
     summary_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
