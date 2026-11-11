@@ -387,18 +387,22 @@ def discover_and_aggregate_patient_across_branches(
     if not pointers:
         raise HTTPException(status_code=404, detail="No records found for this patient in the Central Discovery Index.")
 
+    branch_mrns = [(pointer.branch_code, pointer.source_mrn) for pointer in pointers]
+    if len({branch for branch, _ in branch_mrns}) != len(branch_mrns):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The discovery index contains multiple patient records in one branch for this identifier.",
+        )
+
     # Phone numbers are not unique patient identifiers. Permit a multi-branch
     # phone lookup only when every indexed record carries the same non-empty
-    # ABHA identity and no branch has multiple MRNs for that identity.
+    # ABHA identity; otherwise household members could be merged.
     if not abha_number and len(pointers) > 1:
         pointer_abhas = {pointer.abha_number for pointer in pointers}
-        branch_mrns = [(pointer.branch_code, pointer.source_mrn) for pointer in pointers]
         if (
             None in pointer_abhas
             or "" in pointer_abhas
             or len(pointer_abhas) != 1
-            or len(branch_mrns) != len(set(branch_mrns))
-            or len({branch for branch, _ in branch_mrns}) != len(branch_mrns)
         ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
