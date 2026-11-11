@@ -152,6 +152,11 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
     assert merged.status_code == 200
     body = merged.json()
     assert body["address"] == "Updated Address in Bengaluru (Hospital B)"
+    assert body["source_count"] >= 2
+    assert body["source_success_count"] >= 2
+    assert body["source_failure_count"] == 0
+    assert body["is_partial"] is False
+    assert body["failed_source_branches"] == []
     allergy_codes = {a["allergy_code"] for a in body["active_allergies"]}
     assert allergy_codes == {"ALG_PEN", "ALG_SULFA"}
     for alg in body["active_allergies"]:
@@ -663,3 +668,85 @@ def test_retention_dependency_query_error_aborts_hard_delete():
         )
 
     assert db.execute.call_count == 2
+
+
+def test_federated_discovery_returns_explicit_partial_status_on_timeout(
+    client, apollo_admin_headers, sunrise_admin_headers, monkeypatch
+):
+    """AUD-003: timed-out source workers produce an explicit incomplete response."""
+    import concurrent.futures
+
+    sun_client = client.post(
+        "/v1/api/federation/clients",
+        headers=sunrise_admin_headers,
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Timeout Node"},
+    ).json()
+    patient = client.post(
+        "/v1/api/patients",
+        headers=apollo_admin_headers,
+        json={
+            "full_name": "Discovery Timeout Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+            "phone_number": "9888811111",
+            "abha_number": "ABHA-DISCOVERY-TIMEOUT-01",
+        },
+    )
+    assert patient.status_code == 201, patient.text
+
+    def report_all_pending(futures, **kwargs):
+        return set(), set(futures)
+
+    monkeypatch.setattr(concurrent.futures, "wait", report_all_pending)
+    response = client.get(
+        "/v1/api/federation/patients/discover?abha_number=ABHA-DISCOVERY-TIMEOUT-01",
+        headers={"X-Federation-API-Key": sun_client["raw_api_key"]},
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["is_partial"] is True
+    assert detail["source_count"] == 1
+    assert detail["source_failure_count"] == 1
+    assert detail["failed_source_branches"]
+
+
+def test_federated_discovery_returns_explicit_partial_status_on_worker_error(
+    client, apollo_admin_headers, sunrise_admin_headers, monkeypatch
+):
+    """AUD-003: source database failures are surfaced as incomplete discovery."""
+    from backend.core.database import tenant_engine_pool
+
+    sun_client = client.post(
+        "/v1/api/federation/clients",
+        headers=sunrise_admin_headers,
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Failure Node"},
+    ).json()
+    patient = client.post(
+        "/v1/api/patients",
+        headers=apollo_admin_headers,
+        json={
+            "full_name": "Discovery Failure Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "MALE",
+            "phone_number": "9888822222",
+            "abha_number": "ABHA-DISCOVERY-FAILURE-01",
+        },
+    )
+    assert patient.status_code == 201, patient.text
+
+    def fail_source(_db_name):
+        raise RuntimeError("simulated source database outage")
+
+    monkeypatch.setattr(tenant_engine_pool, "get_engine", fail_source)
+    response = client.get(
+        "/v1/api/federation/patients/discover?abha_number=ABHA-DISCOVERY-FAILURE-01",
+        headers={"X-Federation-API-Key": sun_client["raw_api_key"]},
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["is_partial"] is True
+    assert detail["source_count"] == 1
+    assert detail["source_failure_count"] == 1
+    assert detail["failed_source_branches"]
