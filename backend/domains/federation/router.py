@@ -709,6 +709,22 @@ def import_federated_patient_locally(
             detail="A demographics-authorized discovery result is required for patient import.",
         )
 
+    # Preserve the anti-generic-import boundary even when no receipt is supplied:
+    # an MRN absent from the discovery index is still a not-found source record.
+    source_pointers = control_db.execute(
+        select(GlobalPatientPointer).where(
+            GlobalPatientPointer.source_mrn == payload.source_mrn,
+            GlobalPatientPointer.branch_code != tenant.branch_code,
+        )
+    ).scalars().all()
+    if not source_pointers:
+        raise HTTPException(status_code=404, detail="Federated source patient is not currently indexed.")
+    if len(source_pointers) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Federated source MRN maps to multiple branches; rediscover the patient before import.",
+        )
+
     # Completeness metadata in the request body is caller-controlled. Import is
     # permitted only with a short-lived receipt minted by this server after a
     # complete discovery, bound to this node, destination branch and exact result.
@@ -784,23 +800,7 @@ def import_federated_patient_locally(
             detail="Partial federated discovery cannot be imported; retry discovery when all sources are available.",
         )
 
-    # The import is valid only when the supplied source MRN is currently indexed to
-    # exactly one other active branch. This prevents this authenticated endpoint from
-    # becoming a generic patient-creation endpoint with fabricated federation provenance.
-    source_pointers = control_db.execute(
-        select(GlobalPatientPointer).where(
-            GlobalPatientPointer.source_mrn == payload.source_mrn,
-            GlobalPatientPointer.branch_code != tenant.branch_code,
-        )
-    ).scalars().all()
-    if not source_pointers:
-        raise HTTPException(status_code=404, detail="Federated source patient is not currently indexed.")
-    if len(source_pointers) > 1:
-        raise HTTPException(
-            status_code=409,
-            detail="Federated source MRN maps to multiple branches; rediscover the patient before import.",
-        )
-
+    # The source MRN was confirmed against the index before receipt validation.
     source_pointer = source_pointers[0]
     if (
         source_pointer.id != receipt.source_pointer_id
