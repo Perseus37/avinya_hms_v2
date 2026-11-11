@@ -585,3 +585,55 @@ No node-only fallback, stale-positive cache fallback, permissive circuit-breaker
 - No dependency outage or circuit-breaker state enables node-only, stale-positive, or emergency fallback behavior.
 
 **Review outcome:** these controls must be reflected in the threat model, trust-registry design, operational runbooks, and acceptance-test traceability. They do not close D-01 through D-14. The design remains proposed, AUD-004 remains release-blocking, and runtime implementation remains gated on explicit approvals.
+
+## 23. Main-branch implementation gap assessment (read-only review)
+
+**Review basis:** read-only inspection of the repository `main` branch at the time this section was prepared. Files inspected: `backend/domains/federation/router.py`, `backend/core/dependencies.py`, `backend/domains/identity/models.py`, `backend/control_plane/models.py`, `backend/domains/federation/schemas.py`, and `docs/FEDERATION_SECURITY.md`.
+
+This is a source-code gap assessment, not a penetration test, runtime test, or claim that every possible call path has been exhaustively searched. The findings below describe the inspected implementation and must be revalidated against the exact merge base before any implementation PR is opened.
+
+### 23.1 Confirmed gaps
+
+| ID | Severity | Inspected implementation fact | Required remediation / evidence |
+|---|---|---|---|
+| GAP-01 | **High — AUD-004 core** | `get_federated_node` authenticates an active `FederatedNode` using `X-Federation-API-Key`. The discovery route depends on this node dependency and has no signed clinician actor assertion dependency. | Add source-side verification of a challenge-bound assertion and independent clinician mapping/authorization before any patient-existence signal or protected summary. Negative tests must prove node key alone is insufficient. |
+| GAP-02 | **High — AUD-004 core** | Discovery accepts a free-form `purpose: str` query parameter (length-limited only). The route explicitly blocks a list of emergency strings, but other values remain accepted and are passed into source transfer logging. | Replace free-form purpose with a versioned allow-listed enum and source policy mapping. Unknown values must be rejected; no string-based emergency deny-list as the primary authorization control. |
+| GAP-03 | **High — patient enumeration** | The discovery route queries central pointers before any human actor verification and returns a distinct 404 when no pointer exists. When pointers exist, it proceeds to source reads and may return a demographic/allergy summary. | Do not return match/no-match information until actor verification and source authorization. Challenge creation must have indistinguishable external behavior for matching and non-matching selectors; add timing/response-shape and enumeration tests. |
+| GAP-04 | **High — import actor provenance** | The local import route authenticates `current_user` with `RequirePermission("patients:write")`, but the source tenant audit writes `FederationTransferLog` with destination branch and `actor_user_id=None` in the source privacy decision. A destination-local integer user ID cannot be attributed as a source-local user. | Decide D-11 scope. If local import is covered, send a source-verifiable actor assertion for the authenticated destination user and record issuer-scoped subject separately from local user foreign keys. If excluded, document and approve the scope exception. |
+| GAP-05 | **High — trust lifecycle** | The inspected `FederatedNode` control-plane model stores one API-key hash/prefix and an active flag. The inspected models do not provide issuer signing keys, issuer trust versions, key status/rotation history, or an external clinician subject mapping. | Implement an independently reviewed trust registry and key lifecycle before actor assertions can be accepted. Partner onboarding and revocation must be dual-controlled and audited. |
+| GAP-06 | **Medium — dependency degradation** | `RateLimiter._check` fails open for non-authentication scopes when Redis is absent or errors. Federation discovery uses scope `fed_discover`, which does not match the fail-closed authentication prefixes. | Decide and implement an explicit policy for federation abuse-control dependency outages. At minimum, discovery must not silently lose its configured abuse limit; use a bounded local emergency limiter only if its distributed guarantees are documented, otherwise return 503. This is defense-in-depth, not a substitute for actor authorization. |
+| GAP-07 | **Medium — audit attribution** | Discovery source transfer logs snapshot node identity but do not contain a verified clinician identity. The source privacy decision is evaluated with `actor_user_id=None`. | Extend the source audit schema with issuer-scoped subject, actor class/assurance, assertion/key identifiers (fingerprinted/minimized), source authorization decision, and protocol version. Never put a foreign tenant's integer user ID into a local-user FK. |
+
+### 23.2 Existing controls to preserve
+
+The inspected implementation also contains controls that must not be weakened during AUD-004 work:
+
+- `get_federated_node` rejects missing, invalid, or revoked node keys with 401 and updates `last_used_at`.
+- `get_current_user` validates tenant and branch claims, active local user status, and a live non-revoked `AuthSession`.
+- Remote emergency discovery purposes are explicitly denied; `EMERGENCY_ALLERGIES_ONLY` sources do not return demographic discovery data.
+- Source discovery re-reads patient data and evaluates source privacy/data-use policy with the source tenant's patient identity.
+- Import re-reads source patient/policy, compares the submitted summary with current source demographics, copies clinical data from the source database, and writes a source-side request log before destination commit.
+- Import uses the authenticated local destination user for destination-side patient/allergy creation audit fields.
+- Control-plane tenant registry resolution is used to locate source databases; do not replace this with assertion- or request-supplied schema routing.
+
+These controls are useful but do not satisfy AUD-004 because they do not independently verify the human clinician at the source.
+
+### 23.3 Implementation order derived from the gaps
+
+1. Freeze D-01 through D-14 and the protocol schema. Resolve D-11 explicitly before deciding whether local import is in scope.
+2. Design and migrate the source trust registry, branch signing-key lifecycle, issuer-scoped clinician identity mapping, and source audit fields. Include dual-control administration and revocation.
+3. Implement source-issued challenge persistence and atomic jti/challenge consumption. Discovery challenges must not disclose selector match state.
+4. Implement destination assertion issuance behind the authenticated local user/session dependency. Do not accept caller-supplied actor identity fields.
+5. Add source assertion verification and source-side clinician authorization as dependencies that run before pointer match disclosure or source patient reads.
+6. Convert purpose to a versioned enum and define per-action/per-scope policy. Keep emergency federation denied.
+7. Implement a separate import assertion/challenge path if D-11 includes local import; do not reuse discovery authorization.
+8. Make federation abuse-control behavior explicit during Redis outage and add monitoring/alerts.
+9. Add negative, concurrency, revocation, enumeration, tenant-collision, audit-failure, and outage tests. Require independent security review before pilot.
+
+### 23.4 Review disposition
+
+- GAP-01 through GAP-05 are direct prerequisites for closing AUD-004.
+- GAP-06 is a separate defense-in-depth issue discovered during this review and should be tracked with an owner rather than silently folded into the actor assertion implementation.
+- GAP-07 is required to make human attribution meaningful and auditable.
+- No code, schema, migration, or runtime behavior was changed by this read-only assessment.
+- All D-01 through D-14 remain pending. AUD-004 remains release-blocking.
