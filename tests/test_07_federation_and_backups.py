@@ -124,7 +124,7 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
 
     # A changed source-index snapshot invalidates the receipt and requires
     # rediscovery rather than allowing import against stale discovery state.
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     from backend.control_plane.models import GlobalPatientPointer
 
     ControlSession = multi_tenant_env["control_session_factory"]
@@ -137,7 +137,7 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
             )
             .one()
         )
-        source_pointer.last_clinical_update_at = datetime.now(timezone.utc)
+        source_pointer.last_clinical_update_at = datetime.now(timezone.utc) + timedelta(minutes=1)
         control_db.commit()
 
     stale_receipt = client.post(
