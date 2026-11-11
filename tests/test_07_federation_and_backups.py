@@ -132,7 +132,7 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
 
     # A changed source-index snapshot invalidates the receipt and requires
     # rediscovery rather than allowing import against stale discovery state.
-    from datetime import datetime, timedelta, timezone
+    from datetime import timedelta
     from backend.control_plane.models import GlobalPatientPointer
 
     ControlSession = multi_tenant_env["control_session_factory"]
@@ -145,6 +145,7 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
             )
             .one()
         )
+        previous_pointer_update = source_pointer.last_clinical_update_at
         source_pointer.last_clinical_update_at = datetime.now(timezone.utc) + timedelta(minutes=1)
         control_db.commit()
 
@@ -155,6 +156,20 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
     )
     assert stale_receipt.status_code == 409
     assert "index changed" in stale_receipt.json()["message"].lower()
+
+    # Restore the source ordering so the subsequent A -> B -> C assertion
+    # verifies that the updated B record is selected as the latest demographic.
+    with ControlSession() as control_db:
+        source_pointer = (
+            control_db.query(GlobalPatientPointer)
+            .filter(
+                GlobalPatientPointer.branch_code == "APOLLO-HYD-01",
+                GlobalPatientPointer.source_mrn == p_apollo["mrn"],
+            )
+            .one()
+        )
+        source_pointer.last_clinical_update_at = previous_pointer_update
+        control_db.commit()
 
     disc_from_a = client.get(
         "/v1/api/federation/patients/discover?phone_number=9777788888&purpose=CONTINUITY_OF_CARE",
