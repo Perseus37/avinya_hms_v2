@@ -499,3 +499,89 @@ Operational tooling must expose counts and state age, not raw assertions, challe
 - Audit database outage at each required persistence boundary; no protected disclosure or false completion state may result.
 
 **Implementation gate:** Sections 21.1–21.6 must be incorporated into the frozen protocol schema, threat model, and acceptance-test traceability before runtime implementation. These additions do not close any approval decision in Section 20.
+
+## 22. Adversarial review: trust compromise, revocation, isolation, and dependency outages
+
+This section records additional threat-model requirements identified during adversarial review. These are proposed controls; they do not constitute evidence that the current application implements them.
+
+### 22.1 Issuer or signing-key compromise
+
+Treat a trusted issuer or its signing key as a security boundary whose compromise can produce apparently valid clinician assertions. Signature validity alone is not sufficient.
+
+Required controls:
+- Each issuer/branch has a distinct signing identity and key. Compromise of one branch key must not permit assertions for another branch, issuer, audience, or destination.
+- The source trust record binds issuer ID, organization, branch, registered node relationship, allowed audiences, allowed actions, key ID, algorithm, key validity, and status. Reject any mismatch even when the signature is valid.
+- Issuer trust changes, key additions, key replacement, and emergency revocation require dual control, independent approvers, immutable audit, and out-of-band partner verification.
+- A key marked compromised is denied immediately. Do not preserve an overlap/grace period for a compromised key. Planned rotation overlap is allowed only for explicitly active, non-compromised keys and a bounded window.
+- Never automatically trust a new key merely because it appears in a token, an issuer URL, a JWKS response, or a request header. If a future JWKS integration is approved, pin the issuer endpoint and TLS identity out-of-band, validate key-set changes under a defined trust policy, and fail closed on unexpected issuer/key changes.
+- Provide a tested issuer-wide and branch-key-specific kill switch. It must invalidate cached trust decisions within a documented maximum propagation time and produce an alert.
+- Record the trust-registry version and key-status version used for every authorization decision so investigations can reconstruct the decision.
+
+### 22.2 Clinician suspension, termination, and credential revocation
+
+A signed assertion is a time-bounded statement, not a live employment or license check. A valid signature must not override a more recent suspension, termination, loss of affiliation, or credential revocation.
+
+Required controls:
+- Define distinct status dimensions: account active, workforce affiliation active, clinician class active, professional credential/license status (where required), issuer active, and signing key active. Do not collapse these into one boolean.
+- For each action class, define which status dimensions are mandatory and their maximum acceptable age. High-risk access requires an online or equivalently strongly consistent status decision; a stale cache must not be treated as current.
+- Emergency suspension/revocation must have a documented propagation target, monitoring, escalation, and proof test. If the target cannot be met, deny the affected protected operation.
+- A status service timeout, stale response beyond policy, unknown status, conflicting status, or inability to establish current affiliation means deny. Do not fall back to the assertion's historical role/affiliation claims.
+- License expiry and license revocation are different states. A locally stored expiry date cannot prove the external registry has not revoked a credential early.
+- Reassignment between branches must revoke the old branch relationship before granting a new one, or use a controlled transition that never creates an interval in which both branches can assert unauthorized access.
+
+### 22.3 Tenant and branch isolation invariants
+
+The protocol must preserve the repository's schema-per-tenant and branch isolation model. A signed claim is input to validation, not a database routing instruction.
+
+Required invariants:
+- Resolve tenant schema, source branch, destination branch, and node identity from authenticated server-side context and trusted control-plane mappings. Never select a tenant schema from an untrusted assertion claim or request-body field.
+- Validate that the authenticated node, registered issuer, issuer branch, destination branch, challenge, source pointer, and active federation relationship form one permitted relationship. Validate the relationship on every protected operation, not only when the challenge is created.
+- Every database query and transaction must execute under the resolved tenant/branch context. No cross-tenant fallback query may search by local integer user ID, MRN, or clinician ID.
+- External clinician subjects must be namespaced by exact issuer identity. No joins by email, display name, integer user ID, or non-unique registration number.
+- Composite uniqueness and foreign keys must include the tenant/issuer/branch dimensions needed to prevent collisions. Tests must create deliberately colliding IDs and MRNs across tenants and branches.
+- A destination change, branch transfer, node revocation, source-pointer reassignment, or trust relationship change between challenge issuance and execution invalidates the challenge.
+- Source-side authorization must use the source's resolved patient/resource identity and policy context. Destination-provided patient identifiers or actor role claims must not select or broaden source authorization context.
+
+### 22.4 Dependency outage and degraded-mode policy
+
+The protocol is security-critical. Availability pressure must never silently downgrade authentication or authorization.
+
+| Dependency unavailable or uncertain | Required behavior |
+|---|---|
+| Issuer trust registry / key status | Deny protected operation; no arbitrary key fetch or stale unknown-key acceptance |
+| Clinician affiliation / suspension status | Deny when status freshness exceeds the approved action-specific limit |
+| Source authorization policy | Deny; do not substitute destination RBAC |
+| Source privacy/data-use policy | Deny; do not infer consent or permitted use |
+| Challenge / replay persistence | Deny; do not use process-local memory as the authoritative replay store |
+| Required source audit store | Deny before protected disclosure or transfer authorization |
+| Destination acknowledgement/status | Keep transfer indeterminate; do not claim committed and do not blindly resend payload |
+| Clock synchronization outside approved skew | Deny time-bound assertion/challenge operations |
+| Revocation event delivery | Use bounded online status checks; alert on lag and deny affected high-risk operations |
+
+No node-only fallback, stale-positive cache fallback, permissive circuit-breaker mode, or emergency-purpose bypass is permitted. Any future availability exception requires a separate threat model, explicit owner approval, narrow scope, and independent review.
+
+### 22.5 Cache and consistency rules
+
+- Cache only positive trust/status data with an explicit, action-specific maximum age. Denials and revocations must invalidate positive cache entries.
+- A cache entry must be keyed by issuer, branch, subject, key ID, trust-registry version, status version, and action class; never key only by local integer user ID or issuer display name.
+- Define propagation bounds for revocation and trust changes. If cache invalidation cannot be confirmed within the bound, the source must perform an authoritative lookup or deny.
+- Do not cache a final patient-specific authorization decision across different resources, purposes, destinations, or scopes.
+- Document transaction isolation and locking for challenge/jti claim, pointer validation, and transfer idempotency. A `SELECT` followed by an unprotected `INSERT` is not an atomic replay defense.
+- Trust-registry and revocation updates must be monotonic with respect to compromise: a compromised/revoked key or issuer cannot be reactivated by a delayed stale replication event without a new dual-controlled approval and audit event.
+
+### 22.6 Additional adversarial acceptance tests
+
+- A valid signature from a key registered to the wrong branch, issuer, node, audience, or action is rejected.
+- Compromised key revocation invalidates assertions immediately within the approved bound; planned rotation overlap does not apply to compromised keys.
+- Delayed trust-registry replication cannot reactivate a revoked issuer/key or overwrite a newer status version.
+- Issuer compromise/kill switch blocks new protected operations and generates an observable security alert.
+- Clinician suspension, termination, branch transfer, and license revocation are enforced within the approved action-specific SLA.
+- Status service outage, stale cache, conflicting status, and unavailable policy engine all fail closed.
+- Cross-tenant and cross-branch colliding integer IDs, MRNs, clinician IDs, and external subjects cannot cause misrouting or identity substitution.
+- A signed assertion with a forged tenant/schema/branch claim cannot influence database routing.
+- Node revocation or partner relationship removal after challenge creation invalidates execution.
+- Concurrent trust/key revocation and protected-operation execution have a defined serialization outcome; no operation may proceed using a trust state older than the approved freshness bound.
+- Cache invalidation failure, clock drift, audit-store outage, and replay-store outage produce denial and operational alerts.
+- No dependency outage or circuit-breaker state enables node-only, stale-positive, or emergency fallback behavior.
+
+**Review outcome:** these controls must be reflected in the threat model, trust-registry design, operational runbooks, and acceptance-test traceability. They do not close D-01 through D-14. The design remains proposed, AUD-004 remains release-blocking, and runtime implementation remains gated on explicit approvals.
