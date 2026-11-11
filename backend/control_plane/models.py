@@ -146,6 +146,40 @@ class GlobalPatientPointer(ControlBase):
     )
 
 
+class FederatedDiscoveryReceipt(ControlBase):
+    """Short-lived, server-side proof that a complete federation discovery was issued."""
+
+    __tablename__ = "federated_discovery_receipts"
+    __table_args__ = (
+        Index("ix_federated_discovery_receipts_expiry", "expires_at"),
+        Index(
+            "ix_federated_discovery_receipts_destination",
+            "destination_branch_code",
+            "expires_at",
+        ),
+    )
+
+    # Store only SHA-256(token), never the bearer token returned to the caller.
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    calling_node_id: Mapped[int] = mapped_column(
+        ForeignKey("federated_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    destination_branch_code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    selector_type: Mapped[str] = mapped_column(String(8), nullable=False)
+    selector_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    pointer_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_pointer_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_branch_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_mrn: Mapped[str] = mapped_column(String(50), nullable=False)
+    summary_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ControlPlaneAuditLog(ControlBase):
     """Immutable audit trail for vendor-level administrative operations."""
     __tablename__ = "control_plane_audit_logs"
