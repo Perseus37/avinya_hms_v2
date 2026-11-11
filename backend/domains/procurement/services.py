@@ -415,6 +415,11 @@ def return_patient_indent_stock(db: Session, indent: StoreIndent, return_request
             Invoice.encounter_id == indent.encounter_id,
             Invoice.status == InvoiceStatusEnum.DRAFT
         ).with_for_update()).scalar_one_or_none()
+        if invoice is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Patient invoice is no longer in draft state; use the credit-note/refund workflow before returning stock.",
+            )
 
     for return_item in return_request:
         indent_item = db.execute(select(StoreIndentItem).where(
@@ -444,7 +449,9 @@ def return_patient_indent_stock(db: Session, indent: StoreIndent, return_request
             raise HTTPException(status_code=409, detail="Return quantity exceeds the indent item's remaining issued quantity.")
 
         matching_line = None
-        if invoice and allocation.invoice_line_item_id is not None:
+        if invoice:
+            if allocation.invoice_line_item_id is None:
+                raise HTTPException(status_code=409, detail="The original invoice line is unavailable for this return.")
             matching_line = db.execute(select(InvoiceLineItem).where(
                 InvoiceLineItem.id == allocation.invoice_line_item_id,
                 InvoiceLineItem.invoice_id == invoice.id,

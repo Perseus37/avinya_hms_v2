@@ -269,6 +269,33 @@ def test_patient_indent_returns_require_original_allocation_and_credit_exact_bat
         assert (line_a.quantity, line_a.unit_price_paise) == (6, 1000)
         assert (line_b.quantity, line_b.unit_price_paise) == (2, 1500)
 
+        # A finalized/paid invoice requires a credit-note workflow. Returning
+        # stock must not silently bypass the patient-side financial reversal.
+        from backend.domains.billing.models import Invoice, InvoiceStatusEnum
+        invoice = db.query(Invoice).filter_by(encounter_id=encounter["id"]).one()
+        invoice.status = InvoiceStatusEnum.PAID
+        invoice.amount_paid_paise = (
+            invoice.total_amount_paise + invoice.tax_amount_paise - invoice.discount_amount_paise
+        )
+        db.commit()
+
+    rejected_finalized_return = client.post(
+        f"/v1/api/procurement/indents/patient/{indent['id']}/return",
+        headers=superuser_headers,
+        json={"items": [{
+            "indent_item_id": item_id,
+            "allocation_id": allocation_a["allocation_id"],
+            "return_quantity": 1,
+        }]},
+    )
+    assert rejected_finalized_return.status_code == 409, rejected_finalized_return.text
+
+    with DefaultSession() as db:
+        assert db.get(InventoryBatch, batch_a["id"]).stock_quantity == 44
+        assert db.query(PatientIndentReturnEvent).filter_by(
+            allocation_id=allocation_a["allocation_id"]
+        ).count() == 0
+
 def test_supplier_payment_request_contract_requires_exact_invoice_allocation_total():
     import pytest
     from pydantic import ValidationError
