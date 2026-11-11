@@ -40,6 +40,8 @@ class FederatedAllergySummary(BaseModel):
 
 
 class FederatedPatientSummaryResponse(BaseModel):
+    # Opaque short-lived server-side proof; never a client-asserted completeness flag.
+    discovery_receipt: Optional[str] = None
     # Additive source-completeness metadata: callers can distinguish a complete
     # discovery from a response assembled while one or more branches were unavailable.
     source_count: int = 0
