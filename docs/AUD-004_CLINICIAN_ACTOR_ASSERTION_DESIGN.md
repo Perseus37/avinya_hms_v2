@@ -251,3 +251,135 @@ For import, create a separate challenge bound to the exact source pointer, desti
 - Current local import behavior must be assessed separately: a local authenticated user can initiate import, but the source cannot currently verify that human actor through the remote node key. If AUD-004 is intended to cover all patient-data access, local import needs a source-verifiable actor assertion too; otherwise document and approve a narrower scope explicitly.
 
 **Recommended decision:** approve the per-hospital backend issuer model for a first implementation only after identity-governance owners accept the hospital as the issuer of workforce identity claims, and after the source-side authorization matrix, key-provisioning procedure, and revocation SLA are specified. Keep any external professional-license verification as a separately declared assurance level; never imply it from local profile fields alone.
+
+
+## 16. Implementation contract (proposed; not yet approved)
+
+This section converts the design into an implementation boundary. It is not permission to start runtime work. The API paths and storage names below are logical contracts; final route names and physical schema names must be settled during the implementation plan.
+
+### 16.1 Actors and authority
+
+| Principal | May assert | Must not decide |
+|---|---|---|
+| Destination human user | Nothing directly; authenticates to the destination tenant | Source access or source privacy policy |
+| Destination Avinya issuer | Authenticated subject, local affiliation/status, authentication context, locally permitted action | Source patient authorization |
+| Destination federation node | Its registered node identity and transport channel | Human identity or clinician entitlement |
+| Source trust registry | Which issuers/keys are trusted and their allowed relationships | Whether a specific patient disclosure is clinically justified |
+| Source authorization service | Whether this verified actor may perform this exact action on this resource for this purpose/scope | Whether the destination's signature is valid |
+| Source privacy/data-use policy | Whether the requested use/disclosure is permitted by source policy | Human identity or clinical role |
+
+No component may collapse these independent decisions into a single authorization flag without retaining the decision provenance.
+
+### 16.2 Logical protocol operations
+
+The first implementation must expose equivalent operations for:
+
+1. **Create challenge:** authenticated node submits action, purpose, destination, requested scope, and either a selector (discovery) or exact source pointer (import). Source normalizes and binds the request. Response contains only an opaque challenge ID, unpredictable challenge value, expiry, and protocol version; it must not disclose patient existence.
+2. **Issue actor assertion:** destination tenant backend accepts the challenge in an authenticated clinician session, verifies local user/session/affiliation/eligibility, and signs a one-operation assertion. Private signing material never leaves the issuer.
+3. **Execute protected operation:** node submits the assertion and challenge reference. Source independently verifies node, issuer, signature, claims, challenge state, actor status/mapping, authorization, privacy policy, and audit requirements before returning any protected result or accepting an import.
+4. **Record outcome:** source records whether the operation was requested, denied, authorized, disclosed, import attempted, or import completed. Completion must be recorded only when the corresponding durable operation actually completes.
+
+The source must derive node ID, issuer trust, destination relationship, and source resource from trusted records. It must not accept these as authoritative merely because they appear in request JSON or token claims.
+
+### 16.3 Challenge state machine
+
+The challenge state machine must be explicit and persisted consistently:
+
+| State | Meaning | Allowed transition |
+|---|---|---|
+| ISSUED | Source created a bound, unexpired challenge | CLAIMED, EXPIRED, REVOKED |
+| CLAIMED | A valid assertion/request atomically claimed it | AUTHORIZED, DENIED |
+| AUTHORIZED | Source policy and privacy checks passed and audit was durably recorded | COMPLETED, FAILED |
+| COMPLETED | Protected disclosure/import operation completed | Terminal |
+| DENIED | Verification or policy denied the operation | Terminal |
+| FAILED | An authorized operation failed before completion | Terminal; retry requires a new challenge unless a specifically reviewed idempotency rule applies |
+| EXPIRED / REVOKED | Challenge is no longer usable | Terminal |
+
+Implementation invariants:
+
+- A challenge is bound to one node, destination branch, action, purpose, scope, and selector fingerprint or exact source pointer.
+- Challenge claim and assertion jti consumption must be atomic and protected by database uniqueness constraints. Concurrent requests across workers/processes must produce at most one successful claim.
+- A challenge cannot be rebound, reset to ISSUED, or reused for another action or resource.
+- Discovery retries must use a documented idempotency key and must not permit a second disclosure. A retry may retrieve only the same already-authorized result under a bounded policy; it must not repeat authorization under a changed actor, selector, destination, or scope.
+- Import idempotency must be keyed to the exact source pointer, destination, and approved operation. It must not make a new actor assertion reusable for a different import.
+- Failure to persist challenge state, replay state, authorization decision, or required audit means deny/no protected response.
+
+### 16.4 Proposed minimum persistence model
+
+Final names and normalization are implementation decisions, but the following logical records are mandatory:
+
+- **TrustedIssuer:** immutable issuer identifier, registered organization/branch and node relationship, status, permitted audiences/actions, onboarding evidence/reference, activation and retirement timestamps.
+- **TrustedSigningKey:** issuer FK, key identifier, public key/material or secure key reference, algorithm, intended use, validity window, status, rotation/revocation metadata. Unique issuer + key identifier.
+- **ExternalClinicianMapping:** issuer-scoped subject, recognized actor class, evidence/assurance level, source-side status, effective dates, revocation metadata. Unique issuer + external subject. Never reference a foreign tenant's integer user ID as a local FK.
+- **ActorChallenge:** opaque challenge identifier, cryptographic challenge digest, node/destination binding, action, purpose, resource/selector fingerprint, scope, expiry, state, claim metadata, and timestamps. Do not persist unnecessary PHI or the raw signed assertion.
+- **ConsumedAssertion:** issuer + jti uniqueness, challenge relationship, expiry/retention metadata, and outcome. Enforce replay protection in the database, not only in process memory.
+- **FederatedActorAudit:** source-local verified actor and issuer identity, node/destination, action, purpose, resource reference, scope, policy decision/version, assertion key ID, correlation/challenge identifiers, timestamps, and distinct operation outcome.
+
+All tenant-specific foreign keys must remain within their owning tenant schema. Control-plane trust records must not become a backdoor for cross-tenant clinical data access. Migration downgrade behavior, indexes, uniqueness constraints, retention, and data minimization require review.
+
+### 16.5 Error and disclosure contract
+
+Externally visible errors must not reveal whether a patient exists, whether a clinician mapping exists, or which trust check failed. Use stable generic denial responses for protected discovery paths and correlation IDs for operator investigation. Internally, retain bounded reason codes without bearer tokens or unnecessary PHI.
+
+- Invalid/missing/replayed assertion, unknown issuer/key, stale status, challenge mismatch, unauthorized actor, privacy denial, or audit failure: no patient match, demographic summary, allergy detail, or import side effect.
+- Trust/status/authorization dependency unavailable: fail closed. Do not fall back to node-only authentication or stale positive authorization.
+- A successful discovery response is allowed only after the source has verified the clinician and completed all required policy/audit checks. Existing discovery receipt issuance remains conditional on complete source discovery and is an additional import-integrity control, not an actor credential.
+- An import response must distinguish accepted/attempted from durably completed. Source-side audit must never imply destination commit success without a verifiable completion signal.
+
+## 17. Security acceptance criteria (release-blocking)
+
+AUD-004 is not closed until every applicable criterion below has automated evidence and independent review.
+
+| ID | Acceptance criterion | Required evidence |
+|---|---|---|
+| AC-01 | Node authentication and human actor authentication are both mandatory for every protected remote patient-data operation | Integration tests proving node-only and actor-only requests are denied |
+| AC-02 | Only explicitly onboarded issuers and registered active keys can issue accepted assertions | Tests for unknown, disabled, expired, revoked issuer/key and untrusted key IDs |
+| AC-03 | Signature verification uses a fixed allow-listed asymmetric algorithm and strict token parsing | Negative crypto tests: unsigned, none, algorithm confusion, malformed headers, invalid signature |
+| AC-04 | Actor subject is immutable and issuer-scoped; it is never interpreted as a local tenant user ID | Cross-tenant collision tests and schema/FK review |
+| AC-05 | Destination issuer derives identity from authenticated server-side session and current local user state | Tests reject caller-supplied subject, user ID, role, doctor name, or registration number |
+| AC-06 | Source independently maps and authorizes the clinician for the exact action, patient/resource, purpose, destination, and scope | Allow/deny matrix tests including wrong patient, wrong branch, role, purpose, and scope |
+| AC-07 | Source privacy/data-use policy and clinician authorization are separate mandatory decisions | Tests prove either denial blocks disclosure/import and audit captures both decisions |
+| AC-08 | Discovery and import use separate source-issued challenges and operation-specific assertions | Tests reject discovery assertion for import and vice versa |
+| AC-09 | Challenge and jti replay prevention is atomic across concurrent workers and database connections | Concurrency tests prove at most one claim succeeds |
+| AC-10 | Expiry, clock skew, issuer/key revocation, clinician suspension/termination, and affiliation changes are enforced to documented SLAs | Boundary, stale-status, and revocation propagation tests |
+| AC-11 | Source audit is durable before disclosure/authorization and distinguishes request, decision, disclosure, attempt, and completion | Fault-injection tests for audit DB failure and destination commit failure |
+| AC-12 | Trust registry, key rotation, emergency revocation, and partner onboarding are dual-controlled and audited | Operational runbook plus permission and audit tests |
+| AC-13 | Errors, logs, traces, and metrics contain no raw assertion, private key, bearer credential, or unnecessary PHI | Automated log-capture and redaction tests |
+| AC-14 | Existing tenant/branch isolation, node-key revocation, privacy policy, and discovery-receipt protections remain intact | Full federation regression suite and tenant-isolation tests |
+| AC-15 | No fallback path grants node-only access; emergency/break-glass remains disabled | Negative tests for missing dependencies and all emergency-purpose variants |
+| AC-16 | Security, clinical-safety, privacy, identity-governance, and operations owners approve the protocol and rollout | Recorded sign-off and versioned threat-model review |
+
+A green CI run is necessary but not sufficient. Manual security review, operational evidence, partner interoperability, and named owner approval are release gates.
+
+## 18. Proposed defaults for decision review
+
+These are recommended defaults to make the approval discussion concrete. They are **not approved policy** and must not be silently treated as settled requirements.
+
+| Decision | Proposed default | Approval owner / unresolved point |
+|---|---|---|
+| Issuer | Each hospital's Avinya backend, separately registered per branch | Identity governance must accept hospital responsibility for workforce identity |
+| Signing | Ed25519 where supported by the production cryptographic stack; otherwise ES256 after interoperability review | Security/platform owner to select and pin one algorithm |
+| Key custody | Per-branch asymmetric key in managed KMS/HSM; non-exportable private key preferred | Infrastructure/security owner to confirm service and recovery model |
+| Subject | Random immutable issuer-scoped UUID, independent of email and local integer IDs | Identity owner to define provisioning and lifecycle |
+| Actor classes | Explicit doctor, nurse, and allied-health classes with action-specific eligibility; no generic clinician wildcard | Clinical governance to define permitted classes and scopes |
+| License assurance | Hospital-asserted unless a trusted professional registry integration is separately approved | Clinical/legal owner to define required evidence and freshness |
+| Assertion lifetime | Maximum 120 seconds, with a small documented clock-skew allowance | Security owner to approve operational clock assumptions |
+| Challenge lifetime | Maximum 120 seconds; one operation and one destination | Security owner to approve retry and idempotency semantics |
+| Purpose | Versioned enum, initially limited to approved continuity-of-care workflows | Privacy/clinical owners to approve exact values and policy mapping |
+| Revocation | Online source checks for high-risk actions; documented urgent clinician/key revocation SLA | Partner operations and identity governance to commit to an achievable SLA |
+| Emergency access | Disabled; separate future design and approval | Explicit independent security and clinical-safety sign-off required |
+
+## 19. Implementation sequencing and exit criteria
+
+After the decisions in Section 12 and proposed defaults in Section 18 are approved, implementation should proceed in isolated, reviewable increments:
+
+1. **Protocol and threat model freeze:** finalize claim schema, challenge state machine, actor classes, source authorization matrix, purpose enum, error contract, and trust onboarding.
+2. **Trust registry and key lifecycle:** implement control-plane issuer/key records, dual-control onboarding, rotation, revocation, and audit; no patient disclosure endpoint changes yet.
+3. **Destination issuer:** implement server-side assertion issuance from authenticated user/session context and protected per-branch signing keys.
+4. **Source verifier and challenge store:** implement strict verification, atomic challenge/jti consumption, external clinician mapping, and source authorization decision.
+5. **Protected discovery integration:** require verified actor before any patient-existence signal or demographic response; retain existing complete-discovery receipt rule.
+6. **Protected import integration:** require a distinct import challenge/assertion bound to exact source pointer and destination; preserve idempotency and source/destination audit semantics.
+7. **Adversarial validation:** execute the complete acceptance matrix, concurrency/fault-injection tests, tenant isolation tests, and independent penetration/security review.
+8. **Controlled rollout:** feature flag off by default, partner-by-partner non-production validation, operational monitoring and rollback plan, then explicit multi-owner release approval.
+
+Exit requires all AC-01 through AC-16 satisfied, no unresolved High/Critical security findings, documented revocation and incident runbooks, and explicit release approval. Until then AUD-004 remains open and release-blocking.
