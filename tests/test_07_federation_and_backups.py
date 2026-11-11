@@ -1,4 +1,5 @@
 from cryptography.fernet import Fernet, InvalidToken
+from datetime import datetime, timezone
 import hashlib
 import pytest
 from sqlalchemy.orm import sessionmaker
@@ -554,3 +555,111 @@ def test_federation_identifier_sanitizer_handles_mixed_case_abha_marker():
     assert sanitized == f"branch->abha_sha256:{expected}"
     assert "Sensitive-Value" not in sanitized
 
+
+
+def test_federation_pointer_sync_propagates_control_plane_commit_failure():
+    """AUD-002: a failed pointer write must not be converted into endpoint success."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from backend.domains.federation.router import sync_patient_pointer
+
+    control_db = MagicMock()
+    control_db.execute.return_value.scalar_one_or_none.return_value = None
+    control_db.commit.side_effect = RuntimeError("control plane unavailable")
+    patient = SimpleNamespace(
+        id=77,
+        mrn="AUD002-001",
+        phone_number="9876501234",
+        abha_number=None,
+        allow_network_sharing=True,
+        date_of_birth=None,
+    )
+
+    with pytest.raises(RuntimeError, match="control plane unavailable"):
+        sync_patient_pointer(
+            control_db=control_db,
+            branch_code="AUDIT-BRANCH",
+            subdomain_slug="audit",
+            patient=patient,
+        )
+
+    control_db.rollback.assert_called_once()
+
+
+def test_retention_hard_delete_respects_immutable_federation_transfer_logs():
+    """AUD-001: transfer-log references prevent patient hard deletion."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from backend.domains.privacy.retention_service import execute_retention_category
+
+    class _Scalars:
+        def __init__(self, values):
+            self._values = values
+
+        def all(self):
+            return self._values
+
+    class _Result:
+        def __init__(self, values):
+            self._values = values
+
+        def scalars(self):
+            return _Scalars(self._values)
+
+    db = MagicMock()
+    candidate = SimpleNamespace(id=77)
+    def execute(statement):
+        sql = str(statement)
+        if "FROM patients" in sql:
+            return _Result([candidate])
+        if "federation_transfer_logs" in sql:
+            return _Result([77])
+        return _Result([])
+    db.execute.side_effect = execute
+
+    result = execute_retention_category(
+        db,
+        category_code="patients",
+        action="delete",
+        retention_days=365,
+        now=datetime.now(timezone.utc),
+        dry_run=False,
+    )
+
+    assert result["candidate_count"] == 1
+    assert result["affected_count"] == 0
+    assert result["status"] == "SUCCESS"
+    assert db.execute.call_count == 8  # candidate query + all seven dependency checks
+
+
+def test_retention_dependency_query_error_aborts_hard_delete():
+    """AUD-001: dependency-query failure is never treated as an empty reference set."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from backend.domains.privacy.retention_service import execute_retention_category
+
+    class _Scalars:
+        def all(self):
+            return [SimpleNamespace(id=88)]
+
+    class _Result:
+        def scalars(self):
+            return _Scalars()
+
+    db = MagicMock()
+    db.execute.side_effect = [_Result(), RuntimeError("dependency table unavailable")]
+
+    with pytest.raises(RuntimeError, match="dependency table unavailable"):
+        execute_retention_category(
+            db,
+            category_code="patients",
+            action="delete",
+            retention_days=365,
+            now=datetime.now(timezone.utc),
+            dry_run=False,
+        )
+
+    assert db.execute.call_count == 2
