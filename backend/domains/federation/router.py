@@ -653,6 +653,7 @@ def discover_and_aggregate_patient_across_branches(
     if (
         demographics is not None
         and selected_source_pointer is not None
+        and purpose.strip().upper() == "CONTINUITY_OF_CARE"
         and source_failure_count == 0
         and source_success_count == source_count
     ):
