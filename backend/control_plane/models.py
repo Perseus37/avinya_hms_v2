@@ -170,7 +170,10 @@ class FederatedDiscoveryReceipt(ControlBase):
     selector_type: Mapped[str] = mapped_column(String(8), nullable=False)
     selector_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     pointer_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    source_pointer_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_pointer_id: Mapped[int] = mapped_column(
+        ForeignKey("global_patient_pointers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     source_branch_code: Mapped[str] = mapped_column(String(50), nullable=False)
     source_mrn: Mapped[str] = mapped_column(String(50), nullable=False)
     summary_hash: Mapped[str] = mapped_column(String(64), nullable=False)
