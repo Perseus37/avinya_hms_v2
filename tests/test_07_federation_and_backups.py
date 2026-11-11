@@ -50,7 +50,7 @@ def test_02_invalid_federation_api_key_format_returns_401(client):
     assert res.status_code == 401
 
 
-def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
+def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
     client,
     multi_tenant_env,
     superuser_headers,
@@ -58,17 +58,24 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
     sunrise_admin_headers,
 ):
     """
-    Scenario 3: Full Hospital A (apollo) -> Hospital B (default) -> Hospital C (sunrise) flow:
-      1. Register patient at Hospital A ('apollo') with Penicillin allergy (ALG_PEN).
-      2. Import patient into Hospital B ('default'), update address, and chart Sulfa allergy (ALG_SULFA).
-      3. Discover patient from Hospital C ('sunrise') -> receives newest address from B + BOTH allergies (A + B).
+    Scenario 3: Hospital A (apollo) -> Hospital B (default) -> Hospital C (sunrise).
+    Import A into B, update B, then discover from C and verify B's demographics
+    and the allergy union from A and B.
     """
-    sun_client = client.post(
+    # The node issuing discovery must be the same branch that imports the
+    # result. This binds the server-side receipt to the receiving tenant.
+    destination_node = client.post(
+        "/v1/api/federation/clients",
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "Hyderabad Receiving Hospital"},
+    ).json()
+    fed_headers = {"X-Federation-API-Key": destination_node["raw_api_key"]}
+    sunrise_node = client.post(
         "/v1/api/federation/clients",
         headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Hospital"},
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Discovery Node"},
     ).json()
-    fed_headers = {"X-Federation-API-Key": sun_client["raw_api_key"]}
+    sunrise_fed_headers = {"X-Federation-API-Key": sunrise_node["raw_api_key"]}
 
     p_apollo = client.post(
         "/v1/api/patients",
@@ -92,6 +99,68 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
         "/v1/api/federation/patients/discover?phone_number=9777788888&purpose=CONTINUITY_OF_CARE",
         headers=fed_headers,
     ).json()
+
+    assert disc_from_a.get("discovery_receipt")
+
+    # Caller-supplied completeness flags and edited summaries cannot replace
+    # the server-issued receipt or alter the exact discovered result.
+    without_receipt = dict(disc_from_a)
+    without_receipt.pop("discovery_receipt")
+    no_receipt = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=without_receipt,
+    )
+    assert no_receipt.status_code == 409
+
+    tampered_summary = dict(disc_from_a)
+    tampered_summary["address"] = "Client-forged address"
+    tampered = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=tampered_summary,
+    )
+    assert tampered.status_code == 409
+    assert "modified" in tampered.json()["message"].lower()
+
+    wrong_destination = client.post(
+        "/v1/api/federation/patients/import",
+        headers=apollo_admin_headers,
+        json=disc_from_a,
+    )
+    assert wrong_destination.status_code == 403
+
+    # A changed source-index snapshot invalidates the receipt and requires
+    # rediscovery rather than allowing import against stale discovery state.
+    from datetime import datetime, timedelta, timezone
+    from backend.control_plane.models import GlobalPatientPointer
+
+    ControlSession = multi_tenant_env["control_session_factory"]
+    with ControlSession() as control_db:
+        source_pointer = (
+            control_db.query(GlobalPatientPointer)
+            .filter(
+                GlobalPatientPointer.branch_code == "APOLLO-HYD-01",
+                GlobalPatientPointer.source_mrn == p_apollo["mrn"],
+            )
+            .one()
+        )
+        source_pointer.last_clinical_update_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+        control_db.commit()
+
+    stale_receipt = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=disc_from_a,
+    )
+    assert stale_receipt.status_code == 409
+    assert "index changed" in stale_receipt.json()["message"].lower()
+
+    disc_from_a = client.get(
+        "/v1/api/federation/patients/discover?phone_number=9777788888&purpose=CONTINUITY_OF_CARE",
+        headers=fed_headers,
+    ).json()
+    assert disc_from_a.get("discovery_receipt")
 
     p_default = client.post(
         "/v1/api/federation/patients/import",
@@ -147,7 +216,7 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
 
     merged = client.get(
         "/v1/api/federation/patients/discover?abha_number=ABHA-MULTIHOP-01&purpose=CONTINUITY_OF_CARE",
-        headers=fed_headers,
+        headers=sunrise_fed_headers,
     )
     assert merged.status_code == 200
     body = merged.json()
@@ -541,7 +610,7 @@ def test_09_federation_import_enforces_corporate_group_policy(
         allowed = client.post(
             "/v1/api/federation/patients/import",
             headers=superuser_headers,
-            json=discovered.json(),
+            json=allowed_discovery.json(),
         )
         assert allowed.status_code == 201
     finally:
@@ -765,6 +834,60 @@ def test_federated_discovery_returns_explicit_partial_status_on_worker_error(
 
 
 
+def test_federated_patient_import_rejects_missing_receipt_without_completeness_fields(
+    client, apollo_admin_headers
+):
+    """Caller omission/defaults cannot turn an unverified body into a complete discovery."""
+    response = client.post(
+        "/v1/api/federation/patients/import",
+        headers=apollo_admin_headers,
+        json={
+            "source_mrn": "UNVERIFIED-SOURCE-001",
+            "full_name": "Unverified Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+        },
+    )
+    assert response.status_code == 409
+    assert "discovery receipt" in response.json()["message"].lower()
+
+
+def test_phone_discovery_rejects_multiple_unlinked_patient_identities(
+    client, multi_tenant_env, superuser_headers, apollo_admin_headers
+):
+    """A shared phone number cannot cause allergies/demographics to merge across people."""
+    registered = client.post(
+        "/v1/api/federation/clients",
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "HQ Federation Node"},
+    )
+    assert registered.status_code == 201
+
+    for name, abha in (
+        ("Household Patient One", "ABHA-HOUSEHOLD-ONE"),
+        ("Household Patient Two", "ABHA-HOUSEHOLD-TWO"),
+    ):
+        created = client.post(
+            "/v1/api/patients",
+            headers=apollo_admin_headers,
+            json={
+                "full_name": name,
+                "date_of_birth": "1990-01-01T00:00:00Z",
+                "gender": "FEMALE",
+                "phone_number": "9444412345",
+                "abha_number": abha,
+            },
+        )
+        assert created.status_code == 201, created.text
+
+    response = client.get(
+        "/v1/api/federation/patients/discover?phone_number=9444412345",
+        headers={"X-Federation-API-Key": registered.json()["raw_api_key"]},
+    )
+    assert response.status_code == 409
+    assert "abha" in response.json()["message"].lower()
+
+
 def test_federated_patient_import_rejects_partial_discovery(
     client, apollo_admin_headers
 ):
@@ -786,4 +909,4 @@ def test_federated_patient_import_rejects_partial_discovery(
     )
 
     assert response.status_code == 409
-    assert "partial federated discovery" in response.json()["message"].lower()
+    assert "discovery receipt" in response.json()["message"].lower()
