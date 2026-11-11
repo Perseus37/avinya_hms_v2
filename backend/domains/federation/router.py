@@ -376,6 +376,24 @@ def discover_and_aggregate_patient_across_branches(
     if not pointers:
         raise HTTPException(status_code=404, detail="No records found for this patient in the Central Discovery Index.")
 
+    # Phone numbers are not unique patient identifiers. Permit a multi-branch
+    # phone lookup only when every indexed record carries the same non-empty
+    # ABHA identity and no branch has multiple MRNs for that identity.
+    if not abha_number and len(pointers) > 1:
+        pointer_abhas = {pointer.abha_number for pointer in pointers}
+        branch_mrns = [(pointer.branch_code, pointer.source_mrn) for pointer in pointers]
+        if (
+            None in pointer_abhas
+            or "" in pointer_abhas
+            or len(pointer_abhas) != 1
+            or len(branch_mrns) != len(set(branch_mrns))
+            or len({branch for branch, _ in branch_mrns}) != len(branch_mrns)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number matches multiple patient records; use the patient's ABHA number to disambiguate.",
+            )
+
     latest_demographics: Optional[Patient] = None
     selected_source_pointer: Optional[GlobalPatientPointer] = None
     allergies_only_source_found: bool = False
@@ -703,6 +721,7 @@ def import_federated_patient_locally(
             select(GlobalPatientPointer)
             .where(GlobalPatientPointer.abha_number == payload.abha_number)
             .order_by(GlobalPatientPointer.last_clinical_update_at.desc())
+            .with_for_update()
         ).scalars().all()
     elif receipt.selector_type == "PHONE":
         if not payload.phone_number:
