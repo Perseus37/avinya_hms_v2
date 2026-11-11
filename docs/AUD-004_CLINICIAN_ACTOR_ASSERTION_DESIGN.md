@@ -193,3 +193,61 @@ No emergency grant ID, request header, role label, or caller-supplied boolean ca
 - Which jurisdiction-specific audit fields and retention schedule are approved by legal/privacy owners?
 
 **Do not begin implementation until these decisions are recorded and approved.**
+
+
+## 13. Fit with the current Avinya HMS identity implementation
+
+A review of the current `main` branch shows the following relevant implementation facts:
+
+- Human users are tenant-local in `backend/domains/identity/models.py` (`User`, `AuthSession`, `Role`, `Permission`, and optional `DoctorProfile`). User status includes ACTIVE, SUSPENDED, LOCKED, and DEACTIVATED.
+- `DoctorProfile` stores a clinical ID, qualifications, specialization, medical council, registration number, and registration-valid-until date. These are tenant-entered records; their presence alone does not prove that an external professional registry verified the clinician or that the registration remains valid.
+- Normal user authentication in `backend/core/dependencies.py:get_current_user` validates a tenant-specific JWT, tenant/branch claims, an active user, and a non-revoked/unexpired `AuthSession`.
+- Federation authentication in `get_federated_node` validates only the control-plane node API key and active node. It does not authenticate a human user.
+- The current federation discovery route depends on `get_federated_node`, accepts a caller-supplied purpose string, and evaluates source privacy/data-use policy with `actor_user_id=None`. That privacy evaluation is not a substitute for human identity verification or source-side clinician authorization.
+- The inspected identity and control-plane models do not currently provide a cross-tenant OIDC issuer trust registry or a clinician federation identity mapping.
+
+These are the current code facts relevant to the design; they are not assertions that no other external identity integration exists outside the inspected paths.
+
+## 14. Recommended initial trust model for this codebase
+
+**Recommendation for the first implementation phase:** use each participating hospital's own Avinya tenant backend as its clinician assertion issuer, with an independently provisioned asymmetric signing key per branch. Do not introduce a federation-wide identity broker as a prerequisite for the first version unless partner onboarding or enterprise SSO requirements demonstrate that it is necessary.
+
+This recommendation is conditional on each participating hospital formally accepting responsibility for authenticating its workforce and promptly revoking users. The source trusts the registered hospital issuer for the identity statement; it does not thereby claim that the source independently verified the clinician's medical license.
+
+### Destination-side assertion issuance
+
+- Add a dedicated assertion-issuance service behind the existing authenticated tenant user context. It must receive the authenticated `User` from `get_current_user`; never accept a user ID, email, role, doctor name, or registration number as caller-supplied identity evidence.
+- Require `User.status == ACTIVE`, a live non-revoked `AuthSession`, an active local account/affiliation, and a locally authorized action.
+- Require a clinician credential/profile appropriate to the requested action. For doctor-only operations, validate the local `DoctorProfile` and its registration expiry, but treat the registration fields as hospital-asserted unless a trusted external registry check is implemented. Do not infer that every clinician is a doctor; define nurse/allied-health actor classes and permitted scopes explicitly before supporting them.
+- Use an immutable issuer-scoped external subject identifier. The current integer `User.id` is tenant-local and should not be treated as globally unique; a future immutable UUID subject is preferable. Never use email or display name as the subject.
+- Sign with a dedicated per-branch private key held in a managed KMS/HSM or equivalent protected signing service. Do not reuse the tenant JWT secret, federation API key, database secret, or a shared symmetric secret. The private key must not be returned to the client.
+- Keep assertion issuance server-side. The browser/mobile client may carry the signed assertion to the federation operation but cannot create or modify it.
+
+### Source-side issuer trust and clinician mapping
+
+- Provision each accepted issuer out-of-band through a control-plane operator workflow with dual control, audit, and partner verification. Store issuer ID, registered branch/node relationship, allowed audiences/actions, public signing keys, key status, validity windows, and revocation state in the control plane.
+- Do not trust arbitrary `iss`, `kid`, `jku`, `x5u`, or caller-supplied JWKS URLs. Public keys must be pinned/registered by the source's trust administration process.
+- Namespace the external subject by issuer. The source must not join a foreign `sub` to its local `users.id` or assume matching user IDs across tenant databases.
+- Define a source-side policy mapping from trusted issuer + clinician class/credential evidence + action + purpose + resource + scope to allow/deny. A destination role claim is context only and cannot grant source access by itself.
+- For clinician suspension/termination, define a maximum revocation propagation time. Until a reliable status/revocation mechanism is available, use very short assertions and deny high-risk actions when issuer status cannot be checked. Short expiry alone is not a substitute for a workable urgent-revocation process.
+
+### Purpose and operation separation
+
+The current discovery endpoint's free-form `purpose` query parameter must not be copied into the signed assertion as trusted authorization. Replace it with a versioned enum and an explicit source policy mapping. Discovery, import, and any future emergency disclosure are distinct actions and must not share a broad reusable capability.
+
+For discovery, the source may not yet know the patient resource ID. Use a two-stage request binding:
+1. The source receives the selector over the authenticated node channel and creates a short-lived challenge bound to the source-computed normalized selector fingerprint, authenticated node, destination, action, purpose, and requested scope. The challenge response must not reveal whether a patient exists.
+2. The destination issuer signs the challenge for the authenticated clinician. The source validates the assertion and challenge before returning any patient match or demographic summary. Once a specific source pointer is selected, the discovery receipt binds that pointer and the exact response as already described above.
+
+For import, create a separate challenge bound to the exact source pointer, destination, import action, continuity-of-care purpose, and permitted demographic/allergy scope. Do not reuse the discovery assertion or challenge for import.
+
+## 15. Important design limits and release blockers
+
+- A signed assertion proves that a trusted issuer made a statement about a clinician. It does not independently prove the clinician is licensed, currently employed, or clinically entitled to access a particular patient's record unless the trust model and source checks establish those facts.
+- The source's privacy/data-use decision and the source's clinician authorization decision are separate controls. Both must pass. Do not overload `evaluate_tenant_data_use` or pass a foreign clinician ID as `actor_user_id` to make the audit appear human-attributed.
+- The current tenant-local `Role`/`Permission` model has no demonstrated cross-tenant clinician authorization mapping. This mapping and its policy owner must be designed before implementation.
+- A source-issued challenge and one-time replay record require a carefully defined state machine for discovery retries. The existing discovery receipt is an import-integrity mechanism and is not a substitute for the clinician assertion challenge.
+- The source audit schema must be extended deliberately to capture issuer-scoped actor identity and the separate authorization decision. Do not place foreign user IDs into existing local-user foreign keys.
+- Current local import behavior must be assessed separately: a local authenticated user can initiate import, but the source cannot currently verify that human actor through the remote node key. If AUD-004 is intended to cover all patient-data access, local import needs a source-verifiable actor assertion too; otherwise document and approve a narrower scope explicitly.
+
+**Recommended decision:** approve the per-hospital backend issuer model for a first implementation only after identity-governance owners accept the hospital as the issuer of workforce identity claims, and after the source-side authorization matrix, key-provisioning procedure, and revocation SLA are specified. Keep any external professional-license verification as a separately declared assurance level; never imply it from local profile fields alone.
