@@ -138,6 +138,55 @@ def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_he
 
 
 
+def test_patient_indent_issue_rejects_expired_inventory_batch(
+    client, pharmacist_headers, superuser_headers, multi_tenant_env
+):
+    from sqlalchemy.orm import Session
+    from backend.domains.pharmacy.models import InventoryBatch, MedicationMaster, MedicationFormEnum
+    from backend.domains.procurement.models import StoreIndentItem
+
+    patient = client.post("/v1/api/patients", headers=superuser_headers, json={
+        "full_name": "Expired Batch Patient", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"
+    }).json()
+    encounter = client.post("/v1/api/adt/encounters", headers=superuser_headers, json={
+        "patient_id": patient["id"], "encounter_type": "IPD", "primary_doctor_id": 2, "department_id": 1
+    }).json()
+    medication = client.post("/v1/api/pharmacy/medications", headers=pharmacist_headers, json={
+        "code": "MED_EXPIRED_ISSUE", "brand_name": "Expired Batch Drug",
+        "generic_name": "Expired Batch Generic", "form": "TABLET", "strength": "10mg"
+    }).json()
+    expired_batch = client.post("/v1/api/pharmacy/inventory/batches", headers=pharmacist_headers, json={
+        "medication_id": medication["id"], "batch_number": "EXPIRED-ISSUE-1",
+        "expiry_date": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        "stock_quantity": 5, "unit_price_paise": 100
+    })
+    assert expired_batch.status_code == 201, expired_batch.text
+
+    indent = client.post("/v1/api/procurement/indents/patient", headers=superuser_headers, json={
+        "requesting_department_id": 1, "encounter_id": encounter["id"],
+        "items": [{"medication_id": medication["id"], "requested_quantity": 2}]
+    })
+    assert indent.status_code == 201, indent.text
+    item_id = indent.json()["items"][0]["id"]
+
+    response = client.post(
+        f"/v1/api/procurement/indents/patient/{indent.json()['id']}/issue",
+        headers=pharmacist_headers,
+        json={"items": [{
+            "indent_item_id": item_id, "batch_id": expired_batch.json()["id"], "issue_quantity": 1
+        }]},
+    )
+    assert response.status_code == 409, response.text
+    assert "expired stock" in response.json()["message"].lower()
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        batch = db.get(InventoryBatch, expired_batch.json()["id"])
+        indent_item = db.get(StoreIndentItem, item_id)
+        assert batch.stock_quantity == 5
+        assert indent_item.issued_quantity == 0
+
+
 def test_patient_indent_returns_require_original_allocation_and_credit_exact_batch_line(
     client, doctor_headers, pharmacist_headers, superuser_headers, multi_tenant_env
 ):

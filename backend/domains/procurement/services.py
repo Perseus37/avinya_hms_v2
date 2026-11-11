@@ -260,6 +260,13 @@ def issue_patient_indent(db: Session, indent: StoreIndent, issue_request: list, 
         ).with_for_update()).scalar_one_or_none()
         if not batch or batch.medication_id != indent_item.medication_id:
             raise HTTPException(status_code=400, detail="Invalid batch for requested medication.")
+        # SQLite may return timezone-naive values despite timezone=True; interpret
+        # those stored UTC timestamps consistently before checking expiry.
+        batch_expiry = batch.expiry_date
+        if batch_expiry.tzinfo is None:
+            batch_expiry = batch_expiry.replace(tzinfo=timezone.utc)
+        if batch_expiry <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=409, detail=f"Cannot issue expired stock from batch {batch.batch_number}.")
         if batch.stock_quantity < issue_item.issue_quantity:
             raise HTTPException(status_code=409, detail=f"Insufficient stock in batch {batch.batch_number}.")
 
