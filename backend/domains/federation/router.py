@@ -573,6 +573,14 @@ def import_federated_patient_locally(
     """Import an authenticated discovery result without trusting client-supplied clinical fields."""
     tenant = resolve_tenant_context(request)
 
+    # A partial discovery is not an authoritative patient identity result. Do not
+    # allow callers to import a clone while one or more indexed sources were unavailable.
+    if payload.is_partial or payload.source_failure_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Partial federated discovery cannot be imported; retry discovery when all sources are available.",
+        )
+
     # Allergy-only emergency responses deliberately contain no demographic identity
     # and must never be accepted as patient-import payloads.
     if (
