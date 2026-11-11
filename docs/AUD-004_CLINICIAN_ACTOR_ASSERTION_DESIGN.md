@@ -905,3 +905,21 @@ No approver identity or approval evidence is supplied by this engineering docume
 This review order is a coordination suggestion, not a transfer of accountability. The named approvers must be appointed by the project governance process.
 
 No governance decision is closed by this section. No runtime code, migration, configuration, trust entry, signing key, feature flag or application behavior is changed.
+
+
+## 27. D-11 project direction record — local cross-branch imports included
+
+**Project direction:** YES — AUD-004 scope includes local cross-branch/cross-tenant patient imports that read another branch's source patient record, in addition to cross-hospital federation imports.
+
+**Source of direction:** Explicit project-owner direction in the Avinya HMS project conversation, 12 November 2026. Supporting scope record: `docs/AUD-004_D11_LOCAL_IMPORT_SCOPE_DIRECTION.md` (PR #25).
+
+**Important status distinction:**
+- Project scope direction: **RECORDED — YES**.
+- Formal governance approval: **PENDING**.
+- Accountable approvers still required: product owner, clinical governance owner, and privacy/legal owner, with named identities, organizations, roles, approval date, governance reference, and evidence.
+- Until formal approval is recorded, engineering must design and test against the broader scope and must not ship a weaker local-import bypass.
+- No same-branch ordinary patient CRUD expansion is implied.
+
+**Implementation consequence:** Every protected cross-branch patient-data read, whether local or cross-hospital, requires a trusted human clinician assertion, source-side identity/status verification, source-side action/purpose/resource/destination authorization, current privacy-policy evaluation, replay protection, and source-side audit before disclosure. Discovery and import remain separate protected actions. Any future exception requires explicit narrow approval and equivalent source-side controls.
+
+This section records project direction only. It does not close D-11 as APPROVED and does not authorize runtime implementation, pilot, merge, release, production data access, or emergency federation.
