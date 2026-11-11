@@ -1,13 +1,19 @@
 import hashlib
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 import secrets
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.control_plane.models import FederatedNode, GlobalPatientPointer, TenantRegistry
+from backend.control_plane.models import (
+    FederatedDiscoveryReceipt,
+    FederatedNode,
+    GlobalPatientPointer,
+    TenantRegistry,
+)
 from backend.core.database import get_control_db, get_db, resolve_tenant_context, tenant_engine_pool
 from backend.core.dependencies import RateLimiter, RequirePermission, get_federated_node, validate_pagination
 from backend.domains.identity.models import User
@@ -37,6 +43,54 @@ def normalize_phone_hash(phone_number: Optional[str]) -> str:
     if not digits:
         digits = "0000000000"
     return hashlib.sha256(digits.encode("utf-8")).hexdigest()
+
+
+
+
+def _canonical_sha256(value: dict) -> str:
+    """Hash a deterministic JSON representation without persisting patient plaintext."""
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _pointer_snapshot_sha256(pointers: list[GlobalPatientPointer]) -> str:
+    """Bind a receipt to the exact indexed candidate set and pointer versions."""
+    snapshot = [
+        {
+            "id": pointer.id,
+            "branch_code": pointer.branch_code,
+            "source_mrn": pointer.source_mrn,
+            "last_clinical_update_at": (
+                pointer.last_clinical_update_at.isoformat()
+                if pointer.last_clinical_update_at
+                else None
+            ),
+        }
+        for pointer in sorted(
+            pointers,
+            key=lambda item: (item.branch_code, item.source_mrn, item.id),
+        )
+    ]
+    return _canonical_sha256({"pointers": snapshot})
+
+
+def _summary_sha256(payload: FederatedPatientSummaryResponse) -> str:
+    return _canonical_sha256(
+        payload.model_dump(mode="json", exclude={"discovery_receipt"})
+    )
+
+
+def _selector_sha256(selector_type: str, selector_value: str) -> str:
+    if selector_type == "ABHA":
+        material = f"abha:{selector_value}"
+    else:
+        material = f"phone:{normalize_phone_hash(selector_value)}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _get_branch_policy(branch_db: Session) -> HospitalPolicySetting:
@@ -304,7 +358,18 @@ def discover_and_aggregate_patient_across_branches(
             detail="Remote emergency federation is disabled pending verified requester authorization.",
         )
 
-    stmt = select(GlobalPatientPointer)
+    # Bound receipt storage even when clients abandon discovery results.
+    control_db.execute(
+        delete(FederatedDiscoveryReceipt).where(
+            FederatedDiscoveryReceipt.expires_at <= datetime.now(timezone.utc)
+        )
+    )
+    control_db.commit()
+
+    # Discovery is for remote sources; exclude the requesting/destination branch.
+    stmt = select(GlobalPatientPointer).where(
+        GlobalPatientPointer.branch_code != calling_node.branch_code
+    )
     if abha_number:
         stmt = stmt.where(GlobalPatientPointer.abha_number == abha_number)
         identifier_used = f"abha:{abha_number}"
@@ -322,7 +387,30 @@ def discover_and_aggregate_patient_across_branches(
     if not pointers:
         raise HTTPException(status_code=404, detail="No records found for this patient in the Central Discovery Index.")
 
+    branch_mrns = [(pointer.branch_code, pointer.source_mrn) for pointer in pointers]
+    if len({branch for branch, _ in branch_mrns}) != len(branch_mrns):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Multiple patient records match this identifier in one branch; use the patient ABHA number to disambiguate.",
+        )
+
+    # Phone numbers are not unique patient identifiers. Permit a multi-branch
+    # phone lookup only when every indexed record carries the same non-empty
+    # ABHA identity; otherwise household members could be merged.
+    if not abha_number and len(pointers) > 1:
+        pointer_abhas = {pointer.abha_number for pointer in pointers}
+        if (
+            None in pointer_abhas
+            or "" in pointer_abhas
+            or len(pointer_abhas) != 1
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number matches multiple patient records; use the patient's ABHA number to disambiguate.",
+            )
+
     latest_demographics: Optional[Patient] = None
+    selected_source_pointer: Optional[GlobalPatientPointer] = None
     allergies_only_source_found: bool = False
     merged_allergies: dict[str, FederatedAllergySummary] = {}
 
@@ -505,6 +593,7 @@ def discover_and_aggregate_patient_across_branches(
                     allergies_only_source_found = True
                 elif latest_demographics is None and result["share_demographics"]:
                     latest_demographics = result["patient"]
+                    selected_source_pointer = ptr
 
                 # Process the already-extracted safe schemas
                 for alg_data in result["allergies"]:
@@ -541,7 +630,7 @@ def discover_and_aggregate_patient_across_branches(
     # If no source authorized demographic sharing but an allergies-only source
     # did authorize this emergency disclosure, return a fully redacted envelope.
     demographics = latest_demographics
-    return FederatedPatientSummaryResponse(
+    response_payload = FederatedPatientSummaryResponse(
         source_mrn=demographics.mrn if demographics else None,
         abha_number=demographics.abha_number if demographics else None,
         full_name=demographics.full_name if demographics else None,
@@ -561,6 +650,43 @@ def discover_and_aggregate_patient_across_branches(
         failed_source_branches=failed_source_branches,
     )
 
+    # Only a fully verified demographic result can mint an import receipt. The
+    # client receives a random bearer value; only its hash is stored centrally.
+    if (
+        demographics is not None
+        and selected_source_pointer is not None
+        and source_failure_count == 0
+        and source_success_count == source_count
+    ):
+        selector_type = "ABHA" if abha_number else "PHONE"
+        selector_value = abha_number if abha_number else (phone_number or "")
+        raw_receipt = secrets.token_urlsafe(32)
+        receipt = FederatedDiscoveryReceipt(
+            token_hash=hashlib.sha256(raw_receipt.encode("utf-8")).hexdigest(),
+            calling_node_id=calling_node.id,
+            destination_branch_code=calling_node.branch_code,
+            selector_type=selector_type,
+            selector_hash=_selector_sha256(selector_type, selector_value),
+            pointer_snapshot_hash=_pointer_snapshot_sha256(pointers),
+            source_pointer_id=selected_source_pointer.id,
+            source_branch_code=selected_source_pointer.branch_code,
+            source_mrn=selected_source_pointer.source_mrn,
+            summary_hash=_summary_sha256(response_payload),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=2),
+        )
+        control_db.add(receipt)
+        try:
+            control_db.commit()
+        except Exception:
+            control_db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="A verifiable federated discovery receipt could not be issued.",
+            )
+        response_payload.discovery_receipt = raw_receipt
+
+    return response_payload
+
 
 @router.post("/patients/import", response_model=PatientResponse, status_code=status.HTTP_201_CREATED)
 def import_federated_patient_locally(
@@ -573,8 +699,77 @@ def import_federated_patient_locally(
     """Import an authenticated discovery result without trusting client-supplied clinical fields."""
     tenant = resolve_tenant_context(request)
 
-    # A partial discovery is not an authoritative patient identity result. Do not
-    # allow callers to import a clone while one or more indexed sources were unavailable.
+    # Completeness metadata in the request body is caller-controlled. Import is
+    # permitted only with a short-lived receipt minted by this server after a
+    # complete discovery, bound to this node, destination branch and exact result.
+    if not payload.discovery_receipt:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A valid server-issued federated discovery receipt is required for import.",
+        )
+    token_hash = hashlib.sha256(payload.discovery_receipt.encode("utf-8")).hexdigest()
+    receipt = control_db.get(FederatedDiscoveryReceipt, token_hash)
+    if not receipt:
+        raise HTTPException(status_code=409, detail="Federated discovery receipt is invalid or expired.")
+    now = datetime.now(timezone.utc)
+    expires_at = receipt.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= now:
+        raise HTTPException(status_code=409, detail="Federated discovery receipt is invalid or expired.")
+    if receipt.destination_branch_code != tenant.branch_code:
+        raise HTTPException(status_code=403, detail="Federated discovery receipt belongs to another destination branch.")
+    if receipt.source_mrn != payload.source_mrn:
+        raise HTTPException(status_code=409, detail="Federated discovery receipt does not match the source patient.")
+    if receipt.summary_hash != _summary_sha256(payload):
+        raise HTTPException(status_code=409, detail="Federated discovery result was modified; rediscover before import.")
+
+    calling_node = control_db.get(FederatedNode, receipt.calling_node_id)
+    if not calling_node or not calling_node.is_active:
+        raise HTTPException(status_code=401, detail="Federation node associated with this receipt is no longer active.")
+
+    if receipt.selector_type == "ABHA":
+        if not payload.abha_number:
+            raise HTTPException(status_code=409, detail="Federated discovery selector does not match the receipt.")
+        selector_hash = _selector_sha256("ABHA", payload.abha_number)
+        current_pointers = control_db.execute(
+            select(GlobalPatientPointer)
+            .where(
+                GlobalPatientPointer.abha_number == payload.abha_number,
+                GlobalPatientPointer.branch_code != tenant.branch_code,
+            )
+            .order_by(GlobalPatientPointer.last_clinical_update_at.desc())
+            .with_for_update()
+        ).scalars().all()
+    elif receipt.selector_type == "PHONE":
+        if not payload.phone_number:
+            raise HTTPException(status_code=409, detail="Federated discovery selector does not match the receipt.")
+        selector_hash = _selector_sha256("PHONE", payload.phone_number)
+        current_pointers = control_db.execute(
+            select(GlobalPatientPointer)
+            .where(
+                GlobalPatientPointer.phone_hash == normalize_phone_hash(payload.phone_number),
+                GlobalPatientPointer.branch_code != tenant.branch_code,
+            )
+            .order_by(GlobalPatientPointer.last_clinical_update_at.desc())
+        ).scalars().all()
+    else:
+        raise HTTPException(status_code=409, detail="Federated discovery receipt has an unsupported selector.")
+
+    if selector_hash != receipt.selector_hash:
+        raise HTTPException(status_code=409, detail="Federated discovery selector does not match the receipt.")
+    if _pointer_snapshot_sha256(current_pointers) != receipt.pointer_snapshot_hash:
+        raise HTTPException(status_code=409, detail="Federated source index changed since discovery; rediscover before import.")
+    if not any(
+        pointer.id == receipt.source_pointer_id
+        and pointer.branch_code == receipt.source_branch_code
+        and pointer.source_mrn == receipt.source_mrn
+        for pointer in current_pointers
+    ):
+        raise HTTPException(status_code=409, detail="Federated source pointer no longer matches the discovery receipt.")
+
+    # A complete server-issued receipt is the authority; these legacy metadata
+    # fields remain consistency checks only and cannot create an import capability.
     if payload.is_partial or payload.source_failure_count > 0:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -612,6 +807,12 @@ def import_federated_patient_locally(
         )
 
     source_pointer = source_pointers[0]
+    if (
+        source_pointer.id != receipt.source_pointer_id
+        or source_pointer.branch_code != receipt.source_branch_code
+        or source_pointer.source_mrn != receipt.source_mrn
+    ):
+        raise HTTPException(status_code=409, detail="Federated source pointer changed; rediscover before import.")
     source_registry = control_db.execute(
         select(TenantRegistry).where(
             TenantRegistry.branch_code == source_pointer.branch_code,
