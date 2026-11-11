@@ -843,3 +843,65 @@ Each runtime PR must be small enough to review independently, contain migrations
 - AUD-004 remains release-blocking until implementation, adversarial validation, operational evidence and explicit release authorization are complete.
 
 No runtime code, migration, configuration, or application behavior is changed by this proposed contract.
+
+## 26. Governance decision pack — proposed dispositions for D-01 through D-14
+
+This section is a decision aid for accountable owners. It does not approve any decision. Every item remains **PENDING** until the accountable role records an explicit decision with evidence. Proposed defaults are conservative starting points for review, not binding policy.
+
+### 26.1 Decision register with recommended defaults
+
+| ID | Decision requiring approval | Recommended default for approval consideration | Accountable approver | Evidence required before closure |
+|---|---|---|---|---|
+| D-01 | Who may issue clinician assertions and represent a hospital? | The participating hospital's Avinya tenant backend is the issuer for its own branch. Each branch has a distinct issuer identity and signing key. No node API key or client app may issue assertions. | Hospital security/IT owner, with Avinya security architect | Issuer ownership record; branch-to-issuer mapping; documented authority delegation; partner agreement. |
+| D-02 | What authentication assurance is required for the human actor? | Require authenticated active user, live non-revoked session, MFA for high-risk cross-hospital access, and server-side actor mapping. Session presence alone is not professional authority. | Hospital IAM/security owner | Authentication policy; MFA enforcement evidence; session revocation behavior; threat-model sign-off. |
+| D-03 | Which clinician classes may act? | Explicit allow-listed classes (doctor, nurse, allied-health professional) with action-specific scopes. No generic staff/clinician wildcard. Start with minimum class/action combinations required by the approved use case. | Hospital clinical governance owner | Approved clinician-class taxonomy; scope/action matrix; authorization scenarios; clinical governance sign-off. |
+| D-04 | How is professional registration/licensure verified? | Existing local DoctorProfile fields are hospital-asserted evidence only. Where an action requires a licensed professional, require a trusted registry verification or documented hospital credential-verification process with freshness and expiry. | Hospital medical/clinical governance owner | Registry integration evidence or approved manual verification SOP; evidence freshness; expiry/revocation handling; audit trail. |
+| D-05 | Who authorizes the clinician to access a source patient's data? | Source hospital performs independent, action/resource/purpose/destination-specific authorization. Destination permissions and source privacy policy are separate required decisions. | Source hospital data-protection/privacy owner and clinical governance owner | Source authorization matrix; privacy-policy mapping; deny-case walkthroughs; owner approval. |
+| D-06 | Which purposes and actions are allowed? | Replace free-form purpose strings with a versioned closed enum and explicit action-purpose-scope compatibility matrix. No emergency/break-glass purpose in the initial enabled vocabulary. | Clinical governance owner and privacy/legal owner | Versioned vocabulary; approved use-case mapping; API compatibility plan; prohibited-purpose tests. |
+| D-07 | Which signing algorithm and key custody model are approved? | Ed25519 where supported by all participants and approved libraries; otherwise ES256 after cryptographic review. Dedicated per-branch asymmetric key in managed KMS/HSM; private key never stored in application DB or shared with node clients. | Avinya security/cryptography owner and hospital security owner | Cryptographic review; KMS/HSM design; key access policy; backup/recovery and compromise runbook; rotation/revocation test. |
+| D-08 | How are issuers, partners and keys onboarded/changed? | Out-of-band verified onboarding with dual approval for trust creation, key replacement, issuer suspension and reactivation. No dynamic trust from arbitrary JWKS URLs or self-asserted issuer claims. | Federation trust administrator plus independent security approver | Partner identity verification; dual-control workflow; immutable approval log; key fingerprint confirmation; revocation drill. |
+| D-09 | What are assertion/challenge lifetimes and revocation freshness requirements? | Proposed maximum 120 seconds for assertions and challenges; online/strongly consistent checks for high-risk actions; immediate key-compromise denial; clinician-status freshness and propagation SLA defined per action before pilot. | Avinya security owner and participating hospital IAM owner | Clock-skew analysis; measured status propagation; cache-age limits; kill-switch test; signed-off SLA. |
+| D-10 | How are retries, replay and distributed transfer outcomes handled? | Atomic durable one-time challenge/jti claims; distinct discovery/import namespaces; stable transfer IDs; destination commit acknowledgement; indeterminate state plus reconciliation after lost acknowledgement. No blind replay of protected payloads. | Federation technical owner and database/platform owner | Concurrency test results; unique-constraint review; failure-injection evidence; lost-ack reconciliation runbook. |
+| D-11 | Does AUD-004 cover local imports as well as cross-branch federation? | Conservative default: yes, if local import accesses another branch/tenant's source patient record. Any exclusion must be explicit, narrow, documented, and supported by equivalent source-side attribution/authorization controls. | Product owner, clinical governance owner and privacy/legal owner | Written scope decision; data-flow map; abuse-case review; compensating-control approval for any exclusion. |
+| D-12 | What audit content, retention and access controls apply? | Immutable/tamper-evident source and destination audit with issuer-scoped subject, action, purpose, resource reference, decisions, transfer correlation and trust/status versions. Never store raw bearer assertions or private keys; minimize PHI; retention follows approved legal/contractual schedule. | Privacy/legal owner, records owner and security owner | Retention schedule; access matrix; integrity verification; audit-failure behavior; deletion/legal-hold analysis. |
+| D-13 | Is emergency/break-glass access in scope? | No. Keep emergency federation disabled and out of the initial assertion purpose vocabulary. Design and approve it separately with heightened identity, reason capture, notification, review and expiry controls. | Clinical governance owner and privacy/legal owner | Explicit out-of-scope approval; evidence it remains disabled; separate future threat model if proposed. |
+| D-14 | What authorizes pilot and production release? | No pilot or release until required decisions are closed, acceptance criteria pass, independent security review is complete, partner runbooks and monitoring are ready, and a named release authority approves. Feature flag remains off by default. | Product/release owner plus security and clinical governance approvers | Signed release checklist; CI/security evidence; operational readiness; partner sign-off; rollback/incident exercise; explicit release authorization. |
+
+### 26.2 Decision dependencies and implementation stop points
+
+- **D-01, D-07 and D-08** are prerequisites for trust registry and key lifecycle implementation. Do not create a production trust registry or provision partner keys before approval.
+- **D-02, D-03 and D-04** are prerequisites for clinician identity mapping and assertion issuance. Do not infer clinician class or license assurance from existing tenant profile fields.
+- **D-05 and D-06** are prerequisites for source-side authorization and purpose enforcement. Do not preserve the current free-form purpose field as the final security contract.
+- **D-09 and D-10** are prerequisites for challenge/replay implementation and transfer-state behavior. Proposed 120-second lifetimes must not silently become production constants.
+- **D-11** determines whether local import is in scope. Until approved, implementation planning must assume the broader, safer scope and must not ship a bypass.
+- **D-12** is a prerequisite for audit schema, retention jobs and operational access policy.
+- **D-13** must be explicitly closed as out of scope for the initial release; emergency access remains disabled regardless of silence.
+- **D-14** is a final gate, not a decision that can be inferred from passing CI, PR approval, or a pilot request.
+
+A decision may be marked “deferred” only if the affected capability is explicitly disabled and the dependency is recorded. “Accepted by engineering”, “covered by tests”, “existing behavior”, or “approved verbally” is not a governance disposition.
+
+### 26.3 Required decision record format
+
+For each D-01..D-14, record:
+- Decision ID and exact question/version.
+- Status: PENDING, APPROVED, REJECTED, or DEFERRED.
+- Chosen option and rationale, including deviations from the proposed default.
+- Accountable approver's name, organization and role.
+- Approval date and governance/ticket/meeting reference.
+- Evidence links (policy, partner agreement, threat model, test, runbook or technical review).
+- Affected protocol/design version and implementation stages.
+- Residual risk, compensating control, expiry/revisit date, and feature-disable condition.
+
+No approver identity or approval evidence is supplied by this engineering document. All fourteen decisions remain PENDING after adding this decision pack.
+
+### 26.4 Recommended review order
+
+1. Product, clinical governance and privacy owners resolve D-11, D-03, D-05 and D-06 first because they define the permitted use case and data-access authority.
+2. Hospital IAM/security and Avinya security owners resolve D-01, D-02, D-04, D-07, D-08 and D-09.
+3. Federation engineering/platform owners propose D-10 and D-12 implementation evidence for approval.
+4. Clinical governance and privacy owners explicitly confirm D-13 remains out of scope.
+5. Release authority records D-14 only after implementation and validation evidence exists; D-14 cannot be pre-approved by this design PR.
+
+This review order is a coordination suggestion, not a transfer of accountability. The named approvers must be appointed by the project governance process.
+
+No governance decision is closed by this section. No runtime code, migration, configuration, trust entry, signing key, feature flag or application behavior is changed.
