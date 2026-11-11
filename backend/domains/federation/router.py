@@ -111,7 +111,10 @@ def sync_patient_pointer(
                 return
 
         if pointer:
-            pointer.abha_number = patient.abha_number or pointer.abha_number
+            # Refresh every searchable identifier, including clearing identifiers
+            # that the patient has removed or changed at the source.
+            pointer.phone_hash = p_hash
+            pointer.abha_number = patient.abha_number
             pointer.source_mrn = patient.mrn
             pointer.has_critical_allergies = has_critical_allergies or pointer.has_critical_allergies
             pointer.last_clinical_update_at = datetime.now(timezone.utc)
@@ -369,6 +372,11 @@ def discover_and_aggregate_patient_across_branches(
             # A legacy discovery pointer may have been indexed from the old
             # 0000000000 missing-phone placeholder. Never treat that sentinel as
             # a real phone identity, even before the pointer is refreshed.
+            if abha_number is not None and patient.abha_number != abha_number:
+                # A stale ABHA pointer must never disclose the patient's current
+                # record after the source branch changes or removes that ABHA.
+                return None
+
             if phone_number is not None:
                 requested_digits = "".join(ch for ch in phone_number if ch.isdigit())[-10:]
                 patient_digits = "".join(ch for ch in (patient.phone_number or "") if ch.isdigit())[-10:]

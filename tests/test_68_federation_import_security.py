@@ -74,7 +74,7 @@ def test_federation_does_not_discover_patients_through_missing_phone_placeholder
     partner = client.post(
         "/v1/api/federation/clients",
         headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-NOPHONE-01", "name": "No Phone Discovery Partner"},
+        json={"branch_code": "SUN-BLR-01", "name": "No Phone Discovery Partner"},
     )
     assert partner.status_code == 201, partner.text
 
@@ -104,3 +104,54 @@ def test_federation_does_not_discover_patients_through_missing_phone_placeholder
     )
     assert abha_lookup.status_code == 200, abha_lookup.text
     assert abha_lookup.json()["source_mrn"] == patient.json()["mrn"]
+
+
+
+def test_federation_reindexes_changed_phone_and_abha_identifiers(
+    client, apollo_admin_headers, sunrise_admin_headers
+):
+    """Old identifiers stop resolving and new identifiers resolve after source updates."""
+    partner = client.post(
+        "/v1/api/federation/clients",
+        headers=sunrise_admin_headers,
+        json={"branch_code": "SUN-BLR-01", "name": "Federation Identity Update Partner"},
+    )
+    assert partner.status_code == 201, partner.text
+    patient = client.post(
+        "/v1/api/patients",
+        headers=apollo_admin_headers,
+        json={
+            "full_name": "Federation Identifier Update",
+            "date_of_birth": "1989-04-05T00:00:00Z",
+            "gender": "FEMALE",
+            "phone_number": "9000011122",
+            "abha_number": "ABHA-OLD-IDENTIFIER-01",
+        },
+    )
+    assert patient.status_code == 201, patient.text
+    headers = {"X-Federation-API-Key": partner.json()["raw_api_key"]}
+
+    updated = client.put(
+        f"/v1/api/patients/{patient.json()['id']}",
+        headers=apollo_admin_headers,
+        json={
+            "phone_number": "9000099988",
+            "abha_number": "ABHA-NEW-IDENTIFIER-01",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+
+    for stale_lookup in (
+        "/v1/api/federation/patients/discover?phone_number=9000011122",
+        "/v1/api/federation/patients/discover?abha_number=ABHA-OLD-IDENTIFIER-01",
+    ):
+        response = client.get(stale_lookup, headers=headers)
+        assert response.status_code == 404, response.text
+
+    for current_lookup in (
+        "/v1/api/federation/patients/discover?phone_number=9000099988",
+        "/v1/api/federation/patients/discover?abha_number=ABHA-NEW-IDENTIFIER-01",
+    ):
+        response = client.get(current_lookup, headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.json()["source_mrn"] == patient.json()["mrn"]

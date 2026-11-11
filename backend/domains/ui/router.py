@@ -50,6 +50,11 @@ from backend.domains.pharmacy.models import Prescription
 from backend.domains.diagnostics.models import DiagnosticOrder
 from backend.control_plane.models import ControlPlaneAuditLog, TenantRegistry
 from backend.domains.procurement.documents import scan_file_with_clamav
+from backend.domains.privacy.runtime import (
+    calculate_patient_age,
+    evaluate_tenant_data_use,
+    evaluate_tenant_data_use_for_patients,
+)
 
 router = APIRouter(prefix="/api/ui", tags=["Clinical & Operational UI Aggregates"])
 logger = logging.getLogger(__name__)
@@ -583,11 +588,13 @@ class MyWorkTaskItem(BaseModel):
     "/patients/quick-search",
     response_model=List[PatientQuickSearchItem],
     dependencies=[Depends(RequirePermission("patients:read"))],
+    openapi_extra={"x-privacy-data-use-point": "patients.mpi.search"},
 )
 def quick_patient_search(
     q: str = Query(..., min_length=1, max_length=100, description="Search term for MRN, name, phone, or ABHA"),
     limit: int = Query(default=10, ge=1, le=50),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Rapid, optimized patient lookup endpoint for the top Command Palette (Cmd+K).
@@ -599,6 +606,7 @@ def quick_patient_search(
     patients = (
         db.query(Patient)
         .filter(
+            Patient.is_active.is_(True),
             or_(
                 Patient.mrn.ilike(like_pattern),
                 Patient.full_name.ilike(like_pattern),
@@ -610,6 +618,17 @@ def quick_patient_search(
         .limit(limit)
         .all()
     )
+
+    decisions = evaluate_tenant_data_use_for_patients(
+        db,
+        data_use_point="patients.mpi.search",
+        patient_ages={
+            patient.id: calculate_patient_age(patient.date_of_birth)
+            for patient in patients
+        },
+        actor_user_id=current_user.id,
+    )
+    patients = [patient for patient in patients if decisions[patient.id].allowed]
 
     now = date.today()
     results = []
@@ -643,18 +662,29 @@ def quick_patient_search(
     "/patients/{patient_id}/summary-card",
     response_model=PatientSummaryCard,
     dependencies=[Depends(RequirePermission("patients:read"))],
+    openapi_extra={"x-privacy-data-use-point": "patients.mpi.read"},
 )
 def get_patient_summary_card(
     patient_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Consolidated patient summary card for the universal Patient Safety Banner (CCOW context).
     Bundles Demographics + Active Inpatient Admission + Critical Allergies + Latest Vitals in 1 roundtrip.
     """
     patient = db.get(Patient, patient_id)
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found.")
+    if not patient or not patient.is_active:
+        raise HTTPException(status_code=404, detail="Active patient not found.")
+    decision = evaluate_tenant_data_use(
+        db,
+        data_use_point="patients.mpi.read",
+        patient_id=patient.id,
+        actor_user_id=current_user.id,
+        patient_age=calculate_patient_age(patient.date_of_birth),
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail="Privacy policy does not permit this patient disclosure.")
 
     now = date.today()
     age_years = None
@@ -1313,10 +1343,12 @@ def get_my_work_tasks(
     "/patients/{patient_id}/timeline",
     response_model=List[PatientTimelineEvent],
     dependencies=[Depends(RequirePermission("patients:read"))],
+    openapi_extra={"x-privacy-data-use-point": "patients.mpi.read"},
 )
 def get_patient_timeline(
     patient_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Returns an aggregated, chronological longitudinal timeline of all health events
@@ -1324,8 +1356,17 @@ def get_patient_timeline(
     lab tests, admissions, and billing receipts).
     """
     patient = db.get(Patient, patient_id)
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found.")
+    if not patient or not patient.is_active:
+        raise HTTPException(status_code=404, detail="Active patient not found.")
+    decision = evaluate_tenant_data_use(
+        db,
+        data_use_point="patients.mpi.read",
+        patient_id=patient.id,
+        actor_user_id=current_user.id,
+        patient_age=calculate_patient_age(patient.date_of_birth),
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail="Privacy policy does not permit this patient disclosure.")
 
     events: List[PatientTimelineEvent] = []
 
