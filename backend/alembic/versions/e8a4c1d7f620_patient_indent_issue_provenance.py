@@ -7,7 +7,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "e8a4c1d7f620"
-down_revision = "e1a3c7b5d902"
+down_revision = "d2b6e8f1a903"
 branch_labels = None
 depends_on = None
 
@@ -16,6 +16,11 @@ RETURNS = "procurement_patient_indent_return_events"
 
 
 def upgrade() -> None:
+    # Keep the PostgreSQL enum aligned with the partial-fulfilment state now
+    # emitted by the patient-indent issue workflow. SQLite stores this as text.
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("ALTER TYPE indentstatusenum ADD VALUE IF NOT EXISTS 'PARTIALLY_FULFILLED'")
+
     op.create_table(
         ALLOCATIONS,
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),

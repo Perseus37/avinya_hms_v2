@@ -121,6 +121,7 @@ NON_PATIENT_OR_DEFERRED_GET_ROUTES = {
     "/api/privacy/retention-policies",
     "/api/privacy/retention/jobs/{job_id}",
     "/api/procurement/grn",
+    "/api/procurement/indents/patient/{indent_id}/issue-allocations",
     "/api/procurement/invoices",
     "/api/procurement/invoices/{invoice_id}",
     "/api/procurement/invoices/{invoice_id}/document",

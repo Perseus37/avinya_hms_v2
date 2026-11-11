@@ -58,6 +58,7 @@ class GRNStatusEnum(str, PyEnum):
 class IndentStatusEnum(str, PyEnum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
+    PARTIALLY_FULFILLED = "PARTIALLY_FULFILLED"
     FULFILLED = "FULFILLED"
     CANCELLED = "CANCELLED"
 
