@@ -128,3 +128,25 @@ The workflow must distinguish at least:
 - Until these controls and the legal schedule are approved, retain the existing soft-deactivation path and keep hard deletion disabled for patients with immutable audit references.
 
 This section is an engineering control design, not legal advice and not evidence that statutory erasure is currently supported.
+
+
+## Discovery completeness and pointer publication
+
+Federated discovery responses include additive source-completeness metadata:
+`source_count`, `source_success_count`, `source_failure_count`, `is_partial`, and
+`failed_source_branches`. A successful response with `is_partial=true` is not a
+complete federation view; callers must preserve and display that status rather than
+treating missing source data as a negative clinical finding. If no source result can
+be verified and at least one indexed source is unavailable, discovery returns
+`503 Service Unavailable` with a PHI-minimized failure summary. A normal `404`
+continues to mean that all evaluated sources completed but no shareable patient
+record was found.
+
+Patient-pointer publication distinguishes a privacy-policy denial (HTTP 403) from
+control-plane persistence failure (server error). A successful evaluation does not
+necessarily mean a pointer was published: patient opt-out and branch sharing policy
+may intentionally suppress publication.
+
+These completeness and persistence semantics do not change the separate release
+gate for clinician attribution. Remote emergency federation remains disabled until
+a source-verified, signed actor assertion is implemented and independently reviewed.
