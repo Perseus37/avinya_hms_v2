@@ -139,7 +139,6 @@ class GlobalPatientPointer(ControlBase):
     abha_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
     branch_code: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     subdomain_slug: Mapped[str] = mapped_column(String(63), nullable=False)
-    source_mrn: Mapped[str] = mapped_column(String(50), nullable=False)
     has_critical_allergies: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_clinical_update_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -173,7 +172,6 @@ class FederatedDiscoveryReceipt(ControlBase):
         ForeignKey("global_patient_pointers.id", ondelete="CASCADE"),
         nullable=False,
     )
-    source_branch_code: Mapped[str] = mapped_column(String(50), nullable=False)
     source_mrn: Mapped[str] = mapped_column(String(50), nullable=False)
     summary_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
