@@ -2,6 +2,21 @@ import json
 import pytest
 from datetime import datetime, timedelta, timezone
 
+
+def _grant_doctor_permission(multi_tenant_env, permission_code: str):
+    """Give the doctor test role the explicit permission required by the route."""
+    from sqlalchemy.orm import Session
+    from backend.domains.identity.models import Permission, Role, RolePermission
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        role = db.query(Role).filter_by(code="ROLE_DOCTOR").one()
+        permission = db.query(Permission).filter_by(code=permission_code).one()
+        key = (role.id, permission.id)
+        if db.get(RolePermission, key) is None:
+            db.add(RolePermission(role_id=role.id, permission_id=permission.id))
+            db.commit()
+
 def test_purchase_return_endpoint_reaches_service_validation(client, superuser_headers):
     response = client.post(
         "/v1/api/procurement/returns",
@@ -107,7 +122,8 @@ def test_02_grn_acceptance_auto_generates_inventory_batches(client, superuser_he
     accept_res = client.patch(f"/v1/api/procurement/grn/{grn['id']}/accept", headers=superuser_headers)
     assert accept_res.status_code == 200, f"GRN acceptance failed: {accept_res.text}"
 
-def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_headers, pharmacist_headers, billing_headers, superuser_headers):
+def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_headers, pharmacist_headers, billing_headers, superuser_headers, multi_tenant_env):
+    _grant_doctor_permission(multi_tenant_env, "wards:write")
     """Scenario 3: Issuing an indent bills the patient; returning stock credits the patient."""
     p_res = client.post("/v1/api/patients", headers=doctor_headers, json={"full_name": "Indent Patient", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"})
     assert p_res.status_code == 201, f"Patient creation failed: {p_res.text}"
@@ -150,6 +166,7 @@ def test_patient_indent_issue_rejects_expired_inventory_batch(
     from backend.domains.pharmacy.models import InventoryBatch
     from backend.domains.procurement.models import StoreIndentItem
 
+    _grant_doctor_permission(multi_tenant_env, "wards:write")
     patient = client.post("/v1/api/patients", headers=superuser_headers, json={
         "full_name": "Expired Batch Patient", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"
     }).json()
@@ -220,6 +237,7 @@ def test_patient_indent_returns_require_original_allocation_and_credit_exact_bat
     from backend.domains.pharmacy.models import InventoryBatch
     from backend.domains.procurement.models import PatientIndentReturnEvent
 
+    _grant_doctor_permission(multi_tenant_env, "wards:write")
     patient = client.post("/v1/api/patients", headers=superuser_headers, json={
         "full_name": "Indent Provenance Patient", "date_of_birth": "1991-01-01T00:00:00Z", "gender": "MALE"
     }).json()
