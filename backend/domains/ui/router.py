@@ -836,6 +836,7 @@ def get_patient_summary_card(
     "/doctor/queue-today",
     response_model=DoctorQueueSummary,
     dependencies=[Depends(RequirePermission("opd:read"))],
+    openapi_extra={"x-privacy-data-use-point": "opd.appointments.search"},
 )
 def get_doctor_today_queue(
     doctor_id: Optional[int] = Query(default=None, description="Doctor user ID. Defaults to current user."),
@@ -860,6 +861,27 @@ def get_doctor_today_queue(
         .order_by(Appointment.appointment_time.asc())
         .all()
     )
+
+    patient_ids = {appointment.patient_id for appointment in appointments}
+    queue_patients = db.query(Patient).filter(
+        Patient.id.in_(patient_ids), Patient.is_active.is_(True)
+    ).all() if patient_ids else []
+    queue_decisions = evaluate_tenant_data_use_for_patients(
+        db,
+        data_use_point="opd.appointments.search",
+        patient_ages={
+            patient.id: calculate_patient_age(patient.date_of_birth)
+            for patient in queue_patients
+        },
+        actor_user_id=current_user.id,
+    )
+    allowed_patient_ids = {
+        patient_id for patient_id, decision in queue_decisions.items() if decision.allowed
+    }
+    appointments = [
+        appointment for appointment in appointments
+        if appointment.patient_id in allowed_patient_ids
+    ]
 
     scheduled = 0
     checked_in = 0
@@ -933,10 +955,12 @@ def get_doctor_today_queue(
     "/wards/{ward_id}/bed-map-detailed",
     response_model=List[DetailedBedItem],
     dependencies=[Depends(RequirePermission("ipd:read"))],
+    openapi_extra={"x-privacy-data-use-point": "adt.admissions.search"},
 )
 def get_ward_bed_map_detailed(
     ward_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Returns an interactive visual bed map grid for a specific ward.
@@ -973,6 +997,38 @@ def get_ward_bed_map_detailed(
             if adm:
                 enc = db.get(PatientEncounter, adm.encounter_id)
                 patient = db.get(Patient, enc.patient_id) if enc else None
+                admission_access = (
+                    evaluate_tenant_data_use(
+                        db,
+                        data_use_point="adt.admissions.search",
+                        patient_id=patient.id,
+                        actor_user_id=current_user.id,
+                        patient_age=calculate_patient_age(patient.date_of_birth),
+                        commit_audit=False,
+                    )
+                    if patient and patient.is_active else None
+                )
+                if not admission_access or not admission_access.allowed:
+                    items.append(
+                        DetailedBedItem(
+                            bed_id=b.id,
+                            bed_number=b.bed_number,
+                            room_id=b.room_id,
+                            room_number=room_map.get(b.room_id, "Unknown"),
+                            status=status_val,
+                            occupied_details=None,
+                        )
+                    )
+                    continue
+
+                vitals_access = evaluate_tenant_data_use(
+                    db,
+                    data_use_point="clinical.encounter.vitals.read",
+                    patient_id=patient.id,
+                    actor_user_id=current_user.id,
+                    patient_age=calculate_patient_age(patient.date_of_birth),
+                    commit_audit=False,
+                )
                 attending = db.get(User, adm.admitting_doctor_id) if adm.admitting_doctor_id else None
 
                 age_years = None
@@ -988,6 +1044,7 @@ def get_ward_bed_map_detailed(
                     .filter(EncounterVital.encounter_id == adm.encounter_id)
                     .order_by(ClinicalEarlyWarningScore.id.desc())
                     .first()
+                    if vitals_access.allowed else None
                 )
 
                 occupied_info = {
@@ -1014,6 +1071,7 @@ def get_ward_bed_map_detailed(
             )
         )
 
+    commit_without_expiring(db)
     return items
 
 
@@ -1247,9 +1305,11 @@ def get_opd_queue_summary(
     "/admissions/discharge-pipeline",
     response_model=List[DischargePipelineItem],
     dependencies=[Depends(RequirePermission("admissions:read"))],
+    openapi_extra={"x-privacy-data-use-point": "adt.admissions.search"},
 )
 def get_discharge_pipeline(
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Returns active inpatient admissions pending discharge clearance across
@@ -1263,9 +1323,31 @@ def get_discharge_pipeline(
         .all()
     )
 
+    patient_ids = {admission.patient_id for admission in admissions}
+    patients_by_id = {
+        patient.id: patient
+        for patient in db.query(Patient).filter(
+            Patient.id.in_(patient_ids), Patient.is_active.is_(True)
+        ).all()
+    } if patient_ids else {}
+    decisions = evaluate_tenant_data_use_for_patients(
+        db,
+        data_use_point="adt.admissions.search",
+        patient_ages={
+            patient.id: calculate_patient_age(patient.date_of_birth)
+            for patient in patients_by_id.values()
+        },
+        actor_user_id=current_user.id,
+    )
+    allowed_patient_ids = {
+        patient_id for patient_id, decision in decisions.items() if decision.allowed
+    }
+
     pipeline: List[DischargePipelineItem] = []
     for adm in admissions:
-        patient = db.query(Patient).filter(Patient.id == adm.patient_id).first()
+        patient = patients_by_id.get(adm.patient_id)
+        if patient is None or patient.id not in allowed_patient_ids:
+            continue
         bed = db.query(Bed).filter(Bed.id == adm.bed_id).first() if adm.bed_id else None
         ward = db.query(Ward).filter(Ward.id == bed.ward_id).first() if bed and bed.ward_id else None
 
@@ -1302,6 +1384,7 @@ def get_discharge_pipeline(
     "/tasks/my-work",
     response_model=List[MyWorkTaskItem],
     dependencies=[Depends(RequirePermission("clinical:read"))],
+    openapi_extra={"x-privacy-data-use-point": "opd.appointments.search"},
 )
 def get_my_work_tasks(
     current_user: User = Depends(get_current_user),
@@ -1342,8 +1425,29 @@ def get_my_work_tasks(
         .limit(4)
         .all()
     )
+    waiting_patient_ids = {appointment.patient_id for appointment in waiting_appts}
+    waiting_patients = {
+        patient.id: patient
+        for patient in db.query(Patient).filter(
+            Patient.id.in_(waiting_patient_ids), Patient.is_active.is_(True)
+        ).all()
+    } if waiting_patient_ids else {}
+    waiting_decisions = evaluate_tenant_data_use_for_patients(
+        db,
+        data_use_point="opd.appointments.search",
+        patient_ages={
+            patient.id: calculate_patient_age(patient.date_of_birth)
+            for patient in waiting_patients.values()
+        },
+        actor_user_id=current_user.id,
+    )
+    allowed_waiting_ids = {
+        patient_id for patient_id, decision in waiting_decisions.items() if decision.allowed
+    }
     for appt in waiting_appts:
-        patient = db.query(Patient).filter(Patient.id == appt.patient_id).first()
+        patient = waiting_patients.get(appt.patient_id)
+        if patient is None or patient.id not in allowed_waiting_ids:
+            continue
         tasks.append(
             MyWorkTaskItem(
                 id=f"appt-{appt.id}",
