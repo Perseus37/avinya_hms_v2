@@ -118,7 +118,7 @@ Each source-side event should include:
 - source authorization policy/version and allow/deny reason code;
 - event time and outcome.
 
-Do not store the bearer token. Do not log raw ABHA or unnecessary patient identifiers. Keep audit source-local and append-only. Distinguish requested, authorized, disclosed, import attempted, and import completed so audit never overstates what happened.
+Do not store the bearer token. Do not log raw ABHA or unnecessary patient identifiers. Keep audit source-local and append-only. Distinguish requested, authorized, response-release-attempted, import attempted, destination-committed, and any independently verifiable acknowledgement. Do not claim network delivery, human receipt, or destination commit without corresponding evidence.
 
 If source audit persistence fails, no protected data is released and no import is authorized. If a later destination commit fails, the source record remains an accurate request/authorization/attempt record, not proof of completed destination persistence.
 
@@ -439,9 +439,11 @@ Discovery and import are separate protected operations. They must use distinct c
 
 **Discovery**
 
-`ISSUED → CLAIMED → AUTHORIZED → DISCLOSED`
+`ISSUED → CLAIMED → AUTHORIZED → RESPONSE_RELEASE_ATTEMPTED`
 
-Terminal alternatives are `DENIED`, `EXPIRED`, and `FAILED`. A challenge can transition out of `ISSUED` only once. A repeated request with the same idempotency key may retrieve the already-recorded outcome only if the server can prove it is the same authenticated node, destination, assertion jti, request, and exact response; it must not execute a second disclosure.
+`RESPONSE_RELEASE_ATTEMPTED` means the source durably recorded that it was about to emit the protected response; it does not prove that the destination received or displayed the bytes. The source must never label an HTTP response as delivered merely because the server began or completed a socket write.
+
+Terminal alternatives are `DENIED`, `EXPIRED`, and `FAILED`. A challenge can transition out of `ISSUED` only once. An exact retry after a discovery response has been authorized or emitted must return status/receipt metadata only, never the cached patient summary or other protected payload. A caller that needs the protected payload again must obtain a new source challenge and clinician assertion. This avoids turning an idempotency key into a replayable disclosure capability.
 
 **Import**
 
@@ -465,9 +467,9 @@ Do not implement idempotency as a cache-only check or by making a consumed chall
 
 After claim, the source evaluates issuer trust, clinician status/affiliation, source-side authorization, and privacy/data-use policy. These are distinct decisions and their outcomes must be independently represented in audit.
 
-Before returning any patient-existence signal, demographic summary, or other protected discovery result, the source must durably persist the authorization decision and the exact disclosure outcome/response fingerprint. If audit persistence fails, fail closed.
+Before returning any patient-existence signal, demographic summary, or other protected discovery result, the source must durably persist the authorization decision, the exact response fingerprint, and a `RESPONSE_RELEASE_ATTEMPTED` event. This records the source's release attempt, not proof of network delivery or human receipt. If audit persistence fails, fail closed. A later transport failure remains an attempted release and must not cause automatic replay of the protected response.
 
-For a denial, persist a denial reason code that does not expose sensitive patient information to the caller. External error responses must not distinguish patient-not-found from unauthorized or otherwise disallowed discovery where doing so would create an enumeration oracle.
+For a denial, persist a denial reason code that does not expose sensitive patient information to the caller. External error responses must not distinguish patient-not-found from unauthorized or otherwise disallowed discovery where doing so would create an enumeration oracle. Challenge creation for discovery must use the same externally observable response shape and status for matching and non-matching selectors; avoid match-dependent timing, size, or metadata differences to the extent technically achievable. The source must not disclose selector normalization results or match counts before actor verification.
 
 ### 21.4 Import is a cross-system workflow, not a distributed transaction
 
@@ -489,7 +491,7 @@ Operational tooling must expose counts and state age, not raw assertions, challe
 ### 21.6 Required additional tests
 
 - Concurrent duplicate discovery and import requests across separate workers and database connections.
-- Exact retry versus changed-body, changed-destination, changed-scope, changed-purpose, and changed-jti cases.
+- Exact retry versus changed-body, changed-destination, changed-scope, changed-purpose, and changed-jti cases; verify exact discovery retries return no protected payload.
 - Failure injection between challenge claim, authorization audit, disclosure audit, response transmission, destination commit, acknowledgement transmission, and source completion audit.
 - Lost acknowledgement followed by reconciliation, proving no duplicate destination import.
 - Forged, stale, wrong-node, wrong-destination, and wrong-payload acknowledgement rejection.
