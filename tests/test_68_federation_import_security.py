@@ -65,3 +65,42 @@ def test_federated_import_requires_indexed_source_mrn(client, superuser_headers)
     )
     assert response.status_code == 404
     assert "not currently indexed" in response.json()["message"]
+
+
+def test_federation_does_not_discover_patients_through_missing_phone_placeholder(
+    client, apollo_admin_headers, sunrise_admin_headers
+):
+    """Missing phone values must not be indexed or discoverable as 0000000000."""
+    partner = client.post(
+        "/v1/api/federation/clients",
+        headers=sunrise_admin_headers,
+        json={"branch_code": "SUN-NOPHONE-01", "name": "No Phone Discovery Partner"},
+    )
+    assert partner.status_code == 201, partner.text
+
+    patient = client.post(
+        "/v1/api/patients",
+        headers=apollo_admin_headers,
+        json={
+            "full_name": "No Phone Patient",
+            "date_of_birth": "1991-05-06T00:00:00Z",
+            "gender": "FEMALE",
+            "abha_number": "ABHA-NO-PHONE-01",
+        },
+    )
+    assert patient.status_code == 201, patient.text
+    assert patient.json()["phone_number"] is None
+
+    headers = {"X-Federation-API-Key": partner.json()["raw_api_key"]}
+    placeholder_lookup = client.get(
+        "/v1/api/federation/patients/discover?phone_number=0000000000",
+        headers=headers,
+    )
+    assert placeholder_lookup.status_code == 404, placeholder_lookup.text
+
+    abha_lookup = client.get(
+        "/v1/api/federation/patients/discover?abha_number=ABHA-NO-PHONE-01",
+        headers=headers,
+    )
+    assert abha_lookup.status_code == 200, abha_lookup.text
+    assert abha_lookup.json()["source_mrn"] == patient.json()["mrn"]

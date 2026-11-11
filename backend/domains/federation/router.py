@@ -73,9 +73,17 @@ def sync_patient_pointer(
             return False
 
     try:
-        p_hash = normalize_phone_hash(patient.phone_number)
+        phone_digits = "".join(ch for ch in (patient.phone_number or "") if ch.isdigit())[-10:]
+        # Missing/legacy placeholder numbers are not searchable phone identities.
+        # Keep ABHA-indexed patients discoverable with a deterministic, non-phone key.
+        if not phone_digits or phone_digits == "0000000000":
+            p_hash = hashlib.sha256(
+                f"no-phone:{branch_code}:{patient.mrn}".encode("utf-8")
+            ).hexdigest()
+        else:
+            p_hash = normalize_phone_hash(patient.phone_number)
         stmt = select(GlobalPatientPointer).where(
-            GlobalPatientPointer.phone_hash == p_hash,
+            GlobalPatientPointer.source_mrn == patient.mrn,
             GlobalPatientPointer.branch_code == branch_code,
         )
         pointer = control_db.execute(stmt).scalar_one_or_none()
@@ -358,6 +366,20 @@ def discover_and_aggregate_patient_across_branches(
             patient = branch_db.query(Patient).filter(Patient.mrn == ptr.source_mrn, Patient.is_active.is_(True)).first()
             if not patient or getattr(patient, "allow_network_sharing", True) is False:
                 return None
+            # A legacy discovery pointer may have been indexed from the old
+            # 0000000000 missing-phone placeholder. Never treat that sentinel as
+            # a real phone identity, even before the pointer is refreshed.
+            if phone_number is not None:
+                requested_digits = "".join(ch for ch in phone_number if ch.isdigit())[-10:]
+                patient_digits = "".join(ch for ch in (patient.phone_number or "") if ch.isdigit())[-10:]
+                if (
+                    not requested_digits
+                    or requested_digits == "0000000000"
+                    or not patient_digits
+                    or patient_digits == "0000000000"
+                    or requested_digits != patient_digits
+                ):
+                    return None
 
             decision = evaluate_tenant_data_use(
                 branch_db,

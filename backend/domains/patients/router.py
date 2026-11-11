@@ -114,8 +114,6 @@ def register_patient(
         mrn = f"MRN-{secrets.token_hex(6).upper()}"
 
     dump_data = payload.model_dump(exclude={"mrn"})
-    if not dump_data.get("phone_number"):
-        dump_data["phone_number"] = "0000000000"
 
     patient = Patient(
         mrn=mrn,
