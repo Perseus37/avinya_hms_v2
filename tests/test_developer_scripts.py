@@ -39,6 +39,9 @@ def test_create_control_plane_operator_password_validation():
 
 
 def test_create_control_plane_operator_cli_args(monkeypatch):
+    from backend.core.config import settings
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development")
     # Test valid CLI execution without --name (defaults to username formatted)
     # Mock database session to verify arguments and prevent DB writes
     from unittest.mock import MagicMock, patch
@@ -148,8 +151,11 @@ def test_bootstrap_reset_guard_in_production(monkeypatch):
         bootstrap_main(["--reset"])
 
 
-def test_totp_script_with_secret():
+def test_totp_script_with_secret(monkeypatch):
+    from backend.core.config import settings
     from backend.scripts.totp import main as totp_main, get_code_for_secret
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development")
 
     code, remaining = get_code_for_secret("JBSWY3DPEHPK3PXP")
     assert len(code) == 6
@@ -162,7 +168,10 @@ def test_totp_script_with_secret():
 
 def test_totp_script_with_operator(monkeypatch):
     from unittest.mock import MagicMock, patch
+    from backend.core.config import settings
     from backend.scripts.totp import main as totp_main
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "development")
     from backend.security.envelope import encrypt_tenant_secret
 
     mock_db = MagicMock()

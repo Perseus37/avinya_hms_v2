@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { useAuth } from "../../core/context/AuthContext";
 import { getTenantSlug } from "../../api/client";
 import { authApi } from "../../api/authApi";
+import { useTenantBranding } from "../../core/context/TenantBrandingContext";
 import { Activity, ShieldCheck, KeyRound, Unlock, Key, ArrowLeft, CheckCircle2 } from "lucide-react";
 import { Button } from "../ui/Button";
 
@@ -9,6 +10,7 @@ type AuthMode = "login" | "unlock" | "forgot_password";
 
 export const LoginView: React.FC = () => {
   const { login, verifyMfa, isLoading } = useAuth();
+  const { branding } = useTenantBranding();
   const detectedSlug = getTenantSlug();
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [email, setEmail] = useState("");
@@ -99,11 +101,13 @@ export const LoginView: React.FC = () => {
       <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-800 p-8 shadow-2xl">
         {/* Brand Header */}
         <div className="flex flex-col items-center mb-8">
-          <div className="h-12 w-12 rounded-2xl bg-sky-500 flex items-center justify-center text-slate-950 font-black mb-3 shadow-lg shadow-sky-500/20">
-            <Activity size={26} />
-          </div>
-          <h1 className="text-xl font-bold text-slate-100 tracking-tight">Avinya HMS</h1>
-          <p className="text-xs text-slate-400 mt-1">Clinical & Hospital Operational Operating System</p>
+          {branding?.logo_url ? (
+            <img src={branding.logo_url} alt="" className="h-12 w-12 rounded-2xl object-contain mb-3" />
+          ) : (
+            <div className="h-12 w-12 rounded-2xl bg-[var(--tenant-primary,#0ea5e9)] flex items-center justify-center text-white font-black mb-3 shadow-lg"><Activity size={26} /></div>
+          )}
+          <h1 className="text-xl font-bold text-slate-100 tracking-tight">{branding?.display_name || branding?.hospital_name || "Healthcare"}</h1>
+          <p className="text-xs text-slate-400 mt-1">{branding?.tagline || "Clinical and hospital operations"}</p>
         </div>
 
         {errorMessage && (

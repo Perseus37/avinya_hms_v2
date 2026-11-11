@@ -13,7 +13,7 @@ class PatientCreate(BaseModel):
     full_name: str
     date_of_birth: datetime
     gender: GenderEnum
-    phone_number: Optional[str] = "0000000000"
+    phone_number: Optional[str] = None
     abha_number: Optional[str] = None
     email: Optional[EmailStr] = None
     blood_group: Optional[BloodGroupEnum] = None

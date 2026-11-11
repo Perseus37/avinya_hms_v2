@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { apiClient, getAuthToken, getTenantSlug } from "./client";
 import {
   PatientQuickSearchItem,
   PatientSummaryCard,
@@ -10,7 +10,46 @@ import {
   HardwarePrinterBackendConfig,
 } from "../types";
 
+export interface TenantBranding {
+  tenant_slug: string;
+  hospital_name: string;
+  display_name: string;
+  logo_url: string | null;
+  favicon_url: string | null;
+  primary_color: string;
+  secondary_color: string;
+  accent_color: string;
+  tagline: string | null;
+}
+
 export const uiApi = {
+  getTenantBranding: async (): Promise<TenantBranding> => {
+    return apiClient<TenantBranding>("/api/ui/tenant-branding");
+  },
+  updateTenantBranding: async (branding: Omit<TenantBranding, "tenant_slug" | "hospital_name">): Promise<TenantBranding> => {
+    return apiClient<TenantBranding>("/api/ui/tenant-branding", {
+      method: "PUT",
+      body: JSON.stringify(branding),
+    });
+  },
+  uploadTenantBrandAsset: async (file: File, kind: "logo" | "favicon"): Promise<{ asset_url: string; kind: string; size_bytes: number }> => {
+    const form = new FormData();
+    form.append("file", file);
+    const token = getAuthToken();
+    const response = await fetch(`/api/ui/tenant-branding/assets?kind=${kind}`, {
+      method: "POST",
+      headers: {
+        "X-Hospital-Subdomain": getTenantSlug(),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: form,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new Error(error.detail || `Brand asset upload failed (HTTP ${response.status}).`);
+    }
+    return response.json();
+  },
   quickSearchPatients: async (query: string, limit = 10): Promise<PatientQuickSearchItem[]> => {
     if (!query || query.trim().length === 0) return [];
     return apiClient<PatientQuickSearchItem[]>("/api/ui/patients/quick-search", {

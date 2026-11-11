@@ -114,8 +114,6 @@ def register_patient(
         mrn = f"MRN-{secrets.token_hex(6).upper()}"
 
     dump_data = payload.model_dump(exclude={"mrn"})
-    if not dump_data.get("phone_number"):
-        dump_data["phone_number"] = "0000000000"
 
     patient = Patient(
         mrn=mrn,
@@ -188,19 +186,6 @@ def list_patients(
     query = query.order_by(Patient.id.desc())
 
     if export_format and export_format.lower() == "csv":
-        from backend.domains.privacy.models import PrivacyDecisionAudit
-        db.add(
-            PrivacyDecisionAudit(
-                actor_user_id=actor.id,
-                data_use_point="patients.export.csv",
-                purpose_code="BULK_DATA_EXPORT",
-                mode="ENFORCE",
-                result="ALLOW",
-                reason_code="AUTHORIZED_PATIENT_REGISTRY_EXPORT",
-            )
-        )
-        db.commit()
-
         fieldnames = [
             "id",
             "mrn",
@@ -216,33 +201,52 @@ def list_patients(
         can_view_pii = bool(getattr(actor, "is_superuser", False))
 
         def row_generator():
-            for item in chunked_query_fetcher(query, chunk_size=250):
-                dob_str = item.date_of_birth.strftime("%Y-%m-%d") if item.date_of_birth else ""
-                gender_str = item.gender.value if hasattr(item.gender, "value") else str(item.gender or "")
-                
-                phone = item.phone_number or ""
-                if phone and not can_view_pii and len(phone) >= 7:
-                    phone = f"{phone[:3]}****{phone[-4:]}"
-                elif phone and not can_view_pii:
-                    phone = "****"
+            offset = 0
+            while True:
+                batch = query.offset(offset).limit(250).all()
+                if not batch:
+                    break
+                decisions = evaluate_tenant_data_use_for_patients(
+                    db,
+                    data_use_point="patients.mpi.search",
+                    patient_ages={
+                        item.id: calculate_patient_age(item.date_of_birth)
+                        for item in batch
+                    },
+                    actor_user_id=actor.id,
+                    commit_audit=False,
+                )
+                commit_without_expiring(db)
+                for item in batch:
+                    if not decisions[item.id].allowed:
+                        continue
+                    dob_str = item.date_of_birth.strftime("%Y-%m-%d") if item.date_of_birth else ""
+                    gender_str = item.gender.value if hasattr(item.gender, "value") else str(item.gender or "")
 
-                abha = item.abha_number or ""
-                if abha and not can_view_pii and len(abha) >= 6:
-                    abha = f"{abha[:2]}****{abha[-4:]}"
-                elif abha and not can_view_pii:
-                    abha = "****"
+                    phone = item.phone_number or ""
+                    if phone and not can_view_pii and len(phone) >= 7:
+                        phone = f"{phone[:3]}****{phone[-4:]}"
+                    elif phone and not can_view_pii:
+                        phone = "****"
 
-                yield {
-                    "id": item.id,
-                    "mrn": item.mrn,
-                    "full_name": item.full_name,
-                    "gender": gender_str,
-                    "date_of_birth": dob_str,
-                    "phone_number": phone,
-                    "abha_number": abha,
-                    "is_active": item.is_active,
-                    "created_at": item.created_at,
-                }
+                    abha = item.abha_number or ""
+                    if abha and not can_view_pii and len(abha) >= 6:
+                        abha = f"{abha[:2]}****{abha[-4:]}"
+                    elif abha and not can_view_pii:
+                        abha = "****"
+
+                    yield {
+                        "id": item.id,
+                        "mrn": item.mrn,
+                        "full_name": item.full_name,
+                        "gender": gender_str,
+                        "date_of_birth": dob_str,
+                        "phone_number": phone,
+                        "abha_number": abha,
+                        "is_active": item.is_active,
+                        "created_at": item.created_at,
+                    }
+                offset += len(batch)
 
         filename = f"patients_registry_{start_date or 'all'}_{end_date or 'all'}"
         return stream_csv_response(row_generator(), fieldnames, filename)
@@ -357,7 +361,7 @@ def deactivate_patient(
         control_db.delete(pointer)
         control_db.commit()
 
-    return {"status": "success", "message": f"Patient {patient.mrn} deactivated and purged from Central Index."}
+    return {"status": "success", "message": f"Patient {patient.mrn} deactivated and removed from the Central Discovery Index."}
 
 
 @router.post("/{patient_id}/allergies", response_model=PatientAllergyResponse, status_code=status.HTTP_201_CREATED)

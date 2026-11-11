@@ -7,14 +7,28 @@ and clinical cockpit summaries to eliminate frontend waterfall requests.
 
 from datetime import date, datetime, timezone
 import json
+import logging
+import re
+import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from backend.core.database import get_db, resolve_tenant_context
+from backend.core.config import settings
+from backend.core.storage import (
+    StoragePathError,
+    UploadContentError,
+    UploadTooLargeError,
+    resolve_tenant_storage_file,
+    stage_and_publish_upload,
+    tenant_storage_directory,
+)
+from backend.core.database import get_control_db, get_db, resolve_tenant_context
 from backend.core.dependencies import RequirePermission, get_current_user, get_redis
 from backend.domains.clinical.models import (
     ClinicalEarlyWarningScore,
@@ -34,8 +48,361 @@ from backend.domains.patients.models import Patient, PatientAllergy
 from backend.domains.billing.models import PaymentReceipt, PaymentMethodEnum
 from backend.domains.pharmacy.models import Prescription
 from backend.domains.diagnostics.models import DiagnosticOrder
+from backend.control_plane.models import ControlPlaneAuditLog, TenantRegistry
+from backend.domains.procurement.documents import scan_file_with_clamav
+from backend.domains.privacy.runtime import (
+    calculate_patient_age,
+    commit_without_expiring,
+    evaluate_tenant_data_use,
+    evaluate_tenant_data_use_for_patients,
+)
 
 router = APIRouter(prefix="/api/ui", tags=["Clinical & Operational UI Aggregates"])
+logger = logging.getLogger(__name__)
+
+
+class TenantBrandingUpdate(BaseModel):
+    display_name: str = Field(min_length=2, max_length=150)
+    logo_url: Optional[str] = Field(default=None, max_length=2048)
+    favicon_url: Optional[str] = Field(default=None, max_length=2048)
+    primary_color: str = Field(default="#2563EB", pattern=r"^#[0-9a-fA-F]{6}$")
+    secondary_color: str = Field(default="#0F172A", pattern=r"^#[0-9a-fA-F]{6}$")
+    accent_color: str = Field(default="#0D9488", pattern=r"^#[0-9a-fA-F]{6}$")
+    tagline: Optional[str] = Field(default=None, max_length=160)
+
+
+class TenantBrandingResponse(BaseModel):
+    tenant_slug: str
+    hospital_name: str
+    display_name: str
+    logo_url: Optional[str] = None
+    favicon_url: Optional[str] = None
+    primary_color: str = "#2563EB"
+    secondary_color: str = "#0F172A"
+    accent_color: str = "#0D9488"
+    tagline: Optional[str] = None
+
+
+@router.get("/tenant-branding", response_model=TenantBrandingResponse)
+def get_tenant_branding(
+    request: Request,
+    control_db: Session = Depends(get_control_db),
+):
+    """Public, read-only branding bootstrap. Returns an allowlisted view of the resolved tenant's configuration."""
+    tenant_context = resolve_tenant_context(request)
+    tenant = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.subdomain_slug == tenant_context.subdomain_slug,
+            TenantRegistry.is_active == True,
+        )
+    ).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant configuration not found.")
+
+    try:
+        raw = json.loads(tenant.ui_branding_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def safe_text(key: str, fallback: Optional[str] = None) -> Optional[str]:
+        value = raw.get(key)
+        return value.strip()[:160] if isinstance(value, str) and value.strip() else fallback
+
+    def safe_color(key: str, fallback: str) -> str:
+        value = raw.get(key)
+        if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value.strip()):
+            return value.strip()
+        return fallback
+
+    def safe_asset_url(key: str) -> Optional[str]:
+        value = raw.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        candidate = value.strip()
+        if candidate.startswith("/") and not candidate.startswith("//"):
+            return candidate
+        if candidate.startswith("https://"):
+            return candidate
+        return None
+
+    hospital_name = tenant_context.hospital_name
+    return TenantBrandingResponse(
+        tenant_slug=tenant_context.subdomain_slug,
+        hospital_name=hospital_name,
+        display_name=safe_text("display_name", hospital_name) or hospital_name,
+        logo_url=safe_asset_url("logo_url"),
+        favicon_url=safe_asset_url("favicon_url"),
+        primary_color=safe_color("primary_color", "#2563EB"),
+        secondary_color=safe_color("secondary_color", "#0F172A"),
+        accent_color=safe_color("accent_color", "#0D9488"),
+        tagline=safe_text("tagline"),
+    )
+
+
+@router.put(
+    "/tenant-branding",
+    response_model=TenantBrandingResponse,
+    dependencies=[Depends(RequirePermission("config:write"))],
+)
+def update_tenant_branding(
+    payload: TenantBrandingUpdate,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    control_db: Session = Depends(get_control_db),
+):
+    """Update the allowlisted branding configuration for the resolved tenant."""
+    tenant_context = resolve_tenant_context(request)
+    tenant = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.subdomain_slug == tenant_context.subdomain_slug,
+            TenantRegistry.is_active == True,
+        )
+    ).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant configuration not found.")
+
+    for asset_url in (payload.logo_url, payload.favicon_url):
+        if asset_url and not (
+            (asset_url.startswith("/") and not asset_url.startswith("//"))
+            or asset_url.startswith("https://")
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Brand assets must use HTTPS URLs or same-origin absolute paths.",
+            )
+
+    try:
+        branding = json.loads(tenant.ui_branding_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        branding = {}
+    if not isinstance(branding, dict):
+        branding = {}
+
+    updates = payload.model_dump()
+    updates["display_name"] = updates["display_name"].strip()
+    if len(updates["display_name"]) < 2:
+        raise HTTPException(status_code=422, detail="Display name must contain at least two characters.")
+    if updates["tagline"] is not None:
+        updates["tagline"] = updates["tagline"].strip() or None
+    branding.update(updates)
+
+    tenant.ui_branding_json = json.dumps(branding)
+    control_db.add(tenant)
+    control_db.add(
+        ControlPlaneAuditLog(
+            action="TENANT_BRANDING_UPDATED",
+            target_slug=tenant.subdomain_slug,
+            actor=current_user.email,
+            details="Updated tenant display identity, logo, favicon, and theme configuration.",
+        )
+    )
+    control_db.commit()
+    control_db.refresh(tenant)
+
+    return TenantBrandingResponse(
+        tenant_slug=tenant.subdomain_slug,
+        hospital_name=tenant.hospital_name,
+        display_name=branding.get("display_name") or tenant.hospital_name,
+        logo_url=branding.get("logo_url"),
+        favicon_url=branding.get("favicon_url"),
+        primary_color=branding.get("primary_color", "#2563EB"),
+        secondary_color=branding.get("secondary_color", "#0F172A"),
+        accent_color=branding.get("accent_color", "#0D9488"),
+        tagline=branding.get("tagline"),
+    )
+
+
+_BRAND_ASSET_SIGNATURES = {
+    ".png": (b"\x89PNG\r\n\x1a\n", "image/png"),
+    ".jpg": (b"\xff\xd8\xff", "image/jpeg"),
+    ".jpeg": (b"\xff\xd8\xff", "image/jpeg"),
+    ".webp": (b"RIFF", "image/webp"),
+}
+_BRAND_ASSET_ID = re.compile(r"^[0-9a-f]{32}\.(png|jpg|jpeg|webp)$")
+_BRAND_ASSET_URL_PREFIX = "/api/ui/tenant-branding/assets/"
+
+
+def _local_brand_asset_id(asset_url: Any) -> Optional[str]:
+    """Return an asset ID only for URLs owned by this branding endpoint."""
+    if not isinstance(asset_url, str) or not asset_url.startswith(_BRAND_ASSET_URL_PREFIX):
+        return None
+    asset_id = asset_url[len(_BRAND_ASSET_URL_PREFIX):]
+    return asset_id if _BRAND_ASSET_ID.fullmatch(asset_id) else None
+
+
+def _delete_tenant_brand_asset(tenant_slug: str, asset_id: str) -> None:
+    """Delete one validated asset inside its tenant directory; never follow path escapes."""
+    if not _BRAND_ASSET_ID.fullmatch(asset_id):
+        return
+    try:
+        tenant_root = tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_slug,
+            "branding-assets",
+            create=False,
+        )
+        asset_path = resolve_tenant_storage_file(tenant_root, asset_id)
+    except StoragePathError:
+        return
+    try:
+        if asset_path.is_file():
+            asset_path.unlink()
+    except OSError:
+        # Branding has already committed; cleanup is best-effort and must not
+        # turn a successful configuration update into a failed upload response.
+        logger.warning("Unable to remove replaced tenant brand asset: %s", asset_path, exc_info=True)
+
+
+
+
+@router.post(
+    "/tenant-branding/assets",
+    dependencies=[Depends(RequirePermission("config:write"))],
+)
+def upload_tenant_brand_asset(
+    request: Request,
+    kind: str = Query(..., pattern=r"^(logo|favicon)$"),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    control_db: Session = Depends(get_control_db),
+):
+    """Store a tenant-isolated raster brand asset after signature and malware checks."""
+    tenant_context = resolve_tenant_context(request)
+    tenant = control_db.execute(
+        select(TenantRegistry).where(
+            TenantRegistry.subdomain_slug == tenant_context.subdomain_slug,
+            TenantRegistry.is_active == True,
+        )
+    ).scalar_one_or_none()
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Tenant configuration not found.")
+
+    suffix = Path(file.filename or "").suffix.lower()
+    signature_info = _BRAND_ASSET_SIGNATURES.get(suffix)
+    if signature_info is None:
+        raise HTTPException(status_code=415, detail="Brand assets must be PNG, JPEG, or WebP images.")
+
+    signature, media_type = signature_info
+    if not re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}$", tenant_context.subdomain_slug):
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    try:
+        tenant_root = tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_context.subdomain_slug,
+            "branding-assets",
+            create=True,
+        )
+    except StoragePathError as exc:
+        logger.error("Unable to prepare tenant brand asset storage.", exc_info=True)
+        raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
+
+    asset_id = f"{uuid.uuid4().hex}{suffix}"
+
+    def validate_staged_asset(staged_path: Path) -> None:
+        if suffix == ".webp":
+            with staged_path.open("rb") as image_file:
+                image_file.seek(8)
+                if image_file.read(4) != b"WEBP":
+                    raise UploadContentError("Image content does not match its file type.")
+
+    try:
+        total_bytes = stage_and_publish_upload(
+            tenant_root,
+            asset_id,
+            f".{asset_id}.part",
+            file.file,
+            max_bytes=settings.MAX_ATTACHMENT_UPLOAD_BYTES,
+            signature=signature,
+            scanner=scan_file_with_clamav,
+            validate_staged=validate_staged_asset,
+        )
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=413, detail="Brand asset exceeds the configured upload limit.") from exc
+    except UploadContentError as exc:
+        raise HTTPException(status_code=415, detail="Image content does not match its file type.") from exc
+    except OSError as exc:
+        logger.error("Tenant brand asset write failed.", exc_info=True)
+        raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
+    finally:
+        file.file.close()
+
+    asset_url = f"/api/ui/tenant-branding/assets/{asset_id}"
+    try:
+        destination = resolve_tenant_storage_file(tenant_root, asset_id)
+    except StoragePathError as exc:
+        logger.error("Unable to resolve published tenant brand asset.", exc_info=True)
+        _delete_tenant_brand_asset(tenant_context.subdomain_slug, asset_id)
+        raise HTTPException(status_code=503, detail="Brand asset storage is unavailable.") from exc
+
+    try:
+        try:
+            branding = json.loads(tenant.ui_branding_json or "{}")
+        except (TypeError, json.JSONDecodeError):
+            branding = {}
+        if not isinstance(branding, dict):
+            branding = {}
+        branding_key = "logo_url" if kind == "logo" else "favicon_url"
+        previous_asset_id = _local_brand_asset_id(branding.get(branding_key))
+        branding[branding_key] = asset_url
+        tenant.ui_branding_json = json.dumps(branding)
+        control_db.add(tenant)
+        control_db.add(ControlPlaneAuditLog(
+            action="TENANT_BRAND_ASSET_UPLOADED",
+            target_slug=tenant.subdomain_slug,
+            actor=current_user.email,
+            details=f"Uploaded tenant {kind} image ({media_type}, {total_bytes} bytes).",
+        ))
+        control_db.commit()
+    except Exception:
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            # Preserve the DB rollback even if cleanup cannot reach the mount;
+            # the resulting unreferenced file can be removed by storage maintenance.
+            logger.warning("Unable to remove uncommitted tenant brand asset: %s", destination, exc_info=True)
+        control_db.rollback()
+        raise
+
+    # Remove only the replaced local asset, and only when neither branding slot
+    # still references it. External URLs and unrelated files are never touched.
+    still_referenced = previous_asset_id and any(
+        _local_brand_asset_id(branding.get(key)) == previous_asset_id
+        for key in ("logo_url", "favicon_url")
+    )
+    if previous_asset_id and previous_asset_id != asset_id and not still_referenced:
+        _delete_tenant_brand_asset(tenant.subdomain_slug, previous_asset_id)
+
+    return {"asset_url": asset_url, "kind": kind, "size_bytes": total_bytes}
+
+
+@router.get("/tenant-branding/assets/{asset_id}")
+def get_tenant_brand_asset(request: Request, asset_id: str):
+    """Serve only a tenant's own validated brand asset; no shared static path is exposed."""
+    if not _BRAND_ASSET_ID.fullmatch(asset_id):
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    tenant_context = resolve_tenant_context(request)
+    if not re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,62}$", tenant_context.subdomain_slug):
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    try:
+        tenant_root = tenant_storage_directory(
+            settings.ATTACHMENTS_STORAGE_DIR,
+            tenant_context.subdomain_slug,
+            "branding-assets",
+            create=False,
+        )
+        asset_path = resolve_tenant_storage_file(tenant_root, asset_id)
+    except StoragePathError as exc:
+        raise HTTPException(status_code=404, detail="Brand asset not found.") from exc
+    if not asset_path.is_file():
+        raise HTTPException(status_code=404, detail="Brand asset not found.")
+    media_type = _BRAND_ASSET_SIGNATURES[asset_path.suffix.lower()][1]
+    return FileResponse(
+        asset_path,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -222,11 +589,13 @@ class MyWorkTaskItem(BaseModel):
     "/patients/quick-search",
     response_model=List[PatientQuickSearchItem],
     dependencies=[Depends(RequirePermission("patients:read"))],
+    openapi_extra={"x-privacy-data-use-point": "patients.mpi.search"},
 )
 def quick_patient_search(
     q: str = Query(..., min_length=1, max_length=100, description="Search term for MRN, name, phone, or ABHA"),
     limit: int = Query(default=10, ge=1, le=50),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Rapid, optimized patient lookup endpoint for the top Command Palette (Cmd+K).
@@ -238,6 +607,7 @@ def quick_patient_search(
     patients = (
         db.query(Patient)
         .filter(
+            Patient.is_active.is_(True),
             or_(
                 Patient.mrn.ilike(like_pattern),
                 Patient.full_name.ilike(like_pattern),
@@ -249,6 +619,17 @@ def quick_patient_search(
         .limit(limit)
         .all()
     )
+
+    decisions = evaluate_tenant_data_use_for_patients(
+        db,
+        data_use_point="patients.mpi.search",
+        patient_ages={
+            patient.id: calculate_patient_age(patient.date_of_birth)
+            for patient in patients
+        },
+        actor_user_id=current_user.id,
+    )
+    patients = [patient for patient in patients if decisions[patient.id].allowed]
 
     now = date.today()
     results = []
@@ -282,18 +663,50 @@ def quick_patient_search(
     "/patients/{patient_id}/summary-card",
     response_model=PatientSummaryCard,
     dependencies=[Depends(RequirePermission("patients:read"))],
+    openapi_extra={"x-privacy-data-use-point": "patients.mpi.read"},
 )
 def get_patient_summary_card(
     patient_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Consolidated patient summary card for the universal Patient Safety Banner (CCOW context).
     Bundles Demographics + Active Inpatient Admission + Critical Allergies + Latest Vitals in 1 roundtrip.
     """
     patient = db.get(Patient, patient_id)
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found.")
+    if not patient or not patient.is_active:
+        raise HTTPException(status_code=404, detail="Active patient not found.")
+    patient_age = calculate_patient_age(patient.date_of_birth)
+    decision = evaluate_tenant_data_use(
+        db,
+        data_use_point="patients.mpi.read",
+        patient_id=patient.id,
+        actor_user_id=current_user.id,
+        patient_age=patient_age,
+        commit_audit=False,
+    )
+    if not decision.allowed:
+        commit_without_expiring(db)
+        raise HTTPException(status_code=403, detail="Privacy policy does not permit this patient disclosure.")
+
+    section_access = {
+        point: evaluate_tenant_data_use(
+            db,
+            data_use_point=point,
+            patient_id=patient.id,
+            actor_user_id=current_user.id,
+            patient_age=patient_age,
+            commit_audit=False,
+        )
+        for point in (
+            "adt.admissions.search",
+            "patients.allergies.read",
+            "clinical.encounter.vitals.read",
+            "clinical.encounter.diagnoses.read",
+        )
+    }
+    commit_without_expiring(db)
 
     now = date.today()
     age_years = None
@@ -304,16 +717,18 @@ def get_patient_summary_card(
 
     # 1. Active Inpatient Admission
     active_admission = None
-    admission = (
-        db.query(InpatientAdmission)
-        .join(PatientEncounter)
-        .filter(
-            PatientEncounter.patient_id == patient_id,
-            InpatientAdmission.discharge_time.is_(None),
+    admission = None
+    if section_access["adt.admissions.search"].allowed:
+        admission = (
+            db.query(InpatientAdmission)
+            .join(PatientEncounter)
+            .filter(
+                PatientEncounter.patient_id == patient_id,
+                InpatientAdmission.discharge_time.is_(None),
+            )
+            .order_by(InpatientAdmission.id.desc())
+            .first()
         )
-        .order_by(InpatientAdmission.id.desc())
-        .first()
-    )
     if admission:
         bed = db.get(Bed, admission.current_bed_id) if admission.current_bed_id else None
         room = db.get(PhysicalRoom, bed.room_id) if bed and bed.room_id else None
@@ -335,6 +750,7 @@ def get_patient_summary_card(
         db.query(PatientAllergy)
         .filter(PatientAllergy.patient_id == patient_id, PatientAllergy.is_active == True)
         .all()
+        if section_access["patients.allergies.read"].allowed else []
     )
     allergy_list = [
         {
@@ -351,7 +767,7 @@ def get_patient_summary_card(
     latest_vitals = None
     encounters = db.query(PatientEncounter.id).filter(PatientEncounter.patient_id == patient_id).all()
     enc_ids = [e[0] for e in encounters]
-    if enc_ids:
+    if enc_ids and section_access["clinical.encounter.vitals.read"].allowed:
         vital = (
             db.query(EncounterVital)
             .filter(EncounterVital.encounter_id.in_(enc_ids))
@@ -378,7 +794,7 @@ def get_patient_summary_card(
 
     # 4. Active Diagnoses
     diagnoses = []
-    if enc_ids:
+    if enc_ids and section_access["clinical.encounter.diagnoses.read"].allowed:
         active_diag = (
             db.query(EncounterDiagnosis)
             .filter(EncounterDiagnosis.encounter_id.in_(enc_ids))
@@ -420,6 +836,7 @@ def get_patient_summary_card(
     "/doctor/queue-today",
     response_model=DoctorQueueSummary,
     dependencies=[Depends(RequirePermission("opd:read"))],
+    openapi_extra={"x-privacy-data-use-point": "opd.appointments.search"},
 )
 def get_doctor_today_queue(
     doctor_id: Optional[int] = Query(default=None, description="Doctor user ID. Defaults to current user."),
@@ -444,6 +861,27 @@ def get_doctor_today_queue(
         .order_by(Appointment.appointment_time.asc())
         .all()
     )
+
+    patient_ids = {appointment.patient_id for appointment in appointments}
+    queue_patients = db.query(Patient).filter(
+        Patient.id.in_(patient_ids), Patient.is_active.is_(True)
+    ).all() if patient_ids else []
+    queue_decisions = evaluate_tenant_data_use_for_patients(
+        db,
+        data_use_point="opd.appointments.search",
+        patient_ages={
+            patient.id: calculate_patient_age(patient.date_of_birth)
+            for patient in queue_patients
+        },
+        actor_user_id=current_user.id,
+    )
+    allowed_patient_ids = {
+        patient_id for patient_id, decision in queue_decisions.items() if decision.allowed
+    }
+    appointments = [
+        appointment for appointment in appointments
+        if appointment.patient_id in allowed_patient_ids
+    ]
 
     scheduled = 0
     checked_in = 0
@@ -517,10 +955,12 @@ def get_doctor_today_queue(
     "/wards/{ward_id}/bed-map-detailed",
     response_model=List[DetailedBedItem],
     dependencies=[Depends(RequirePermission("ipd:read"))],
+    openapi_extra={"x-privacy-data-use-point": "adt.admissions.search"},
 )
 def get_ward_bed_map_detailed(
     ward_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Returns an interactive visual bed map grid for a specific ward.
@@ -557,6 +997,38 @@ def get_ward_bed_map_detailed(
             if adm:
                 enc = db.get(PatientEncounter, adm.encounter_id)
                 patient = db.get(Patient, enc.patient_id) if enc else None
+                admission_access = (
+                    evaluate_tenant_data_use(
+                        db,
+                        data_use_point="adt.admissions.search",
+                        patient_id=patient.id,
+                        actor_user_id=current_user.id,
+                        patient_age=calculate_patient_age(patient.date_of_birth),
+                        commit_audit=False,
+                    )
+                    if patient and patient.is_active else None
+                )
+                if not admission_access or not admission_access.allowed:
+                    items.append(
+                        DetailedBedItem(
+                            bed_id=b.id,
+                            bed_number=b.bed_number,
+                            room_id=b.room_id,
+                            room_number=room_map.get(b.room_id, "Unknown"),
+                            status=status_val,
+                            occupied_details=None,
+                        )
+                    )
+                    continue
+
+                vitals_access = evaluate_tenant_data_use(
+                    db,
+                    data_use_point="clinical.encounter.vitals.read",
+                    patient_id=patient.id,
+                    actor_user_id=current_user.id,
+                    patient_age=calculate_patient_age(patient.date_of_birth),
+                    commit_audit=False,
+                )
                 attending = db.get(User, adm.admitting_doctor_id) if adm.admitting_doctor_id else None
 
                 age_years = None
@@ -572,6 +1044,7 @@ def get_ward_bed_map_detailed(
                     .filter(EncounterVital.encounter_id == adm.encounter_id)
                     .order_by(ClinicalEarlyWarningScore.id.desc())
                     .first()
+                    if vitals_access.allowed else None
                 )
 
                 occupied_info = {
@@ -598,6 +1071,7 @@ def get_ward_bed_map_detailed(
             )
         )
 
+    commit_without_expiring(db)
     return items
 
 
@@ -831,9 +1305,11 @@ def get_opd_queue_summary(
     "/admissions/discharge-pipeline",
     response_model=List[DischargePipelineItem],
     dependencies=[Depends(RequirePermission("admissions:read"))],
+    openapi_extra={"x-privacy-data-use-point": "adt.admissions.search"},
 )
 def get_discharge_pipeline(
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Returns active inpatient admissions pending discharge clearance across
@@ -847,9 +1323,31 @@ def get_discharge_pipeline(
         .all()
     )
 
+    patient_ids = {admission.patient_id for admission in admissions}
+    patients_by_id = {
+        patient.id: patient
+        for patient in db.query(Patient).filter(
+            Patient.id.in_(patient_ids), Patient.is_active.is_(True)
+        ).all()
+    } if patient_ids else {}
+    decisions = evaluate_tenant_data_use_for_patients(
+        db,
+        data_use_point="adt.admissions.search",
+        patient_ages={
+            patient.id: calculate_patient_age(patient.date_of_birth)
+            for patient in patients_by_id.values()
+        },
+        actor_user_id=current_user.id,
+    )
+    allowed_patient_ids = {
+        patient_id for patient_id, decision in decisions.items() if decision.allowed
+    }
+
     pipeline: List[DischargePipelineItem] = []
     for adm in admissions:
-        patient = db.query(Patient).filter(Patient.id == adm.patient_id).first()
+        patient = patients_by_id.get(adm.patient_id)
+        if patient is None or patient.id not in allowed_patient_ids:
+            continue
         bed = db.query(Bed).filter(Bed.id == adm.bed_id).first() if adm.bed_id else None
         ward = db.query(Ward).filter(Ward.id == bed.ward_id).first() if bed and bed.ward_id else None
 
@@ -886,6 +1384,7 @@ def get_discharge_pipeline(
     "/tasks/my-work",
     response_model=List[MyWorkTaskItem],
     dependencies=[Depends(RequirePermission("clinical:read"))],
+    openapi_extra={"x-privacy-data-use-point": "opd.appointments.search"},
 )
 def get_my_work_tasks(
     current_user: User = Depends(get_current_user),
@@ -905,7 +1404,46 @@ def get_my_work_tasks(
         .limit(3)
         .all()
     )
+    high_risk_vital_ids = {score.vital_id for score in high_risk_vitals}
+    task_vitals = {
+        vital.id: vital
+        for vital in db.query(EncounterVital).filter(
+            EncounterVital.id.in_(high_risk_vital_ids)
+        ).all()
+    } if high_risk_vital_ids else {}
+    task_encounter_ids = {vital.encounter_id for vital in task_vitals.values()}
+    task_encounters = {
+        encounter.id: encounter
+        for encounter in db.query(PatientEncounter).filter(
+            PatientEncounter.id.in_(task_encounter_ids)
+        ).all()
+    } if task_encounter_ids else {}
+    task_patient_ids = {
+        encounter.patient_id for encounter in task_encounters.values()
+    }
+    task_patients = {
+        patient.id: patient
+        for patient in db.query(Patient).filter(
+            Patient.id.in_(task_patient_ids), Patient.is_active.is_(True)
+        ).all()
+    } if task_patient_ids else {}
+    vital_decisions = evaluate_tenant_data_use_for_patients(
+        db,
+        data_use_point="clinical.encounter.vitals.read",
+        patient_ages={
+            patient.id: calculate_patient_age(patient.date_of_birth)
+            for patient in task_patients.values()
+        },
+        actor_user_id=current_user.id,
+    )
+    allowed_vital_patients = {
+        patient_id for patient_id, decision in vital_decisions.items() if decision.allowed
+    }
     for score in high_risk_vitals:
+        vital = task_vitals.get(score.vital_id)
+        encounter = task_encounters.get(vital.encounter_id) if vital else None
+        if not encounter or encounter.patient_id not in allowed_vital_patients:
+            continue
         tasks.append(
             MyWorkTaskItem(
                 id=f"news2-{score.id}",
@@ -926,8 +1464,29 @@ def get_my_work_tasks(
         .limit(4)
         .all()
     )
+    waiting_patient_ids = {appointment.patient_id for appointment in waiting_appts}
+    waiting_patients = {
+        patient.id: patient
+        for patient in db.query(Patient).filter(
+            Patient.id.in_(waiting_patient_ids), Patient.is_active.is_(True)
+        ).all()
+    } if waiting_patient_ids else {}
+    waiting_decisions = evaluate_tenant_data_use_for_patients(
+        db,
+        data_use_point="opd.appointments.search",
+        patient_ages={
+            patient.id: calculate_patient_age(patient.date_of_birth)
+            for patient in waiting_patients.values()
+        },
+        actor_user_id=current_user.id,
+    )
+    allowed_waiting_ids = {
+        patient_id for patient_id, decision in waiting_decisions.items() if decision.allowed
+    }
     for appt in waiting_appts:
-        patient = db.query(Patient).filter(Patient.id == appt.patient_id).first()
+        patient = waiting_patients.get(appt.patient_id)
+        if patient is None or patient.id not in allowed_waiting_ids:
+            continue
         tasks.append(
             MyWorkTaskItem(
                 id=f"appt-{appt.id}",
@@ -952,10 +1511,12 @@ def get_my_work_tasks(
     "/patients/{patient_id}/timeline",
     response_model=List[PatientTimelineEvent],
     dependencies=[Depends(RequirePermission("patients:read"))],
+    openapi_extra={"x-privacy-data-use-point": "patients.mpi.read"},
 )
 def get_patient_timeline(
     patient_id: int,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Returns an aggregated, chronological longitudinal timeline of all health events
@@ -963,8 +1524,48 @@ def get_patient_timeline(
     lab tests, admissions, and billing receipts).
     """
     patient = db.get(Patient, patient_id)
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found.")
+    if not patient or not patient.is_active:
+        raise HTTPException(status_code=404, detail="Active patient not found.")
+    patient_age = calculate_patient_age(patient.date_of_birth)
+    decision = evaluate_tenant_data_use(
+        db,
+        data_use_point="patients.mpi.read",
+        patient_id=patient.id,
+        actor_user_id=current_user.id,
+        patient_age=patient_age,
+        commit_audit=False,
+    )
+    if not decision.allowed:
+        commit_without_expiring(db)
+        raise HTTPException(status_code=403, detail="Privacy policy does not permit this patient disclosure.")
+
+    category_access = {
+        "CLINICAL": evaluate_tenant_data_use(
+            db, data_use_point="opd.appointments.search", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+        "ADMISSION": evaluate_tenant_data_use(
+            db, data_use_point="adt.admissions.search", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+        "TRIAGE": evaluate_tenant_data_use(
+            db, data_use_point="clinical.encounter.vitals.read", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+        "LAB": evaluate_tenant_data_use(
+            db, data_use_point="diagnostics.orders.search", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+        "MEDICATION": evaluate_tenant_data_use(
+            db, data_use_point="pharmacy.prescriptions.search", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+        "BILLING": evaluate_tenant_data_use(
+            db, data_use_point="billing.payments.read", patient_id=patient.id,
+            actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+        ),
+    }
+    commit_without_expiring(db)
 
     events: List[PatientTimelineEvent] = []
 
@@ -1179,6 +1780,12 @@ def get_patient_timeline(
                 )
             )
 
+    # Keep each event category behind its own active privacy decision.
+    events = [
+        event for event in events
+        if event.category == "REGISTRATION"
+        or category_access[event.category].allowed
+    ]
     # Sort descending (newest milestone first)
     events.sort(key=lambda x: x.timestamp, reverse=True)
     return events
@@ -1191,19 +1798,33 @@ def get_patient_timeline(
     "/patients/{patient_id}/revisit-eligibility",
     response_model=RevisitEligibilityResponse,
     dependencies=[Depends(RequirePermission("opd:read"))],
+    openapi_extra={"x-privacy-data-use-point": "patients.mpi.read"},
 )
 def get_revisit_eligibility(
     patient_id: int,
     doctor_id: int = Query(..., description="Target doctor user ID"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Evaluates patient eligibility for a complimentary revisit versus standard
     or follow-up fee, tied to doctor-specific grace periods.
     """
     patient = db.get(Patient, patient_id)
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found.")
+    if not patient or not patient.is_active:
+        raise HTTPException(status_code=404, detail="Active patient not found.")
+    patient_age = calculate_patient_age(patient.date_of_birth)
+    mpi_decision = evaluate_tenant_data_use(
+        db, data_use_point="patients.mpi.read", patient_id=patient.id,
+        actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+    )
+    appointment_decision = evaluate_tenant_data_use(
+        db, data_use_point="opd.appointments.search", patient_id=patient.id,
+        actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+    )
+    commit_without_expiring(db)
+    if not mpi_decision.allowed or not appointment_decision.allowed:
+        raise HTTPException(status_code=403, detail="Privacy policy does not permit this patient disclosure.")
 
     doc_user = db.get(User, doctor_id)
     if not doc_user:

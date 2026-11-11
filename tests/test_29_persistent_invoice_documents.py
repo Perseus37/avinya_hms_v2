@@ -86,7 +86,12 @@ def test_invoice_document_is_persisted_and_authorized_download_is_tenant_scoped(
     assert download.status_code == 200
     assert download.content == content
     assert download.headers["content-type"] == "application/pdf"
+    assert download.headers["cache-control"] == "private, no-store, max-age=0"
+    assert download.headers["pragma"] == "no-cache"
+    assert download.headers["expires"] == "0"
     assert download.headers["x-content-type-options"] == "nosniff"
+    assert download.headers["x-download-options"] == "noopen"
+    assert download.headers["cross-origin-resource-policy"] == "same-origin"
     assert "vendor-invoice-" in download.headers["content-disposition"]
 
     engine = multi_tenant_env["tenant_engines"]["hms_default"]
@@ -344,3 +349,112 @@ def test_invoice_extraction_failure_retains_document_for_manual_review(
         assert invoice.notes == (
             "AI extraction failed; the source document is retained for manual review."
         )
+
+
+def test_invoice_storage_rejects_symlinked_tenant_directory(
+    monkeypatch, tmp_path
+):
+    from backend.domains.procurement.documents import store_vendor_invoice_document
+
+    storage_root = tmp_path / "storage"
+    storage_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (storage_root / "default").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(settings, "ATTACHMENTS_STORAGE_DIR", str(storage_root))
+    monkeypatch.setattr(
+        "backend.domains.procurement.documents.scan_file_with_clamav",
+        lambda _: None,
+    )
+
+    with pytest.raises(HTTPException) as rejected:
+        store_vendor_invoice_document(
+            "default", "invoice.pdf", BytesIO(b"%PDF-1.7\\ncontent")
+        )
+
+    assert rejected.value.status_code == 503
+    assert not list(outside.rglob("*"))
+
+
+def test_invoice_storage_rejects_symlinked_invoice_directory(
+    monkeypatch, tmp_path
+):
+    from backend.domains.procurement.documents import store_vendor_invoice_document
+
+    storage_root = tmp_path / "storage"
+    tenant_root = storage_root / "default"
+    tenant_root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tenant_root / "procurement-invoices").symlink_to(
+        outside, target_is_directory=True
+    )
+    monkeypatch.setattr(settings, "ATTACHMENTS_STORAGE_DIR", str(storage_root))
+    monkeypatch.setattr(
+        "backend.domains.procurement.documents.scan_file_with_clamav",
+        lambda _: None,
+    )
+
+    with pytest.raises(HTTPException) as rejected:
+        store_vendor_invoice_document(
+            "default", "invoice.pdf", BytesIO(b"%PDF-1.7\\ncontent")
+        )
+
+    assert rejected.value.status_code == 503
+    assert not list(outside.rglob("*"))
+
+
+def test_invoice_download_rejects_symlinked_document(
+    monkeypatch, tmp_path
+):
+    storage_root = tmp_path / "storage"
+    invoice_dir = storage_root / "default" / "procurement-invoices"
+    invoice_dir.mkdir(parents=True)
+    outside_file = tmp_path / "outside.pdf"
+    outside_file.write_bytes(b"%PDF-1.7\\nprivate")
+    (invoice_dir / ("a" * 32 + ".pdf")).symlink_to(outside_file)
+    monkeypatch.setattr(settings, "ATTACHMENTS_STORAGE_DIR", str(storage_root))
+
+    with pytest.raises(HTTPException) as rejected:
+        resolve_vendor_invoice_document(
+            "default", f"default/procurement-invoices/{'a' * 32}.pdf"
+        )
+
+    assert rejected.value.status_code == 404
+
+
+def test_shared_tenant_storage_rejects_invalid_components(tmp_path):
+    from backend.core.storage import StoragePathError, tenant_storage_directory
+
+    with pytest.raises(StoragePathError):
+        tenant_storage_directory(tmp_path, "../outside", "procurement-invoices", create=True)
+    with pytest.raises(StoragePathError):
+        tenant_storage_directory(tmp_path, "default", "../outside", create=True)
+
+
+def test_shared_tenant_storage_rejects_symlinked_namespace(tmp_path):
+    from backend.core.storage import StoragePathError, tenant_storage_directory
+
+    tenant_dir = tmp_path / "default"
+    tenant_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tenant_dir / "procurement-invoices").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(StoragePathError):
+        tenant_storage_directory(tmp_path, "default", "procurement-invoices", create=True)
+
+
+def test_shared_tenant_storage_file_resolution_rejects_traversal_and_symlinks(tmp_path):
+    from backend.core.storage import StoragePathError, resolve_tenant_storage_file
+
+    tenant_dir = tmp_path / "default"
+    tenant_dir.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.7")
+    (tenant_dir / "linked.pdf").symlink_to(outside)
+
+    with pytest.raises(StoragePathError):
+        resolve_tenant_storage_file(tenant_dir, "../outside.pdf")
+    with pytest.raises(StoragePathError):
+        resolve_tenant_storage_file(tenant_dir, "linked.pdf")

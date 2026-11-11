@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     PRIVACY_ALLOW_RETENTION_EXECUTE: bool = False
     ENABLE_PRODUCTION_API_DOCS: bool = False
     TRUSTED_PROXY_IPS: str = ""
+    # Header-based tenant routing is disabled by default. Enable only for
+    # explicitly trusted internal/test ingress paths.
+    ALLOW_HEADER_TENANT_OVERRIDE: bool = False
     WS_MAX_CONNECTIONS: int = Field(default=100, ge=1, le=10000)
     WS_MAX_WAITING_ROOM_CONNECTIONS: int = Field(default=25, ge=1, le=10000)
     BREAK_GLASS_MAX_REQUESTS_PER_DAY: int = Field(default=5, ge=1, le=100)

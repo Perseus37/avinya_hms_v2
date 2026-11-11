@@ -55,12 +55,14 @@ def test_02_control_plane_modular_entitlements_and_schema_status(client):
                 "blood_bank": False,
             },
             "quota_limits": {"max_beds": 300, "max_users": 120},
+            "corporate_group_id": "corp-network-1",
             "maintenance_mode": False,
         },
     )
     assert ent_res.status_code == 200
     assert ent_res.json()["pricing_model"] == "BUNDLE_SURGICAL_SUITE"
     assert ent_res.json()["base_license_fee_paise"] == 17500000
+    assert ent_res.json()["corporate_group_id"] == "CORP-NETWORK-1"
 
     sch_res = cp.get("/api/fleet/schema-status", headers={"X-Master-Setup-Key": settings.MASTER_ONBOARDING_KEY})
     assert sch_res.status_code == 200
@@ -229,7 +231,7 @@ def test_07_federation_privacy_sovereignty_patient_opt_out_and_hospital_isolated
     sun_client = client.post(
         "/v1/api/federation/clients",
         headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-PRIV-01", "name": "Sunrise Privacy Test Node"},
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Privacy Test Node"},
     ).json()
     fed_headers = {"X-Federation-API-Key": sun_client["raw_api_key"]}
 
