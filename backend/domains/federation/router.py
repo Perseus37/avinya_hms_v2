@@ -391,7 +391,7 @@ def discover_and_aggregate_patient_across_branches(
     if len({branch for branch, _ in branch_mrns}) != len(branch_mrns):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="The discovery index contains multiple patient records in one branch for this identifier.",
+            detail="Multiple patient records match this identifier in one branch; use the patient ABHA number to disambiguate.",
         )
 
     # Phone numbers are not unique patient identifiers. Permit a multi-branch
