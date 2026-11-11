@@ -709,8 +709,22 @@ def import_federated_patient_locally(
             detail="A demographics-authorized discovery result is required for patient import.",
         )
 
-    # Preserve the anti-generic-import boundary even when no receipt is supplied:
-    # an MRN absent from the discovery index is still a not-found source record.
+    # A discovery receipt is the authority for import. Reject its absence before
+    # source-index lookups so an unverified body cannot probe index membership.
+    if not payload.discovery_receipt:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A valid server-issued federated discovery receipt is required for import.",
+        )
+    token_hash = hashlib.sha256(payload.discovery_receipt.encode("utf-8")).hexdigest()
+    receipt = control_db.get(FederatedDiscoveryReceipt, token_hash)
+    if not receipt:
+        raise HTTPException(status_code=409, detail="Federated discovery receipt is invalid or expired.")
+    if receipt.destination_branch_code != tenant.branch_code:
+        raise HTTPException(status_code=403, detail="Federated discovery receipt belongs to another destination branch.")
+
+    # Confirm the source MRN remains indexed only after the receipt is bound to
+    # this destination. The receipt's exact pointer snapshot is checked below.
     source_pointers = control_db.execute(
         select(GlobalPatientPointer).where(
             GlobalPatientPointer.source_mrn == payload.source_mrn,
@@ -725,18 +739,6 @@ def import_federated_patient_locally(
             detail="Federated source MRN maps to multiple branches; rediscover the patient before import.",
         )
 
-    # Completeness metadata in the request body is caller-controlled. Import is
-    # permitted only with a short-lived receipt minted by this server after a
-    # complete discovery, bound to this node, destination branch and exact result.
-    if not payload.discovery_receipt:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A valid server-issued federated discovery receipt is required for import.",
-        )
-    token_hash = hashlib.sha256(payload.discovery_receipt.encode("utf-8")).hexdigest()
-    receipt = control_db.get(FederatedDiscoveryReceipt, token_hash)
-    if not receipt:
-        raise HTTPException(status_code=409, detail="Federated discovery receipt is invalid or expired.")
     now = datetime.now(timezone.utc)
     expires_at = receipt.expires_at
     if expires_at.tzinfo is None:
