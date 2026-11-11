@@ -699,3 +699,147 @@ The highest-risk gap is not limited to the discovery route: **the import route i
 PR #19 is still an unmerged remediation branch and contains the newer discovery-receipt integrity work. The source-code observations in Sections 23–24 describe the inspected `main` baseline, not the unmerged PR #19 implementation. Before AUD-004 runtime work starts, rebase/review the combined implementation against the final merged PR #19 code and preserve its receipt validation. Do not implement actor authorization against a stale version of the discovery/import flow.
 
 No application code, migrations, configuration, or runtime behavior was changed by this route inventory. D-01 through D-14 remain pending; AUD-004 remains release-blocking.
+
+## 25. Consolidated AUD-004 implementation contract (proposed; governance-gated)
+
+This section translates the protocol design and the route inventory into an implementation boundary. It is a proposed engineering contract, not an authorization to code, a statement of approved policy, or evidence that the controls exist today. D-01 through D-14 remain pending. Any implementation PR must identify the approved dispositions it relies on and must stop where a required decision is still open.
+
+### 25.1 Non-negotiable security invariants
+
+1. A federation node API key authenticates a technical partner/node only. It never authenticates a clinician and never grants patient-data access by itself.
+2. The source hospital makes the final disclosure decision. Destination-side role checks, privacy policy, signed claims, and node registration are inputs, not substitutes for source-side authorization.
+3. No patient-existence signal, source pointer detail, patient summary, allergy information, or importable source record is released before source-side actor verification and action-specific authorization.
+4. Discovery and import are distinct protected operations. They have different challenges, assertion action values, scopes, idempotency keys, audit outcomes, and retry rules. A discovery assertion cannot authorize import.
+5. The source resolves the destination tenant, branch, and node from trusted server-side control-plane state. No caller-supplied assertion claim, request field, MRN, or pointer can select a database schema or bypass tenant resolution.
+6. Human identity is namespaced by trusted issuer identity. Tenant-local integer user IDs, email addresses, display names, and caller-supplied clinician registration values are not globally unique identity keys.
+7. Unknown, stale, conflicting, revoked, unverifiable, or unavailable authorization dependencies fail closed for protected disclosure. No node-only, stale-positive-cache, permissive circuit-breaker, or emergency fallback is allowed.
+8. Source authorization, privacy/data-use policy, and technical node trust are separate decisions. All must allow the specific operation.
+9. Audit failure before a protected response or transfer is released prevents release. A response write is recorded as a release attempt, not proof of delivery or human receipt.
+10. Emergency/break-glass federation remains disabled unless separately approved and independently designed.
+
+### 25.2 Logical component boundaries
+
+| Component | Trust boundary and responsibility | Must not do |
+|---|---|---|
+| Destination application/API | Authenticates local user/session; obtains local authorization and purpose; initiates a challenge-bound protected operation. | Accept caller-supplied clinician identity as proof; choose source schema; reuse discovery assertion for import. |
+| Destination assertion issuer | Server-side service behind authenticated local user context; resolves immutable issuer-scoped subject and local clinician status; signs only approved claims with branch key. | Expose signing key; sign arbitrary client-supplied claims; sign for suspended/inactive users. |
+| Federation node identity | Authenticates the partner system and binds requests to an enrolled node. | Stand in for a human actor or authorize clinical disclosure. |
+| Source trust registry | Maps approved issuer, branch, node, key ID/algorithm, audience, status, validity and allowed operation classes to a provisioned public key. | Trust arbitrary issuer/JWKS URLs or caller-provided key material. |
+| Source challenge/replay service | Issues and atomically claims short-lived challenges and assertion IDs; enforces one-time semantics across workers/processes. | Depend on process-local memory or cache-only replay state. |
+| Source actor verifier | Verifies signature, claims, challenge binding, issuer/key status, clinician mapping/status and freshness. | Treat a valid signature alone as clinical authorization. |
+| Source authorization service | Evaluates clinician class, affiliation, action, purpose, patient/resource, destination and requested scope under source policy. | Reuse destination-side permission results as source authorization. |
+| Source privacy/data-use service | Independently evaluates patient consent, source policy, age/other restrictions and data-use point. | Treat privacy permission as proof of clinician identity. |
+| Source transfer/audit service | Durably records actor provenance, authorization decisions, privacy decisions and transfer state before release. | Record a foreign integer user ID as a source-local FK or log secrets/raw assertions. |
+| Destination transfer receiver | Validates the source-bound transfer, commits imported data and destination audit, and returns authenticated acknowledgement. | Claim completion before durable commit and audit. |
+| Control plane | Resolves tenant/branch/node/database registration and approved trust metadata. | Route to tenant schema using untrusted token or request claims. |
+
+### 25.3 Proposed logical data records
+
+Exact table names, ownership, database placement, indexes, retention and migration strategy require schema review and D-01/D-07/D-08/D-12 approval. The following are logical records, not mandated names.
+
+| Record | Minimum fields / constraints |
+|---|---|
+| Issuer trust | Immutable issuer ID; organization and branch identity; registered node; audience; status; trust-registry version; validity window; onboarding approval references. |
+| Issuer signing key | Issuer ID; key ID; algorithm; public key; status; valid-from/revoked-at; rotation/supersession reference; approval/audit reference. Private key remains outside the database in approved KMS/HSM custody. |
+| External clinician identity | Issuer ID + immutable external subject UUID; local user mapping; clinician class; affiliation/status version; credential evidence/status; effective dates; revocation state. |
+| Actor challenge | Random challenge ID/secret hash; operation; destination issuer/branch/node; source resource binding or protected selector binding; purpose/scope; creation/expiry; state/version; unique constraints. |
+| Assertion replay claim | Issuer ID + assertion jti unique key; challenge ID; claim time; terminal outcome; transaction/audit correlation ID. |
+| Source authorization decision | Actor subject; action; purpose; source resource; destination; scope; policy/version; decision; reason code; decision time/freshness metadata. |
+| Protected transfer | Transfer/idempotency ID; source pointer identity; destination branch; action; payload fingerprint; state; source audit reference; destination acknowledgement fingerprint and timestamps. |
+| Federation actor audit | Issuer-scoped subject; clinician class; issuer/key fingerprint identifiers; assertion/challenge correlation IDs; node; action/purpose/scope; source privacy decision; source authorization decision; outcome; protocol version; trust/status versions. No raw assertion, private key, bearer token, or unnecessary PHI. |
+
+Database constraints must enforce uniqueness and atomic claim semantics at the authoritative database boundary. ORM-level “check then insert” without a unique constraint/transactional claim is insufficient against concurrent replay.
+
+### 25.4 Protocol operation contracts
+
+**A. Challenge creation**
+
+- The destination requests a challenge for one named operation and a specific source/destination context.
+- The source resolves node and destination identity from trusted enrollment state and validates the operation is enabled.
+- The challenge is random, short-lived, single-use, purpose/action/scope bound, and stored durably.
+- For discovery, challenge creation must not query or disclose selector match state. Match and non-match requests must have the same externally observable response schema/status and must not expose match-dependent metadata.
+- A challenge cannot be changed to another operation, destination, source, resource, purpose, or scope after issuance.
+
+**B. Destination actor assertion issuance**
+
+- The issuer derives the actor from the authenticated local session and server-side user/clinician mapping.
+- It verifies active account, live session, active affiliation, approved clinician class and local authority for the requested operation.
+- The assertion contains only the approved protocol claims and references the exact challenge.
+- Proposed claims include issuer, immutable subject, actor class, issuer branch, audience, issued/not-before/expiry times, unique jti, challenge ID, request/transfer ID, action, purpose, source/destination binding, scope, authentication context and relevant status versions.
+- The issuer signs with its registered branch key. No signing key or signing endpoint is exposed to the browser/mobile client.
+- Proposed maximum lifetime is 120 seconds, subject to D-09 approval and clock-skew analysis.
+
+**C. Source verification and authorization**
+
+- Resolve the expected destination node/branch from server-side state before trusting assertion claims.
+- Verify allowed algorithm, trusted issuer/key, key status, signature, audience, time bounds, challenge binding, jti uniqueness, operation/action, purpose, scope and destination/source bindings.
+- Atomically claim challenge and jti, with durable audit correlation, before protected work. Concurrent requests using the same challenge/jti must yield at most one authorization execution.
+- Resolve the external clinician subject under the exact trusted issuer namespace; check current account, affiliation, clinician class, credential and revocation state at the required freshness.
+- Evaluate source-side action-specific authorization and source privacy/data-use policy independently.
+- On any unknown, stale, conflicting or unavailable critical dependency, deny without disclosing patient existence or protected data.
+
+**D. Discovery**
+
+- Verify actor and source authorization before pointer match disclosure and source patient reads.
+- Keep selector binding protected: challenge/assertion must bind the normalized selector without returning normalized selector details or match metadata to an unauthenticated caller.
+- A complete discovery response may create the existing short-lived import-integrity receipt only after all source outcomes satisfy the receipt protocol. Partial discovery must never mint an importable receipt.
+- Persist source authorization, privacy decision and response fingerprint before attempting response release.
+- Record `RESPONSE_RELEASE_ATTEMPTED`; do not claim that the destination received or displayed the response.
+- An exact retry may return non-sensitive operation status/receipt metadata only. Redisclosure requires a new challenge and assertion.
+
+**E. Import**
+
+- Import requires its own challenge/assertion with action `patient.import` (final vocabulary subject to D-06), exact source pointer, destination branch, transfer ID, purpose and minimum required scope.
+- The source re-reads the current source patient and privacy policy. Caller-supplied demographics are comparison evidence only, never the authoritative imported record.
+- Discovery receipt integrity remains an additional payload/pointer consistency control; it is not clinician authorization.
+- Source records a durable transfer attempt and audit before releasing the source payload.
+- Destination commits imported records and destination audit atomically, then returns an authenticated acknowledgement bound to transfer ID, destination, payload fingerprint and commit receipt.
+- Source marks `DESTINATION_COMMITTED` only after validating that acknowledgement. Lost acknowledgement leaves the transfer indeterminate and requires reconciliation; do not blindly repeat a non-idempotent import.
+- If D-11 includes local import, apply the same source-verifiable actor model to local source data access. If it excludes local import, record the approved scope exception and its compensating controls.
+
+### 25.5 Transaction and failure boundaries
+
+- Challenge claim, jti claim and corresponding audit correlation must be atomic at the source authority boundary.
+- Source authorization/privacy decision and response fingerprint must be durably recorded before protected response release.
+- Destination data commit and destination audit must be in one destination transaction.
+- Source and destination databases are not assumed to share a transaction. Use durable transfer IDs, authenticated acknowledgements and reconciliation.
+- Trust/key/clinician revocation must invalidate affected authorization caches and outstanding challenges according to the approved freshness/revocation SLA.
+- A partial failure between tenant-local partner revocation and control-plane node revocation must leave a detectable, fail-closed state and a reconciliation record; never report full revocation if only one side committed.
+- Source audit outage, replay-store outage, trust-registry outage, clinician-status outage, privacy-policy outage, unacceptable clock drift, destination acknowledgement uncertainty and tenant resolution failure must have explicit deny/indeterminate outcomes. No permissive fallback.
+- Operational repair must be dual-controlled, audited and idempotent. Never manually delete replay claims or rewrite transfer state without an approved repair record.
+
+### 25.6 Implementation PR sequence and ownership gates
+
+| Stage | Proposed PR boundary | Exit evidence |
+|---|---|---|
+| 0 | Governance/protocol freeze (no runtime changes) | D-01..D-14 dispositions, threat model, claim schema, purpose vocabulary, D-11 scope and named owners. |
+| 1 | Trust registry and key lifecycle | Migrations, dual-control admin workflow, KMS/HSM integration, key rotation/revocation tests, trust-registry audit. |
+| 2 | Clinician identity mapping and destination issuer | Immutable issuer-scoped subjects, explicit actor classes, local session binding, no caller-supplied identity tests, key custody evidence. |
+| 3 | Source challenge, verifier, replay and authorization services | Atomic uniqueness/concurrency tests, signature/claim negative tests, revocation freshness and fail-closed outage tests. |
+| 4 | Discovery integration | Both API aliases protected; enumeration tests; source policy and actor audit; no cached-summary redisclosure; existing discovery receipt tests preserved. |
+| 5 | Import integration | Separate import challenge; source pointer/resource binding; destination acknowledgement; lost-ack reconciliation and idempotency tests. |
+| 6 | Adversarial and operational validation | Cross-tenant isolation, key compromise, clinician revocation, dependency outages, clock drift, audit outage, concurrency, incident/recovery runbooks. |
+| 7 | Controlled pilot proposal | Feature flag off by default until explicit approval; partner onboarding evidence; monitoring; rollback plan; independent security review. |
+
+Each runtime PR must be small enough to review independently, contain migrations and rollback strategy where relevant, include negative tests, state which governance decisions it implements, and avoid bundling unrelated pointer/AUD-002 changes.
+
+### 25.7 Required test suites
+
+- **Issuer and key:** wrong issuer/branch/node/audience/key ID/algorithm; unknown, expired, revoked and compromised keys; key rotation overlap rules; trust-registry version mismatch; delayed replication cannot reactivate a revoked key.
+- **Clinician:** inactive/locked/suspended user; revoked session; terminated or stale affiliation; branch transfer; wrong clinician class; expired professional credential; external registry unavailable or stale; issuer subject collision across tenants.
+- **Challenge/assertion:** expired/future assertion; wrong action/purpose/resource/scope/destination; modified selector/pointer; wrong request/transfer ID; missing challenge; replayed jti; concurrent duplicate claims; changed assertion under same jti; clock drift.
+- **Discovery privacy:** matching and non-matching selector response parity; no pointer query before actor verification; no partial-result receipt; no summary redisclosure on retry; source privacy denial; audit outage; all sources unavailable vs partial source failure.
+- **Import integrity:** discovery assertion rejected for import; source pointer substitution rejected; source data changed after discovery; destination mismatch; forged acknowledgement; lost acknowledgement; destination commit/audit rollback; exact idempotent retry vs changed payload.
+- **Tenant isolation:** same local user ID/MRN in multiple branches; forged branch/schema claims; node revoked after challenge; source pointer moved/revoked; no cross-tenant fallback; both root and V1 route aliases.
+- **Operations:** trust/key/clinician revocation during concurrent requests; Redis outage and cache invalidation; DB failover; source audit/replay store outage; dual-control repair; metrics and alerts contain no raw tokens or unnecessary PHI.
+
+### 25.8 Explicit non-goals and change control
+
+- No microservice split, new identity provider, global clinician directory, emergency access enablement, or change to ordinary same-tenant patient CRUD is implied by this contract.
+- No change to current patient privacy defaults or data-sharing scope is implied.
+- No new trust relationship is created merely by registering a federation node or API key.
+- Do not use this contract to bypass D-01..D-14. If an implementation detail requires an unresolved decision, stop and obtain the named approval before coding it.
+- PR #19 must be reviewed/merged under its own approval process before AUD-004 runtime work is rebased onto the resulting mainline. Preserve the discovery receipt safeguards; do not build against the older main baseline.
+- AUD-004 remains release-blocking until implementation, adversarial validation, operational evidence and explicit release authorization are complete.
+
+No runtime code, migration, configuration, or application behavior is changed by this proposed contract.
