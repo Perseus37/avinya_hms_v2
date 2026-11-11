@@ -55,7 +55,7 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b(
     multi_tenant_env,
     superuser_headers,
     apollo_admin_headers,
- ):
+):
     """
     Scenario 3: Hospital A (apollo) -> Hospital B (default): import the source
     patient, then rediscover the current demographic record and merged allergies.
