@@ -151,7 +151,6 @@ class FederatedDiscoveryReceipt(ControlBase):
 
     __tablename__ = "federated_discovery_receipts"
     __table_args__ = (
-        Index("ix_federated_discovery_receipts_expiry", "expires_at"),
         Index(
             "ix_federated_discovery_receipts_destination",
             "destination_branch_code",
