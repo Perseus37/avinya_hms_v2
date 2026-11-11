@@ -128,3 +128,43 @@ The workflow must distinguish at least:
 - Until these controls and the legal schedule are approved, retain the existing soft-deactivation path and keep hard deletion disabled for patients with immutable audit references.
 
 This section is an engineering control design, not legal advice and not evidence that statutory erasure is currently supported.
+
+
+## Discovery completeness and pointer publication
+
+Federated discovery responses include additive source-completeness metadata:
+`source_count`, `source_success_count`, `source_failure_count`, `is_partial`, and
+`failed_source_branches`. A successful response with `is_partial=true` is not a
+complete federation view; callers must preserve and display that status rather than
+treating missing source data as a negative clinical finding. If no source result can
+be verified and at least one indexed source is unavailable, discovery returns
+`503 Service Unavailable` with a PHI-minimized failure summary. A normal `404`
+continues to mean that all evaluated sources completed but no shareable patient
+record was found.
+
+Patient-pointer publication distinguishes a privacy-policy denial (HTTP 403) from
+control-plane persistence failure (server error). A successful evaluation does not
+necessarily mean a pointer was published: patient opt-out and branch sharing policy
+may intentionally suppress publication.
+
+These completeness and persistence semantics do not change the separate release
+gate for clinician attribution. Remote emergency federation remains disabled until
+a source-verified, signed actor assertion is implemented and independently reviewed.
+
+
+## Complete discovery receipts for patient import (AUD-003)
+
+Patient import must not rely on caller-supplied `is_partial`, `source_failure_count`, or related counters. These fields are response metadata, not authorization evidence.
+
+A successful `CONTINUITY_OF_CARE` discovery that has demographic authorization and has verified every indexed source issues a short-lived (two-minute) opaque receipt. The control-plane database stores only the SHA-256 hash of the random receipt token and binds it to:
+- the authenticated federation node and its destination branch;
+- the exact ABHA or normalized-phone selector hash;
+- the complete indexed pointer snapshot (pointer IDs, branch codes, source MRNs, and pointer update timestamps);
+- the selected demographic source pointer;
+- a canonical digest of the complete discovery response, including the allergy summary.
+
+The import endpoint requires the receipt, verifies expiry and node status, requires the same destination branch, recomputes the selector and current pointer snapshot, checks the exact response digest, and then repeats the source patient, privacy, and sharing-policy checks. A changed index or modified response requires rediscovery. The raw receipt is never stored or logged.
+
+Receipts are intentionally reusable during their short lifetime so a client can safely retry the existing idempotent import flow after a transient failure. They do not bypass destination user permission checks, source policy checks, current source-patient validation, or the separate clinician-level actor assertion requirement. Partial or allergy-only discovery responses never receive an import receipt. Discovery excludes the requesting branch from the remote-source snapshot. A phone-only lookup that matches multiple distinct patient identities is rejected unless every remote branch has one record with the same non-empty ABHA; shared-phone household records are never merged as one patient.
+
+This receipt protocol establishes discovery completeness and response integrity; it does not authenticate the human clinician. AUD-004 remains unresolved, and remote emergency federation remains disabled pending its separate actor-assertion protocol and independent security review.

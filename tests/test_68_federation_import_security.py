@@ -7,8 +7,8 @@ def test_federated_import_rejects_tampered_discovery_payload(
     """Federated import must not accept edited demographics from the caller."""
     sun_client = client.post(
         "/v1/api/federation/clients",
-        headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Import Security"},
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "Sunrise Import Security"},
     ).json()
 
     client.post(
@@ -38,11 +38,11 @@ def test_federated_import_rejects_tampered_discovery_payload(
         json=payload,
     )
     assert imported.status_code == 409
-    assert "changed since discovery" in imported.json()["message"]
+    assert "modified" in imported.json()["message"].lower()
 
 
-def test_federated_import_requires_indexed_source_mrn(client, superuser_headers):
-    """The import endpoint must not become a generic patient-creation API."""
+def test_federated_import_rejects_unverified_payload_without_receipt(client, superuser_headers):
+    """An unverified body cannot probe the index or become a generic patient-creation API."""
     payload = {
         "source_mrn": "MRN-NOT-IN-DISCOVERY",
         "full_name": "Fabricated Patient",
@@ -63,8 +63,8 @@ def test_federated_import_requires_indexed_source_mrn(client, superuser_headers)
         headers=superuser_headers,
         json=payload,
     )
-    assert response.status_code == 404
-    assert "not currently indexed" in response.json()["message"]
+    assert response.status_code == 409
+    assert "discovery receipt" in response.json()["message"].lower()
 
 
 def test_federation_does_not_discover_patients_through_missing_phone_placeholder(
@@ -170,8 +170,8 @@ def test_federated_import_respects_source_allergy_sharing_setting(
 
     partner = client.post(
         "/v1/api/federation/clients",
-        headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-BLR-01", "name": "Allergy Privacy Import Partner"},
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "Allergy Privacy Import Partner"},
     )
     assert partner.status_code == 201, partner.text
 

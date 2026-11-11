@@ -218,6 +218,7 @@ def execute_retention_category(
                 from backend.domains.diagnostics.models import DiagnosticOrder
                 from backend.domains.insurance.models import PatientInsurancePolicy
                 from backend.domains.privacy.models import PatientConsentRecord
+                from backend.domains.federation.models import FederationTransferLog
 
                 cand_ids = [p.id for p in candidates]
                 referenced_patient_ids = set()
@@ -230,12 +231,15 @@ def execute_retention_category(
                     DiagnosticOrder.patient_id,
                     PatientInsurancePolicy.patient_id,
                     PatientConsentRecord.patient_id,
+                    # Immutable federation transfer logs are legal/audit dependencies.
+                    FederationTransferLog.patient_id,
                 ]:
-                    try:
-                        found_ids = db.execute(select(col).where(col.in_(cand_ids))).scalars().all()
-                        referenced_patient_ids.update(found_ids)
-                    except Exception:
-                        pass
+                    # Fail closed: a failed dependency query must abort this retention
+                    # execution rather than being interpreted as "no references".
+                    found_ids = db.execute(
+                        select(col).where(col.in_(cand_ids))
+                    ).scalars().all()
+                    referenced_patient_ids.update(found_ids)
 
                 deletable_ids = [p.id for p in candidates if p.id not in referenced_patient_ids]
 

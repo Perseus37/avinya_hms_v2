@@ -1,5 +1,7 @@
-from cryptography.fernet import Fernet, InvalidToken
 import hashlib
+from datetime import datetime, timezone
+
+from cryptography.fernet import Fernet, InvalidToken
 import pytest
 from sqlalchemy.orm import sessionmaker
 
@@ -57,17 +59,24 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
     sunrise_admin_headers,
 ):
     """
-    Scenario 3: Full Hospital A (apollo) -> Hospital B (default) -> Hospital C (sunrise) flow:
-      1. Register patient at Hospital A ('apollo') with Penicillin allergy (ALG_PEN).
-      2. Import patient into Hospital B ('default'), update address, and chart Sulfa allergy (ALG_SULFA).
-      3. Discover patient from Hospital C ('sunrise') -> receives newest address from B + BOTH allergies (A + B).
+    Scenario 3: Hospital A (apollo) -> Hospital B (default) -> Hospital C (sunrise).
+    Import A into B, update B, then discover from C and verify B's demographics
+    and the allergy union from A and B.
     """
-    sun_client = client.post(
+    # The node issuing discovery must be the same branch that imports the
+    # result. This binds the server-side receipt to the receiving tenant.
+    destination_node = client.post(
+        "/v1/api/federation/clients",
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "Hyderabad Receiving Hospital"},
+    ).json()
+    fed_headers = {"X-Federation-API-Key": destination_node["raw_api_key"]}
+    sunrise_node = client.post(
         "/v1/api/federation/clients",
         headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Hospital"},
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Discovery Node"},
     ).json()
-    fed_headers = {"X-Federation-API-Key": sun_client["raw_api_key"]}
+    sunrise_fed_headers = {"X-Federation-API-Key": sunrise_node["raw_api_key"]}
 
     p_apollo = client.post(
         "/v1/api/patients",
@@ -91,6 +100,83 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
         "/v1/api/federation/patients/discover?phone_number=9777788888&purpose=CONTINUITY_OF_CARE",
         headers=fed_headers,
     ).json()
+
+    assert disc_from_a.get("discovery_receipt")
+
+    # Caller-supplied completeness flags and edited summaries cannot replace
+    # the server-issued receipt or alter the exact discovered result.
+    without_receipt = dict(disc_from_a)
+    without_receipt.pop("discovery_receipt")
+    no_receipt = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=without_receipt,
+    )
+    assert no_receipt.status_code == 409
+
+    tampered_summary = dict(disc_from_a)
+    tampered_summary["address"] = "Client-forged address"
+    tampered = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=tampered_summary,
+    )
+    assert tampered.status_code == 409
+    assert "modified" in tampered.json()["message"].lower()
+
+    wrong_destination = client.post(
+        "/v1/api/federation/patients/import",
+        headers=apollo_admin_headers,
+        json=disc_from_a,
+    )
+    assert wrong_destination.status_code == 403
+
+    # A changed source-index snapshot invalidates the receipt and requires
+    # rediscovery rather than allowing import against stale discovery state.
+    from datetime import timedelta
+    from backend.control_plane.models import GlobalPatientPointer
+
+    ControlSession = multi_tenant_env["control_session_factory"]
+    with ControlSession() as control_db:
+        source_pointer = (
+            control_db.query(GlobalPatientPointer)
+            .filter(
+                GlobalPatientPointer.branch_code == "APOLLO-HYD-01",
+                GlobalPatientPointer.source_mrn == p_apollo["mrn"],
+            )
+            .one()
+        )
+        previous_pointer_update = source_pointer.last_clinical_update_at
+        source_pointer.last_clinical_update_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+        control_db.commit()
+
+    stale_receipt = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=disc_from_a,
+    )
+    assert stale_receipt.status_code == 409
+    assert "index changed" in stale_receipt.json()["message"].lower()
+
+    # Restore the source ordering so the subsequent A -> B -> C assertion
+    # verifies that the updated B record is selected as the latest demographic.
+    with ControlSession() as control_db:
+        source_pointer = (
+            control_db.query(GlobalPatientPointer)
+            .filter(
+                GlobalPatientPointer.branch_code == "APOLLO-HYD-01",
+                GlobalPatientPointer.source_mrn == p_apollo["mrn"],
+            )
+            .one()
+        )
+        source_pointer.last_clinical_update_at = previous_pointer_update
+        control_db.commit()
+
+    disc_from_a = client.get(
+        "/v1/api/federation/patients/discover?phone_number=9777788888&purpose=CONTINUITY_OF_CARE",
+        headers=fed_headers,
+    ).json()
+    assert disc_from_a.get("discovery_receipt")
 
     p_default = client.post(
         "/v1/api/federation/patients/import",
@@ -146,11 +232,16 @@ def test_03_multi_hop_patient_discovery_and_allergy_union_a_to_b_to_c(
 
     merged = client.get(
         "/v1/api/federation/patients/discover?abha_number=ABHA-MULTIHOP-01&purpose=CONTINUITY_OF_CARE",
-        headers=fed_headers,
+        headers=sunrise_fed_headers,
     )
     assert merged.status_code == 200
     body = merged.json()
     assert body["address"] == "Updated Address in Bengaluru (Hospital B)"
+    assert body["source_count"] >= 2
+    assert body["source_success_count"] >= 2
+    assert body["source_failure_count"] == 0
+    assert body["is_partial"] is False
+    assert body["failed_source_branches"] == []
     allergy_codes = {a["allergy_code"] for a in body["active_allergies"]}
     assert allergy_codes == {"ALG_PEN", "ALG_SULFA"}
     for alg in body["active_allergies"]:
@@ -535,7 +626,7 @@ def test_09_federation_import_enforces_corporate_group_policy(
         allowed = client.post(
             "/v1/api/federation/patients/import",
             headers=superuser_headers,
-            json=discovered.json(),
+            json=allowed_discovery.json(),
         )
         assert allowed.status_code == 201
     finally:
@@ -554,3 +645,284 @@ def test_federation_identifier_sanitizer_handles_mixed_case_abha_marker():
     assert sanitized == f"branch->abha_sha256:{expected}"
     assert "Sensitive-Value" not in sanitized
 
+
+
+def test_federation_pointer_sync_propagates_control_plane_commit_failure():
+    """AUD-002: a failed pointer write must not be converted into endpoint success."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from backend.domains.federation.router import sync_patient_pointer
+
+    control_db = MagicMock()
+    control_db.execute.return_value.scalar_one_or_none.return_value = None
+    control_db.commit.side_effect = RuntimeError("control plane unavailable")
+    patient = SimpleNamespace(
+        id=77,
+        mrn="AUD002-001",
+        phone_number="9876501234",
+        abha_number=None,
+        allow_network_sharing=True,
+        date_of_birth=None,
+    )
+
+    with pytest.raises(RuntimeError, match="control plane unavailable"):
+        sync_patient_pointer(
+            control_db=control_db,
+            branch_code="AUDIT-BRANCH",
+            subdomain_slug="audit",
+            patient=patient,
+        )
+
+    control_db.rollback.assert_called_once()
+
+
+def test_retention_hard_delete_respects_immutable_federation_transfer_logs():
+    """AUD-001: transfer-log references prevent patient hard deletion."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from backend.domains.privacy.retention_service import execute_retention_category
+
+    class _Scalars:
+        def __init__(self, values):
+            self._values = values
+
+        def all(self):
+            return self._values
+
+    class _Result:
+        def __init__(self, values):
+            self._values = values
+
+        def scalars(self):
+            return _Scalars(self._values)
+
+    db = MagicMock()
+    candidate = SimpleNamespace(id=77)
+    def execute(statement):
+        sql = str(statement)
+        if "FROM patients" in sql:
+            return _Result([candidate])
+        if "federation_transfer_logs" in sql:
+            return _Result([77])
+        return _Result([])
+    db.execute.side_effect = execute
+
+    result = execute_retention_category(
+        db,
+        category_code="patients",
+        action="delete",
+        retention_days=365,
+        now=datetime.now(timezone.utc),
+        dry_run=False,
+    )
+
+    assert result["candidate_count"] == 1
+    assert result["affected_count"] == 0
+    assert result["status"] == "SUCCESS"
+    assert db.execute.call_count == 9  # legal holds + candidate query + seven dependency checks
+
+
+def test_retention_dependency_query_error_aborts_hard_delete():
+    """AUD-001: dependency-query failure is never treated as an empty reference set."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from backend.domains.privacy.retention_service import execute_retention_category
+
+    class _Scalars:
+        def all(self):
+            return [SimpleNamespace(id=88)]
+
+    class _Result:
+        def scalars(self):
+            return _Scalars()
+
+    db = MagicMock()
+    class _EmptyScalars:
+        def all(self):
+            return []
+    class _EmptyResult:
+        def scalars(self):
+            return _EmptyScalars()
+
+    # Legal holds, candidate patient, then the first dependency check.
+    db.execute.side_effect = [
+        _EmptyResult(),
+        _Result(),
+        RuntimeError("dependency table unavailable"),
+    ]
+
+    with pytest.raises(RuntimeError, match="dependency table unavailable"):
+        execute_retention_category(
+            db,
+            category_code="patients",
+            action="delete",
+            retention_days=365,
+            now=datetime.now(timezone.utc),
+            dry_run=False,
+        )
+
+    assert db.execute.call_count == 3
+
+
+def test_federated_discovery_returns_explicit_partial_status_on_timeout(
+    client, apollo_admin_headers, sunrise_admin_headers, monkeypatch
+):
+    """AUD-003: timed-out source workers produce an explicit incomplete response."""
+    import concurrent.futures
+
+    sun_client = client.post(
+        "/v1/api/federation/clients",
+        headers=sunrise_admin_headers,
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Timeout Node"},
+    ).json()
+    patient = client.post(
+        "/v1/api/patients",
+        headers=apollo_admin_headers,
+        json={
+            "full_name": "Discovery Timeout Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+            "phone_number": "9888811111",
+            "abha_number": "ABHA-DISCOVERY-TIMEOUT-01",
+        },
+    )
+    assert patient.status_code == 201, patient.text
+
+    def report_all_pending(futures, **kwargs):
+        return set(), set(futures)
+
+    monkeypatch.setattr(concurrent.futures, "wait", report_all_pending)
+    response = client.get(
+        "/v1/api/federation/patients/discover?abha_number=ABHA-DISCOVERY-TIMEOUT-01",
+        headers={"X-Federation-API-Key": sun_client["raw_api_key"]},
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["message"]
+    assert detail["is_partial"] is True
+    assert detail["source_count"] == 1
+    assert detail["source_failure_count"] == 1
+    assert detail["failed_source_branches"]
+
+
+def test_federated_discovery_returns_explicit_partial_status_on_worker_error(
+    client, apollo_admin_headers, sunrise_admin_headers, monkeypatch
+):
+    """AUD-003: source database failures are surfaced as incomplete discovery."""
+    from backend.core.database import tenant_engine_pool
+
+    sun_client = client.post(
+        "/v1/api/federation/clients",
+        headers=sunrise_admin_headers,
+        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Failure Node"},
+    ).json()
+    patient = client.post(
+        "/v1/api/patients",
+        headers=apollo_admin_headers,
+        json={
+            "full_name": "Discovery Failure Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "MALE",
+            "phone_number": "9888822222",
+            "abha_number": "ABHA-DISCOVERY-FAILURE-01",
+        },
+    )
+    assert patient.status_code == 201, patient.text
+
+    def fail_source(_db_name):
+        raise RuntimeError("simulated source database outage")
+
+    monkeypatch.setattr(tenant_engine_pool, "get_engine", fail_source)
+    response = client.get(
+        "/v1/api/federation/patients/discover?abha_number=ABHA-DISCOVERY-FAILURE-01",
+        headers={"X-Federation-API-Key": sun_client["raw_api_key"]},
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["message"]
+    assert detail["is_partial"] is True
+    assert detail["source_count"] == 1
+    assert detail["source_failure_count"] == 1
+    assert detail["failed_source_branches"]
+
+
+
+def test_federated_patient_import_rejects_missing_receipt_without_completeness_fields(
+    client, apollo_admin_headers
+):
+    """Caller omission/defaults cannot turn an unverified body into a complete discovery."""
+    response = client.post(
+        "/v1/api/federation/patients/import",
+        headers=apollo_admin_headers,
+        json={
+            "source_mrn": "UNVERIFIED-SOURCE-001",
+            "full_name": "Unverified Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+        },
+    )
+    assert response.status_code == 409
+    assert "discovery receipt" in response.json()["message"].lower()
+
+
+def test_phone_discovery_rejects_multiple_unlinked_patient_identities(
+    client, multi_tenant_env, superuser_headers, apollo_admin_headers
+):
+    """A shared phone number cannot cause allergies/demographics to merge across people."""
+    registered = client.post(
+        "/v1/api/federation/clients",
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "HQ Federation Node"},
+    )
+    assert registered.status_code == 201
+
+    for name, abha in (
+        ("Household Patient One", "ABHA-HOUSEHOLD-ONE"),
+        ("Household Patient Two", "ABHA-HOUSEHOLD-TWO"),
+    ):
+        created = client.post(
+            "/v1/api/patients",
+            headers=apollo_admin_headers,
+            json={
+                "full_name": name,
+                "date_of_birth": "1990-01-01T00:00:00Z",
+                "gender": "FEMALE",
+                "phone_number": "9444412345",
+                "abha_number": abha,
+            },
+        )
+        assert created.status_code == 201, created.text
+
+    response = client.get(
+        "/v1/api/federation/patients/discover?phone_number=9444412345",
+        headers={"X-Federation-API-Key": registered.json()["raw_api_key"]},
+    )
+    assert response.status_code == 409
+    assert "abha" in response.json()["message"].lower()
+
+
+def test_federated_patient_import_rejects_partial_discovery(
+    client, apollo_admin_headers
+):
+    """AUD-003: an incomplete discovery envelope cannot become a patient clone."""
+    response = client.post(
+        "/v1/api/federation/patients/import",
+        headers=apollo_admin_headers,
+        json={
+            "source_mrn": "PARTIAL-SOURCE-001",
+            "full_name": "Partial Discovery Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+            "source_count": 2,
+            "source_success_count": 1,
+            "source_failure_count": 1,
+            "is_partial": True,
+            "failed_source_branches": ["SUN-BLR-01"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert "discovery receipt" in response.json()["message"].lower()
