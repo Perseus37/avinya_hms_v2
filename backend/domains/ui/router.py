@@ -1404,7 +1404,46 @@ def get_my_work_tasks(
         .limit(3)
         .all()
     )
+    high_risk_vital_ids = {score.vital_id for score in high_risk_vitals}
+    task_vitals = {
+        vital.id: vital
+        for vital in db.query(EncounterVital).filter(
+            EncounterVital.id.in_(high_risk_vital_ids)
+        ).all()
+    } if high_risk_vital_ids else {}
+    task_encounter_ids = {vital.encounter_id for vital in task_vitals.values()}
+    task_encounters = {
+        encounter.id: encounter
+        for encounter in db.query(PatientEncounter).filter(
+            PatientEncounter.id.in_(task_encounter_ids)
+        ).all()
+    } if task_encounter_ids else {}
+    task_patient_ids = {
+        encounter.patient_id for encounter in task_encounters.values()
+    }
+    task_patients = {
+        patient.id: patient
+        for patient in db.query(Patient).filter(
+            Patient.id.in_(task_patient_ids), Patient.is_active.is_(True)
+        ).all()
+    } if task_patient_ids else {}
+    vital_decisions = evaluate_tenant_data_use_for_patients(
+        db,
+        data_use_point="clinical.encounter.vitals.read",
+        patient_ages={
+            patient.id: calculate_patient_age(patient.date_of_birth)
+            for patient in task_patients.values()
+        },
+        actor_user_id=current_user.id,
+    )
+    allowed_vital_patients = {
+        patient_id for patient_id, decision in vital_decisions.items() if decision.allowed
+    }
     for score in high_risk_vitals:
+        vital = task_vitals.get(score.vital_id)
+        encounter = task_encounters.get(vital.encounter_id) if vital else None
+        if not encounter or encounter.patient_id not in allowed_vital_patients:
+            continue
         tasks.append(
             MyWorkTaskItem(
                 id=f"news2-{score.id}",
@@ -1759,19 +1798,33 @@ def get_patient_timeline(
     "/patients/{patient_id}/revisit-eligibility",
     response_model=RevisitEligibilityResponse,
     dependencies=[Depends(RequirePermission("opd:read"))],
+    openapi_extra={"x-privacy-data-use-point": "patients.mpi.read"},
 )
 def get_revisit_eligibility(
     patient_id: int,
     doctor_id: int = Query(..., description="Target doctor user ID"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Evaluates patient eligibility for a complimentary revisit versus standard
     or follow-up fee, tied to doctor-specific grace periods.
     """
     patient = db.get(Patient, patient_id)
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found.")
+    if not patient or not patient.is_active:
+        raise HTTPException(status_code=404, detail="Active patient not found.")
+    patient_age = calculate_patient_age(patient.date_of_birth)
+    mpi_decision = evaluate_tenant_data_use(
+        db, data_use_point="patients.mpi.read", patient_id=patient.id,
+        actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+    )
+    appointment_decision = evaluate_tenant_data_use(
+        db, data_use_point="opd.appointments.search", patient_id=patient.id,
+        actor_user_id=current_user.id, patient_age=patient_age, commit_audit=False,
+    )
+    commit_without_expiring(db)
+    if not mpi_decision.allowed or not appointment_decision.allowed:
+        raise HTTPException(status_code=403, detail="Privacy policy does not permit this patient disclosure.")
 
     doc_user = db.get(User, doctor_id)
     if not doc_user:
