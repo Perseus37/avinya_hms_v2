@@ -166,7 +166,7 @@ def test_federated_import_respects_source_allergy_sharing_setting(
     """Import must not copy allergies when the source branch disables allergy sharing."""
     from sqlalchemy.orm import Session
     from backend.domains.patients.models import PatientAllergy
-    from backend.domains.policies.models import HospitalPolicySetting
+    from backend.domains.federation.router import _get_branch_policy
 
     partner = client.post(
         "/v1/api/federation/clients",
@@ -198,8 +198,9 @@ def test_federated_import_respects_source_allergy_sharing_setting(
 
     source_engine = multi_tenant_env["tenant_engines"]["hms_apollo"]
     with Session(source_engine) as source_db:
-        policy = source_db.query(HospitalPolicySetting).first()
-        assert policy is not None
+        # Tenant fixtures do not guarantee a policy row exists. Initialize it
+        # through the same fail-safe helper used by federation discovery/import.
+        policy = _get_branch_policy(source_db)
         original_setting = policy.federation_share_allergies
         policy.federation_share_allergies = False
         source_db.commit()
