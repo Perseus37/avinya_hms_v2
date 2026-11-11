@@ -613,11 +613,36 @@ def raise_patient_indent(payload: StoreIndentCreate, db: Session = Depends(get_d
     db.refresh(indent)
     return indent
 
+
+@router.patch("/indents/patient/{indent_id}/approve")
+def approve_patient_indent(
+    indent_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("procurement:approve")),
+):
+    indent = db.query(StoreIndent).filter(
+        StoreIndent.id == indent_id
+    ).with_for_update().one_or_none()
+    if indent is None:
+        raise HTTPException(status_code=404, detail="Patient indent not found.")
+    if indent.status != IndentStatusEnum.PENDING:
+        raise HTTPException(status_code=409, detail="Only pending patient indents can be approved.")
+    if indent.requested_by_id == current_user.id:
+        raise HTTPException(status_code=403, detail="The patient indent requester cannot approve their own indent.")
+
+    indent.status = IndentStatusEnum.APPROVED
+    indent.approved_by_id = current_user.id
+    db.commit()
+    return {"status": "success", "message": "Patient indent approved for pharmacy issue."}
+
+
 @router.post("/indents/patient/{indent_id}/issue")
 def issue_indent_stock(indent_id: int, payload: IndentIssueRequest, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("pharmacy:write"))):
     indent = db.query(StoreIndent).options(joinedload(StoreIndent.encounter), joinedload(StoreIndent.items)).filter(StoreIndent.id == indent_id).with_for_update(of=StoreIndent).first()
-    if not indent or indent.status in [IndentStatusEnum.FULFILLED, IndentStatusEnum.CANCELLED]:
-        raise HTTPException(status_code=400, detail="Invalid indent or already fully fulfilled.")
+    if indent is None:
+        raise HTTPException(status_code=404, detail="Patient indent not found.")
+    if indent.status not in {IndentStatusEnum.APPROVED, IndentStatusEnum.PARTIALLY_FULFILLED}:
+        raise HTTPException(status_code=409, detail="Patient indent must be independently approved before pharmacy issue.")
 
     allocations = issue_patient_indent(db, indent, payload.items, current_user.id)
     db.commit()

@@ -127,11 +127,16 @@ def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_he
 
     indent_res = client.post(
         "/v1/api/procurement/indents/patient",
-        headers=superuser_headers,
+        headers=doctor_headers,
         json={"requesting_department_id": 1, "encounter_id": enc["id"], "items": [{"medication_id": med["id"], "requested_quantity": 10}]}
     )
     assert indent_res.status_code == 201, f"Indent creation failed: {indent_res.text}"
     indent = indent_res.json()
+    approved = client.patch(
+        f"/v1/api/procurement/indents/patient/{indent['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert approved.status_code == 200, approved.text
 
     issue_res = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/issue", headers=pharmacist_headers, json={"items": [{"indent_item_id": indent["items"][0]["id"], "batch_id": batch["id"], "issue_quantity": 10}]})
     assert issue_res.status_code == 200, f"Indent issue failed: {issue_res.text}"
@@ -139,7 +144,7 @@ def test_03_patient_indent_issue_and_return_auto_bills_invoice(client, doctor_he
 
 
 def test_patient_indent_issue_rejects_expired_inventory_batch(
-    client, pharmacist_headers, superuser_headers, multi_tenant_env
+    client, doctor_headers, pharmacist_headers, superuser_headers, multi_tenant_env
 ):
     from sqlalchemy.orm import Session
     from backend.domains.pharmacy.models import InventoryBatch
@@ -169,12 +174,25 @@ def test_patient_indent_issue_rejects_expired_inventory_batch(
         batch_record.expiry_date = datetime.now(timezone.utc) - timedelta(days=1)
         db.commit()
 
-    indent = client.post("/v1/api/procurement/indents/patient", headers=superuser_headers, json={
+    indent = client.post("/v1/api/procurement/indents/patient", headers=doctor_headers, json={
         "requesting_department_id": 1, "encounter_id": encounter["id"],
         "items": [{"medication_id": medication["id"], "requested_quantity": 2}]
     })
     assert indent.status_code == 201, indent.text
     item_id = indent.json()["items"][0]["id"]
+
+    pending_issue = client.post(
+        f"/v1/api/procurement/indents/patient/{indent.json()['id']}/issue",
+        headers=pharmacist_headers,
+        json={"items": [{"indent_item_id": item_id, "batch_id": expired_batch.json()["id"], "issue_quantity": 1}]},
+    )
+    assert pending_issue.status_code == 409, pending_issue.text
+
+    approval = client.patch(
+        f"/v1/api/procurement/indents/patient/{indent.json()['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert approval.status_code == 200, approval.text
 
     response = client.post(
         f"/v1/api/procurement/indents/patient/{indent.json()['id']}/issue",
@@ -220,10 +238,17 @@ def test_patient_indent_returns_require_original_allocation_and_credit_exact_bat
         "medication_id": medication["id"], "batch_number": "PROV-B", "expiry_date": "2028-06-01T00:00:00Z",
         "stock_quantity": 20, "unit_price_paise": 1500
     }).json()
-    indent = client.post("/v1/api/procurement/indents/patient", headers=superuser_headers, json={
+    indent_response = client.post("/v1/api/procurement/indents/patient", headers=doctor_headers, json={
         "requesting_department_id": 1, "encounter_id": encounter["id"],
         "items": [{"medication_id": medication["id"], "requested_quantity": 10}]
-    }).json()
+    })
+    assert indent_response.status_code == 201, indent_response.text
+    indent = indent_response.json()
+    approval = client.patch(
+        f"/v1/api/procurement/indents/patient/{indent['id']}/approve",
+        headers=superuser_headers,
+    )
+    assert approval.status_code == 200, approval.text
     item_id = indent["items"][0]["id"]
     issued = client.post(f"/v1/api/procurement/indents/patient/{indent['id']}/issue", headers=pharmacist_headers, json={
         "items": [

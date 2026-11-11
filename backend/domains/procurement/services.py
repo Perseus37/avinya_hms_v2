@@ -228,6 +228,8 @@ def post_invoice_to_accounts_payable(db: Session, invoice: VendorInvoice, curren
 
 def issue_patient_indent(db: Session, indent: StoreIndent, issue_request: list, current_user_id: int):
     """Issue from locked stock and persist exact batch and invoice-line provenance."""
+    if indent.status not in {IndentStatusEnum.APPROVED, IndentStatusEnum.PARTIALLY_FULFILLED}:
+        raise HTTPException(status_code=409, detail="Patient indent must be independently approved before pharmacy issue.")
     invoice = None
     if indent.encounter_id:
         invoice = db.execute(select(Invoice).where(
@@ -305,7 +307,6 @@ def issue_patient_indent(db: Session, indent: StoreIndent, issue_request: list, 
         invoice.total_amount_paise += total_billed_paise
     all_fulfilled = all(item.issued_quantity >= item.requested_quantity for item in indent.items)
     indent.status = IndentStatusEnum.FULFILLED if all_fulfilled else IndentStatusEnum.PARTIALLY_FULFILLED
-    indent.approved_by_id = current_user_id
     return created_allocations
 
 def process_purchase_return(
