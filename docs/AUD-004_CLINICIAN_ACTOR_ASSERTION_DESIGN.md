@@ -428,3 +428,72 @@ Implementation planning may begin only when D-01 through D-14 have an explicit d
 Before any production pilot, all applicable decisions must be approved, AC-01 through AC-16 must have evidence, and the independent review and release approvals in Section 11 must be complete.
 
 **Current decision state: all D-01 through D-14 are PENDING. AUD-004 remains open and release-blocking.**
+
+## 21. Normative operation state and transaction boundaries
+
+This section makes the challenge, replay, disclosure, and cross-tenant import semantics explicit. It is a proposed protocol requirement and remains subject to the approvals in Section 20.
+
+### 21.1 Separate operation state machines
+
+Discovery and import are separate protected operations. They must use distinct challenges, assertions, action values, and idempotency namespaces.
+
+**Discovery**
+
+`ISSUED → CLAIMED → AUTHORIZED → DISCLOSED`
+
+Terminal alternatives are `DENIED`, `EXPIRED`, and `FAILED`. A challenge can transition out of `ISSUED` only once. A repeated request with the same idempotency key may retrieve the already-recorded outcome only if the server can prove it is the same authenticated node, destination, assertion jti, request, and exact response; it must not execute a second disclosure.
+
+**Import**
+
+`ISSUED → CLAIMED → AUTHORIZED → TRANSFER_ATTEMPTED → DESTINATION_COMMITTED`
+
+Terminal alternatives are `DENIED`, `EXPIRED`, `FAILED`, and `DESTINATION_REJECTED`. The import challenge is bound to one exact source pointer, destination, action, purpose, and minimum scope. A discovery challenge or discovery assertion must never authorize import.
+
+The source must not report `DESTINATION_COMMITTED` merely because it sent a response. That state requires an authenticated destination acknowledgement tied to the same transfer/idempotency identifier and verified destination receipt. If acknowledgement is unavailable, retain an explicit indeterminate/attempted state for reconciliation; do not guess success or automatically create a second transfer.
+
+### 21.2 Atomic source-side claim
+
+The source must claim the challenge and assertion jti in one database transaction using uniqueness constraints that are effective across all workers and processes. The transaction must also persist a durable request/claim audit event. If any insert, uniqueness check, or required audit write fails, the transaction rolls back and no protected response is released.
+
+A duplicate request must be classified as one of:
+- **Exact idempotent retry:** same authenticated node, destination, request identifier, challenge, assertion jti, and request-body fingerprint; return only the previously persisted outcome permitted by the operation's retry policy.
+- **Replay or mutation:** any changed identity, destination, action, purpose, resource, scope, assertion, or body fingerprint; deny and record a security event without returning patient-existence information.
+
+Do not implement idempotency as a cache-only check or by making a consumed challenge reusable.
+
+### 21.3 Authorization and disclosure audit ordering
+
+After claim, the source evaluates issuer trust, clinician status/affiliation, source-side authorization, and privacy/data-use policy. These are distinct decisions and their outcomes must be independently represented in audit.
+
+Before returning any patient-existence signal, demographic summary, or other protected discovery result, the source must durably persist the authorization decision and the exact disclosure outcome/response fingerprint. If audit persistence fails, fail closed.
+
+For a denial, persist a denial reason code that does not expose sensitive patient information to the caller. External error responses must not distinguish patient-not-found from unauthorized or otherwise disallowed discovery where doing so would create an enumeration oracle.
+
+### 21.4 Import is a cross-system workflow, not a distributed transaction
+
+The source and destination databases cannot be assumed to share an atomic transaction. Use a durable transfer identifier and an explicit state/reconciliation protocol:
+1. Source atomically claims the import challenge/jti and records the authorization and transfer-attempt event.
+2. Source creates or retrieves the same idempotent transfer package for that transfer identifier; it must not mint a second logical transfer on retry.
+3. Destination validates the exact source pointer, destination, payload fingerprint, and import authorization, then commits the import and its local audit in one destination transaction.
+4. Destination returns an authenticated acknowledgement containing the transfer identifier, destination receipt identifier, and committed payload fingerprint.
+5. Source verifies the acknowledgement against the registered destination/node and records completion. If the acknowledgement is lost, retry only the acknowledgement/status lookup or reconcile by transfer identifier; do not blindly repeat the import.
+
+The source audit must distinguish `AUTHORIZED`, `TRANSFER_ATTEMPTED`, and `DESTINATION_COMMITTED`. The destination audit must distinguish `RECEIVED`, `VALIDATED`, `COMMITTED`, and `REJECTED`. A source-side success response must not claim destination persistence until the acknowledgement has been verified.
+
+### 21.5 Retention and operational recovery
+
+Challenge, jti, idempotency, transfer, and acknowledgement records must have explicit retention periods approved under D-12. Expired challenge records may be cleaned up only after their replay-prevention window and audit obligations are preserved. Transfer reconciliation records must remain available long enough to resolve delayed acknowledgements and support incident investigation.
+
+Operational tooling must expose counts and state age, not raw assertions, challenge secrets, patient selectors, or unnecessary PHI. Manual repair must be dual-controlled, audited, and limited to state transitions explicitly allowed by the protocol; operators must not be able to mark a transfer committed without verified destination evidence.
+
+### 21.6 Required additional tests
+
+- Concurrent duplicate discovery and import requests across separate workers and database connections.
+- Exact retry versus changed-body, changed-destination, changed-scope, changed-purpose, and changed-jti cases.
+- Failure injection between challenge claim, authorization audit, disclosure audit, response transmission, destination commit, acknowledgement transmission, and source completion audit.
+- Lost acknowledgement followed by reconciliation, proving no duplicate destination import.
+- Forged, stale, wrong-node, wrong-destination, and wrong-payload acknowledgement rejection.
+- Cleanup racing with a late replay and with an in-progress transfer.
+- Audit database outage at each required persistence boundary; no protected disclosure or false completion state may result.
+
+**Implementation gate:** Sections 21.1–21.6 must be incorporated into the frozen protocol schema, threat model, and acceptance-test traceability before runtime implementation. These additions do not close any approval decision in Section 20.
