@@ -41,6 +41,11 @@ def upgrade() -> None:
             ["federated_nodes.id"],
             ondelete="CASCADE",
         ),
+        sa.ForeignKeyConstraint(
+            ["source_pointer_id"],
+            ["global_patient_pointers.id"],
+            ondelete="CASCADE",
+        ),
         sa.PrimaryKeyConstraint("token_hash"),
     )
     op.create_index(
