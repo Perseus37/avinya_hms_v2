@@ -156,7 +156,7 @@ a source-verified, signed actor assertion is implemented and independently revie
 
 Patient import must not rely on caller-supplied `is_partial`, `source_failure_count`, or related counters. These fields are response metadata, not authorization evidence.
 
-A successful discovery that has demographic authorization and has verified every indexed source issues a short-lived (two-minute) opaque receipt. The control-plane database stores only the SHA-256 hash of the random receipt token and binds it to:
+A successful `CONTINUITY_OF_CARE` discovery that has demographic authorization and has verified every indexed source issues a short-lived (two-minute) opaque receipt. The control-plane database stores only the SHA-256 hash of the random receipt token and binds it to:
 - the authenticated federation node and its destination branch;
 - the exact ABHA or normalized-phone selector hash;
 - the complete indexed pointer snapshot (pointer IDs, branch codes, source MRNs, and pointer update timestamps);
