@@ -5,7 +5,7 @@ import secrets
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.control_plane.models import (
@@ -357,6 +357,14 @@ def discover_and_aggregate_patient_across_branches(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Remote emergency federation is disabled pending verified requester authorization.",
         )
+
+    # Bound receipt storage even when clients abandon discovery results.
+    control_db.execute(
+        delete(FederatedDiscoveryReceipt).where(
+            FederatedDiscoveryReceipt.expires_at <= datetime.now(timezone.utc)
+        )
+    )
+    control_db.commit()
 
     # Discovery is for remote sources; exclude the requesting/destination branch.
     stmt = select(GlobalPatientPointer).where(
