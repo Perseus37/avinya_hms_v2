@@ -142,7 +142,7 @@ def test_patient_indent_issue_rejects_expired_inventory_batch(
     client, pharmacist_headers, superuser_headers, multi_tenant_env
 ):
     from sqlalchemy.orm import Session
-    from backend.domains.pharmacy.models import InventoryBatch, MedicationMaster, MedicationFormEnum
+    from backend.domains.pharmacy.models import InventoryBatch
     from backend.domains.procurement.models import StoreIndentItem
 
     patient = client.post("/v1/api/patients", headers=superuser_headers, json={
@@ -157,10 +157,17 @@ def test_patient_indent_issue_rejects_expired_inventory_batch(
     }).json()
     expired_batch = client.post("/v1/api/pharmacy/inventory/batches", headers=pharmacist_headers, json={
         "medication_id": medication["id"], "batch_number": "EXPIRED-ISSUE-1",
-        "expiry_date": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        "expiry_date": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat(),
         "stock_quantity": 5, "unit_price_paise": 100
     })
     assert expired_batch.status_code == 201, expired_batch.text
+    # Receiving correctly rejects expired stock. Simulate a batch that expires
+    # after receipt so this test isolates the dispensing-time guard.
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with Session(engine) as db:
+        batch_record = db.get(InventoryBatch, expired_batch.json()["id"])
+        batch_record.expiry_date = datetime.now(timezone.utc) - timedelta(days=1)
+        db.commit()
 
     indent = client.post("/v1/api/procurement/indents/patient", headers=superuser_headers, json={
         "requesting_department_id": 1, "encounter_id": encounter["id"],
@@ -179,7 +186,6 @@ def test_patient_indent_issue_rejects_expired_inventory_batch(
     assert response.status_code == 409, response.text
     assert "expired stock" in response.json()["message"].lower()
 
-    engine = multi_tenant_env["tenant_engines"]["hms_default"]
     with Session(engine) as db:
         batch = db.get(InventoryBatch, expired_batch.json()["id"])
         indent_item = db.get(StoreIndentItem, item_id)
