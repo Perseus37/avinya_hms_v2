@@ -108,3 +108,24 @@ Any of the following fails the proof:
 7. Independently review the evidence before any production identity, role-bootstrap, network, secret, deployment or runtime rollout.
 
 No production rollout, partner onboarding, trust provisioning, federation activation, merge or release is implied by this contract.
+
+
+## Wire-profile reconciliation gate
+
+PR #30 already contains a proposed discovery challenge and clinician-assertion design: source-canonicalized selectors; issuer-scoped clinician subject; actor classification; challenge and protocol binding; destination node and branch; action; purpose; source audience; requested scope; issue/not-before/expiry; unique token identifier; source-side trust and claim verification; and one-operation challenge state. Reuse and reconcile that proposal rather than inventing a parallel assertion protocol.
+
+PR #30 explicitly remains design-only and does not freeze a cryptographic profile or production lifetime. The following must be decided in one reviewed wire-profile artifact before source-service implementation:
+
+1. **Envelope and serialization:** exact media type, canonical serialization, protected header, claim names/types, duplicate-claim handling, maximum sizes, and protocol-version negotiation.
+2. **Cryptographic profile:** approved signature algorithm(s), key type/size, key identifier rules, permitted critical headers, canonical signing input, algorithm-confusion rejection, and test vectors. Reject unsigned tokens, symmetric shared signing secrets across tenants, and caller-selected algorithms.
+3. **Issuer trust:** issuer registry ownership, trust-anchor/key publication and pinning, key rotation overlap, compromise response, issuer disablement, and unknown-key behavior.
+4. **Audience and identity:** exact source service audience; destination workload identity binding; issuer-scoped clinician subject; source-side clinician mapping and current status; no trust in destination-supplied role strings or local numeric user IDs.
+5. **Operation binding:** challenge ID, operation ID, protocol version, source identity, destination node and branch, action, versioned purpose, selector commitment, exact requested categories, and request/response correlation.
+6. **Freshness and replay:** clock-skew allowance, issue/not-before/expiry semantics, unique token identifier namespace, durable one-time consumption, atomic concurrency behavior, lost-response retry rules, and effective-time revocation.
+7. **Privacy:** source-only canonicalization and keyed commitment; no low-entropy plain selector hash; uniform denial envelope; rate limits and enumeration monitoring.
+8. **Response integrity:** exact response schema, source identity, operation/challenge binding, authorized category list, audit correlation, response signature or authenticated transport binding, destination validation, and replay rejection.
+9. **Operational controls:** key custody, rotation evidence, revocation propagation, pool/session invalidation, clock synchronization, audit retention, incident response, and synthetic conformance vectors.
+
+The wire profile must resolve, not silently waive, the still-open independent-review findings from PR #67/#69: R74 revocation proof/effective time, R76 wire profile completeness, and R77 polling/redemption binding and anti-enumeration. A document that merely lists fields is not sufficient; it must provide exact normative validation rules, negative test vectors, and accountable approval.
+
+**No algorithm, token lifetime, trust-anchor format, key-distribution mechanism, or production issuer is selected by this proof contract.** Do not implement a speculative choice in application code.
