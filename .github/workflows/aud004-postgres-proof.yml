@@ -19,6 +19,8 @@ jobs:
   disposable-postgres-acl:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      AUD004_SETUP_PASSWORD: ${{ runner.temp }}-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
     steps:
       - name: Check out proof harness
         uses: actions/checkout@v4
@@ -50,8 +52,6 @@ jobs:
           echo "safe_to_cleanup=true" >> "$GITHUB_OUTPUT"
 
       - name: Start disposable PostgreSQL 17
-        env:
-          AUD004_SETUP_PASSWORD: ${{ runner.temp }}-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
         run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait
 
       - name: Run real PostgreSQL ACL tests
