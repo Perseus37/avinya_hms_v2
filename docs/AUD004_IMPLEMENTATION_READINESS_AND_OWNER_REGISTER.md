@@ -351,3 +351,90 @@ Do not grant all these workloads one common database login merely because they s
 7. Treat all maintenance utilities that accept arbitrary database names or URLs as privileged interfaces; require an explicit target allowlist and audited invocation.
 
 No Compose files, runtime code, environment files, database roles, credentials or deployed infrastructure were changed during this review.
+
+
+## 12. Recommended workload identity separation plan
+
+**Disposition:** recommended implementation sequence for architecture/security owner review. This section is not an accepted ADR, governance approval, runtime change request, or production authorization. The database-per-tenant topology remains unchanged.
+
+### 12.1 Target workload-to-identity matrix
+
+| Workload | Target identity boundary | Permitted database capability | Explicitly prohibited |
+|---|---|---|---|
+| Tenant A API | Tenant A-bound runtime identity; no tenant B secret access | Tenant A database application grants only | Tenant B database CONNECT, source-only privileges, control-plane admin |
+| Tenant A source disclosure service | Tenant A-bound source workload identity and source DB credential | Tenant A minimum source-policy, actor-mapping, patient/resource read and source-audit objects | Any other tenant DB, provisioning, migration, backup or restore |
+| Tenant A import operation | Destination A-bound identity | Tenant A destination import/provenance/idempotency objects | Direct source DB session; source secret retrieval |
+| Control-plane API | Control-plane workload identity | Control-plane registry/routing metadata only | Patient/resource objects in any tenant DB; cluster administration |
+| Onboarding portal | Separate control-plane onboarding identity | Only approved onboarding/control-plane operations | Tenant clinical DBs and cluster administration |
+| Email worker | Email-only identity | No tenant DB access unless a demonstrated handler dependency requires it | Tenant registry-wide or patient DB access |
+| Retention execution worker | Explicitly authorized tenant-bound execution identity | One tenant DB per execution, only approved retention objects | Fleet-wide credentials in the ordinary worker process |
+| Retention scheduler | Separate scheduler identity | Control-plane metadata and enqueue capability; no tenant clinical DB reads if policy evaluation can be moved to tenant-bound execution | Reusing the ordinary API or email worker DB identity |
+| HL7 listener | Tenant-bound integration identity selected by trusted routing | Only the destination tenant DB and required integration objects | Arbitrary tenant DB selection or source federation DB access |
+| Provisioning | Short-lived provisioning identity | Create approved tenant DB and provision roles; no routine patient query | API/worker runtime and federation disclosure |
+| Migration | Short-lived migration identity bound to explicit tenant DB allowlist | DDL required for the selected migration target(s) | Runtime request handling and arbitrary fleet traversal |
+| Backup | Dedicated backup identity and isolated backup workload | Read/backup capability for explicitly approved DB allowlist; control-plane key access separately scoped | API, federation, interactive clinical queries |
+| Backup vault | Vault identity | Object-store/filesystem vault operations only | PostgreSQL credentials and control-plane DB credentials |
+| Restore / DR drill | Separate recovery identity, isolated target cluster or quarantined target | Restore to an approved, bound target; drill identity limited to disposable drill DBs | General runtime use; arbitrary production target; unreviewed global role restore |
+| PostgreSQL exporter | Monitoring identity | Required statistics/monitoring views only | Tenant application tables and write privileges |
+
+**Hard-boundary rule:** a process that possesses usable credentials for tenant A and tenant B can technically attempt cross-tenant access, even if normal application routing intends otherwise. For a strict workload-compromise boundary, do not give one tenant-facing process a secret-manager policy or credential bundle covering every tenant. Prefer tenant-bound runtime instances/workload identities (or a separately reviewed isolation mechanism with equivalent enforceable guarantees). A shared process with a fleet-wide credential cache is not an acceptable substitute.
+
+### 12.2 Sequence and gates
+
+**Phase 0 — confirm deployment facts (read-only).**
+- Deployment owner supplies a redacted inventory of service names, image/command, environment-variable names, secret references, mounts, network attachments, schedulers and host/CI execution points.
+- Database owner supplies non-production PostgreSQL role membership, ownership, database ACL, PUBLIC grants, object grants, default privileges and privileged-function inventory.
+- Confirm actual production backup, restore, migration and index-maintenance execution points; do not assume development Compose services exist in production.
+- Gate: owners and evidence are recorded; no secret values or patient data enter GitHub documentation.
+
+**Phase 1 — define enforceable identity and ACL contracts.**
+- Approve the database-per-tenant identity ADR and name the security principals by workload class.
+- Define the per-tenant application/source role split, ownership model, database CONNECT policy, PUBLIC privilege revocation, role memberships, object grants and credential rotation/revocation semantics.
+- Verify that database owners, inherited roles, CREATEDB, CREATEROLE, superuser, replication and predefined roles cannot bypass the intended boundary.
+- Decide how a tenant-bound API/source workload is scheduled and routed without a shared process receiving every tenant secret.
+- Gate: independent reviewer can demonstrate how a compromised tenant A workload is technically denied tenant B access.
+
+**Phase 2 — implement a non-production vertical slice for two synthetic tenants.**
+- Provision disposable tenant A and B databases with distinct application and source identities.
+- Run the real API/source process images under distinct workload identities and secret policies.
+- Prove A can connect to A and is denied CONNECT to B; prove B can connect to B and is denied A.
+- Prove destination A cannot connect to source B, while an authenticated source B service can read only B's approved objects.
+- Verify revocation, credential rotation, pool drain, stale connection handling, connection-string leakage controls and failure-closed behavior.
+- Gate: automated negative tests execute from the actual container/network identity; no developer-shell-only evidence.
+
+**Phase 3 — split background and operational workloads.**
+- Remove retention/fleet traversal from the general-purpose worker identity. Route each tenant's retention execution to a tenant-bound worker; keep scheduling/enqueue authority separate from tenant DB access.
+- Separate email-only tasks from tenant-data tasks.
+- Give provisioning, migration, index maintenance, backup, vault, restore and DR drill dedicated identities and isolated execution entrypoints.
+- Remove unnecessary database secrets from onboarding, HL7, email, vault, monitoring and ordinary API environments.
+- Gate: inspect effective process environments and secret-manager policies; verify denied access from each workload.
+
+**Phase 4 — federation source ownership.**
+- Replace destination-side foreign tenant_engine_pool.get_engine(...) reads in discovery/import with authenticated source-service calls.
+- Apply the same protocol to local cross-branch and remote federation.
+- Source service derives tenant DB from its own identity/configuration; callers cannot supply a DB name, DSN, secret reference or tenant override.
+- Verify clinician assertion, source actor mapping, purpose/action/scope, policy, revocation and source audit before selector-specific patient data is disclosed.
+- Gate: repository call-graph and runtime tests show no destination API/import/worker path can open a foreign tenant engine.
+
+**Phase 5 — independent verification and release gate.**
+- Independent security reviewer verifies role/catalog evidence, secret policy, container identity, network reachability, negative tests, task routing, recovery isolation and audit evidence.
+- Re-run the full relevant test suite and migration/backup/restore validation against disposable non-production databases.
+- Resolve all Critical and High findings with evidence before any pilot or production authorization.
+- Production rollout, data migration, federation activation, trust provisioning, partner onboarding and merge remain separate explicit approvals.
+
+### 12.3 Critical implementation constraints
+
+1. Do not add a tenant password field to TenantRegistry and let request handlers choose arbitrary tenant DSNs. Secret storage and retrieval must be bound to a workload identity, not merely a tenant identifier supplied by a caller.
+2. Do not retain a generic build_db_url(db_name) capability in ordinary runtime packages if it can combine a broad credential with an arbitrary database name.
+3. Do not rely on PostgreSQL CONNECT ACLs alone. Validate ownership, role membership, PUBLIC, object privileges, default privileges, privileged functions and any role-switching path.
+4. Do not assume separate containers are isolated when they share the same secret bundle, database login and unrestricted network path.
+5. Do not put cluster-admin, CREATEDB, migration, backup, restore or global role-export credentials into API, source disclosure, import, email, HL7 or ordinary worker containers.
+6. Do not allow the source service to become a confused deputy. It must authorize the caller and exact operation before it resolves or releases patient-specific data.
+7. Preserve independent audit and recovery behavior. A source authorization/disclosure record must not be represented as committed until the source transaction confirms it.
+8. Keep all proof data synthetic and all database experiments on a disposable non-production cluster.
+
+### 12.4 Immediate next deliverable
+
+The next useful engineering artifact is a **two-tenant non-production identity proof specification**: exact role/ACL assertions, per-workload secret-access assertions, container-level connection attempts, expected PostgreSQL SQLSTATEs, source-service authorization cases, and evidence artifacts. It should be reviewed before SQL migrations or application refactors are authored. This avoids implementing credentials or schema changes before the workload boundary and deployment topology are agreed.
+
+No implementation was performed as part of this readiness update.
