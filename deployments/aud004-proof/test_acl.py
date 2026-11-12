@@ -79,3 +79,36 @@ def test_runtime_login_is_not_privileged(identity):
                 "FROM pg_roles WHERE rolname = current_user"
             )
             assert cur.fetchone() == (False, False, False)
+
+
+
+@pytest.mark.parametrize("identity", ["a", "b", "cp"])
+def test_runtime_cannot_assume_setup_identity(identity):
+    with connect(identity) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_has_role(current_user, 'aud004_setup', 'MEMBER')")
+            assert cur.fetchone()[0] is False
+
+
+@pytest.mark.parametrize("identity", ["a", "b"])
+def test_tenant_runtime_has_only_read_access_to_synthetic_marker(identity):
+    with connect(identity) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT has_schema_privilege(current_user, 'synthetic', 'CREATE'), "
+                "has_table_privilege(current_user, 'synthetic.tenant_marker', 'INSERT'), "
+                "has_table_privilege(current_user, 'synthetic.tenant_marker', 'UPDATE'), "
+                "has_table_privilege(current_user, 'synthetic.tenant_marker', 'DELETE')"
+            )
+            assert cur.fetchone() == (False, False, False, False)
+
+
+@pytest.mark.parametrize("identity", ["a", "b", "cp"])
+def test_runtime_has_no_cluster_admin_or_replication_attributes(identity):
+    with connect(identity) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls "
+                "FROM pg_roles WHERE rolname = current_user"
+            )
+            assert cur.fetchone() == (False, False, False, False, False)
