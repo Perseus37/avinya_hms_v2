@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-lifecycle-registry-1.0.0.json",
+  "title": "AUD-004 federation lifecycle registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "states",
+    "transitions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "states": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/state"
+      },
+      "uniqueItems": true
+    },
+    "transitions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/transition"
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "owner",
+        "durable_store",
+        "terminal",
+        "description"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+        },
+        "owner": {
+          "enum": [
+            "source_authorizer",
+            "source_read_worker",
+            "source_egress",
+            "destination_importer",
+            "destination_ack",
+            "pointer_reconciler",
+            "operator_dual_control"
+          ]
+        },
+        "durable_store": {
+          "type": "string",
+          "minLength": 1
+        },
+        "terminal": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "authority",
+        "preconditions",
+        "evidence",
+        "fencing_required",
+        "timeout_seconds",
+        "retry_owner",
+        "on_timeout"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+        },
+        "from": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "to": {
+          "type": "string"
+        },
+        "authority": {
+          "enum": [
+            "source_authorizer",
+            "source_read_worker",
+            "source_egress",
+            "destination_importer",
+            "destination_ack",
+            "pointer_reconciler",
+            "operator_dual_control"
+          ]
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "fencing_required": {
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "retry_owner": {
+          "enum": [
+            "source_authorizer",
+            "source_read_worker",
+            "source_egress",
+            "destination_importer",
+            "destination_ack",
+            "pointer_reconciler",
+            "operator_dual_control",
+            "none"
+          ]
+        },
+        "on_timeout": {
+          "enum": [
+            "retry_same_operation",
+            "reconcile",
+            "quarantine",
+            "terminal_fail"
+          ]
+        }
+      }
+    }
+  }
+}
