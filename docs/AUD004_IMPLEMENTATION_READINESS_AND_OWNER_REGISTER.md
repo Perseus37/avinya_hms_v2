@@ -557,3 +557,58 @@ The proof run produces:
 **Automatic fail conditions:** cross-tenant connection succeeds; any runtime identity can assume a privileged role; a destination process can read a foreign tenant DB; a source response is released without required source audit; a denied connection is counted as a pass because the target DB was missing; or the test was run only from a developer shell rather than the workload container identity.
 
 No executable test, SQL, migration, credential, secret policy, container or runtime configuration was created or changed by adding this specification.
+
+
+## 14. Existing PostgreSQL role bootstrap and test-harness gap
+
+Additional source inspection of \`main\` confirms that the repository already contains a role bootstrap. It must be treated as an existing partial control, not as proof that tenant isolation is implemented.
+
+### 14.1 Existing role script is not a tenant identity model
+
+Inspected: \`deployments/postgres-roles.sql\`.
+
+The script creates cluster-wide login roles \`hms_app\`, \`hms_migrator\`, \`hms_backup\` and \`hms_exporter\`. The following gaps are visible in the checked-in SQL:
+
+1. \`hms_app\` receives \`CONNECT\` on database \`postgres\`, and object grants on schema \`public\` in the database where the script is executed. The script does not provision a distinct application role and explicit CONNECT/object ACL for every tenant database.
+2. \`hms_migrator\` similarly receives broad grants in the database where the script is executed; the script does not bind it to an approved tenant migration target.
+3. \`GRANT pg_read_all_data TO hms_backup\` grants the predefined cluster role to the backup login. This is not a per-tenant backup boundary; it can confer read access across databases where the predefined role applies. Effective reach still depends on PostgreSQL behavior, connection access and deployment grants, which require catalog verification.
+4. The script does not define per-tenant source-service identities, source-only object grants, tenant-specific secret retrieval policy, or an ownership/membership model preventing privilege escalation.
+5. The SQL does not explicitly revoke PUBLIC CONNECT/TEMPORARY or demonstrate a complete ACL inventory. Absence of those statements is not proof of current PUBLIC grants; inspect the effective catalogs.
+
+Consequently, these roles are useful starting labels for workload classes but do not establish the required database-per-tenant isolation.
+
+### 14.2 Bootstrap applies roles with the configured cluster login
+
+Inspected: \`backend/scripts/bootstrap.py\` and production Compose \`db-init\`.
+
+- \`apply_database_roles()\` connects to the \`postgres\` database using \`settings.POSTGRES_USER\` and \`settings.POSTGRES_PASSWORD\`, then executes the role SQL.
+- Production \`db-init\` invokes \`python backend/scripts/bootstrap.py --apply-roles\` and receives \`.env.production\`.
+- The same bootstrap then provisions databases, upgrades the control-plane database, and upgrades/seeds tenant databases using URLs built from the same configured database login.
+- The bootstrap source therefore does not demonstrate that the application runtime switches to \`hms_app\`, that tenant-specific identities are provisioned, or that the configured login is removed from ordinary services.
+- Production API, worker, HL7 listener and onboarding portal still reference the same \`.env.production\` file in Compose.
+
+This is a code/configuration observation. The actual values in deployed environment files and the effective privileges of \`POSTGRES_USER\` were not inspected.
+
+### 14.3 Current automated tenancy tests do not prove PostgreSQL ACL isolation
+
+Inspected: \`tests/conftest.py\`, \`tests/test_01_system_and_tenancy.py\`, \`tests/test_23_compose_redis_config.py\`, \`tests/test_40_background_worker_and_queue.py\`.
+
+- The shared \`multi_tenant_env\` fixture creates the control-plane and tenant databases using in-memory SQLite engines and monkeypatches \`tenant_engine_pool.get_engine\` to return an engine by database-name dictionary lookup.
+- This is useful for application routing and tenant-context behavior, but it cannot prove PostgreSQL database CONNECT denial, role membership, ownership, PUBLIC ACL, secret-manager access or network isolation.
+- Existing Compose tests parse YAML and assert selected configuration values. They are static configuration checks, not container identity or live database authentication tests.
+- Existing worker tests use an in-memory \`FakeRedis\` and exercise queue/dispatch lifecycle. They do not run the worker with distinct PostgreSQL workload credentials.
+- Existing restore-drill tests mock \`create_engine\`; they do not prove that a recovery identity is unable to target another tenant database.
+
+**Required test strategy:** retain fast SQLite tests for request routing and domain behavior. Add a separate opt-in integration suite that provisions disposable PostgreSQL tenant A/B databases and real non-superuser roles, then runs positive/negative connection and object-privilege tests from the same container images and workload identities intended for deployment. CI must fail closed or mark the integration suite explicitly not-run when the disposable PostgreSQL service is unavailable; it must never silently substitute SQLite for an ACL proof.
+
+### 14.4 Consequence for implementation order
+
+Do not simply change \`DATABASE_URL\` to \`hms_app\` and assume the design is complete. First define and test:
+- how a tenant-bound process obtains only its own credential;
+- how control-plane access remains separate from tenant clinical access;
+- how per-tenant database roles and object grants are provisioned and rotated;
+- how migration, provisioning and backup roles are isolated from runtime;
+- how the source service receives only its own tenant credential;
+- how the ordinary worker is split so fleet-wide scheduling cannot imply fleet-wide patient DB access.
+
+The existing bootstrap/role SQL should be revised only after the two-tenant disposable-cluster proof demonstrates the intended role topology. No role SQL, bootstrap code, Compose file, test fixture, credential or database was changed by this inventory update.
