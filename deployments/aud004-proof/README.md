@@ -40,6 +40,18 @@ Install the repository's pinned psycopg2-binary and pytest in an isolated develo
 
 The test suite expects the dedicated service on 127.0.0.1:55439. It fails if the server is unreachable; it does not substitute SQLite. A denied connection passes only when PostgreSQL returns SQLSTATE 42501.
 
+## Run through GitHub Actions
+
+The existing **On-demand validation** workflow contains the AUD-004 proof job on this PR branch. To run it without changing application code or provisioning any shared infrastructure:
+
+1. Open the repository's **Actions** tab and select **On-demand validation**.
+2. Choose **Run workflow**.
+3. Select branch `security/aud004-disposable-postgres-proof`.
+4. Select scope **reconciliation**.
+5. Start the workflow and inspect the **AUD-004 disposable PostgreSQL ACL proof** job.
+
+The `reconciliation` scope runs both the reconciliation regression tests and this isolated PostgreSQL proof. The proof job creates its own disposable PostgreSQL service and tears down only its explicitly named Compose project and volume after its preflight succeeds. A skipped Release-gates job is not evidence that this proof ran. Treat the proof as pending until the AUD-004 job itself completes successfully. Do not select a release/deployment workflow or use production credentials.
+
 ## Teardown
 
 First verify the active Compose project is the dedicated harness:
