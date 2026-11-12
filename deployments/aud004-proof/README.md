@@ -14,7 +14,13 @@ This is an opt-in, isolated test fixture, not a production deployment template. 
 
 ## Start
 
-Use a disposable local machine with Docker Compose installed. Set a throwaway setup password in the current shell, then run:
+Use a disposable local machine with Docker Compose installed. First confirm the dedicated names are unused. If any command reports an existing resource, stop and investigate; do not attach this harness to or delete that resource:
+
+    docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml ps -a
+    docker volume inspect aud004-proof-pgdata
+    docker network inspect aud004-proof-only
+
+A missing-resource response from the volume and network inspect commands is expected on first use. Use a throwaway setup password in the current shell, then run:
 
     export AUD004_SETUP_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
     docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait
