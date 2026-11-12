@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.invalid/schemas/aud004-worker-hardening-profile.schema.json",
+  "title": "Avinya isolated source worker hardening profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "profile_id",
+    "platform",
+    "version",
+    "identity",
+    "namespaces",
+    "filesystem",
+    "capabilities",
+    "syscall_policy",
+    "resources",
+    "dump_swap",
+    "network",
+    "host_actors",
+    "evidence"
+  ],
+  "properties": {
+    "profile_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uid",
+        "gid",
+        "workload_identity",
+        "non_root"
+      ],
+      "properties": {
+        "uid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "gid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "workload_identity": {
+          "type": "string"
+        },
+        "non_root": {
+          "const": true
+        }
+      }
+    },
+    "namespaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "mount",
+        "ipc",
+        "network",
+        "private"
+      ],
+      "properties": {
+        "pid": {
+          "const": true
+        },
+        "mount": {
+          "const": true
+        },
+        "ipc": {
+          "const": true
+        },
+        "network": {
+          "const": true
+        },
+        "private": {
+          "const": true
+        }
+      }
+    },
+    "filesystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_read_only",
+        "staging_bytes_max",
+        "no_host_path",
+        "no_shared_app_volume"
+      ],
+      "properties": {
+        "root_read_only": {
+          "const": true
+        },
+        "staging_bytes_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "no_host_path": {
+          "const": true
+        },
+        "no_shared_app_volume": {
+          "const": true
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "syscall_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "memory_bytes_max",
+        "cpu_millis_max",
+        "pids_max",
+        "fetch_rows_max",
+        "fetch_bytes_max",
+        "statement_timeout_ms"
+      ],
+      "properties": {
+        "memory_bytes_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cpu_millis_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pids_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fetch_rows_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fetch_bytes_max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "statement_timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "dump_swap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "core_dump_policy",
+        "swap_policy",
+        "crash_handler_policy"
+      ],
+      "properties": {
+        "core_dump_policy": {
+          "type": "string"
+        },
+        "swap_policy": {
+          "type": "string"
+        },
+        "crash_handler_policy": {
+          "type": "string"
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "egress_allowlist",
+        "no_client_listener",
+        "sole_egress_adapter"
+      ],
+      "properties": {
+        "egress_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "no_client_listener": {
+          "const": true
+        },
+        "sole_egress_adapter": {
+          "const": true
+        }
+      }
+    },
+    "host_actors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image_digest",
+        "host_id",
+        "collected_at",
+        "verifier_id",
+        "signature_ref"
+      ],
+      "properties": {
+        "image_digest": {
+          "type": "string"
+        },
+        "host_id": {
+          "type": "string"
+        },
+        "collected_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "verifier_id": {
+          "type": "string"
+        },
+        "signature_ref": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
