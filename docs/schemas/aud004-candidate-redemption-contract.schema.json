@@ -1,101 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://avinya.example/schemas/aud004-candidate-redemption-contract.schema.json",
-  "title": "AUD-004 Candidate and Redemption Contracts",
+  "title": "AUD-004 Candidate Poll and Redemption Contracts",
   "$defs": {
-    "binding": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "actor_issuer",
-        "actor_subject",
-        "destination_workload_id",
-        "tenant_id",
-        "branch_id",
-        "source_operation_id",
-        "source_resource_ref",
-        "purpose_id",
-        "action_id",
-        "projection_digest",
-        "policy_version",
-        "generation_vector",
-        "profile_id",
-        "expires_at"
-      ],
-      "properties": {
-        "actor_issuer": {
-          "type": "string",
-          "minLength": 1
-        },
-        "actor_subject": {
-          "type": "string",
-          "minLength": 1
-        },
-        "destination_workload_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "tenant_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "branch_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "source_operation_id": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "source_resource_ref": {
-          "type": "string",
-          "minLength": 1
-        },
-        "purpose_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "action_id": {
-          "type": "string",
-          "minLength": 1
-        },
-        "projection_digest": {
-          "type": "string",
-          "pattern": "^[A-Fa-f0-9]{64}$"
-        },
-        "policy_version": {
-          "type": "string"
-        },
-        "generation_vector": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "domain",
-              "generation"
-            ],
-            "properties": {
-              "domain": {
-                "type": "string"
-              },
-              "generation": {
-                "type": "integer",
-                "minimum": 0
-              }
-            }
-          }
-        },
-        "profile_id": {
-          "type": "string"
-        },
-        "expires_at": {
-          "type": "string",
-          "format": "date-time"
-        }
-      }
-    },
     "poll_request": {
       "type": "object",
       "additionalProperties": false,
@@ -137,9 +44,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "minLength": 1,
-          "maxLength": 256
+          ]
         },
         "retry_after_seconds": {
           "type": [
@@ -150,42 +55,28 @@
         }
       }
     },
-    "candidate_record": {
+    "stage_result": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "reference_hash",
-        "binding",
-        "state",
-        "created_at",
-        "consumed_at"
+        "operation_id",
+        "status"
       ],
       "properties": {
-        "reference_hash": {
+        "operation_id": {
           "type": "string",
-          "minLength": 32
+          "format": "uuid"
         },
-        "binding": {
-          "$ref": "#/$defs/binding"
-        },
-        "state": {
+        "status": {
           "enum": [
-            "ISSUED",
-            "CONSUMED",
+            "STAGED",
+            "ALREADY_STAGED",
+            "CONFLICT",
+            "DENIED",
             "EXPIRED",
-            "REVOKED"
+            "UNAVAILABLE",
+            "OUTCOME_UNCERTAIN"
           ]
-        },
-        "created_at": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "consumed_at": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "format": "date-time"
         }
       }
     },
@@ -196,7 +87,8 @@
         "candidate_ref",
         "idempotency_key",
         "canonical_request_digest",
-        "operation_id"
+        "operation_id",
+        "binding_digest"
       ],
       "properties": {
         "candidate_ref": {
@@ -211,52 +103,39 @@
         },
         "canonical_request_digest": {
           "type": "string",
-          "pattern": "^[A-Fa-f0-9]{64}$"
+          "minLength": 1
         },
         "operation_id": {
           "type": "string",
           "format": "uuid"
+        },
+        "binding_digest": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
-    "stage_result": {
+    "authenticated_poll_context": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "status",
-        "operation_id",
-        "artifact_id",
-        "egress_state"
+        "server_authenticated_workload_id",
+        "tenant_id",
+        "branch_id",
+        "authentication_evidence_ref"
       ],
       "properties": {
-        "status": {
-          "enum": [
-            "STAGED",
-            "ALREADY_STAGED",
-            "CONFLICT",
-            "DENIED",
-            "EXPIRED",
-            "UNAVAILABLE",
-            "OUTCOME_UNCERTAIN"
-          ]
+        "server_authenticated_workload_id": {
+          "type": "string"
         },
-        "operation_id": {
-          "type": "string",
-          "format": "uuid"
+        "tenant_id": {
+          "type": "string"
         },
-        "artifact_id": {
-          "type": [
-            "string",
-            "null"
-          ]
+        "branch_id": {
+          "type": "string"
         },
-        "egress_state": {
-          "enum": [
-            "NOT_ACCEPTED",
-            "EGRESS_ACCEPTED",
-            "TRANSPORT_RELEASE_COMMITTED",
-            "OUTCOME_UNCERTAIN"
-          ]
+        "authentication_evidence_ref": {
+          "type": "string"
         }
       }
     },
@@ -266,11 +145,9 @@
       "required": [
         "receipt_id",
         "operation_id",
+        "binding_digest",
         "artifact_digest",
-        "projection_digest",
-        "destination_workload_id",
         "status",
-        "issued_at",
         "signature_ref"
       ],
       "properties": {
@@ -282,15 +159,10 @@
           "type": "string",
           "format": "uuid"
         },
+        "binding_digest": {
+          "type": "string"
+        },
         "artifact_digest": {
-          "type": "string",
-          "pattern": "^[A-Fa-f0-9]{64}$"
-        },
-        "projection_digest": {
-          "type": "string",
-          "pattern": "^[A-Fa-f0-9]{64}$"
-        },
-        "destination_workload_id": {
           "type": "string"
         },
         "status": {
@@ -299,10 +171,6 @@
             "DELIVERY_CONFIRMED",
             "OUTCOME_UNCERTAIN"
           ]
-        },
-        "issued_at": {
-          "type": "string",
-          "format": "date-time"
         },
         "signature_ref": {
           "type": "string"
@@ -318,13 +186,13 @@
       "$ref": "#/$defs/poll_response"
     },
     {
-      "$ref": "#/$defs/candidate_record"
+      "$ref": "#/$defs/stage_result"
     },
     {
       "$ref": "#/$defs/redemption_request"
     },
     {
-      "$ref": "#/$defs/stage_result"
+      "$ref": "#/$defs/authenticated_poll_context"
     },
     {
       "$ref": "#/$defs/receipt"
