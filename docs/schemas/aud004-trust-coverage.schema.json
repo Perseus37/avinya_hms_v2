@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-trust-coverage-1.0.0.json",
+  "title": "AUD-004 trust coverage and freshness evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "root",
+    "snapshot",
+    "nodes",
+    "edges",
+    "exclusions",
+    "reconciliation",
+    "attestation"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "root": {
+      "$ref": "#/$defs/root"
+    },
+    "snapshot": {
+      "$ref": "#/$defs/snapshot"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "uniqueItems": true
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "uniqueItems": true
+    },
+    "exclusions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/exclusion"
+      },
+      "uniqueItems": true
+    },
+    "reconciliation": {
+      "$ref": "#/$defs/reconciliation"
+    },
+    "attestation": {
+      "$ref": "#/$defs/attestation"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "organization_id",
+        "account_ids",
+        "regions",
+        "scope_generation",
+        "declared_at"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "organization_id": {
+          "$ref": "#/$defs/id"
+        },
+        "account_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "regions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "scope_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "declared_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_id",
+        "provider",
+        "api_version",
+        "started_at",
+        "completed_at",
+        "pagination_complete",
+        "page_count",
+        "source_digest"
+      ],
+      "properties": {
+        "snapshot_id": {
+          "$ref": "#/$defs/id"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "api_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "pagination_complete": {
+          "const": true
+        },
+        "page_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node_id",
+        "kind",
+        "provider",
+        "native_id",
+        "scope",
+        "lifecycle",
+        "evidence_ref"
+      ],
+      "properties": {
+        "node_id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "organization",
+            "account",
+            "region",
+            "identity",
+            "workload",
+            "host",
+            "network",
+            "proxy",
+            "secret_broker",
+            "database_cluster",
+            "database",
+            "postgres_role",
+            "control_plane",
+            "operator"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "native_id": {
+          "$ref": "#/$defs/id"
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tenant_id",
+            "database_id"
+          ],
+          "properties": {
+            "tenant_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "database_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "lifecycle": {
+          "enum": [
+            "active",
+            "disabled",
+            "deleted",
+            "tombstoned",
+            "unknown"
+          ]
+        },
+        "evidence_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "edge_id",
+        "from",
+        "to",
+        "capability",
+        "authn",
+        "authz",
+        "policy_ref",
+        "valid_from",
+        "valid_until",
+        "evidence_ref"
+      ],
+      "properties": {
+        "edge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "capability": {
+          "enum": [
+            "connect",
+            "impersonate",
+            "assume_role",
+            "mutate_policy",
+            "read_secret",
+            "administer",
+            "route_network",
+            "restore_backup",
+            "execute"
+          ]
+        },
+        "authn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authz": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_ref": {
+          "$ref": "#/$defs/id"
+        },
+        "valid_from": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "valid_until": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject_id",
+        "reason",
+        "approver_ids",
+        "expires_at",
+        "evidence_ref"
+      ],
+      "properties": {
+        "subject_id": {
+          "$ref": "#/$defs/id"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approver_ids": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authoritative_sources",
+        "discovered_count",
+        "matched_count",
+        "unmatched_count",
+        "unknown_count",
+        "tombstone_count",
+        "complete"
+      ],
+      "properties": {
+        "authoritative_sources": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "discovered_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "matched_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unmatched_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tombstone_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "complete": {
+          "const": true
+        }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generation",
+        "issued_at",
+        "expires_at",
+        "witness_id",
+        "previous_generation",
+        "evidence_digest",
+        "signature_ref"
+      ],
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "witness_id": {
+          "$ref": "#/$defs/id"
+        },
+        "previous_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "signature_ref": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    }
+  }
+}

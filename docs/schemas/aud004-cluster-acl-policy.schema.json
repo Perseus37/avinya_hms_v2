@@ -1,0 +1,664 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-cluster-acl-policy-1.0.0.json",
+  "title": "AUD-004 PostgreSQL cluster ACL policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "cluster",
+    "supported_server_major",
+    "roles",
+    "memberships",
+    "databases",
+    "schemas",
+    "objects",
+    "default_privileges",
+    "extensions",
+    "foreign_access",
+    "exceptions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "cluster": {
+      "$ref": "#/$defs/cluster"
+    },
+    "supported_server_major": {
+      "type": "integer",
+      "minimum": 14,
+      "maximum": 99
+    },
+    "roles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/role"
+      },
+      "uniqueItems": true
+    },
+    "memberships": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/membership"
+      },
+      "uniqueItems": true
+    },
+    "databases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/database"
+      },
+      "uniqueItems": true
+    },
+    "schemas": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/schemaObject"
+      },
+      "uniqueItems": true
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/object"
+      },
+      "uniqueItems": true
+    },
+    "default_privileges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/defaultAcl"
+      },
+      "uniqueItems": true
+    },
+    "extensions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/extension"
+      },
+      "uniqueItems": true
+    },
+    "foreign_access": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/foreignAccess"
+      },
+      "uniqueItems": true
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/exception"
+      },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$"
+    },
+    "cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "account_id",
+        "region",
+        "cluster_id",
+        "system_identifier",
+        "environment"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "account_id": {
+          "$ref": "#/$defs/id"
+        },
+        "region": {
+          "$ref": "#/$defs/id"
+        },
+        "cluster_id": {
+          "$ref": "#/$defs/id"
+        },
+        "system_identifier": {
+          "type": "string",
+          "pattern": "^[0-9]{1,20}$"
+        },
+        "environment": {
+          "enum": [
+            "production",
+            "staging",
+            "test",
+            "development"
+          ]
+        }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role_name",
+        "login",
+        "superuser",
+        "createdb",
+        "createrole",
+        "replication",
+        "bypassrls",
+        "inherit",
+        "can_set_role",
+        "object_owner",
+        "purpose",
+        "credential_version_id",
+        "tenant_id"
+      ],
+      "properties": {
+        "role_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "login": {
+          "type": "boolean"
+        },
+        "superuser": {
+          "type": "boolean"
+        },
+        "createdb": {
+          "type": "boolean"
+        },
+        "createrole": {
+          "type": "boolean"
+        },
+        "replication": {
+          "type": "boolean"
+        },
+        "bypassrls": {
+          "type": "boolean"
+        },
+        "inherit": {
+          "type": "boolean"
+        },
+        "can_set_role": {
+          "type": "boolean"
+        },
+        "object_owner": {
+          "type": "boolean"
+        },
+        "purpose": {
+          "enum": [
+            "tenant_runtime",
+            "source_runtime",
+            "migration",
+            "backup",
+            "provisioning",
+            "monitoring",
+            "break_glass",
+            "owner"
+          ]
+        },
+        "credential_version_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "tenant_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        }
+      }
+    },
+    "membership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "member",
+        "granted_role",
+        "grantor",
+        "admin_option",
+        "inherit_option",
+        "set_option"
+      ],
+      "properties": {
+        "member": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "granted_role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "grantor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "admin_option": {
+          "type": "boolean"
+        },
+        "inherit_option": {
+          "type": "boolean"
+        },
+        "set_option": {
+          "type": "boolean"
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "owner",
+        "connect_public",
+        "temp_public",
+        "acl"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "connect_public": {
+          "type": "boolean"
+        },
+        "temp_public": {
+          "type": "boolean"
+        },
+        "acl": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/grant"
+          }
+        }
+      }
+    },
+    "schemaObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database",
+        "name",
+        "owner",
+        "create_public",
+        "usage_public",
+        "acl"
+      ],
+      "properties": {
+        "database": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "create_public": {
+          "type": "boolean"
+        },
+        "usage_public": {
+          "type": "boolean"
+        },
+        "acl": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/grant"
+          }
+        }
+      }
+    },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database",
+        "schema",
+        "kind",
+        "identity",
+        "owner",
+        "acl",
+        "extension_owned"
+      ],
+      "properties": {
+        "database": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "kind": {
+          "enum": [
+            "table",
+            "partitioned_table",
+            "partition",
+            "view",
+            "materialized_view",
+            "sequence",
+            "function",
+            "procedure",
+            "aggregate",
+            "type",
+            "domain",
+            "foreign_table",
+            "large_object"
+          ]
+        },
+        "identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "acl": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/grant"
+          }
+        },
+        "extension_owned": {
+          "type": "boolean"
+        }
+      }
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "grantee",
+        "grantor",
+        "privileges",
+        "grantable"
+      ],
+      "properties": {
+        "grantee": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "grantor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "privileges": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "CONNECT",
+              "CREATE",
+              "TEMP",
+              "USAGE",
+              "SELECT",
+              "INSERT",
+              "UPDATE",
+              "DELETE",
+              "TRUNCATE",
+              "REFERENCES",
+              "TRIGGER",
+              "EXECUTE",
+              "USAGE_SEQUENCE",
+              "SELECT_SEQUENCE",
+              "UPDATE_SEQUENCE"
+            ]
+          }
+        },
+        "grantable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "defaultAcl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database",
+        "creator_role",
+        "schema",
+        "object_class",
+        "grants"
+      ],
+      "properties": {
+        "database": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "creator_role": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 63
+        },
+        "object_class": {
+          "enum": [
+            "tables_views",
+            "sequences",
+            "routines",
+            "types"
+          ]
+        },
+        "grants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/grant"
+          }
+        }
+      }
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "database",
+        "name",
+        "version",
+        "trusted",
+        "schema",
+        "owner",
+        "approved"
+      ],
+      "properties": {
+        "database": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "trusted": {
+          "type": "boolean"
+        },
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "approved": {
+          "type": "boolean"
+        }
+      }
+    },
+    "foreignAccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "database",
+        "owner",
+        "enabled",
+        "remote_identity",
+        "approved"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "foreign_server",
+            "user_mapping",
+            "fdw",
+            "dblink",
+            "security_definer_routine"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "database": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "remote_identity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "approved": {
+          "type": "boolean"
+        }
+      }
+    },
+    "exception": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exception_id",
+        "principal",
+        "object_ref",
+        "privilege",
+        "grantor",
+        "approver_ids",
+        "reason_code",
+        "expires_at",
+        "evidence_ref"
+      ],
+      "properties": {
+        "exception_id": {
+          "$ref": "#/$defs/id"
+        },
+        "principal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "object_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "privilege": {
+          "enum": [
+            "CONNECT",
+            "CREATE",
+            "TEMP",
+            "USAGE",
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "TRUNCATE",
+            "REFERENCES",
+            "TRIGGER",
+            "EXECUTE",
+            "USAGE_SEQUENCE",
+            "SELECT_SEQUENCE",
+            "UPDATE_SEQUENCE"
+          ]
+        },
+        "grantor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "approver_ids": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "reason_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    }
+  }
+}
