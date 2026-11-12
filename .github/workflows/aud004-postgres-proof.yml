@@ -19,8 +19,6 @@ jobs:
   disposable-postgres-acl:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      AUD004_SETUP_PASSWORD: ${{ runner.temp }}-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
     steps:
       - name: Check out proof harness
         uses: actions/checkout@v4
@@ -35,6 +33,8 @@ jobs:
 
       - name: Refuse pre-existing harness resources
         id: preflight
+        env:
+          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
         run: |
           if docker volume inspect aud004-proof-pgdata >/dev/null 2>&1; then
             echo "::error::Refusing to reuse existing aud004-proof-pgdata volume"
@@ -52,6 +52,8 @@ jobs:
           echo "safe_to_cleanup=true" >> "$GITHUB_OUTPUT"
 
       - name: Start disposable PostgreSQL 17
+        env:
+          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
         run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait
 
       - name: Run real PostgreSQL ACL tests
@@ -62,5 +64,7 @@ jobs:
 
       - name: Tear down only the disposable proof project
         if: always() && steps.preflight.outputs.safe_to_cleanup == 'true'
+        env:
+          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
         run: |
           docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml down --volumes --remove-orphans
