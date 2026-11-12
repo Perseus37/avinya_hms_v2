@@ -32,8 +32,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check pytest psycopg2-binary
 
       - name: Refuse pre-existing harness resources
-        env:
-          AUD004_SETUP_PASSWORD: ${{ secrets.AUD004_SETUP_PASSWORD }}
+        id: preflight
         run: |
           if docker volume inspect aud004-proof-pgdata >/dev/null 2>&1; then
             echo "::error::Refusing to reuse existing aud004-proof-pgdata volume"
@@ -47,6 +46,7 @@ jobs:
             echo "::error::Refusing to reuse an existing aud004-proof Compose project"
             exit 1
           fi
+          echo "safe_to_cleanup=true" >> "$GITHUB_OUTPUT"
 
       - name: Start disposable PostgreSQL 17
         env:
@@ -60,6 +60,6 @@ jobs:
         run: python -m pytest -q deployments/aud004-proof/test_acl.py
 
       - name: Tear down only the disposable proof project
-        if: always()
+        if: always() && steps.preflight.outputs.safe_to_cleanup == 'true'
         run: |
           docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml down --volumes --remove-orphans
