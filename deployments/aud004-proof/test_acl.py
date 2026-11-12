@@ -136,7 +136,7 @@ def test_public_has_no_connect_or_temp_on_runtime_database(identity):
                 """
                 SELECT
                     COALESCE(bool_or(privilege_type = 'CONNECT'), FALSE),
-                    COALESCE(bool_or(privilege_type = 'TEMP'), FALSE)
+                    COALESCE(bool_or(privilege_type = 'TEMPORARY'), FALSE)
                 FROM pg_database AS d
                 CROSS JOIN LATERAL aclexplode(d.datacl) AS acl
                 WHERE d.datname = current_database()
