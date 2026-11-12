@@ -1,0 +1,28 @@
+# Isolated AUD-004 proof cluster. Never merge into the normal HMS Compose project.
+name: aud004-proof
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    environment:
+      POSTGRES_USER: aud004_setup
+      POSTGRES_PASSWORD: \${AUD004_SETUP_PASSWORD:?Set AUD004_SETUP_PASSWORD to a disposable local-only value}
+      POSTGRES_DB: postgres
+    ports:
+      - "127.0.0.1:55439:5432"
+    volumes:
+      - aud004_pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01-aud004-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aud004_setup -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [aud004-only]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+volumes:
+  aud004_pgdata:
+    name: aud004-proof-pgdata
+networks:
+  aud004-only:
+    name: aud004-proof-only
