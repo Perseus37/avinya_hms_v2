@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-worker-platform-measurement.schema.json",
+  "title": "AUD-004 Worker Platform Measurement Attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "platform_profile_id",
+    "workload_identity",
+    "host_identity",
+    "observed_controls",
+    "measurement",
+    "verifier"
+  ],
+  "properties": {
+    "platform_profile_id": {
+      "type": "string"
+    },
+    "workload_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workload_id",
+        "image_digest",
+        "runtime_id",
+        "boot_measurement"
+      ],
+      "properties": {
+        "workload_id": {
+          "type": "string"
+        },
+        "image_digest": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": "string"
+        },
+        "boot_measurement": {
+          "type": "string"
+        }
+      }
+    },
+    "host_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host_id",
+        "os_id",
+        "kernel_version",
+        "provider_attestation_ref"
+      ],
+      "properties": {
+        "host_id": {
+          "type": "string"
+        },
+        "os_id": {
+          "type": "string"
+        },
+        "kernel_version": {
+          "type": "string"
+        },
+        "provider_attestation_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "observed_controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uid",
+        "gid",
+        "capabilities",
+        "seccomp_digest",
+        "mac_profile",
+        "namespaces",
+        "mounts_digest",
+        "cpu_quota_micros",
+        "memory_limit_bytes",
+        "pids_limit",
+        "ptrace_restricted",
+        "core_dumps_disabled",
+        "swap_state",
+        "network_policy_digest",
+        "effective_routes_digest",
+        "host_actor_inventory_digest"
+      ],
+      "properties": {
+        "uid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "gid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "seccomp_digest": {
+          "type": "string"
+        },
+        "mac_profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mechanism",
+            "profile_id",
+            "enforced",
+            "approval_ref"
+          ],
+          "properties": {
+            "mechanism": {
+              "enum": [
+                "APPARMOR",
+                "SELINUX"
+              ]
+            },
+            "profile_id": {
+              "type": "string"
+            },
+            "enforced": {
+              "const": true
+            },
+            "approval_ref": {
+              "type": "string"
+            }
+          }
+        },
+        "namespaces": {
+          "type": "array",
+          "minItems": 4,
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "mounts_digest": {
+          "type": "string"
+        },
+        "cpu_quota_micros": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "memory_limit_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pids_limit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ptrace_restricted": {
+          "const": true
+        },
+        "core_dumps_disabled": {
+          "const": true
+        },
+        "swap_state": {
+          "enum": [
+            "DISABLED",
+            "ENCRYPTED"
+          ]
+        },
+        "network_policy_digest": {
+          "type": "string"
+        },
+        "effective_routes_digest": {
+          "type": "string"
+        },
+        "host_actor_inventory_digest": {
+          "type": "string"
+        }
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "collector_id",
+        "collector_build_digest",
+        "collected_at",
+        "raw_measurement_digest",
+        "attestation_chain_ref",
+        "freshness_policy_id"
+      ],
+      "properties": {
+        "collector_id": {
+          "type": "string"
+        },
+        "collector_build_digest": {
+          "type": "string"
+        },
+        "collected_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "raw_measurement_digest": {
+          "type": "string"
+        },
+        "attestation_chain_ref": {
+          "type": "string"
+        },
+        "freshness_policy_id": {
+          "type": "string"
+        }
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verifier_id",
+        "build_digest",
+        "trust_root_ref",
+        "result",
+        "signature_ref"
+      ],
+      "properties": {
+        "verifier_id": {
+          "type": "string"
+        },
+        "build_digest": {
+          "type": "string"
+        },
+        "trust_root_ref": {
+          "type": "string"
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT_READY"
+          ]
+        },
+        "signature_ref": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
