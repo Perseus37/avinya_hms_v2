@@ -114,6 +114,21 @@ def test_runtime_has_no_cluster_admin_or_replication_attributes(identity):
             assert cur.fetchone() == (False, False, False, False, False)
 
 @pytest.mark.parametrize("identity", ["a", "b", "cp"])
+def test_runtime_has_only_database_connect_privilege(identity):
+    with connect(identity) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    has_database_privilege(current_user, current_database(), 'CONNECT'),
+                    has_database_privilege(current_user, current_database(), 'CREATE'),
+                    has_database_privilege(current_user, current_database(), 'TEMPORARY')
+                """
+            )
+            assert cur.fetchone() == (True, False, False)
+
+
+@pytest.mark.parametrize("identity", ["a", "b", "cp"])
 def test_public_has_no_connect_or_temp_on_runtime_database(identity):
     with connect(identity) as conn:
         with conn.cursor() as cur:
