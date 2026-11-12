@@ -54,4 +54,4 @@ This command is scoped to the dedicated project file and project name. Never sub
 
 ## Current proof limitations
 
-The first slice tests per-database CONNECT ACLs, tenant-local synthetic reads, control-plane separation and non-privileged runtime role attributes. It does not yet prove source-service authorization, object-level source grants, secret isolation, role membership closure, PUBLIC/predefined-role inventory, workload container identity, revocation or pool draining. Those remain required before any production role/bootstrap/runtime change.
+The first slice tests per-database CONNECT ACLs, tenant-local synthetic reads, control-plane separation, runtime role attributes (including replication and BYPASSRLS), inability to assume the setup identity, and read-only access to the synthetic marker table. It does not yet prove source-service authorization, full role membership closure, PUBLIC/predefined-role inventory, secret isolation, workload container identity, revocation or pool draining. Those remain required before any production role/bootstrap/runtime change.
