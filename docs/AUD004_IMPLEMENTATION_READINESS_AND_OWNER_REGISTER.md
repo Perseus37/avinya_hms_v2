@@ -438,3 +438,122 @@ No Compose files, runtime code, environment files, database roles, credentials o
 The next useful engineering artifact is a **two-tenant non-production identity proof specification**: exact role/ACL assertions, per-workload secret-access assertions, container-level connection attempts, expected PostgreSQL SQLSTATEs, source-service authorization cases, and evidence artifacts. It should be reviewed before SQL migrations or application refactors are authored. This avoids implementing credentials or schema changes before the workload boundary and deployment topology are agreed.
 
 No implementation was performed as part of this readiness update.
+
+
+## 13. Two-tenant non-production identity proof specification
+
+**Status:** test/evidence specification only. It intentionally does not contain executable SQL, migrations, credentials, or deployment changes. Run only on a disposable PostgreSQL cluster with synthetic records and synthetic identities.
+
+### 13.1 Fixture and identity inventory
+
+Create one disposable cluster with:
+- control-plane database CP;
+- tenant databases A and B, representing two independent clinics/tenants;
+- synthetic patient/resource rows in each tenant, with deliberately distinguishable non-sensitive fixture identifiers;
+- source-only federation policy, actor-mapping and audit objects in each tenant;
+- isolated workload identities for A API, A source service, A import worker, B API, B source service, control-plane runtime, email worker, migration, provisioning, backup, restore-drill and monitoring.
+
+Use distinct credentials for each workload identity. No test identity may inherit a cluster administrator, database owner, tenant B, tenant A or unrelated workload role. Keep credential values out of logs, test reports and Git.
+
+### 13.2 Database-level negative and positive assertions
+
+| Test ID | Attempt | Expected result | Evidence |
+|---|---|---|---|
+| DB-01 | A API connects to A | Allow | Successful connection from A API container identity |
+| DB-02 | A API connects to B | Deny with PostgreSQL insufficient-privilege SQLSTATE 42501 | Captured SQLSTATE and role/database ACL snapshot |
+| DB-03 | B API connects to B | Allow | Successful connection from B API container identity |
+| DB-04 | B API connects to A | Deny with SQLSTATE 42501 | Captured SQLSTATE and ACL snapshot |
+| DB-05 | A source service connects to A | Allow | Successful source-service connection |
+| DB-06 | A source service connects to B | Deny with SQLSTATE 42501 | Captured SQLSTATE and role/database ACL snapshot |
+| DB-07 | B source service connects to B | Allow | Successful source-service connection |
+| DB-08 | B source service connects to A | Deny with SQLSTATE 42501 | Captured SQLSTATE and role/database ACL snapshot |
+| DB-09 | Control-plane runtime connects to CP | Allow | Successful control-plane connection |
+| DB-10 | Control-plane runtime connects to A or B | Deny with SQLSTATE 42501 | Captured SQLSTATE and ACL snapshot |
+| DB-11 | A API reads a source-only policy/audit object in A | Deny with SQLSTATE 42501, where the approved role model separates those objects | Object privilege snapshot and failed query |
+| DB-12 | A source service reads the approved source objects in A | Allow | Successful narrowly scoped query |
+| DB-13 | A API attempts SET ROLE to A source, migration, owner or admin role | Deny; expected SQLSTATE 42501 for a role it is not a member of | Membership graph and failed SET ROLE attempt |
+| DB-14 | Runtime role attempts CREATE DATABASE, CREATE ROLE, role membership grant, owner change or protected DDL | Deny | Captured SQLSTATE and catalog privilege snapshot |
+| DB-15 | A runtime connects after PUBLIC CONNECT has been revoked and only explicit grants remain | A permitted tenant role succeeds; every unlisted tenant role fails | Effective database ACL and live connection attempts |
+
+**SQLSTATE interpretation:** 42501 is the expected authorization-denial code for an existing database whose CONNECT privilege is denied. A failure such as 3D000 (invalid catalog/database name) is not a passing isolation test; it means the test may have targeted a nonexistent database. Record the actual SQLSTATE, server identity and target database for every attempt.
+
+### 13.3 Catalog and privilege evidence
+
+Capture before and after snapshots for:
+- all cluster roles and attributes, including SUPERUSER, CREATEDB, CREATEROLE, REPLICATION, BYPASSRLS, LOGIN and connection limits;
+- role membership edges, including inherited membership and SET ROLE options;
+- database owner, ACL, CONNECT and TEMPORARY privileges, including PUBLIC;
+- schema, table, sequence, function and type ownership and grants;
+- default privileges for future objects;
+- security-definer functions, extension ownership and privileged routines;
+- replication, backup, monitoring and predefined PostgreSQL roles;
+- active sessions, connection poolers and database endpoints used by each test container.
+
+For each workload role, prove both the positive allowlist and the negative cross-tenant cases. A static ACL query is supporting evidence, not a substitute for a real connection attempt from the workload's actual container identity.
+
+### 13.4 Secret and workload identity assertions
+
+| Test ID | Attempt | Expected result |
+|---|---|---|
+| SEC-01 | A API workload retrieves A API credential | Allow only if the approved secret policy requires runtime retrieval |
+| SEC-02 | A API workload retrieves B API or B source credential | Deny at secret-manager authorization layer |
+| SEC-03 | A source workload retrieves A source credential | Allow |
+| SEC-04 | A source workload retrieves B source credential | Deny |
+| SEC-05 | A import worker requests a source database credential | Deny; it must call the source service instead |
+| SEC-06 | Email worker requests any tenant DB credential | Deny |
+| SEC-07 | Backup vault requests PostgreSQL credential | Deny |
+| SEC-08 | API, onboarding, HL7 and ordinary worker process environments are inspected | No provisioning, migration, backup, restore or unrelated tenant secret is present |
+| SEC-09 | Secret rotation revokes old credential after approved pool drain | Old credential cannot establish a new connection; new credential succeeds only for its bound tenant |
+| SEC-10 | Runtime logs, exception traces and metrics are inspected | No DSN, password, token, secret payload or raw clinical fixture is exposed |
+
+If a design uses a tenant-bound workload instance, the workload identity must be independently attested by the secret manager. A caller-supplied tenant ID or secret name is not proof of tenant identity.
+
+### 13.5 Source-owned federation authorization cases
+
+Execute through the real source-service endpoint using synthetic actors and records. For every denied case, verify that no patient-specific response body or selector-dependent distinction is released. Exact external status/body behavior must follow the approved anti-enumeration protocol contract.
+
+| Test ID | Source request condition | Required outcome |
+|---|---|---|
+| SRC-01 | Valid destination workload, valid clinician assertion, correct audience/source/destination, allowed purpose/action/scope | Source authorizes only the bounded request and returns minimum permitted data |
+| SRC-02 | Missing or malformed workload authentication | Reject before source database selector resolution |
+| SRC-03 | Invalid signature, untrusted issuer/key or wrong audience | Reject before patient-specific selector resolution |
+| SRC-04 | Assertion names a different source or destination | Reject; do not silently rewrite tenant or destination binding |
+| SRC-05 | Clinician is unmapped, inactive, revoked or not affiliated with the source | Reject without disclosing candidate existence |
+| SRC-06 | Purpose, action, resource or scope is not authorized | Reject without patient-specific disclosure |
+| SRC-07 | Revocation is effective before source release linearization point | Reject and record the authoritative revocation decision |
+| SRC-08 | Request nonce/operation is replayed or selector commitment differs | Reject or return only the exact idempotent prior result permitted by the approved protocol |
+| SRC-09 | Source policy denies one candidate/resource | Do not disclose that candidate/resource; preserve approved non-enumerating outcome |
+| SRC-10 | Required source authorization/disclosure audit commit fails | Fail closed; no protected response is released |
+| SRC-11 | Source DB is unavailable or source audit cannot be confirmed | Return the protocol-defined unavailable/indeterminate result; never claim successful disclosure |
+| SRC-12 | Destination A attempts direct SQL connection to source B while also calling B source service | Direct SQL is denied; only the authenticated source-service path can disclose authorized data |
+
+### 13.6 Pool, revocation and lifecycle tests
+
+- Revoke a tenant database CONNECT grant, then prove new connections are denied. Separately prove that already-open pooled sessions are drained/terminated; do not assume ACL revocation closes existing sessions.
+- Rotate tenant A credentials and prove tenant B credentials and sessions are unaffected.
+- Revoke a source workload identity and verify both secret retrieval and source endpoint authentication fail within the documented revocation bound.
+- Restart the workload after revocation to prove stale in-memory credentials cannot silently re-establish access.
+- Verify the source service fails closed if tenant binding, policy generation, revocation status, audit commit or DB identity is unavailable.
+- Verify connection pools are keyed by immutable tenant/workload identity, never only by caller-supplied database name.
+- Verify provisioning, migration, backup and restore jobs have explicit target allowlists and cannot be triggered through ordinary API/task payloads.
+- For restore drills, verify the drill principal can create/use/drop only its disposable drill database and cannot drop or restore over A, B or CP.
+
+### 13.7 Evidence package and acceptance criteria
+
+The proof run produces:
+1. fixture manifest containing synthetic tenant IDs and database names only;
+2. workload-to-image/container/network/secret-reference map with secret values redacted;
+3. PostgreSQL role membership and privilege catalog snapshots;
+4. positive and negative connection results with SQLSTATE, timestamp, workload identity and target database;
+5. object-level permission and role-switch test results;
+6. secret-manager allow/deny decision evidence;
+7. source authorization case outcomes and audit correlation IDs;
+8. pool drain, credential rotation and revocation timing evidence;
+9. test command, immutable code revision and environment manifest;
+10. independent reviewer disposition for every failed or waived assertion.
+
+**Pass criteria:** all required positive cases succeed; all cross-tenant and privilege-escalation negative cases fail for the intended authorization reason; no secret or patient fixture is disclosed; source audit failure prevents disclosure; and the reviewer can reproduce the evidence from the recorded revision and disposable environment.
+
+**Automatic fail conditions:** cross-tenant connection succeeds; any runtime identity can assume a privileged role; a destination process can read a foreign tenant DB; a source response is released without required source audit; a denied connection is counted as a pass because the target DB was missing; or the test was run only from a developer shell rather than the workload container identity.
+
+No executable test, SQL, migration, credential, secret policy, container or runtime configuration was created or changed by adding this specification.
