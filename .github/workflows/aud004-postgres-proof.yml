@@ -42,7 +42,8 @@ jobs:
             echo "::error::Refusing to reuse existing aud004-proof-only network"
             exit 1
           fi
-          if docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml ps -a --quiet | grep -q .; then
+          existing_containers="$(docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml ps -a --quiet)"
+          if [ -n "$existing_containers" ]; then
             echo "::error::Refusing to reuse an existing aud004-proof Compose project"
             exit 1
           fi
