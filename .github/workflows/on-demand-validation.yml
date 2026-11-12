@@ -15,7 +15,6 @@ on:
           - backend
           - frontend
           - full
-          - aud004-postgres
 
 permissions:
   contents: read
@@ -129,7 +128,7 @@ jobs:
 
   aud004-postgres-proof:
     name: AUD-004 disposable PostgreSQL ACL proof
-    if: ${{ inputs.scope == 'aud004-postgres' }}
+    if: ${{ inputs.scope == 'reconciliation' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
