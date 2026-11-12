@@ -112,3 +112,48 @@ def test_runtime_has_no_cluster_admin_or_replication_attributes(identity):
                 "FROM pg_roles WHERE rolname = current_user"
             )
             assert cur.fetchone() == (False, False, False, False, False)
+
+@pytest.mark.parametrize("identity", ["a", "b", "cp"])
+def test_public_has_no_connect_or_temp_on_runtime_database(identity):
+    with connect(identity) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COALESCE(bool_or(privilege_type = 'CONNECT'), FALSE),
+                    COALESCE(bool_or(privilege_type = 'TEMP'), FALSE)
+                FROM pg_database AS d
+                CROSS JOIN LATERAL aclexplode(d.datacl) AS acl
+                WHERE d.datname = current_database()
+                  AND acl.grantee = 0
+                """
+            )
+            assert cur.fetchone() == (False, False)
+
+
+@pytest.mark.parametrize("identity", ["a", "b", "cp"])
+def test_runtime_has_no_membership_in_predefined_or_privileged_roles(identity):
+    with connect(identity) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT r.rolname
+                FROM pg_roles AS r
+                WHERE r.rolname LIKE 'pg\\_%' ESCAPE '\\'
+                  AND r.rolname <> 'pg_database_owner'
+                  AND pg_has_role(current_user, r.oid, 'MEMBER')
+                UNION
+                SELECT r.rolname
+                FROM pg_roles AS r
+                WHERE (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole
+                       OR r.rolreplication OR r.rolbypassrls)
+                  AND r.rolname <> current_user
+                  AND pg_has_role(current_user, r.oid, 'MEMBER')
+                ORDER BY 1
+                """
+            )
+            memberships = [row[0] for row in cur.fetchall()]
+            assert memberships == [], (
+                "Runtime login inherits predefined or elevated role membership: "
+                f"{memberships!r}"
+            )
