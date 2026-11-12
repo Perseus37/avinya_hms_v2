@@ -26,3 +26,4 @@ volumes:
 networks:
   aud004-only:
     name: aud004-proof-only
+    internal: true
