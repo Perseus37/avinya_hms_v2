@@ -612,3 +612,81 @@ Do not simply change \`DATABASE_URL\` to \`hms_app\` and assume the design is co
 - how the ordinary worker is split so fleet-wide scheduling cannot imply fleet-wide patient DB access.
 
 The existing bootstrap/role SQL should be revised only after the two-tenant disposable-cluster proof demonstrates the intended role topology. No role SQL, bootstrap code, Compose file, test fixture, credential or database was changed by this inventory update.
+
+
+## 15. Disposable PostgreSQL proof harness — environment boundary and execution plan
+
+### 15.1 Do not reuse the default development Compose project
+
+Inspection of the checked-in \`docker-compose.yml\` on \`main\` found:
+- PostgreSQL uses the persistent named volume \`hms_pgdata\`.
+- PostgreSQL, \`db-init\`, and application services load the project \`.env\`.
+- \`db-init\` runs \`python backend/scripts/bootstrap.py\`.
+- The default Compose project also starts the wider application stack.
+
+Therefore, the default Compose project is not an acceptable disposable ACL-test target. A test run must not point at a developer's normal \`hms_pgdata\`, use \`.env\` credentials, invoke the normal bootstrap, or rely on a developer's existing PostgreSQL cluster.
+
+### 15.2 Dedicated harness boundary
+
+The implementation should add a dedicated opt-in test harness (for example, \`deployments/aud004-proof/\`) with these properties:
+
+1. A separate Compose project name and isolated network, with no shared application network.
+2. A pinned PostgreSQL image matching the supported project major version.
+3. No published host port by default; test containers reach PostgreSQL only over the isolated test network.
+4. A uniquely named disposable volume or ephemeral storage. Teardown must be limited to this dedicated project and its explicitly named volume; never use a broad \`docker compose down -v\` against the normal project.
+5. No project \`.env\`, \`.env.production\`, application bootstrap, production secrets, patient fixtures, or mounted developer database directories.
+6. Synthetic-only fixture data with unmistakable tenant A/B identifiers.
+7. A setup identity used only for the disposable cluster to create databases/roles/grants. It must not be reused by the API, source service, import worker or tests asserting runtime denial.
+8. Separate test containers/processes for tenant-A API, tenant-B API, tenant-A source, tenant-B source, control-plane API, destination import, email worker and privileged maintenance roles as applicable.
+9. Credentials supplied only to the specific test workload that needs them. Test output must redact connection strings, passwords and secret-manager values.
+10. A documented manual teardown command scoped to the unique test project, plus a check that refuses teardown if the project label/name does not match the dedicated AUD-004 harness.
+
+### 15.3 Required phases
+
+**H-00 — preflight (read-only):**
+- Verify Docker/Compose availability and the pinned image digest.
+- Verify the harness project name and volume labels are unique and dedicated to AUD-004.
+- Verify no production or default development env file is loaded.
+- Verify the test cluster is newly created and contains no pre-existing application databases.
+- Abort on ambiguous project, volume, host, or environment identity.
+
+**H-01 — disposable cluster initialization:**
+- Create only synthetic CP, tenant-A and tenant-B databases.
+- Create cluster-wide PostgreSQL roles deliberately separated by workload and tenant.
+- Assign each tenant runtime login CONNECT only to its own database; explicitly review PUBLIC privileges, role memberships, database ownership, schema/object grants, default privileges and predefined roles.
+- Keep setup/admin credentials out of all runtime test containers.
+- Record catalog snapshots before executing workload tests.
+
+**H-02 — identity proof:**
+- Execute the DB-01–DB-15 checks from Section 13 using actual tenant workload credentials.
+- Require A-to-A and B-to-B positive connections.
+- Require A-to-B and B-to-A denied connections with the intended authentication/authorization error; a missing database, DNS failure, unavailable server, or bad password is not a passing isolation result.
+- Verify that the workload cannot SET ROLE to a privileged identity or perform prohibited DDL.
+- Verify source-only objects are inaccessible to ordinary tenant API identities.
+
+**H-03 — container identity proof:**
+- Run the tests from the actual test container identities, not only from the developer shell or a privileged test runner.
+- Verify destination/import and email workloads have no source tenant credentials.
+- Verify the source workload cannot retrieve another tenant's credential.
+- Verify the control-plane workload cannot connect to tenant databases unless a separately reviewed operation explicitly requires it.
+
+**H-04 — lifecycle proof:**
+- Rotate and revoke a test credential; verify new sessions fail after revocation.
+- Separately drain/terminate already-established pooled sessions and verify they cannot reconnect with stale credentials.
+- Verify test teardown cannot target any database outside the disposable cluster.
+- Capture the final role/ACL catalog snapshot and redacted test evidence.
+
+### 15.4 CI behavior
+
+- Keep the current SQLite suite unchanged for fast application/domain tests.
+- Add a separately named PostgreSQL integration job that starts the dedicated harness from a clean runner.
+- The PostgreSQL job must not silently fall back to SQLite.
+- A required security gate must report an explicit failure or blocked status if the integration environment cannot be provisioned; it must not report isolation as passed.
+- Preserve test logs, image digest, Compose configuration hash, fixture manifest and redacted catalog evidence as CI artifacts.
+- Do not place reusable credentials in repository secrets. Use short-lived CI job-scoped values for the disposable cluster only.
+
+### 15.5 Execution boundary and current status
+
+This section is a design and safety specification only. No Compose harness, Docker container, PostgreSQL cluster, database, role, credential, test fixture, CI workflow or teardown command has been created or executed. No existing database or named volume has been touched.
+
+The next code change, if authorized, should be limited to adding the dedicated harness and non-destructive integration assertions. It must not alter the default development/production Compose files, application connection routing, role bootstrap, tenant registry, migrations or runtime credentials in the same change. Role bootstrap and runtime identity changes should follow only after the isolated proof is reproducible and independently reviewed.
