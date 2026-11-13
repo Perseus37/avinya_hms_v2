@@ -1002,3 +1002,112 @@ Before drafting exact SQL grants, complete these steps:
 The initial inventory shows that ordinary tenant and CP request traffic can be reduced to database-local, table-scoped DML, while provisioning, fleet support, migrations, index maintenance, backup and restore require separate privileged execution identities. It also identifies multiple append-only tables where table-level UPDATE/DELETE must be denied, not merely rejected by ORM hooks or triggers.
 
 This inventory is not yet a complete route-by-route privilege map, does not prove deployed grants or PostgreSQL role attributes, and does not authorize implementation. The exact table grants, default privileges, ownership transfer and backup role strategy remain pending full metadata/query inventory and DBA/security review. No runtime, SQL, migration, Compose, credential, secret, database, patient-data or production change was made. PostgreSQL **database-per-tenant** remains invariant.
+
+
+## 22. Source-declared SQLAlchemy model inventory — first-pass object baseline
+
+**Evidence status:** static source inventory from the two declarative registries and the tenant Alembic import manifest; not yet an executed `MetaData` dump and not a live PostgreSQL catalog inventory. This section is intentionally not a grant script.
+
+### 22.1 Registry separation and migration registration
+
+The repository defines two independent declarative registries:
+
+- Tenant database: `backend.core.database.Base`, declared in `backend/core/database.py`.
+- Control plane database: `backend.control_plane.models.ControlBase`, declared in `backend/control_plane/models.py`.
+
+Tenant Alembic targets `Base.metadata` and explicitly imports 23 model modules in `backend/alembic/env.py`: `abdm`, `audit`, `billing`, `bloodbank`, `clinical`, `diagnostics`, `encounters`, `facility`, `federation`, `finance`, `identity`, `insurance`, `integrations`, `patients`, `pharmacy`, `policies`, `privacy`, `procurement`, `quality`, `reports`, `service_ops`, `surgery`, and `workforce`. This explicit import list is the strongest source-backed declaration of the tenant migration model-registration boundary.
+
+Control-plane Alembic targets `ControlBase.metadata` from `backend/control_plane/models.py`; it does not import the tenant model registry.
+
+### 22.2 Tenant model table declarations
+
+The following table names were extracted from literal `__tablename__` declarations in the listed model modules. Grouping is by source module, not a permission recommendation.
+
+| Model module | Declared tables |
+|---|---|
+| `abdm` | `abdm_consent_artefacts`, `nhcx_claim_exchange_logs` |
+| `audit` | `security_audit_export_register` |
+| `billing` | `invoices`, `invoice_line_items`, `payment_receipts`, `patient_deposits`, `refund_vouchers`, `procurement_vendor_invoices`, `procurement_vendor_invoice_items`, `charge_capture_events` |
+| `bloodbank` | `blood_bag_inventory`, `blood_cross_match_orders`, `radiology_study_metadata` |
+| `clinical` | `encounter_vitals`, `clinical_notes`, `encounter_diagnoses`, `fluid_balance_logs`, `er_triage_assessments`, `medico_legal_cases`, `patient_comorbidities`, `encounter_physical_exams`, `birth_records`, `death_records`, `order_set_masters`, `order_set_items`, `clinical_early_warning_scores` |
+| `diagnostics` | `service_categories`, `service_catalog`, `service_bundle_mappings`, `diagnostic_orders`, `diagnostic_tasks`, `lab_delta_check_configs` |
+| `encounters` | `patient_encounters`, `inpatient_admissions`, `bed_transfer_logs`, `appointments`, `appointment_status_history`, `service_demand_requests`, `service_demand_status_history`, `appointment_waitlist_entries`, `appointment_waitlist_history`, `doctor_leaves` |
+| `facility` | `floors`, `wards`, `physical_rooms_master`, `beds_master`, `nursing_shift_assignments` |
+| `federation` | `federated_clients`, `federation_transfer_logs` |
+| `finance` | `finance_expenses`, `finance_recurring_expenses` |
+| `identity` | `departments`, `roles`, `permissions`, `role_permissions`, `users`, `auth_sessions`, `password_reset_tokens`, `mfa_recovery_codes`, `mfa_enrollment_codes`, `user_roles`, `doctor_profiles` |
+| `insurance` | `insurance_providers`, `insurance_plans`, `insurance_plan_tariffs`, `patient_insurance_policies`, `insurance_pre_auths`, `insurance_claims` |
+| `integrations` | `equipment_master`, `hl7_integration_logs`, `equipment_test_mappings` |
+| `patients` | `chief_complaints_master`, `comorbidities_master`, `allergies_master`, `diagnoses_master`, `physical_examinations_master`, `patients`, `break_glass_grants`, `break_glass_uses`, `patient_allergies` |
+| `pharmacy` | `medication_master`, `inventory_batches`, `prescriptions`, `prescription_items`, `medication_administration_logs`, `pharmacy_return_logs`, `controlled_substance_vaults`, `controlled_substance_movement_logs`, `bcma_scan_audit_logs` |
+| `policies` | `hospital_policy_settings` |
+| `privacy` | `patient_consent_records`, `privacy_retention_policies`, `privacy_policy_revisions`, `privacy_decision_audits`, `privacy_legal_holds`, `privacy_retention_run_ledgers`, `patient_data_rights_requests`, `privacy_data_breach_incidents` |
+| `procurement` | `procurement_vendors`, `procurement_purchase_orders`, `procurement_po_items`, `procurement_grn`, `procurement_grn_items`, `procurement_purchase_returns`, `procurement_purchase_return_items`, `procurement_indents`, `procurement_indent_items`, `procurement_patient_indent_issue_allocations`, `procurement_patient_indent_return_events`, `procurement_vendor_invoices`, `procurement_document_download_audits`, `procurement_vendor_invoice_items`, `procurement_supplier_payments`, `procurement_supplier_payment_allocations`, `procurement_supplier_payment_requests`, `procurement_supplier_payment_request_allocations`, `procurement_bank_statement_batches`, `procurement_bank_statement_lines`, `procurement_supplier_payment_bank_matches`, `procurement_reconciliation_investigations`, `procurement_reconciliation_sla_policies`, `procurement_reconciliation_investigation_events`, `procurement_reconciliation_escalation_policies`, `procurement_reconciliation_notification_preferences`, `procurement_reconciliation_notification_config_events`, `procurement_reconciliation_notification_outbox`, `procurement_reconciliation_governance_reports` |
+| `quality` | `clinical_quality_incidents`, `quality_indicator_benchmarks` |
+| `reports` | `report_templates` |
+| `service_ops` | `ambulance_vehicles`, `ambulance_dispatches`, `dietary_orders`, `cssd_instrument_sets`, `cssd_sterilization_batches`, `mortuary_cases`, `service_workflow_events`, `biomedical_waste_manifests`, `biomedical_waste_bags` |
+| `surgery` | `operation_theatres`, `surgical_schedules`, `who_surgical_safety_checklists`, `operative_anesthesia_records`, `surgical_implant_logs` |
+| `workforce` | `attendance_records`, `leave_requests`, `salary_profiles`, `payroll_periods`, `payroll_lines`, `payroll_calculation_events` |
+
+### 22.3 Control-plane model table declarations
+
+The `ControlBase` registry declares these 11 tables in `backend/control_plane/models.py`:
+
+`tenant_registry`, `federated_nodes`, `global_patient_pointers`, `control_plane_audit_logs`, `tenant_snapshots_registry`, `module_catalog`, `bundle_catalog`, `blueprint_catalog`, `migration_schemas`, `control_plane_operators`, and `control_plane_operator_sessions`.
+
+These are CP-database objects. Their names must not be included in tenant runtime grants. Conversely, tenant table names must not be included in the CP runtime allow-list.
+
+### 22.4 Enum declarations and sequence caveats
+
+The static model scan found enum classes in the following tenant modules:
+
+- `billing`: `InvoiceStatusEnum`, `PaymentMethodEnum`, `DepositStatusEnum`, `VendorInvoiceStatusEnum`, `ChargeCaptureEventTypeEnum`.
+- `bloodbank`: `BloodComponentTypeEnum`, `BloodBagStatusEnum`, `TransfusionReactionTypeEnum`, `DicomModalityEnum`.
+- `clinical`: `FluidDirectionEnum`, `TriageAcuityEnum`, `MLCCauseEnum`, `DeliveryModeEnum`, `MannerOfDeathEnum`, `OrderSetItemTypeEnum`, `OrderSetPriorityEnum`, `EarlyWarningRiskEnum`.
+- `diagnostics`: `ServiceTypeEnum`, `OrderStatusEnum`, `TaskStatusEnum`.
+- `encounters`: `EncounterTypeEnum`, `EncounterStatusEnum`, `DiagnosisTypeEnum`, `AdmissionTypeEnum`, `DischargeDispositionEnum`, `AppointmentStatusEnum`, `ServiceDemandStatusEnum`, `ServiceDemandReasonEnum`, `ServiceDemandSourceEnum`, `AppointmentWaitlistStatusEnum`.
+- `facility`: `WardTypeEnum`, `RoomTypeEnum`, `BedTypeEnum`, `BedStatusEnum`, `ShiftTypeEnum`.
+- `finance`: `ExpenseCategoryEnum`, `ExpenseStatusEnum`, `RecurringFrequencyEnum`.
+- `identity`: `GenderEnum`, `BloodGroupEnum`, `UserStatusEnum`.
+- `insurance`: `InsuranceProviderTypeEnum`, `PreAuthStatusEnum`, `ClaimStatusEnum`.
+- `integrations`: `ProtocolEnum`.
+- `patients`: `AllergyCategoryEnum`, `AllergySeverityEnum`, `BodySystemEnum`.
+- `pharmacy`: `MedicationFormEnum`, `PrescriptionStatusEnum`, `eMARStatusEnum`.
+- `policies`: `FederationPolicyEnum`.
+- `procurement`: `VendorCategoryEnum`, `POStatusEnum`, `GRNStatusEnum`, `IndentStatusEnum`, `VendorInvoiceStatusEnum`, `SupplierPaymentMethodEnum`.
+- `quality`: `ClinicalIncidentTypeEnum`, `ClinicalIncidentSeverityEnum`, `ClinicalIncidentStatusEnum`.
+- `reports`: `ReportTypeEnum`, `PageSizeEnum`, `PrintModeEnum`.
+- `service_ops`: `BMWColorCategoryEnum`, `BMWBagStatusEnum`.
+- `surgery`: `OTTheatreTypeEnum`, `SurgeryStatusEnum`, `AnesthesiaTypeEnum`.
+
+The CP model declares `DeploymentModeEnum`, `PricingModelEnum`, and `BillingCycleEnum`.
+
+No explicit SQLAlchemy `Sequence(...)` declaration was found in the scanned model files. Many integer primary keys use SQLAlchemy autoincrement conventions, but that does **not** prove the deployed PostgreSQL object names or whether each database version uses SERIAL-backed sequences versus identity columns. Do not generate sequence grants from naming guesses. The actual metadata objects and migrated PostgreSQL catalogs must be queried to enumerate generated sequences and enum type names, including schema, ownership and dependencies.
+
+### 22.5 What this inventory does and does not prove
+
+This source inventory establishes a first allow-list candidate universe for the two registries. It does not establish:
+- that every listed model is actually imported in every runtime process before ORM use;
+- that all live tables are represented by these models;
+- that Alembic history has no manually created or legacy objects;
+- that every model table is accessed by the general HTTP runtime;
+- that all tables require CRUD rather than narrower operation-specific rights;
+- exact sequence, enum, domain, view, materialized-view, function, extension or trigger inventory;
+- actual PostgreSQL owner, ACL, PUBLIC, role-membership, default-privilege or RLS state.
+
+The model declarations include both ordinary mutable entities and evidence/ledger tables. Do not infer DML rights from module membership. In particular, retain the immutable-table restrictions already recorded in Section 21; compare those lists against all model and migration objects before any grant design.
+
+### 22.6 Required deterministic metadata and catalog extraction
+
+Before preparing grant SQL, implement a disposable, no-production-access inventory runner that imports the same 23 tenant modules in the same order as tenant Alembic, imports `ControlBase`, and emits stable machine-readable output for each registry:
+1. sorted table names, schema, columns, primary/foreign/unique/check constraints and indexes;
+2. identity/autoincrement configuration and every metadata sequence, including associated table/column;
+3. every Enum type name, native/non-native setting, schema and value set;
+4. server defaults, computed columns, views/materialized views if represented, and explicit schema-qualified objects;
+5. source module/class for each mapped table, including duplicate table/type declarations and import collisions.
+
+Then, against a disposable PostgreSQL instance migrated from the repository's exact revisions, extract catalogs for relations, sequences, enum/domain types, functions/procedures, triggers, views, extensions, ownership, ACLs, default ACLs, memberships and PUBLIC grants. Diff source metadata against migrated catalogs and explain every extra/missing object. Include all handwritten migration SQL and operational scripts, not only Alembic autogenerate metadata.
+
+Finally, map each table to concrete request routes, worker task handlers, listener paths and scripts, and mark operation classes separately: SELECT, INSERT, UPDATE, DELETE, sequence nextval/currval/setval, COPY, temporary objects, DDL, and maintenance. Use that mapping—not module names—to define runtime grants. The final allow-list must be generated deterministically, reviewed, and tested with independent PostgreSQL login sessions for CP, tenant A, tenant B, migrator, backup and monitoring identities.
+
+**Implementation status:** documentation and source inspection only. No model, migration, SQL, runtime, Compose, credential, secret, database or production configuration was changed. PostgreSQL database-per-tenant remains mandatory.
