@@ -887,3 +887,10 @@ No production/runtime/SQL/migration/Compose/credential/secret/database/productio
 A source-level review of the PR #71 harness found that ACL/default-ACL and role-membership snapshots are already captured in the JSON artifact. The report wording was corrected so it no longer incorrectly describes those snapshots as absent. The evidence boundary is now explicit: those snapshots are recorded but not interpreted or asserted; column, sequence, routine and type ACLs, role attributes and cluster-wide settings are not inventoried in this pass. Trigger/routine definitions and security settings are captured but not evaluated, and raw-SQL append-only denial remains untested.
 
 This correction changes only the characterization report's limitation text. It does not change migration execution, grants, runtime behavior, production configuration or tenant database topology. The workflow remains unexecuted on the latest PR head; no migration or parity result is claimed.
+
+
+### Section 33 — ORM-to-catalog column delta reporting added
+
+PR #71 now reports per-database column-name deltas between the tenant/CP SQLAlchemy metadata manifests and the live post-migration PostgreSQL catalogs. For each of the CP, tenant A and tenant B databases, the JSON artifact lists metadata columns absent from the catalog and catalog columns absent from metadata, alongside the existing table-level deltas. This is characterization output only: differences are surfaced, not automatically accepted or rejected, and type/constraint/index semantic equivalence is not yet certified by this comparison.
+
+The report addition does not change Alembic execution or production behavior. Latest-head CI execution is still required before any migration/catalog conclusion can be drawn.
