@@ -374,3 +374,12 @@ It makes PostgreSQL `PUBLIC` CONNECT/TEMP revocation and explicit per-database g
 Important design caveat: the contract does not select final literal role names, secret manager, workload identity provider, backup topology or supported pooler/platform profile. Those remain owner decisions. The existing PR #71 test is characterization evidence of the current behavior, not acceptance evidence for this target.
 
 PR #70 remains open/draft/unmerged. This document is proposed and requires DBA, application-security, platform and operations review. No SQL, runtime, migrations, Compose, credentials, live database, patient data, production rollout or federation activation changed or was authorized.
+## 27. Workload-to-database identity implementation map (2026-11-13)
+
+The least-privilege contract now includes a repository-grounded workload map in Section 13, based on static inspection of the production Compose manifest, settings/database engine construction, tenant provisioning, migration, backup, restore and bootstrap paths on `main`.
+
+Key result: the current single API process uses shared database credentials for both control-plane and tenant sessions; `TenantEngineRegistry.get_engine(db_name)` selects a database while retaining the same configured login. The control-plane onboarding service, worker, HL7 listener, API and `db-init` all receive the full `.env.production`. `postgres-exporter` also uses the shared `POSTGRES_USER`/`POSTGRES_PASSWORD`. Provisioning combines DB creation, migration and tenant initialization; backup and restore use the shared login. No dedicated backup service appears in the inspected production Compose service list.
+
+This means role SQL alone cannot deliver the target isolation. A P0 architecture decision is required for the multi-tenant API credential boundary: tenant-bound process isolation, a tightly constrained credential broker, or another independently enforced design. The broker/process design must not become a fleet-wide credential oracle. Federation source reads, provisioning, migration, backup and restore require their own execution boundaries.
+
+Static source revisions and the limits of this bounded inventory are recorded in Section 13. This is not a complete connection-consumer inventory and does not establish deployed grants, environment values, network policy or live sessions. No runtime, SQL, migration, Compose or secret changes were made. The contract remains proposed and PR #70 remains draft/open/unmerged.
