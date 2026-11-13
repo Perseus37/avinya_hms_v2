@@ -194,3 +194,74 @@ The disposable PR #71 characterization proof passed on 2026-11-13, but it intent
 - Approve rotation, revocation, emergency operations, audit retention and DR procedures.
 
 Until those decisions and independent reviews are complete, this contract remains proposed. No SQL, runtime, migrations, Compose, secrets, live databases, patient data, federation activation or deployment has been changed or authorized.
+
+## 13. Repository-grounded workload-to-database implementation map (2026-11-13)
+
+**Evidence boundary:** static inspection of `main` at the paths/revisions listed below, compared with the proposed contract. This is not deployed-environment evidence and does not prove the effective privileges of a live PostgreSQL cluster. It is a remediation map, not authorization to change code or deployment.
+
+### 13.1 Current connection construction
+
+| Code path | Current behavior observed | Required target change |
+|---|---|---|
+| `backend/core/config.py::Settings.DATABASE_URL` | Builds one PostgreSQL URL from `POSTGRES_USER`, `POSTGRES_PASSWORD`, host/port and `POSTGRES_DB`. | Replace the single shared login assumption with explicit CP, tenant-bound runtime, migration, provisioning and backup credential sources. No fallback to the legacy shared login in production. |
+| `backend/core/database.py::build_db_url(db_name)` | Changes only the database component of `settings.DATABASE_URL`; username/password remain unchanged. | Database selection must be paired with an independently authorized identity. The function must not turn a caller-controlled database name into cross-tenant authority. |
+| `backend/core/database.py::control_engine` / `ControlSessionLocal` | Control-plane engine is created from `build_db_url(CONTROL_PLANE_DB_NAME)`, therefore uses the same configured username/password as tenant engines. | CP runtime identity must be CP-only and must not be accepted by tenant databases. |
+| `backend/core/database.py::TenantEngineRegistry.get_engine(db_name)` | Accepts a database name, constructs an engine from the shared URL and caches it by database name. | Remove arbitrary database-name access as an authorization primitive. Bind tenant context to an authenticated immutable tenant identity and a tenant-scoped credential capability; reject unapproved DB/tenant pairs before connection creation. |
+| `backend/core/database.py::ensure_postgres_db_exists(db_name)` | Builds a connection to `postgres` using the same configured URL and can create a database. | Move database creation to a separate short-lived provisioning capability; ordinary API/tenant code must not hold this privilege. |
+
+### 13.2 Production Compose service map
+
+| Compose service | Current PostgreSQL exposure evidenced in `docker-compose.prod.yml` | Required target identity / disposition |
+|---|---|---|
+| `db` | Receives `.env.production`; initializes the PostgreSQL container using the configured POSTGRES variables. | Treat initialization/bootstrap superuser as an infrastructure-only secret; never expose it to application services. |
+| `db-init` | Receives the full `.env.production`; runs `python backend/scripts/bootstrap.py --apply-roles`. | Split into explicitly authorized provisioning/bootstrap and migration phases. Do not pass the full environment to an ordinary runtime. Current command continues into CP migration, seed and tenant validation; it is not role-SQL-only. |
+| `api` | Receives full `.env.production`; serves tenant API and uses both CP and tenant session paths in the shared backend process. | Requires a reviewed broker/tenant-isolation design: CP access should be narrowly mediated; tenant DB sessions must be tenant-bound and cannot use one fleet-wide login. A single multi-tenant API process with one login cannot satisfy the per-tenant DB credential matrix without a separately enforced credential broker/process boundary. |
+| `worker` | Receives full `.env.production`; shares the backend package and backup volume mount. | Inventory each job's data scope. Split tenant work into tenant-bound execution contexts; give each job only the required tenant credential. Backup must be a separate workload/identity, not inherited from generic worker configuration. |
+| `hl7-listener` | Receives full `.env.production`; connects to PostgreSQL through shared settings; profile-gated as `integrations`. | Integration identity must be tenant-scoped to assigned interface/tenant and must not have CP/provisioning/migration or other-tenant access. |
+| `onboarding-portal` | Receives full `.env.production`; runs `backend.control_plane.app:app`, but current config still defines the shared `DATABASE_URL`. | CP-only runtime identity. It must not receive tenant DB credentials, patient-data access or the provisioning superuser credential. Provisioning should call a separate narrowly scoped capability. |
+| `postgres-exporter` | `DATA_SOURCE_NAME` explicitly uses `POSTGRES_USER` / `POSTGRES_PASSWORD` and connects to `POSTGRES_DB`. | Dedicated monitoring identity with only approved statistics/health access; no shared application login and no clinical table read. Confirm exporter collector requirements before finalizing grants. |
+| `prometheus`, `alertmanager`, `redis-exporter`, `node-exporter`, `hospital-ui`, `reverse-proxy`, `docker-proxy`, `clamav` | No direct PostgreSQL credentials are shown in their service definitions (other than exporter separately listed). | Keep DB credentials absent. Validate indirect access only through intended API/network paths. |
+| Backup daemon / vault worker | No dedicated backup service is present in the inspected production Compose service list; backup implementation exists in `backend/scripts/backup_service.py`. | Decide and document the actual execution host/service. It must have a separate backup identity, no app or provisioning credential, no shared writable runtime trust boundary, and per-database scope. Do not assume a separate backup service exists because the code module exists. |
+
+### 13.3 Privileged operational paths
+
+- `backend/scripts/bootstrap.py::provision_physical_databases()` connects to the `postgres` maintenance database using the shared `POSTGRES_USER`/`POSTGRES_PASSWORD` and creates CP/default-tenant databases. `apply_database_roles()` uses that same identity. `bootstrap_system()` then upgrades CP, seeds CP, may migrate/seed a tenant and validates active cloud tenant URLs. This is a combined privileged startup path, not a separated provisioning/migration identity.
+- `backend/control_plane/api/routers/provisioning.py` creates tenant DBs via `ensure_postgres_db_exists`, builds a tenant URL, runs `upgrade_tenant_database_url`, and creates a tenant engine from the shared configuration. Provisioning therefore combines database creation, migration and tenant initialization in the control-plane application path.
+- `backend/scripts/migrate.py` accepts a database URL and creates SQLAlchemy engines from it for Alembic/schema operations. Migration privilege is inherited from the supplied URL; the reviewed configuration does not inject a distinct migration identity.
+- `backend/scripts/backup_service.py::_dump_and_encrypt()` invokes `pg_dump` using `settings.POSTGRES_USER` and `settings.POSTGRES_PASSWORD` for the selected `db_name`. `run_backup_cycle()` reads active CLOUD tenants from the CP database and iterates their database names. The database selector is not matched to a per-tenant PostgreSQL credential.
+- `backend/scripts/restore_tenant.py::restore_encrypted_backup()` calls `ensure_postgres_db_exists(target_db_name)` and runs `pg_restore` using the shared configured login. It can also promote a registry entry to CLOUD. Restore is therefore not an isolated, quarantined-target-only capability in the inspected path.
+
+### 13.4 Priority gaps and dependencies
+
+1. **P0 — Identity architecture before code:** a single API process currently accesses CP plus arbitrary tenant DBs through shared credentials. A tenant-scoped database login per tenant cannot be safely selected by a plain `db_name` argument. Decide whether to isolate tenant execution into tenant-bound processes, use a broker that authorizes and issues narrowly scoped short-lived credentials, or adopt another independently enforceable boundary. A broker must not become a fleet-wide credential oracle.
+2. **P0 — Remove shared superuser/owner exposure:** separate infrastructure bootstrap, provisioning, migration and runtime capabilities. Ensure the full `.env.production` is no longer mounted into every service.
+3. **P0 — Provisioning lifecycle:** move DB creation, owner assignment, tenant runtime credential creation, grants and verification out of the normal control-plane request process, or isolate behind a separately authenticated and audited provisioning service.
+4. **P0 — Federation source boundary:** source reads must execute inside a source-owned tenant workload/identity. Destination API/import workers must never use the tenant engine registry to connect to a foreign tenant database.
+5. **P0 — Backup/restore:** define actual service placement, per-tenant credential issuance, artifact isolation, restore quarantine, integrity/ownership verification and cutover approval before wiring new DB roles.
+6. **P1 — Monitoring:** replace the exporter shared credential with a dedicated monitoring identity and test the exact exporter collectors against minimum grants.
+7. **P1 — Connection lifecycle:** design tenant credential rotation/revocation against SQLAlchemy engine caching, process workers, `NullPool`, long-lived sessions and already authenticated PostgreSQL sessions. Revoking a password alone does not terminate existing sessions.
+
+### 13.5 Required follow-up inventory before implementation
+
+- Exhaustively enumerate every `create_engine`, `psycopg2.connect`, `asyncpg`/driver connection, `pg_dump`, `pg_restore`, raw SQL connection and `DATABASE_URL` consumer across backend, scripts, worker tasks, integrations, tests and deployment manifests.
+- Map each endpoint, background job, CLI, migration command, restore path, federation path and support/admin operation to the exact database set and minimum SQL operations it needs.
+- Confirm whether API process boundaries can be split without breaking request routing, transactions, cross-domain workflows and background jobs. If not, specify the credential broker threat model and prove it cannot mint credentials for an untrusted caller-selected tenant.
+- Inspect actual `pg_hba.conf`, role memberships, `PUBLIC` ACLs, DB/object owners, predefined-role memberships, secret mounts, Docker networks, runtime process environment and live service connections only in an approved isolated deployment test. No such live inspection is claimed here.
+- Add negative tests at the real service boundary: tenant A request/job cannot obtain or use tenant B credentials; onboarding cannot connect to clinical DBs; exporter cannot read patient tables; backup A cannot read tenant B or CP; restore cannot promote an unverified target.
+
+### 13.6 Static source references
+
+| Repository path | Inspected revision on `main` |
+|---|---|
+| `docker-compose.prod.yml` | `bfce52948c508e137875a0be2af09ae11178e78` |
+| `backend/core/config.py` | `6c00f90f66f28402c0afa03b669aebff6225ceb7` |
+| `backend/core/database.py` | `043f4ccbdad4d2bfe4c89af0b46988ce60610b01` |
+| `backend/control_plane/api/routers/provisioning.py` | `40bb98fc9f79fb700b8b9484688d818c3ef1c441` |
+| `backend/scripts/migrate.py` | `5ebc4364c127afdebaea187a74df5d0b9e78984b` |
+| `backend/scripts/backup_service.py` | `8ad90420fb4c2f487ed3c6318f657411e3b9cfa8` |
+| `backend/scripts/restore_tenant.py` | `33598657b29ae4e24f136d079543e02dc91098e6` |
+| `backend/scripts/bootstrap.py` | `418a6f6641c17f2bc17b22f4bc09371ae9857bfd` |
+
+This map is bounded by the files listed. It is not an exhaustive proof that no other database connection path exists. The complete connection-consumer inventory in Section 13.5 is still required.
+
+**Disposition:** repository evidence demonstrates that role separation requires application architecture and deployment changes, not just replacement SQL. The next implementation proposal must first resolve the single-process multi-tenant credential boundary. No code, SQL, migration, Compose, secret, database or production setting was changed by this audit.
