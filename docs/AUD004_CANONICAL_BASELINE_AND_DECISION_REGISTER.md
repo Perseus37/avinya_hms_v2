@@ -117,22 +117,20 @@ The latest inspected PR #19 head still has these explicit follow-ups:
 
 The PR discussion links a proposed durable idempotency and recovery design in PR #23. That proposal is design evidence only; it does not mean the runtime fix exists. Do not treat PR #19's successful workflow as proof that these follow-ups are implemented, tested or independently accepted.
 
-## 8. PR #23 design review — proposed, not implementation-ready
+## 8. PR #23 design review and revised proposal — still unapproved
 
-PR #23 provides a useful design direction for PR #19's concurrent-import and post-commit pointer-sync failures. Its current text correctly identifies a server-derived operation identity, durable import state, destination correlation marker, recoverable pointer synchronization, cross-database partial progress, and PostgreSQL concurrency/failure-injection tests.
+PR #23's design document was updated at head `84f54fbad1574982e5d4b27f7b47f440cdc6e6c3` to incorporate the independent review requirements as normative contract language. It now explicitly requires:
 
-The independent review comment on PR #23 requires these details to become normative before implementation:
+- versioned, unambiguous, domain-separated canonical import identity with test vectors and no demographic fields;
+- receipt consumption into a durable operation, with expiry and revalidation semantics;
+- mandatory monotonic fencing generations, lease renewal/takeover rules and stale-worker rejection at both state-transition and destination-commit boundaries;
+- two durable uniqueness barriers: a control-plane operation key and a destination correlation/provenance marker committed atomically with the clone;
+- safe reconciliation of either partial-barrier state without demographic matching or duplicate creation;
+- explicit machine-readable API states, HTTP mappings, polling authorization and retry guidance;
+- PostgreSQL independent-session and separate-worker concurrency, crash-window, stale-fencing and process-termination tests;
+- forward-only migration, rollout, quarantine and evidence-preserving recovery requirements.
 
-- mandatory monotonic fencing generation for every claim, state transition and destination commit; explicit lease expiry, renewal and takeover semantics;
-- two durable uniqueness barriers: unique control-plane operation identity and unique destination-side correlation marker committed atomically with the patient/allergy clone;
-- versioned, domain-separated and unambiguous canonical identity encoding using destination identity, immutable source pointer identity/generation, source branch identity and protocol version; no demographics;
-- provenance verification before uncertain-commit reconciliation, preventing attachment to an unrelated patient;
-- explicit receipt consumption and expiry semantics, plus source identity/policy revalidation on retries;
-- machine-readable API states, operation identifiers, polling/retry behavior and safe disclosure boundaries;
-- PostgreSQL tests across independent sessions and separate worker processes, including stale-worker fencing, lock/unique conflicts and process termination at every cross-database boundary.
-
-Until these details are accepted and implemented, PR #23 is a proposed design only. It does not remediate PR #19, authorize a migration or close the data-integrity findings. PR #19 remains open and unmerged; AUD-004 remains a separate release blocker.
-
+The revised document remains **PROPOSED — NOT APPROVED FOR IMPLEMENTATION OR RELEASE**. PR #23 remains draft and stacked on PR #19, not `main`; no submitted independent GitHub review is recorded. This design refinement does not remediate PR #19, authorize migrations, or close the data-integrity findings. PR #19 remains open and unmerged; AUD-004 remains a separate release blocker.
 ## 9. PR #19 implementation trace against PR #23 recovery criteria
 
 Read-only static review of PR #19 head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`, performed after the PR #23 design review. This is source inspection only; no tests were executed as part of this review.
