@@ -2203,3 +2203,40 @@ For a fresh Compose-managed PostgreSQL volume, the official PostgreSQL image ini
 **Assessment:** The declared PostgreSQL least-privilege roles are not integrated into the application's connection configuration or normal production bootstrap. All control-plane and tenant engines inherit `POSTGRES_USER`, and the optional role script neither configures that runtime identity nor grants the created application role across the actual control-plane/tenant databases. On a fresh standard Compose PostgreSQL initialization, this is likely the bootstrap superuser identity; confirm live catalog attributes before making a deployment-specific assertion. This is a high-priority database isolation and blast-radius gap: separate PostgreSQL databases exist, but the checked-in application configuration does not establish least-privilege database authorization between them.
 
 **Boundary:** static source/configuration review only. No database, role, grant, credential, tenant, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+## 75. Mandatory pre-restore safety snapshot imports a backup function that does not exist
+
+**Sources reviewed on main:**
+- `backend/control_plane/api/routers/fleet_ops.py` (`restore_tenant_from_snapshot`)
+- `backend/scripts/backup_service.py` (available backup functions)
+- `backend/scripts/restore_tenant.py` (`restore_encrypted_backup`)
+
+Static source review only. The restore endpoint was not invoked; no backup, database, tenant, file, or production state was read or changed.
+
+### 75.1 The mandatory safety-snapshot import fails before the restore is attempted
+
+The control-plane endpoint `POST /api/tenants/{slug}/backups/{filename}/restore` queues a background task. Inside that task, before calling `restore_encrypted_backup()`, it executes:
+
+```python
+from backend.scripts.backup_service import create_encrypted_backup
+safety_path = create_encrypted_backup(tenant_db_name, encrypted_backup_key)
+```
+
+The checked-in `backend/scripts/backup_service.py` defines `_dump_and_encrypt(db_name, encryption_key, output_dir)` as its snapshot implementation, plus the backup-cycle/daemon helpers. It does not define or export `create_encrypted_backup`. A repository-wide code search also returned no definition or import-compatible implementation of that name.
+
+Python therefore raises `ImportError` when the background task reaches this import. The exception is caught by the endpoint's task wrapper, recorded as `PRE_RESTORE_SAFETY_SNAPSHOT_FAILED` / `RESTORE_FAILED`, and re-raised. The subsequent `restore_encrypted_backup(str(target_path), ...)` call is unreachable in the current source state. The endpoint can queue and acknowledge the task at HTTP request time, but the background restore will fail before modifying the tenant database.
+
+The safety snapshot is explicitly described in the source as mandatory and fail-closed. This is not a recommendation to bypass that control: the missing implementation prevents both the safety control and the intended restore operation from completing.
+
+### 75.2 Required remediation and acceptance evidence
+
+1. Implement and export a reviewed `create_encrypted_backup` helper with a clear contract, or update the restore task to call the existing `_dump_and_encrypt` helper with the correct raw tenant key and output directory. Do not pass the encrypted-at-rest registry value where a decrypted backup key is required.
+2. Keep the mandatory pre-restore snapshot fail-closed. Verify that it is durably written, checksum sidecar is present, and its artifact can be decrypted with the tenant's key before allowing destructive restore to proceed.
+3. Add a disposable PostgreSQL integration test that invokes the control-plane restore workflow with synthetic tenant data and a valid encrypted snapshot. Assert the pre-restore snapshot exists and is decryptable, the selected restore completes, and the expected data state is restored.
+4. Add failure-injection tests for missing backup helper, snapshot write failure, checksum failure, decryption failure, and pg_restore failure. Every pre-restore failure must leave the original tenant database unchanged and produce a durable, correctly correlated operation result.
+5. Avoid returning a successful queued status as the only completion signal. Expose a durable restore operation ID and terminal success/failure state to the operator; verify that the audit events distinguish queued, safety-snapshot complete, restore started, and restore complete.
+6. Confirm the safety snapshot helper's call sites and tests use the same documented raw/encrypted key boundary; never log or expose the decrypted key.
+
+**Assessment:** Deterministic functional defect in the privileged restore workflow. The endpoint's mandatory pre-restore safety snapshot imports a symbol absent from the checked-in backup service, so the background task aborts before the actual restore call. This prevents the UI-triggered restore path from completing as implemented. It is not evidence that scheduled backup creation or the standalone restore script is broken.
+
+**Boundary:** static source review only. No restore, backup, snapshot, database, file, credential, migration, or production state was exercised or changed. AUD-004 remains blocked.
