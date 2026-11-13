@@ -1304,3 +1304,101 @@ Required next batch:
 7. Compare this map against immutable evidence tables in Section 21, then test the proposed per-workload operation matrix using independent PostgreSQL sessions.
 
 **No runtime code, SQL, migrations, Compose, credentials, secrets, databases, patient data or production settings were changed.** Database-per-tenant remains the required architecture. No final grants are approved by this source trace.
+
+
+## 25. Tenant-domain mutation and worker transitive-operation trace — third source batch (13 Nov 2026)
+
+**Status:** Source-backed operation trace for selected diagnostic, pharmacy, procurement, billing and privacy worker paths. This is not an exhaustive CRUD inventory. Model class names are used where the exact physical table name has not yet been verified against imported metadata/catalogs.
+
+### 25.1 Diagnostic order lifecycle — `backend/domains/diagnostics/router.py`
+
+Observed operations:
+
+| Handler | Objects | Operation shape |
+|---|---|---|
+| `place_diagnostic_order` | `Patient`, `ServiceCatalog`, `ServiceBundleMapping`, `DiagnosticOrder`, `DiagnosticTask`, billing `Invoice` / `InvoiceLineItem` via `auto_bill_diagnostic_order` | SELECT patient/catalog/bundle mappings; INSERT order and tasks; transitive invoice/line reads and inserts or invoice update; one transaction commit. |
+| `update_diagnostic_order` | `DiagnosticOrder` | SELECT then attribute UPDATE. |
+| `cancel_diagnostic_order` | `DiagnosticOrder`, related `DiagnosticTask`, billing invoice/line objects via `reverse_cancelled_diagnostic_order_billing` | SELECT order/tasks; UPDATE order and eligible pending tasks; transitive billing SELECT/DELETE/UPDATE; commit. |
+| `submit_task_result` | `DiagnosticTask`, `DiagnosticOrder`, `ServiceCatalog`, clinical history/delta-check dependencies | SELECT task/order/service; UPDATE task result, status, performer/verifier, rejection and panic fields; delta-check helper adds clinical-history/config reads and may write alert/evidence objects (not fully traced here). |
+| Delta configuration | `ServiceCatalog`, `LabDeltaCheckConfig` | SELECT active service and existing config; INSERT if absent, otherwise UPDATE; list is SELECT. |
+
+The router's CSV order export additionally invokes privacy evaluation; its transitive reads and `PrivacyDecisionAudit` INSERT are described below. HTTP DELETE on order cancellation does not itself establish physical DELETE: the inspected handler updates order/task lifecycle state and calls a separate billing reversal helper.
+
+### 25.2 Controlled-substance perpetual inventory — `backend/domains/pharmacy/services.py`
+
+`process_controlled_substance_movement`:
+
+- SELECTs the `ControlledSubstanceVault` row using `FOR UPDATE`.
+- For DISPENSE, optionally SELECTs `PatientEncounter` and `PrescriptionItem`; witness verification reads the witness identity/credential state.
+- Updates the vault balance and, when supplied, its tamper-seal value.
+- INSERTs a `ControlledSubstanceMovementLog` containing movement type, quantity, before/after balance, encounter/prescription linkage, primary/witness identities, witness verification and wastage/disposal evidence.
+- Commits, then refreshes the movement and vault.
+
+This is a concrete mutable-balance plus append-only-ledger pattern. Section 21 records a DB immutable trigger for the controlled-substance movement log family. The runtime identity therefore needs narrowly scoped SELECT/INSERT for the ledger and SELECT/UPDATE for the vault; it must not receive ledger UPDATE/DELETE. Confirm exact physical relation and trigger name in the metadata/catalog proof before ACL authoring.
+
+### 25.3 Supplier payment execution — `backend/domains/procurement/router.py`
+
+`execute_supplier_payment_request` (finance:pay):
+
+- SELECTs and locks the payment request, vendor, selected `VendorInvoice` rows and linked `ExpenseRecord` rows.
+- Reads existing `SupplierPayment` and `SupplierPaymentAllocation` totals to calculate paid/reserved/outstanding amounts.
+- INSERTs a `SupplierPayment` and its `SupplierPaymentAllocation` children.
+- Conditionally UPDATEs invoice status to PAID and linked expense status/receipt reference/updater.
+- UPDATEs payment request status, executed payment reference/time and updater.
+- Commits and SELECTs the created payment with allocations.
+
+Section 21 records the supplier-payment and allocation relations as append-only trigger-protected evidence. The execution identity needs SELECT/INSERT on those ledger relations, not UPDATE/DELETE; it separately needs narrowly scoped SELECT/UPDATE on mutable request, invoice and expense relations. Payment creation is not evidence that every procurement endpoint needs these permissions.
+
+### 25.4 Privacy policy evaluation audit — `backend/domains/privacy/runtime.py`
+
+The runtime:
+
+- SELECTs the active consent `PrivacyPolicyRevision`.
+- SELECTs patient rows to derive ages/context where an active policy requires them.
+- SELECTs `PatientConsentRecord` rows for the evaluated patient/purpose/revision.
+- Uses SQLAlchemy Core `insert(PrivacyDecisionAudit)` with executemany for decision audit rows; the helper can flush or commit depending on caller.
+- Is called transitively from billing/diagnostic read and export paths.
+
+This adds an INSERT requirement on the decision-audit relation to any workload that executes this evaluation in-process, unless the audit operation is deliberately delegated. Do not infer UPDATE/DELETE from the audit model's presence.
+
+### 25.5 Retention scheduler and executor — `backend/core/queue.py`
+
+The source makes two materially different workloads visible:
+
+**Daily scheduler**
+- SELECTs active `TenantRegistry` rows in CP.
+- Iterates every active tenant and opens a tenant engine.
+- SELECTs latest approved `PrivacyPolicyRevision` for retention, reads its policy document, validates categories and enqueues a tenant execution task.
+- Scheduler therefore has CP registry read plus cross-tenant tenant-policy read capability today; it is not CP-only in the current implementation.
+
+**Tenant execution handler**
+- Reads tenant identity from `tenant_subdomain` payload, resolves active `TenantRegistry` and DB name using CP session, then opens that tenant DB.
+- SELECTs approved `PrivacyPolicyRevision` and active `User` actor rows; resolves distinct actor from configured-by user.
+- Calls `execute_retention_policy_revision`, which owns the actual category-specific retention reads/deletes/updates/audit writes and is not yet traced in this batch.
+- Non-dry-run execution is disabled unless deployment flag permits it and is explicitly rejected in production by this handler.
+
+This proves current scheduler/executor are not yet separated into the target CP-only dispatcher and tenant-bound executor. It also proves that the destructive retention service's object set must be traced before any DELETE privilege is considered. No destructive execution was invoked.
+
+### 25.6 Billing side effects — `backend/domains/billing/services.py`
+
+Selected auto-billing helpers read `DoctorProfile`/related `User`, `BedTransferLog` and bed relationships, `BloodCrossMatchOrder` and blood-bag relationships; they locate or create draft `Invoice` rows, check for existing `InvoiceLineItem` rows, insert new line items and increment invoice totals. Reversal helpers include explicit `db.delete(item)` for matching draft invoice lines. These service calls can be triggered by non-billing clinical workflows, so invoice and line-item writes are transitive capabilities of those callers.
+
+### 25.7 Privilege consequences and confidence
+
+1. A single tenant API identity that serves all routes would need the union of these rights; that is broader than the target workload separation and is not an approved final role design.
+2. Immutable ledgers (controlled-substance movements, supplier payments/allocations and other Section 21 evidence tables) must retain SELECT/INSERT-only runtime access even when the business workflow updates a separate mutable balance/request row.
+3. Diagnostic cancellation and billing reversal demonstrate that a route can cause writes in another domain.
+4. Privacy evaluation creates audit INSERT as a transitive side effect of reads/exports.
+5. The retention scheduler currently crosses all tenant DBs and the execution handler trusts payload tenant selector before CP resolution; both need architectural isolation and adversarial tenant-binding tests. This document does not authorize runtime changes.
+6. Exact physical table/sequence names, cascades, raw SQL, trigger effects and complete transitive statement coverage still require deterministic metadata/catalog and statement capture.
+
+### 25.8 Next required trace
+
+- Trace `execute_retention_policy_revision` category-by-category, including all retention ledgers, legal holds, deletion batches, evidence and actor audit writes.
+- Complete diagnostic delta-check helper and alert/event writes.
+- Trace remaining pharmacy prescription dispense/return/BCMA paths and inventory batch mutations.
+- Trace procurement bank reconciliation, purchase returns, patient indents, reconciliation investigation/notification/report paths against the immutable families in Section 21.
+- Trace billing payment, deposit, refund and RCM endpoints and all callers of auto-billing/reversal helpers.
+- Trace all remaining tenant routers and worker handlers; then capture SQL against disposable migrated tenant/CP databases and prove rights with independent PostgreSQL sessions.
+
+**No runtime code, SQL, migrations, Compose, credentials, secrets, databases, patient data or production settings changed.** PostgreSQL database-per-tenant remains mandatory. No final grant SQL is approved by this trace.
