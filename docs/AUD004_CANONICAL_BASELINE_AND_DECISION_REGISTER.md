@@ -405,3 +405,16 @@ Newly explicit access paths:
 Result: the shared tenant engine registry is reachable beyond the primary API request path, and backup/restore has multiple distinct execution surfaces. Migration also spans bootstrap/migrate scripts, CP routes/fleet operations and maintenance CLI. These require separate workload identity and negative-test coverage; changing role SQL or the primary API configuration alone cannot close the boundary.
 
 Scope remains a targeted static cross-check, not a complete proof of every repository connection consumer or deployed access. Contract Section 14 records source blob SHAs and explicit limitations. No code, SQL, migration, Compose, secret, database, patient data or production setting changed. PR #70 remains draft/open/unmerged.
+## 30. Tenant-engine call-site classification (2026-11-13)
+
+The PostgreSQL least-privilege contract Section 15 now classifies the inspected direct `tenant_engine_pool.get_engine()` call sites in core request handling, privacy queue jobs, HL7 ingress, CP fleet/support routes, CP migration routes and federation.
+
+Key conclusions:
+- Tenant selection by `db_name` is not authorization. The shared registry is a capability amplifier because callers can choose a database while using the same configured credential.
+- The request dependency is a required tenant runtime path, but must be tenant-bound to the authenticated/resolved tenant and must not have fleet-wide credentials.
+- The privacy scheduled sweep is a fleet scheduler and should enqueue tenant-bound work rather than scan every tenant DB using a fleet credential.
+- CP fleet routes directly access tenant clinical data for metrics/telemetry, federation key rotation, emergency password reset, sandbox cloning, schema parity/sync, policy reads and fleet summaries. These require minimized projections or distinct delegated operations.
+- CP CSV migration preview/background writes require tenant-bound import workers.
+- Federation discovery and source-side import reads are cross-tenant access paths; source data release must execute inside the source tenant boundary, while destination writes use destination identity.
+
+Section 15 records the call-site table, classifications and negative-test acceptance criteria. This confirms that the next architecture decision is workload/process isolation (or a rigorously constrained broker), not simply a replacement role SQL file. No runtime, SQL, migration, Compose, credentials, database, patient data or production setting changed. PR #70 remains draft/open/unmerged.
