@@ -350,3 +350,13 @@ Safety boundary: the workflow uses only an ephemeral GitHub Actions PostgreSQL s
 Evidence status: files and workflow job were added to PR #71, but no workflow run has yet been observed for this new job. Do not report these assertions as executed/passed until GitHub Actions reports a completed successful run on the current PR head. This proof still does not establish corrected least-privilege behavior, application connection wiring, per-tenant migration ownership, backup scoping, or provisioning handoff.
 
 No production runtime, SQL, Compose deployment configuration, credentials, or database topology were changed.
+
+## 25.1. Harness execution-environment correction (2026-11-13)
+
+Review of the new PR #71 test harness found that the extracted production `apply_database_roles()` function references `ISOLATION_LEVEL_AUTOCOMMIT`, but the isolated execution namespace initially did not provide that symbol. The test would therefore have failed before exercising PostgreSQL.
+
+PR #71 now imports `ISOLATION_LEVEL_AUTOCOMMIT` from `psycopg2.extensions` and injects it into the extracted function namespace (commit `71a9d95f64c802448cb0e25a5277a5c4be95ef93`). The current harness file was re-fetched and confirms the correction is present.
+
+Evidence status remains unchanged: no workflow-dispatch run has been observed for the current PR head. `fetch_commit_workflow_runs` returned no PR-triggered runs for the fix commit; this workflow is explicitly `workflow_dispatch` only. A maintainer must manually select the `security/aud004-disposable-postgres-proof` branch and `reconciliation` scope in GitHub Actions. Do not treat the characterization assertions as executed or passed until that run completes.
+
+No production runtime, SQL, Compose deployment configuration, credentials, or database topology were changed.
