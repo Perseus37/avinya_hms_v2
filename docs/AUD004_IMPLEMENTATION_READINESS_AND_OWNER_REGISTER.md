@@ -1019,3 +1019,33 @@ Followed the backup, restore and CSV migration callbacks into their implementati
 6. For migration, define chunk/checkpoint and idempotency semantics before enabling automatic retry; preserve row-level error reporting and tenant-scoped execution.
 
 No runtime code or tests were changed. These are source-inspection findings and proposed evidence requirements, not a claim that production credentials or deployments were inspected. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the existing consolidated report; no new PR was created.
+
+### 11.15 Restore helper contract and test coverage cross-check — 2026-11-13
+
+Cross-checked the restore implementation and the existing backup/DR test module at source commit `20b8a5e48518c81820a7e28494fd73aeda33b46f`.
+
+#### Confirmed helper contract mismatch
+
+- `backend/control_plane/api/routers/fleet_ops.py` imports `create_encrypted_backup` from `backend.scripts.backup_service` in the restore callback.
+- The complete `backend/scripts/backup_service.py` exposes `_dump_and_encrypt(db_name, encryption_key, output_dir)`, but does not define `create_encrypted_backup`.
+- `backend/scripts/restore_tenant.py` exposes `restore_encrypted_backup(encrypted_file_path, target_db_name, backup_encryption_key, promote_to_cloud=False)`; it does not provide the missing safety-backup helper.
+- `backend/scripts/backup_service.py` does not expose an equivalent `create_encrypted_backup` wrapper. Its `_dump_and_encrypt` expects the caller to supply an output directory and an already decrypted encryption key.
+- This establishes a source-level API mismatch. It does not establish whether another deployment-specific monkeypatch or untracked module exists; none is shown in the inspected repository files.
+
+#### Existing tests do not exercise this endpoint contract
+
+- `tests/test_45_offhost_backups_and_restore_drills.py` tests checksum verification, Fernet decryption, off-host directory/S3 delivery, and `run_restore_drill` using mocked engine/subprocess/inspection calls.
+- It does not import or invoke `restore_tenant_from_snapshot`, `_execute_restore`, or the missing `create_encrypted_backup` helper.
+- The restore-drill test exercises `backend.scripts.restore_drill`, which is a separate path from the control-plane tenant restore callback.
+- The provisioning/mail test module does not cover this restore route either.
+- No runtime test was executed in this audit; these are static source and test-coverage observations.
+
+#### Smallest safe correction candidate — not implemented
+
+1. Define one explicit backup-helper contract in `backup_service.py` (or change the restore callback to the existing supported helper) with documented input types: tenant database name, decrypted key, output directory and returned artifact path.
+2. Resolve the encrypted-vs-decrypted key boundary explicitly. The current manual-backup route decrypts the tenant key before calling `_dump_and_encrypt`; the restore route currently passes the encrypted key to the nonexistent helper. Do not pass an encrypted envelope to a helper expecting raw key material.
+3. Preserve restore ordering: successfully create and verify a pre-restore snapshot first; only then call `restore_encrypted_backup`. Any snapshot error must stop restore.
+4. Add focused tests at the control-plane callback boundary: missing/invalid helper contract, successful snapshot then restore, snapshot failure prevents restore, restore failure audit, successful completion audit, and tenant-key handling. Use synthetic database names/keys and mocked subprocesses; never use patient or production data.
+5. Do not introduce a new database layout, schema-per-tenant, shared tenant schema, or global queue-policy change as part of this correction.
+
+No code or tests were changed or executed. This section records a remediation candidate, not a patch. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains draft/open and no new PR was created.
