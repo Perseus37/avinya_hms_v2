@@ -1424,3 +1424,14 @@ PR #71 now extends the independent-login PostgreSQL fixture beyond database CONN
 **Execution status:** the test changes are committed on PR #71 at `e8c9f730cdd0ff6a9a0660f8f4207e44f868384c`. No workflow run for this head has been observed; these assertions are not yet reported as passing. The on-demand reconciliation workflow must be dispatched and its three independent probe jobs reviewed before this proof slice can be accepted.
 
 No production/runtime/SQL/migration/Compose/credential/secret/database/role change. Only the synthetic test assertions changed. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
+
+
+### Section 52 — Migrated PostgreSQL append-only trigger catalog assertions added
+
+PR #71 now turns the migration-installed PostgreSQL append-only trigger inventory into explicit assertions in the disposable three-database migration/catalog harness. For both independently migrated tenant databases, the test requires the expected row-level `BEFORE UPDATE OR DELETE` trigger on the federation transfer log and the supplier payment/allocation, bank reconciliation, purchase return, patient indent provenance, reconciliation investigation event, notification configuration event, and governance report evidence tables.
+
+The catalog check also asserts that each expected trigger is enabled for ordinary origin sessions, its trigger function is not `SECURITY DEFINER`, and its PostgreSQL trigger type includes row-level BEFORE UPDATE and DELETE events. The catalog query now captures `tgtype` and `tgenabled` to support those assertions. This validates the migration-installed trigger definitions after actual Alembic execution rather than relying only on model listeners or source comments.
+
+**Boundary:** this is a migrated-catalog assertion, not yet a raw SQL mutation test. It does not prove that UPDATE/DELETE attempts against populated evidence rows are rejected, that TRUNCATE is denied, or that runtime roles lack owner/DDL/trigger-disabling authority. The test job must execute on the latest PR #71 head and the resulting catalog artifact/logs must be reviewed. No trigger assertion is claimed to have passed yet.
+
+No production/runtime/SQL/migration/Compose/credential/secret/database/role change. Only disposable test assertions and catalog capture changed. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
