@@ -1975,3 +1975,37 @@ The confirm endpoint does rate-limit code attempts, and successful confirmation 
 **Assessment:** The control-plane login and MFA rate limits do not reliably fail closed under Redis outage because of a literal scope-prefix mismatch. The MFA setup endpoint additionally permits repeated retrieval of the same TOTP secret using a still-valid setup challenge and lacks its own rate limit. These are high-priority authentication-hardening gaps; source review does not establish that Redis is currently unavailable or that any account/challenge has been abused.
 
 **Boundary:** source review only. No authentication requests, Redis changes, MFA enrollment, operator/session changes, database writes, runtime changes or production operations were performed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+## 69. Generic control-plane webhook ingress is unauthenticated, unbounded and acknowledged before durable processing
+
+**Source reviewed:**
+- `backend/control_plane/app.py` (`/api/webhooks/ingress`, `process_webhook_payload`)
+
+Static source review only. No webhook request was sent and no external integration, queue, database or production state was exercised.
+
+### 69.1 Public ingress accepts arbitrary JSON without authenticating a sender
+
+The global `POST /api/webhooks/ingress` route is registered directly on the control-plane FastAPI app. It declares no authentication dependency, signature verification, shared-secret check, sender allowlist, timestamp validation or replay/idempotency check. It reads the complete request body through `await request.json()` without an application-level byte limit, then schedules a background task.
+
+Any network caller able to reach the route can therefore submit arbitrary JSON and receive HTTP 202. The route does not establish that the caller is an authorized payment provider, federation partner or other trusted integration. This finding is separate from Section 64's Stripe-specific webhook review: the inspected global route is a distinct generic ingress.
+
+### 69.2 The current background handler is only a placeholder, but the ingress still permits resource/log abuse
+
+The current `process_webhook_payload` implementation only extracts `payload.get("event")` and writes it to the application log; its comment describes future payment/federation processing, but the inspected function does not currently mutate billing, tenant, federation or other application state.
+
+That limits the demonstrated impact today: source review does not establish an unauthenticated path to execute a business operation. However, the endpoint accepts an unbounded JSON document and schedules one in-process FastAPI BackgroundTask per accepted request. A reachable caller can impose request parsing, memory, task scheduling and log-volume costs without proving sender identity. The event value is caller-controlled and is interpolated into the log message; control characters/newlines may make log records misleading depending on the logging handler/collector. The handler's exception path also logs exception text.
+
+HTTP 202 here means the request was accepted for an in-process background callback, not that an event was durably persisted or reliably processed. A process restart or crash can discard work; there is no durable queue, delivery ledger, retry policy, signature evidence or terminal processing status in this route.
+
+### 69.3 Required remediation and acceptance evidence
+
+1. Do not expose a generic webhook receiver until each integration has an explicit sender contract. Require provider-specific signature verification over the exact raw request bytes, timestamp/replay window checks, secret rotation and sender/key identity; reject unknown event sources.
+2. Enforce a strict request-body size limit before JSON parsing, validate a typed event schema, cap string/array/depth sizes and reject unknown or malformed event shapes.
+3. Persist authenticated events to a durable inbox/queue before returning 2xx. Use provider event IDs or an equivalent idempotency key, unique constraints, bounded retries, ordering rules where required, dead-letter handling and observable terminal states.
+4. Return 2xx only after durable acceptance. Do not represent FastAPI in-process BackgroundTasks as a reliable message queue for financial, tenant-lifecycle or federation events.
+5. Use structured logging with bounded, sanitized event identifiers and stable error codes; never interpolate arbitrary payload fields or raw exception details into log messages.
+6. Add tests for missing/invalid signatures, expired timestamps, replayed IDs, oversized bodies, malformed/deep JSON, concurrent duplicate delivery, queue/database outage, worker crash/retry and log-control characters. Verify no business state changes occur before authentication and durable acceptance.
+
+**Assessment:** The generic ingress is an unauthenticated and unbounded request-to-background-task endpoint. Its current callback is a logging placeholder, so no unauthorized business-state mutation was observed in source; the demonstrated present concern is resource/log abuse and false durability implied by HTTP 202. It must remain disabled or be replaced with a provider-authenticated, size-bounded, durable inbox before any real webhook processing is attached.
+
+**Boundary:** source review only. No runtime code, webhook endpoint, queue, database, credential, tenant, billing, federation or production state changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
