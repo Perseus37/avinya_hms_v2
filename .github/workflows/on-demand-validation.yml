@@ -180,22 +180,27 @@ jobs:
               path = directory / name
               path.write_text(value, encoding="utf-8")
               os.chmod(path, 0o600)
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              for name, value in values.items():
-                  env_file.write(f"{name}={value}\n")
+          # Keep passwords in a mode-0600 Compose interpolation file instead
+          # of GITHUB_ENV: Actions prints step environment variables in logs.
+          env_path = directory / "compose.env"
+          env_path.write_text(
+              "".join(f"{name}={value}\\n" for name, value in values.items()),
+              encoding="utf-8",
+          )
+          os.chmod(env_path, 0o600)
           PY
       - name: Start isolated PostgreSQL 17 fixture
-        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait postgres
+        run: docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait postgres
       - name: Run tenant A identity proof in its own container
-        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps tenant_a_probe
+        run: docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps tenant_a_probe
       - name: Run tenant B identity proof in its own container
-        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps tenant_b_probe
+        run: docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps tenant_b_probe
       - name: Run control-plane identity proof in its own container
-        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps control_plane_probe
+        run: docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps control_plane_probe
       - name: Tear down only the disposable proof project and secrets
         if: always() && steps.preflight.outputs.safe_to_cleanup == 'true'
         run: |
           if [ -n "${AUD004_SECRETS_DIR:-}" ] && [ -d "$AUD004_SECRETS_DIR" ]; then
-            docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml down --volumes --remove-orphans || true
+            docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml down --volumes --remove-orphans || true
             rm -rf -- "$AUD004_SECRETS_DIR"
           fi
