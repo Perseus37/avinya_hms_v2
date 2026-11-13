@@ -1503,3 +1503,14 @@ This differs from the tenant `security_audit_export_register`, for which a Postg
 **Required proof/remediation:** decide whether CP audit rows are truly append-only evidence. If yes, implement only under a separately approved migration/remediation change: database-level UPDATE/DELETE protection plus a CP runtime identity with SELECT/INSERT but no UPDATE/DELETE/TRUNCATE/ownership/trigger-disable authority. Add a disposable CP fixture row and raw SQL UPDATE/DELETE/TRUNCATE attempts under the actual intended CP runtime identity; verify the expected denial and that permitted audit insertion still works. Also test the control-plane audit route's actor/target attribution and ensure no application operation needs to mutate existing audit rows. Do not treat ORM event listeners as the database security boundary.
 
 **Boundary:** this is source inspection only. No migration, trigger, grant, role, runtime, or production change was made. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
+
+
+### Section 58 — PostgreSQL 63-byte trigger identifier truncation corrected in the characterization expectation
+
+The next manual reconciliation dispatch, run `43441898408`, used PR #71 head `3b3dd76580cb6e6ec0bf9b1ff6e820425e07ab30`. All three actual Alembic migration graphs completed on PostgreSQL 17; workload-isolation, role-bootstrap and reconciliation regression jobs passed. The catalog test advanced beyond the prior event-order assertion and found that the migration `c8f2a6d1e940_reconciliation_escalation_configuration.py` declares trigger name `trg_procurement_reconciliation_notification_config_events_immutable`, which is 67 bytes. PostgreSQL identifiers are limited to 63 bytes, so the live catalog correctly reports `trg_procurement_reconciliation_notification_config_events_immut`. The trigger was present; the expected-name assertion was too long.
+
+PR #71 corrects only the test's expected catalog name in commit `6b7d5ff39cece427d2619de02f121618be58e075` and documents the PostgreSQL identifier truncation beside the expectation. The migration itself is deliberately unchanged; any future migration rename/cleanup requires a separate reviewed migration decision because the existing catalog name and downgrade behavior must be preserved safely.
+
+**Validation status:** this test expectation correction has not yet run. A fresh manual reconciliation dispatch on the latest PR #71 head is required. Full catalog assertions, raw SQL mutation tests, report artifact and parity review remain pending. AUD-004 remains blocked.
+
+No production/runtime/SQL/migration/Compose/credential/secret/database/role/ACL/topology change. Only the disposable test's expected catalog identifier changed. PostgreSQL database-per-tenant remains invariant.
