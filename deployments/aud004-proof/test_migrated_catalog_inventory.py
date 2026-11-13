@@ -272,6 +272,17 @@ def _capture_catalog(database: str) -> dict:
                 ORDER BY schemaname,tablename,policyname
                 """
             ).all()
+            rls_table_states = conn.exec_driver_sql(
+                """
+                SELECT n.nspname, c.relname, c.relkind,
+                       c.relrowsecurity, c.relforcerowsecurity
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE c.relkind IN ('r','p')
+                  AND n.nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY n.nspname,c.relname
+                """
+            ).all()
             grants = conn.exec_driver_sql(
                 """
                 SELECT table_schema, table_name, grantee, privilege_type, is_grantable
@@ -450,6 +461,7 @@ def _capture_catalog(database: str) -> dict:
                 "routines": [list(row) for row in routines],
                 "triggers": [list(row) for row in triggers],
                 "rls_policies": [list(row) for row in policies],
+                "rls_table_states": [list(row) for row in rls_table_states],
                 "table_grants_information_schema": [list(row) for row in grants],
                 "relation_acls_expanded": [list(row) for row in relation_acls],
                 "column_acls_expanded": [list(row) for row in column_acls],
@@ -719,8 +731,11 @@ def test_migrate_and_capture_three_independent_postgres_catalogs(tmp_path: Path)
             "control_plane_migration_only": sorted(
                 set(catalogs["control_plane"]["tables"]) - set(metadata["control_plane"])
             ),
-            "tenant_migration_only": sorted(
+            "tenant_a_migration_only": sorted(
                 set(catalogs["tenant_a"]["tables"]) - set(metadata["tenant"])
+            ),
+            "tenant_b_migration_only": sorted(
+                set(catalogs["tenant_b"]["tables"]) - set(metadata["tenant"])
             ),
         },
         "column_deltas": {
