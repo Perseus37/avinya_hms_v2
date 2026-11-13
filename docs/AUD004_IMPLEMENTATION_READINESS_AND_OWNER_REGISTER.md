@@ -1448,3 +1448,14 @@ The PR #71 catalog snapshot now records `relrowsecurity` and `relforcerowsecurit
 **Boundary:** RLS state is captured, not approved. The harness does not yet evaluate policy expressions, effective role behavior under RLS, `BYPASSRLS`, ownership bypass, or FORCE RLS behavior using the deployed workload identities. No least-privilege conclusion follows from this snapshot. The latest-head workflow remains unexecuted; the new SQL and report fields require CI execution and artifact review.
 
 No production/runtime/SQL/migration/Compose/credential/secret/database/role change. Only disposable catalog capture and report fields changed. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
+
+
+### Section 54 — First PostgreSQL catalog workflow failure diagnosed and harness import collision corrected
+
+The first manually dispatched reconciliation workflow on PR #71 head `c1b6a59f93f1f73cd91c099b7f3c8f01a6033c02` completed the workload-isolation proof, role-bootstrap proof, and reconciliation regression tests successfully. The dedicated Alembic/catalog job failed before the first control-plane migration executed. Its traceback showed `backend/control_plane/alembic.ini` prepending `backend/core` to `sys.path`; that directory contains `queue.py`, which shadowed Python's standard-library `queue` during `logging.handlers` / Redis imports and caused `ImportError: cannot import name 'Empty' from partially initialized module 'queue'`. No migration or catalog assertion ran, and no catalog artifact was generated.
+
+PR #71 now changes only the disposable harness's Alembic subprocess invocation: it preloads the standard-library `queue` module before Alembic parses its configuration and prepends `backend/core`. This avoids modifying the application's Alembic configuration or runtime import behavior. Fix commit: `0810745182423ffae5c28a2d22c8cf639dbb2a2a`.
+
+**Validation status:** the correction is committed but has not yet been executed by CI. The next reconciliation dispatch must confirm that control-plane migration starts, then tenant A and tenant B migrations complete, and the catalog artifact is uploaded and reviewed. Do not infer PostgreSQL migration compatibility from the earlier passing jobs. AUD-004 remains blocked.
+
+No production/runtime/SQL/migration/Compose/credential/secret/database/role change. Only the disposable test harness subprocess startup changed. PostgreSQL database-per-tenant remains invariant.
