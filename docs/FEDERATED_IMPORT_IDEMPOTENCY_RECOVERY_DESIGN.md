@@ -356,3 +356,14 @@ The implementation of `sync_patient_pointer` and its patient-facing callers reve
 - **Cross-database ordering remains visible in lifecycle routes.** Registration, update, allergy charting and deactivation commit the tenant database before the control-plane pointer action. A control-plane failure can therefore leave patient state committed while the discovery index is stale. The import path has the same class of split commit. Durable reconciliation is required; simply adding a generation column will not close these windows.
 
 These findings increase the required acceptance criteria: tests must cover privacy-policy denial after prior publication, patient opt-out under denied disclosure policy, transition into/out of `ISOLATED_SILO` and `EMERGENCY_ALLERGIES_ONLY`, critical-allergy removal, concurrent pointer refresh, and tenant-commit/control-plane-failure recovery. No behavior was changed by this audit.
+
+### 12.6 Control-plane migration and receipt-retention constraints (2026-11-13)
+
+The migration history was inspected directly at the PR #19 source commit (`0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`):
+
+- `backend/control_plane/alembic/versions/95769c3ab4b3_baseline.py` creates `global_patient_pointers` with a uniqueness constraint on `(phone_hash, branch_code, source_mrn)`. The baseline contains no immutable tenant UUID or pointer generation column.
+- `backend/control_plane/alembic/versions/6c9f2a1d8b40_federated_discovery_receipts.py` defines `federated_discovery_receipts.source_pointer_id` as a foreign key to `global_patient_pointers.id` with `ON DELETE CASCADE`.
+- Therefore physical pointer deletion can cascade-delete the linked discovery receipt. Receipt evidence and operation recovery must not depend on a pointer row that may be physically removed. The future design needs an explicit retention/tombstone relationship and must preserve audit/recovery evidence independently of pointer lifecycle.
+- The remaining inspected control-plane migrations and migration router/catalog contained no additional pointer writers. This is a bounded migration/control-plane review, not proof that all repository ORM or raw-SQL writers have been enumerated.
+
+Implementation implication: before introducing pointer tombstones or receipt-consumption records, migration design must explicitly replace or otherwise account for the cascading FK and define retention behavior for expired, revoked and physically purged pointers. No migration or runtime behavior was changed.
