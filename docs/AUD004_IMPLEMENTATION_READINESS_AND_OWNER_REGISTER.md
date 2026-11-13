@@ -1366,3 +1366,16 @@ No production/runtime/SQL/migration/Compose/credential/secret/database change. P
 **Gate:** AUD-004 remains blocked. Existing passing CI proofs are valuable but orthogonal: neither proves the migrated production object inventory, trigger integrity, restore parity nor final least-privilege grants. No final grant SQL is approved.
 
 No runtime/SQL/migration/Compose/credential/secret/database/production change. PostgreSQL database-per-tenant remains invariant.
+
+
+### Section 46 — First repeatable three-database migration/catalog harness committed; execution pending
+
+**Implementation:** PR #71 adds a dedicated disposable PostgreSQL 17 CI job and a test that runs the real Alembic migration graphs against three newly created synthetic databases: one control-plane database and two independent tenant databases. It explicitly uses the production Alembic environments and revisions, not ORM `create_all()`.
+
+**Captured evidence:** separate tenant/CP metadata manifests; live schemas/tables/columns/constraints/indexes/enums/sequences/views/materialized views; migration version rows; owners; extensions; routine and trigger definitions/security attributes; RLS policies; table grants; default ACLs; role memberships; database and schema ACLs. The test records table-level metadata/catalog deltas in a JSON artifact and asserts both tenant databases reach identical migration version sets.
+
+**Safety:** new databases are synthetic and uniquely named; test refuses pre-existing names; workflow uses a fresh PostgreSQL 17 service and synthetic credentials; no production secrets, patient rows or financial records are used. No bootstrap, seed, or application startup is invoked.
+
+**Status:** source and workflow files were re-fetched and verified on PR #71. The GitHub integration available in this session cannot dispatch Actions, so the new workflow job is committed but not yet executed. Migration success, actual catalog parity and resulting deltas are not claimed. The next acceptance action is to dispatch the on-demand workflow with scope `reconciliation`, inspect the new job logs and review the uploaded report; fix any migration failure or unexplained delta before advancing.
+
+**Gate:** AUD-004 remains blocked. This is a characterization harness, not a least-privilege or restore acceptance result. Raw SQL append-only denial, independent workload-role tests, restore parity and production identity/secret/network proof remain outstanding.
