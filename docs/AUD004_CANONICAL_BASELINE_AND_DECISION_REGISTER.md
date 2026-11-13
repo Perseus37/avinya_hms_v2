@@ -232,3 +232,12 @@ A targeted pass inspected adjacent FHIR, ABDM, integrations and encounter router
 `backend/control_plane/api/routers/fleet_ops.py` reads `GlobalPatientPointer` for fleet counts and operator MPI lookup; the inspected route writes only a separate `ControlPlaneAuditLog` record. This is a read/audit path, not a pointer writer.
 
 The known mutation paths remain the federation synchronization function and the direct patient-deactivation deletion path previously recorded. The all-file inventory remains incomplete: the majority of unrelated backend Python files and all raw-SQL matches have not been exhaustively scanned; GitHub code-search yielded no indexed results for the pointer symbols. Do not treat this targeted pass as proof that no other writer exists.
+## 19. Tenant federation transfer-log retention is separate from discovery receipts (2026-11-13)
+
+A targeted review of patient/privacy/identity/federation/FHIR/ABDM tenant migration files found no additional writes to the control-plane global pointer table or pointer-generation/tombstone migration. It did identify a separate tenant-local audit safeguard:
+
+- `a7c4e9d2b615_federation_audit_node_attribution.py` adds requesting-node attribution to `federation_transfer_logs`.
+- `f9b7c3d1e205_immutable_federation_transfer_logs.py` changes the patient FK to `ON DELETE RESTRICT` and installs a PostgreSQL trigger blocking update/delete of transfer-log rows.
+- This immutable tenant-local transfer history must not be confused with control-plane `federated_discovery_receipts`. It does not provide pointer revocation tombstones or durable import operation recovery.
+
+This was a targeted migration review, not an exhaustive scan of every migration/SQL statement. The all-repository pointer-writer inventory remains incomplete.
