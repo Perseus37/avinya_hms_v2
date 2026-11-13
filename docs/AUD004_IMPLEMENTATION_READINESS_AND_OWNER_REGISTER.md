@@ -1877,3 +1877,49 @@ This is an integrity/operational safety issue: an unavailable or unreadable tena
 **Assessment:** the legacy control-plane console contains stored-data HTML injection sinks for audit and federation fields. Because the page is an authenticated privileged control-plane surface, this is a critical operator-session security defect until safe rendering and regression proof are in place. The federation policy fallback is a separate high-severity integrity issue.
 
 **Boundary:** source review only. No runtime, browser, API, audit data, federation policy, database, credentials or production state changed. PostgreSQL database-per-tenant remains the project architecture. AUD-004 remains blocked.
+
+
+## 67. Additional privileged-console HTML sinks include tenant cards, snapshot actions and provisioning output
+
+**Sources reviewed on main:**
+- backend/control_plane/api/routers/ui_console.py
+- backend/control_plane/api/routers/fleet_ops.py
+- backend/control_plane/api/routers/provisioning.py
+- backend/control_plane/api/routers/migration.py
+
+This section extends Section 66's stored-data HTML injection finding. Static source review only; no browser session, API call, snapshot restore, provisioning operation or exploit was performed.
+
+### 67.1 Tenant registry fields are rendered into HTML and inline JavaScript
+
+renderFleetCards() builds markup using innerHTML and interpolates API fields including hospital_name, subdomain_slug, branch_code, db_name and pricing_model. The tenant detail drawer also inserts tenant-provided values into a template-literal innerHTML for module checkboxes. The schema-status table interpolates tenant slug, database name, migration version and status, including subdomain_slug in an inline onclick handler.
+
+Several values originate from provisioning/operator-supplied fields and persisted CP registry records. The endpoint response is JSON, but JSON does not make values safe for an HTML text, attribute or JavaScript-string context. A value containing markup, quotes or JavaScript delimiters can escape the intended context if it reaches these sinks.
+
+### 67.2 Snapshot filenames enter both HTML text and an inline event-handler argument
+
+renderDrawerSnapshots() interpolates s.filename into visible HTML and into onclick="restoreSnapshot('...')". Snapshot filenames are discovered from backup registry/filesystem state. Path.basename checks in the restore route constrain the eventual filesystem target, but they do not neutralize the value when it is first parsed as HTML/JavaScript in the browser. The correct fix is to avoid inline handlers and bind a click listener using a closure over a validated filename; render the filename with textContent.
+
+### 67.3 Provisioning inputs and server responses are reflected into executable markup
+
+The provisioning form sends operator-entered hospital_name and admin_email. The successful API response is interpolated into provVaultBody.innerHTML, including subdomain URL, database name, admin email, temporary administrator password, federation API key and backup-encryption key. The same workflow passes server error text into appendTermLog(), which appends msg using innerHTML; showToast() also inserts msg through innerHTML.
+
+This creates additional HTML injection sinks for reflected provisioning values and API error strings. The credential vault's 60-second visual clearing does not make HTML insertion safe, nor does it remove values from browser developer tools, extensions, screenshots, browser memory or the already-issued network response. Section 64 separately records the underlying API response credential-delivery risk; this section records the privileged-console rendering exposure.
+
+### 67.4 Dynamic catalogs also use HTML and JavaScript interpolation
+
+renderDynamicCatalogs() inserts blueprint names/descriptions, bundle names/codes and module names/codes into innerHTML. Bundle codes are also interpolated into inline onclick handlers and element IDs. Catalogs may be seeded or operator-maintained; their current provenance and write authorization should be established before they are treated as immutable trusted constants.
+
+### 67.5 Required remediation and proof
+
+1. Treat every API response, persisted CP field, catalog value, filename and exception string as untrusted at the browser rendering boundary.
+2. Replace innerHTML template rendering with DOM construction and textContent. Where static markup is unavoidable, use context-specific escaping and never interpolate into inline event handlers, attributes, CSS classes or JavaScript source.
+3. Remove inline onclick/onchange handlers and bind event listeners programmatically to validated data objects; use opaque identifiers rather than embedding arbitrary strings into executable contexts.
+4. Use URL path encoding for route segments and server-side allowlist validation for snapshot identifiers; retain filesystem containment checks as a separate control.
+5. Render provisioning secrets as text nodes in a deliberately restricted credential view, minimize their lifetime, avoid retaining the full response in global/page state, and move toward one-time audience-bound secret retrieval as Section 64 requires.
+6. Ensure server error responses and logs use stable error codes and do not echo attacker-controlled or sensitive row values.
+7. Add browser-level tests covering malicious values in tenant name, slug, branch code, database name, migration version, snapshot filename, blueprint/module/bundle labels, provisioning response fields and API error details. Assert no script execution and no executable DOM attributes.
+8. Inventory every innerHTML/outerHTML/insertAdjacentHTML/document.write sink in the console and any adjacent frontend assets; the findings here cover the reviewed console source, not every frontend bundle.
+
+**Assessment:** Section 66's two demonstrated stored-data sinks are part of a broader unsafe-rendering pattern across the authenticated control-plane console. The additional inline-event-handler contexts increase the number of ways persisted or reflected data can become executable in an operator session. Treat the entire console as unsafe for production operator use until all sinks are removed and browser-level regression tests pass.
+
+**Boundary:** source review only. No runtime, browser, endpoint, credential, tenant, backup, database, migration or production state changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
