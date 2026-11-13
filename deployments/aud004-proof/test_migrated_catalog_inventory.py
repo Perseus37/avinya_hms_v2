@@ -385,6 +385,46 @@ def _capture_catalog(database: str) -> dict:
                 ORDER BY nspname
                 """
             ).all()
+            database_acls_expanded = conn.exec_driver_sql(
+                """
+                SELECT d.datname,
+                       CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                            ELSE pg_get_userbyid(acl.grantee) END,
+                       pg_get_userbyid(acl.grantor), acl.privilege_type,
+                       acl.is_grantable
+                FROM pg_database d
+                CROSS JOIN LATERAL aclexplode(d.datacl) AS acl
+                WHERE d.datname=current_database() AND d.datacl IS NOT NULL
+                ORDER BY d.datname,acl.grantee,acl.privilege_type
+                """
+            ).all()
+            schema_acls_expanded = conn.exec_driver_sql(
+                """
+                SELECT n.nspname,
+                       CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                            ELSE pg_get_userbyid(acl.grantee) END,
+                       pg_get_userbyid(acl.grantor), acl.privilege_type,
+                       acl.is_grantable
+                FROM pg_namespace n
+                CROSS JOIN LATERAL aclexplode(n.nspacl) AS acl
+                WHERE n.nspacl IS NOT NULL
+                  AND n.nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY n.nspname,acl.grantee,acl.privilege_type
+                """
+            ).all()
+            default_acls_expanded = conn.exec_driver_sql(
+                """
+                SELECT pg_get_userbyid(d.defaclrole), n.nspname, d.defaclobjtype,
+                       CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                            ELSE pg_get_userbyid(acl.grantee) END,
+                       pg_get_userbyid(acl.grantor), acl.privilege_type,
+                       acl.is_grantable
+                FROM pg_default_acl d
+                LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace
+                CROSS JOIN LATERAL aclexplode(d.defaclacl) AS acl
+                ORDER BY 1,2,3,4,6
+                """
+            ).all()
             extensions = conn.exec_driver_sql(
                 """
                 SELECT e.extname, e.extversion, n.nspname, pg_get_userbyid(e.extowner)
@@ -419,6 +459,9 @@ def _capture_catalog(database: str) -> dict:
                 "role_memberships": [list(row) for row in memberships],
                 "database_acl": [list(row) for row in database_acl],
                 "schema_acl": [list(row) for row in schema_acl],
+                "database_acls_expanded": [list(row) for row in database_acls_expanded],
+                "schema_acls_expanded": [list(row) for row in schema_acls_expanded],
+                "default_acls_expanded": [list(row) for row in default_acls_expanded],
                 "extensions": [list(row) for row in extensions],
             }
     finally:
