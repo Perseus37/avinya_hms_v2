@@ -212,3 +212,5 @@ Deeper inspection of `sync_patient_pointer` and its callers in PR #19 identified
 - Patient lifecycle routes commit tenant data before the control-plane pointer action, leaving split-commit stale-index windows if control-plane synchronization fails.
 
 PR #23 Section 12.5 adds required tests for denied-policy revocation, opt-out, branch policy transitions, critical-allergy removal, concurrent refresh and cross-database failure recovery. These are repository-source findings, not runtime test results. PR #23 remains proposed/draft; no implementation, migrations, tests, database queries or production changes were performed. The all-file ORM/raw-SQL writer scan is still incomplete. PostgreSQL **database-per-tenant** remains unchanged.
+
+PR #23 reference at this refresh: head `8a859dfe5b23e03dbb126bf8e8d3d577123ba7f0`; design document blob `23eef980164235eca0780c6af6054597c47ebdb2`. This is a documentation-only design update, not independent review or approval.
