@@ -499,7 +499,8 @@ EXPECTED_APPEND_ONLY_TRIGGERS = {
     "procurement_patient_indent_issue_allocations": "trg_procurement_patient_indent_issue_allocations_immutable",
     "procurement_patient_indent_return_events": "trg_procurement_patient_indent_return_events_immutable",
     "procurement_reconciliation_investigation_events": "trg_procurement_reconciliation_investigation_events_immutable",
-    "procurement_reconciliation_notification_config_events": "trg_procurement_reconciliation_notification_config_events_immutable",
+    # PostgreSQL truncates identifiers to NAMEDATALEN-1 (63 bytes); the migration declares a 67-byte name.
+    "procurement_reconciliation_notification_config_events": "trg_procurement_reconciliation_notification_config_events_immut",
     "procurement_reconciliation_governance_reports": "trg_procurement_reconciliation_governance_reports_immutable",
 }
 
