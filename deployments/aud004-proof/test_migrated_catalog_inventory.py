@@ -253,7 +253,8 @@ def _capture_catalog(database: str) -> dict:
             triggers = conn.exec_driver_sql(
                 """
                 SELECT n.nspname, t.relname, tr.tgname, pg_get_triggerdef(tr.oid, true),
-                       p.proname, p.prosecdef, p.proconfig, pg_get_userbyid(p.proowner)
+                       p.proname, p.prosecdef, p.proconfig, pg_get_userbyid(p.proowner),
+                       tr.tgtype, tr.tgenabled
                 FROM pg_trigger tr
                 JOIN pg_class t ON t.oid=tr.tgrelid
                 JOIN pg_namespace n ON n.oid=t.relnamespace
@@ -468,6 +469,57 @@ def _capture_catalog(database: str) -> dict:
         engine.dispose()
 
 
+EXPECTED_APPEND_ONLY_TRIGGERS = {
+    "federation_transfer_logs": "trg_federation_transfer_logs_immutable",
+    "procurement_supplier_payments": "trg_procurement_supplier_payments_immutable",
+    "procurement_supplier_payment_allocations": "trg_procurement_supplier_payment_allocations_immutable",
+    "procurement_bank_statement_batches": "trg_procurement_bank_statement_batches_immutable",
+    "procurement_bank_statement_lines": "trg_procurement_bank_statement_lines_immutable",
+    "procurement_supplier_payment_bank_matches": "trg_procurement_supplier_payment_bank_matches_immutable",
+    "procurement_purchase_returns": "trg_procurement_purchase_returns_immutable",
+    "procurement_purchase_return_items": "trg_procurement_purchase_return_items_immutable",
+    "procurement_patient_indent_issue_allocations": "trg_procurement_patient_indent_issue_allocations_immutable",
+    "procurement_patient_indent_return_events": "trg_procurement_patient_indent_return_events_immutable",
+    "procurement_reconciliation_investigation_events": "trg_procurement_reconciliation_investigation_events_immutable",
+    "procurement_reconciliation_notification_config_events": "trg_procurement_reconciliation_notification_config_events_immutable",
+    "procurement_reconciliation_governance_reports": "trg_procurement_reconciliation_governance_reports_immutable",
+}
+
+
+def _assert_expected_append_only_triggers(catalog: dict) -> None:
+    """Require the PostgreSQL migration-installed row guards in each tenant DB."""
+    observed = {
+        row[1]: row
+        for row in catalog["triggers"]
+        if row[0] == "public" and row[1] in EXPECTED_APPEND_ONLY_TRIGGERS
+    }
+    missing = sorted(set(EXPECTED_APPEND_ONLY_TRIGGERS) - set(observed))
+    assert not missing, f"Expected append-only PostgreSQL triggers missing: {missing}"
+
+    for table_name, expected_trigger in EXPECTED_APPEND_ONLY_TRIGGERS.items():
+        row = observed[table_name]
+        _schema, relation, trigger_name, definition, function_name, security_definer, _config, _owner, trigger_type, enabled = row
+        assert trigger_name == expected_trigger, (
+            f"{relation}: expected trigger {expected_trigger!r}, got {trigger_name!r}"
+        )
+        assert "BEFORE UPDATE OR DELETE" in definition.upper(), (
+            f"{relation}: trigger does not guard UPDATE and DELETE: {definition}"
+        )
+        assert "FOR EACH ROW" in definition.upper(), (
+            f"{relation}: immutability trigger is not row-level: {definition}"
+        )
+        assert security_definer is False, (
+            f"{relation}: trigger function unexpectedly uses SECURITY DEFINER"
+        )
+        assert enabled == "O", (
+            f"{relation}: trigger is not enabled for ordinary origin sessions: {enabled!r}"
+        )
+        # PostgreSQL tgtype: ROW=1, BEFORE=2, DELETE=8, UPDATE=16.
+        assert trigger_type & 27 == 27, (
+            f"{relation}: unexpected trigger event/type bitmask {trigger_type!r}"
+        )
+
+
 def _metadata_manifest() -> dict:
     # Import exactly the same model modules as the tenant Alembic env.
     from backend.core.database import Base
@@ -561,6 +613,10 @@ def test_migrate_and_capture_three_independent_postgres_catalogs(tmp_path: Path)
         name: _capture_catalog(database)
         for name, database in DATABASES.items()
     }
+
+    # Verify migration-installed append-only guards in both independent tenant DBs.
+    _assert_expected_append_only_triggers(catalogs["tenant_a"])
+    _assert_expected_append_only_triggers(catalogs["tenant_b"])
 
     # Both tenant databases must independently reach the same migration state.
     assert catalogs["tenant_a"]["migration_versions"] == catalogs["tenant_b"]["migration_versions"]
