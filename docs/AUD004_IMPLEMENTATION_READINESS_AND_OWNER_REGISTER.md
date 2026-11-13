@@ -1825,3 +1825,55 @@ Row errors are copied into completion audit details and service logs. Some error
 **Assessment:** the generic ETL model/field discovery currently exposes a direct path to create or elevate tenant superusers through CSV import, and it defaults omitted patient network-sharing consent to enabled. These are critical authorization and privacy defects, not merely migration usability issues. Disable the visual ETL endpoints or block sensitive models/fields before any production use until independently tested remediation is approved.
 
 **Boundary:** source review only. No runtime, endpoint, credential, database, tenant account, consent, migration or production state changed. PostgreSQL database-per-tenant remains the project architecture. AUD-004 remains blocked.
+
+
+## 66. Control-plane console renders stored audit and federation values as executable HTML
+
+**Sources reviewed on main:**
+- backend/control_plane/api/routers/ui_console.py
+- backend/control_plane/api/routers/fleet_ops.py
+- backend/control_plane/api/routers/migration.py
+- backend/control_plane/models.py (ControlPlaneAuditLog, FederatedNode)
+
+Static source review only. No console session was opened, no API endpoint was called, and no audit or federation data was modified.
+
+### 66.1 Stored audit fields are interpolated into innerHTML without escaping
+
+The legacy control-plane console's loadAuditLogs() function fetches /api/fleet/audit-logs and constructs table rows with template literals. It inserts l.action, l.target_slug, l.details and l.created_at directly into HTML, then assigns the result to auditLogsContainer.innerHTML.
+
+The API serializes those fields directly from ControlPlaneAuditLog. The source does not HTML-escape or encode them for the HTML sink, nor does the console use textContent/createTextNode for untrusted values.
+
+These fields are not all server-generated constants. The inspected code writes free-form details from operational inputs and exceptions, including:
+- MPI lookup justification supplied by the caller;
+- migration row error samples, including portions of exception text;
+- provisioning/email error details;
+- restore/snapshot exception strings and operator-supplied filenames or tenant identifiers in operational audit messages.
+
+An attacker able to influence a value that reaches an audit record, and who can later cause a control-plane operator to load the audit tab, may be able to execute script in that operator's authenticated console origin. The exact exploitability depends on route reachability, the ability to create a malicious persisted value and browser security headers; no live exploit was attempted. The unescaped HTML sink is directly present in source.
+
+The same console uses innerHTML for federation topology rows and interpolates branch_code, hospital_name, subdomain_slug, api_key_prefix and federation_sharing_mode from /api/federation/topology. These are persisted control-plane values, so this is a second stored-data HTML sink, even if their expected values are usually provisioned internally.
+
+### 66.2 The audit endpoint is not a narrow read-only operator permission
+
+/fleet/audit-logs requires the control-plane secret and shared vendor key but does not declare require_operator_role(). This overlaps Section 62's finding that audit-list access uses broad shared-key authorization rather than a narrowly scoped named read-only role. Here the consequence is elevated: the same response feeds an HTML sink in the privileged operator console.
+
+### 66.3 Federation topology fallback can misrepresent policy state
+
+The topology endpoint initializes sharing_mode to FULL_MESH and also assigns FULL_MESH when it cannot read the tenant policy. A failed tenant DB connection or policy read is therefore serialized indistinguishably from a successfully observed FULL_MESH policy. The console presents that value as the hospital sovereignty mode.
+
+This is an integrity/operational safety issue: an unavailable or unreadable tenant policy is rendered as a permissive sharing mode instead of UNKNOWN/UNAVAILABLE. The endpoint is a reporting path, not evidence that the tenant's actual federation policy changed.
+
+### 66.4 Required remediation and acceptance evidence
+
+1. Remove HTML string interpolation for all API-sourced values. Render table cells with DOM APIs and textContent, or use a rigorously tested context-aware escaping helper. Do not treat JSON serialization as HTML escaping.
+2. Apply the same safe rendering to audit logs, federation topology, tenant registry, error messages, and every other console table/notification that inserts API values into HTML.
+3. Add regression tests with payloads containing HTML tags, quotes, event-handler attributes and script-like strings in action, target, details, hospital name, branch code and key prefix. Verify they appear as inert text and cannot execute.
+4. Add a restrictive Content-Security-Policy as defense in depth; the current console's extensive inline script/event-handler design means CSP must be introduced with a deliberate nonce/hash refactor rather than an unsafe-inline exception.
+5. Minimize and redact audit details at write time; do not persist raw exception strings, patient/staff values or caller-controlled free text unless strictly necessary. Use structured error codes and bounded, sanitized metadata.
+6. Gate audit-log reads behind a named, least-privilege audit-reader role and preserve actor attribution; keep shared vendor keys for machine-to-machine use only.
+7. Change federation topology's default/error state to UNKNOWN or UNAVAILABLE, include an explicit policy-read status, and never substitute FULL_MESH when the source policy could not be read. Add tests for tenant DB outage, missing policy and invalid policy value.
+8. Add security tests that exercise the actual console rendering code with malicious API fixtures, not only API response schema tests.
+
+**Assessment:** the legacy control-plane console contains stored-data HTML injection sinks for audit and federation fields. Because the page is an authenticated privileged control-plane surface, this is a critical operator-session security defect until safe rendering and regression proof are in place. The federation policy fallback is a separate high-severity integrity issue.
+
+**Boundary:** source review only. No runtime, browser, API, audit data, federation policy, database, credentials or production state changed. PostgreSQL database-per-tenant remains the project architecture. AUD-004 remains blocked.
