@@ -514,3 +514,16 @@ Target role classes are separated into short-lived cluster provisioner, per-data
 Section 20 adds an independent-login disposable-PostgreSQL proof matrix covering CP vs tenant A/B, PUBLIC and inherited privileges, ownership/default ACLs, reconciliation after drift, scoped migrations, backup, isolated restore, active sessions and credential rotation. Existing PR #71 remains characterization evidence of current behavior, not acceptance evidence.
 
 Open decisions require DBA/security/platform/operations approval: exact role/ownership model, object privilege inventory, secret provider/workload identity, provisioner operation model, backup/global export strategy, rotation/revocation SLA and safe decomposition of bootstrap. PR #70 remains draft/open/unmerged. No production change or tenant topology change was made.
+
+
+## 36. Initial application PostgreSQL privilege inventory (2026-11-13)
+
+The least-privilege remediation contract Section 21 now records a source-grounded initial inventory of database operations by workload. It distinguishes ordinary SQLAlchemy ORM DML from privileged provisioning, session termination, database-template cloning, migrations, concurrent index maintenance, backup, restore, fleet support, HL7 and federation execution.
+
+The initial ordinary runtime baseline is database-local and table-scoped: CP runtime connects only to CP; each tenant runtime connects only to its assigned tenant DB; mutable application tables receive only required CRUD; immutable audit/ledger evidence receives SELECT/INSERT only; generated sequences receive USAGE/SELECT where needed. Runtime does not receive DDL, ownership, CREATEDB, PG_SIGNAL_BACKEND, TRUNCATE, role administration, cluster-wide monitoring/data-read roles or backup/restore capability by default.
+
+Section 21 identifies append-only/immutable table families in inspected migrations: CP audit logs, federation transfer logs, security audit export register, supplier payments/allocations, bank statement batches/lines/matches, purchase returns/items, patient-indent issue allocations/return events, reconciliation investigation events, notification configuration events and reconciliation governance reports. It notes that CP audit immutability is currently an ORM event rather than a DB trigger, so DB ACLs are required to prevent raw SQL mutation.
+
+Privileged operations requiring separate identities include CREATE DATABASE, `pg_terminate_backend`, template clone, tenant/CP Alembic DDL, concurrent index DDL, `pg_dump`, cluster-global export and restore. The document records migration advisory-lock and trigger/function needs, and the remaining backup/restore completeness proofs.
+
+**Limitations:** this is an initial source-grounded inventory, not a complete route-by-route or model-wide query certification and not proof of deployed permissions. Exact grants remain blocked on metadata/query inventory, full append-only table discovery, independent PostgreSQL login tests, backup/restore proofs and DBA/security approval. No implementation or production changes were made. PR #70 remains draft/open/unmerged.
