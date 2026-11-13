@@ -367,3 +367,10 @@ The migration history was inspected directly at the PR #19 source commit (`0d20e
 - The remaining inspected control-plane migrations and migration router/catalog contained no additional pointer writers. This is a bounded migration/control-plane review, not proof that all repository ORM or raw-SQL writers have been enumerated.
 
 Implementation implication: before introducing pointer tombstones or receipt-consumption records, migration design must explicitly replace or otherwise account for the cascading FK and define retention behavior for expired, revoked and physically purged pointers. No migration or runtime behavior was changed.
+### 12.7 Additional writer-inventory pass: adjacent domains and control-plane operations (2026-11-13)
+
+A further targeted source pass inspected the FHIR, ABDM, integrations and encounter routers/services; control-plane provisioning, fleet operations and network routers; patient service/break-glass modules; privacy runtime/decision/retention modules; and seed/restore scripts. No additional `GlobalPatientPointer` ORM writes, raw table writes, or calls to `sync_patient_pointer` were found in those inspected files.
+
+`backend/control_plane/api/routers/fleet_ops.py` does import and query `GlobalPatientPointer` for fleet counts and the operator MPI lookup endpoint. The inspected usage is read-only; the endpoint writes a separate `ControlPlaneAuditLog` entry. It is an index reader/auditor, not an additional pointer mutation path.
+
+This narrows the known writer set to the already documented federation sync function and the direct patient-deactivation deletion path. It does not complete the all-file inventory: most unrelated backend Python files and every raw-SQL occurrence have not been exhaustively scanned, and GitHub code-search returned no indexed results for the pointer symbols. Treat the inventory as targeted/partial until a repository-wide text scan or equivalent CI-backed scan is run.
