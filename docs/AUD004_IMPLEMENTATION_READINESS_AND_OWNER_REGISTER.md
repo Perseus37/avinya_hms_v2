@@ -2275,3 +2275,31 @@ There is no existence refusal, unique per-run ownership marker, or proof that an
 **Assessment:** High-priority disaster-recovery integrity and destructive-target-selection defect. The current runner can overstate restore success because it ignores the restore command's exit status, and it can delete an existing database selected by a caller or collided with by another run. Both defects undermine the safety and evidentiary value of DR drills. This is a static code-path finding; no live restore or database deletion was attempted.
 
 **Boundary:** static source review only. No restore drill, database, backup, tenant, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+## 77. Backup vault mode labels chmod-based files as WORM without an immutable storage boundary
+
+**Sources reviewed on main:**
+- `backend/scripts/backup_service.py` (`main`, `--vault-mode` branch)
+- `docker-compose.prod.yml` (backup-volume and service mounts)
+
+Static source/configuration review only. Vault mode was not run; no backup files, volumes, storage policies, credentials or production state were accessed or changed.
+
+### 77.1 Read-only mode bits are the only immutability control in the vault implementation
+
+The `--vault-mode` branch copies each `*.dump.enc` artifact from `/source` to `/vault/immutable` when the target filename does not already exist, writes a SHA-256 sidecar, and applies `chmod 0400` to both files. The implementation does not establish an immutable/WORM storage policy, object-lock retention, append-only storage service, filesystem immutable attribute, separate administrative trust boundary, or independent audit of retention-policy changes. Ordinary file ownership/privileges can change the mode or remove/replace the files; mode 0400 alone is not a WORM guarantee.
+
+The copy is also performed directly to the final target path. If the process stops after creating a partial target but before completing the copy and sidecar, the next poll sees that the target exists and skips it permanently. There is no temporary target plus atomic publish, completion marker, or validation/retry of an existing target. A partial artifact can therefore occupy the expected filename and prevent later sealing of the source artifact.
+
+The production Compose file reviewed mounts the shared `hms_backups` volume into application services; it does not define a distinct vault service or a separate immutable storage backend. This is a source/configuration observation, not a claim about external storage controls that may exist outside the repository.
+
+### 77.2 Required remediation and acceptance evidence
+
+1. Do not describe chmod-only storage as WORM or immutable. Either rename the feature to reflect its actual best-effort read-only behavior or implement a separately administered immutable storage target with enforced retention/object lock.
+2. Separate backup writers from vault retention administrators. Document and test who can delete, overwrite, change retention, or disable immutability, including host/root and cloud-account administrators.
+3. Copy to a unique temporary object, verify the complete encrypted artifact and checksum, then atomically publish the final object/manifest. On interrupted copy, discard or resume the temporary object; never treat mere target existence as successful sealing.
+4. Verify the destination object and its retention/lock state after publication. Reconcile source artifacts, destination artifacts, manifests and missing/partial objects on every poll.
+5. Add tests for interrupted copy, pre-existing partial destination, checksum mismatch, attempted overwrite/delete, retention-policy changes, and recovery after process restart. Demonstrate that the configured storage provider enforces immutability independently of the backup process identity.
+
+**Assessment:** High-priority backup-retention assurance gap if this mode is relied on for WORM or ransomware-resistant recovery. The checked-in implementation provides filesystem permission hardening, not an independently enforced immutable backup boundary; interrupted copies can also be mistaken for completed destinations. External infrastructure could add controls, but none are established by the reviewed repository configuration.
+
+**Boundary:** static source/configuration review only. No vault mode, backup, storage volume, database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
