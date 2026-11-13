@@ -1154,3 +1154,44 @@ Compared the scheduled backup cycle, manual backup endpoint, S3/remote delivery 
 7. Preserve tenant separation and PostgreSQL **database-per-tenant**. This finding requires consistent backup lifecycle semantics, not a database-topology change.
 
 No runtime code, tests, S3 configuration, bucket policy, credentials or deployment settings were changed or executed. This is a static source/test review; production storage controls remain unverified. PR #70 remains the consolidated draft/open report; no new PR was created.
+
+### 11.20 Open pull-request portfolio and safe consolidation order — 2026-11-13
+
+A live GitHub API inventory of the repository's open pull requests found 54 open PRs: 52 drafts and two non-drafts (#17 and #19). The inventory and changed-file lists were reviewed to distinguish implementation work, audit evidence and stacked documentation history.
+
+#### Portfolio groups
+
+| PRs | Purpose | Current disposition |
+|---|---|---|
+| #17 | Combined mainline security/lifecycle audit | Preserve as audit history; do not merge as implementation |
+| #19 | Runtime remediation for AUD-001–003 | Keep open for focused review, CI evidence and remaining remediation |
+| #20–#43 | AUD-004 federation actor assertion, import recovery, protocol, governance and review series | Stacked documentation/review chain; preserve until its canonical content is safely consolidated |
+| #44–#69 | Database-per-tenant identity and DBID-R01–R81 proposal/review series | Stacked documentation/review chain; preserve until its canonical content is safely consolidated |
+| #70 | Implementation-readiness and accountable-owner report | Keep as the current main-based readiness record |
+| #71 | Disposable PostgreSQL ACL proof harness | Keep as synthetic test evidence, with its fixture/deployment limitations explicit |
+
+#### Canonical checkpoints and stack dependencies
+
+- PR #40 is the proposed canonical protocol/governance checkpoint for the #20–#39 series, but its base is the PR #39 branch, not main. PR #41 independently reviews it. PRs #42–#43 then add and review the CAN-01 source-owned boundary.
+- PR #68 is the consolidated DBID-R74–R81 proposal, but its base is the PR #67 review branch, not main. PR #69 independently reviews it.
+- PR #44 proposes the PostgreSQL database-per-tenant identity model; #45 reviews it. Later DBID proposal/review pairs continue as a stack. The latest #68/#69 pair does not establish that every earlier stack document is merged into main.
+- PR #70 is based directly on main and records readiness findings and owner gates; it is not a replacement for every detailed protocol/design document in the stacks.
+- PR #71 is a separate disposable PostgreSQL ACL proof harness and does not establish production workload identity, secret separation or deployed grant boundaries.
+
+#### JSON Schema versus PostgreSQL schema clarification
+
+The changed-file inventory confirms that PRs #60, #62, #64 and #66 introduce or revise files under docs/schemas/ with .schema.json names. These are JSON Schema documents describing JSON payloads/contracts. They are not PostgreSQL schema/namespace migrations, do not convert database-per-tenant to schema-per-tenant, and do not justify changing the selected tenant storage topology. The canonical architecture remains PostgreSQL **database-per-tenant**.
+
+#### Safe cleanup decision
+
+Do not bulk-close #20–#69 yet. These are stacked PRs whose base branches reference preceding PR branches; the canonical checkpoint PRs themselves are not based on main. Closing predecessors before preserving and validating their unique content risks losing the review trail and breaking the remaining stack's intended comparison context.
+
+The safe sequence is:
+
+1. Keep #17, #19, #70 and #71 open for their distinct audit, remediation, readiness and synthetic-evidence purposes.
+2. Treat #40/#41 and #68/#69 as the principal protocol and DBID consolidation/review checkpoints, while retaining #42/#43 as the CAN-01 boundary checkpoint.
+3. Reconcile all unique accepted requirements, unresolved findings and review dispositions into a single main-based canonical document set (or a deliberately bounded set of documents), retaining links to the original PRs for traceability.
+4. Validate that the canonical documents preserve the full decision history, unresolved Critical/High findings, explicit non-authorization and database-per-tenant architecture.
+5. Only after that content is available on a durable main-based branch should superseded stack PRs be closed in dependency order. Do not merge all 50 PRs individually and do not close them merely to reduce the open count.
+
+No PRs were closed, merged, rebased or retargeted during this inventory. No runtime code, PostgreSQL objects, migrations, credentials, deployment settings or patient data were touched. The PR inventory is a point-in-time repository view; it does not constitute production-readiness evidence.
