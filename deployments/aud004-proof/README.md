@@ -7,7 +7,7 @@ This is an opt-in, isolated test fixture, not a production deployment template. 
 - Do not run from a production host or against a shared/developer PostgreSQL server.
 - Do not use a production or normal HMS .env file.
 - The Compose project, volume and network are explicitly named aud004-proof, aud004-proof-pgdata, and aud004-proof-only.
-- PostgreSQL is published only on loopback port 55439.
+- PostgreSQL is not published to the host; the test runner connects over the private Compose network only.
 - The setup password is supplied at runtime; the tenant passwords in init.sql are fixed, synthetic test-only values. Never reuse them.
 - The initialization SQL runs only when PostgreSQL initializes an empty volume. Existing volumes are not reset automatically.
 - No patient or real tenant data is permitted.
@@ -23,22 +23,22 @@ Use a disposable local machine with Docker Compose installed. First confirm the 
 A missing-resource response from the volume and network inspect commands is expected on first use. Use a throwaway setup password in the current shell, then run:
 
     export AUD004_SETUP_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-    docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait
+    docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait postgres
 
 PowerShell:
 
     $env:AUD004_SETUP_PASSWORD = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
-    docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait
+    docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait postgres
 
 The explicit project name is required. Do not omit -p aud004-proof.
 
 ## Run tests
 
-Install the repository's pinned psycopg2-binary and pytest in an isolated development environment, then run:
+Build and run the dedicated proof container. Its Python dependencies are installed at image-build time; at runtime it shares only the private Compose network with PostgreSQL:
 
-    python -m pytest -q deployments/aud004-proof/test_acl.py
+    docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps proof
 
-The test suite expects the dedicated service on 127.0.0.1:55439. It fails if the server is unreachable; it does not substitute SQLite. A denied connection passes only when PostgreSQL returns SQLSTATE 42501.
+The runner connects to the PostgreSQL service as `postgres:5432`; there is no host-published database port. It fails if the server is unreachable; it does not substitute SQLite. A denied connection passes only when PostgreSQL returns SQLSTATE 42501.
 
 ## Run through GitHub Actions
 
