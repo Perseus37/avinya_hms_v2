@@ -19,7 +19,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     restart: "no"
 
-  proof:
+  tenant_a_probe:
     build:
       context: .
       dockerfile: Dockerfile
@@ -29,6 +29,50 @@ services:
     environment:
       AUD004_PGHOST: postgres
       AUD004_PGPORT: "5432"
+      AUD004_DB_USER: tenant_a_api_test
+      AUD004_DB_PASSWORD: aud004-a-api-test-only
+      AUD004_OWN_DATABASE: aud004_tenant_a
+      AUD004_FOREIGN_DATABASES: aud004_tenant_b,aud004_control_plane
+      AUD004_EXPECTED_MARKER: TENANT_A_SYNTHETIC_ONLY
+      AUD004_MARKER_TABLE: tenant_marker
+    networks: [aud004-only]
+    restart: "no"
+
+  tenant_b_probe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AUD004_PGHOST: postgres
+      AUD004_PGPORT: "5432"
+      AUD004_DB_USER: tenant_b_api_test
+      AUD004_DB_PASSWORD: aud004-b-api-test-only
+      AUD004_OWN_DATABASE: aud004_tenant_b
+      AUD004_FOREIGN_DATABASES: aud004_tenant_a,aud004_control_plane
+      AUD004_EXPECTED_MARKER: TENANT_B_SYNTHETIC_ONLY
+      AUD004_MARKER_TABLE: tenant_marker
+    networks: [aud004-only]
+    restart: "no"
+
+  control_plane_probe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AUD004_PGHOST: postgres
+      AUD004_PGPORT: "5432"
+      AUD004_DB_USER: control_plane_test
+      AUD004_DB_PASSWORD: aud004-cp-test-only
+      AUD004_OWN_DATABASE: aud004_control_plane
+      AUD004_FOREIGN_DATABASES: aud004_tenant_a,aud004_tenant_b
+      AUD004_EXPECTED_MARKER: CONTROL_PLANE_SYNTHETIC_ONLY
+      AUD004_MARKER_TABLE: control_marker
     networks: [aud004-only]
     restart: "no"
 
