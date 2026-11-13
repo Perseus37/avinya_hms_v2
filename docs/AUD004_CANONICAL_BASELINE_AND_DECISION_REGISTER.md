@@ -331,3 +331,22 @@ Security and operational implications:
 - Do not execute the full `bootstrap.py --apply-roles` against any shared, developer, staging, or production database as part of this proof.
 
 No runtime, Compose, SQL, credentials, or database topology changes were made. This is a static source trace; no PostgreSQL cluster was started and no bootstrap function was executed.
+
+## 25. Test-only execution proof added to PR #71 (2026-11-13)
+
+PR #71 now contains `deployments/aud004-proof/test_production_role_bootstrap.py` and an `aud004-production-role-bootstrap-proof` job in `.github/workflows/on-demand-validation.yml`.
+
+The test parses `backend/scripts/bootstrap.py`, extracts the exact production `apply_database_roles()` function AST, compiles and executes that function body with only its external settings/connection/logger dependencies supplied, and points it at a fresh GitHub Actions PostgreSQL 17 service. It reads and executes the exact repository `deployments/postgres-roles.sql` through the production function. The full `bootstrap_system()` function is deliberately not invoked, so migrations, seeding, provisioning and tenant validation cannot run.
+
+The test is intentionally a characterization proof of current behavior, not a passing least-privilege acceptance test. It checks that:
+
+- A fresh run creates all four declared roles, with the declared restrictive role flags but with no passwords configured.
+- The `hms_backup` membership in `pg_read_all_data` is present.
+- On a fresh PostgreSQL cluster, `hms_app` can connect to tenant/control-plane databases through PostgreSQL's default PUBLIC CONNECT ACL; the production role SQL does not revoke that default or scope those database grants.
+- A deliberately pre-existing unsafe `hms_app` role (`SUPERUSER CREATEDB CREATEROLE`) remains unsafe after rerunning the production function because role creation is guarded by `IF NOT EXISTS` rather than reconciliation.
+
+Safety boundary: the workflow uses only an ephemeral GitHub Actions PostgreSQL service, a fixed synthetic CI-only setup password, and synthetic database names. It does not read `.env.production`, mount production secrets, contact any shared database, or run the complete HMS bootstrap.
+
+Evidence status: files and workflow job were added to PR #71, but no workflow run has yet been observed for this new job. Do not report these assertions as executed/passed until GitHub Actions reports a completed successful run on the current PR head. This proof still does not establish corrected least-privilege behavior, application connection wiring, per-tenant migration ownership, backup scoping, or provisioning handoff.
+
+No production runtime, SQL, Compose deployment configuration, credentials, or database topology were changed.
