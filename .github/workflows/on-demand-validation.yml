@@ -86,18 +86,15 @@ jobs:
     steps:
       - name: Check out selected branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "20"
-
       - name: Build hospital UI
         working-directory: hospital-ui
         run: |
           npm ci --no-audit --no-fund
           npm run build
-
       - name: Test and build onboarding UI
         working-directory: onboarding-ui
         run: |
@@ -113,26 +110,23 @@ jobs:
     steps:
       - name: Check out selected branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
       - name: Validate development Compose configuration
         run: |
           cp .env.example .env
           docker compose --env-file .env -f docker-compose.yml config --quiet
-
       - name: Validate production Compose configuration
         run: |
           cp .env.production.example .env.production
           docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
 
   aud004-postgres-proof:
-    name: AUD-004 disposable PostgreSQL ACL proof
+    name: AUD-004 disposable PostgreSQL workload-isolation proof
     if: ${{ inputs.scope == 'reconciliation' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Check out selected branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
       - name: Refuse pre-existing proof resources
         id: preflight
         env:
@@ -152,17 +146,22 @@ jobs:
             exit 1
           fi
           echo "safe_to_cleanup=true" >> "$GITHUB_OUTPUT"
-
       - name: Start isolated PostgreSQL 17 fixture
         env:
           AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
         run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait postgres
-
-      - name: Run PostgreSQL ACL proof tests inside the isolated network
+      - name: Run tenant A identity proof in its own container
         env:
           AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
-        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps proof
-
+        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps tenant_a_probe
+      - name: Run tenant B identity proof in its own container
+        env:
+          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
+        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps tenant_b_probe
+      - name: Run control-plane identity proof in its own container
+        env:
+          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
+        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps control_plane_probe
       - name: Tear down only the disposable proof project
         if: always() && steps.preflight.outputs.safe_to_cleanup == 'true'
         env:
