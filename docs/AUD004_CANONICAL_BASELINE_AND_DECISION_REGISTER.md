@@ -736,3 +736,54 @@ Inspected `backend/domains/billing/router.py`.
 6. Complete the remaining bank-reconciliation candidate aggregation, report generation and all model/migration/trigger relationships with disposable PostgreSQL SQL capture. Then test each workload role independently, including raw SQL attempts against evidence tables and cross-tenant/CP connection denial.
 
 No final grant SQL is approved. PostgreSQL database-per-tenant remains invariant. No runtime/SQL/migration/Compose/credential/secret/database/production change; no patient or financial records were accessed or mutated.
+
+### Section 28 — Reconciliation candidates, governance snapshots, insurance settlement, pharmacy stock adjustments and queue handlers
+
+Source-traced on 13 November 2026 from the current `main` source:
+- `backend/domains/procurement/bank_reconciliation.py`
+- `backend/domains/procurement/investigations.py`
+- `backend/domains/insurance/router.py`
+- `backend/domains/billing/rcm_services.py`
+- `backend/domains/pharmacy/router.py`
+- `backend/core/queue.py`
+
+#### 28.1 Bank reconciliation candidate generation and matching
+- Candidate listing is a read-only aggregation over bank statement lines, supplier payments and supplier payment requests. It derives unclassified credits, unmatched/partially matched debits, unreconciled/partially reconciled supplier payments, possible duplicate payment references and overdue approved payment requests. Candidate cursors are decoded/validated; the endpoint does not itself create investigations.
+- Matching a bank debit locks the statement line first and supplier payment second, checks the pair for an existing match, sums prior matches against both objects, enforces that the new amount fits both remaining balances, and INSERTs a `SupplierPaymentBankMatch`. The match is not an UPDATE to either source ledger.
+- Statement import validates statement arithmetic and in-period dates, checks duplicate statement/transaction identities, INSERTs a batch and its lines, and commits together. Application duplicate checks are not a substitute for database uniqueness and concurrent-session tests.
+- Candidate aggregation is a live derived view, not a persisted reconciliation result or evidence that a bank statement originated from an authenticated bank feed. External bank authenticity, signature/transport validation and statement completeness remain unproven.
+
+#### 28.2 Governance report snapshots
+- `GET /reconciliation/dashboard`, SLA summary, quality summary and recurrence summary are live tenant-local aggregate SELECTs; they are not immutable monthly snapshots.
+- Monthly governance report generation accepts only completed UTC calendar months, rejects a duplicate month, calculates aggregate-only counts and classifications, canonicalizes the JSON payload, computes SHA-256, and INSERTs one `ReconciliationGovernanceReport`. Listing/get endpoints SELECT metadata or payload.
+- The snapshot intentionally excludes source narratives and source financial identifiers. Its payload includes interpretation limits: closure quality is current state at generation, backlog is point-in-time at generation, SLA is elapsed wall-clock time, and recurrence/root-cause groupings are human-recorded indicators rather than verified causality.
+- The SHA-256 field detects accidental payload changes only if the stored digest is trusted; it is not a digital signature, external timestamp, or independent proof of origin. DB immutability still depends on the migration trigger/ACL inventory and independent UPDATE/DELETE denial proof.
+
+#### 28.3 Insurance claim and settlement operations
+- Claim submission reads invoice and line items, policy/plan, optional approved preauthorization and plan tariffs; validates invoice state and one-claim-per-invoice at application level; then INSERTs `InsuranceClaim`. Insurer payable is calculated from the invoice net amount before advance deposits are deducted (explicit FIN-001 comment), less exclusions and copay, capped by policy/preauth coverage. Claimed amount is outstanding balance. The different bases need finance-owner confirmation and reconciled examples.
+- Claim listing and CSV export read claims joined to invoice/patient and policy/provider. Claim PDF reads claim, invoice, patient, policy, provider, plan, preauth, invoice lines, report template/profile and privacy-decision audit path.
+- Settlement locks the claim, rejects already-settled/rejected claims, bounds the amount by insurer payable and remaining invoice balance, then INSERTs an insurance `PaymentReceipt`, UPDATEs invoice paid amount/status and UPDATEs claim status/settled amount/UTR/remarks in one transaction.
+- Important semantic risk: the route sets claim status to `SETTLED` for any accepted amount, including an amount lower than `insurer_payable_paise`; it does not model a partially settled claim state. It also has no explicit idempotency key beyond the current SETTLED-state check. A retry after commit is rejected, but timeout/response-loss and concurrent duplicate settlement require independent PostgreSQL proof and a finance-approved partial-settlement policy.
+- No settlement reversal/compensation path was established in this trace. Receipt immutability is not established; prior billing trace found a receipt DELETE reversal path elsewhere.
+
+#### 28.4 Pharmacy stock adjustment and void
+- Inventory adjustment locks one `InventoryBatch` row with NOWAIT, rejects zero adjustment and negative resulting stock, mutates `stock_quantity`, and commits. It does not INSERT a separate stock-adjustment ledger row in this endpoint.
+- Batch void also locks the batch and sets stock to zero rather than deleting it. The endpoint response says this preserves recall traceability, but the reviewed operation does not itself record a distinct immutable reason/actor/quantity adjustment event beyond surrounding application audit behavior (not established here).
+- This creates a material evidence gap for inventory reconciliation: before least-privilege grants or production readiness are certified, enumerate every stock mutation path and prove who/when/why, before/after quantities, batch identity, source document and reversal/compensation are independently retained. Do not infer that ORM audit mixins or general audit logs provide a complete inventory subledger.
+- Pharmacy return service paths were already traced in Section 27; this section adds the direct batch-adjust/void endpoints and does not claim an exhaustive pharmacy route inventory.
+
+#### 28.5 Queue handler and execution boundary
+- The task registry in `backend/core/queue.py` currently has three handlers: `email.send`, `privacy.retention.execute` and `privacy.retention.scheduled_daily_sweep`.
+- Email handler invokes the configured mailer; no tenant DB session is opened in the handler itself.
+- Retention execution resolves an active tenant in CP, obtains a tenant engine by DB name, opens a tenant session, validates an approved retention revision, resolves an active actor with separation-of-duties checks, then calls the retention service. Non-dry-run is blocked unless the deployment flag is enabled and the environment is not production.
+- Daily sweep opens CP session, reads all active tenants, then opens a tenant session per tenant to find the latest approved retention policy; it enqueues one tenant-scoped retention job for each. It forces dry-run in production or when destructive execution is disabled. It records/enqueues tenant subdomains in the result.
+- Queue enqueue has `sync_fallback=True` by default; on Redis failure it directly invokes the registered handler in the caller process. This can collapse the intended asynchronous worker boundary and execute a tenant/retention handler inside an API/scheduler process. Queue task status/TTL semantics are Redis-backed and are not a durable database job ledger.
+- Current worker/queue code uses the shared tenant engine registry and CP session factory. The handler's tenant selector is a subdomain resolved through CP, but the underlying engine credential is not a per-tenant DB authorization boundary. Keep CP scheduler, tenant-bound worker and privileged retention executor separate; disable synchronous fallback for privileged/destructive tasks and require durable enqueue/claim/ack semantics before production certification.
+
+#### 28.6 Privilege implications and remaining proof
+- Reconciliation candidate/dashboard/report reads require targeted SELECT across investigation/event, bank statement, supplier payment/request/match and SLA/report objects. Match/import and investigation/report creation require narrowly scoped INSERT; investigation assignment/transition and SLA configuration also require UPDATE on mutable workflow/configuration rows.
+- Insurance claim settlement requires SELECT on invoice/line, policy/plan/preauth/tariff and claim rows; INSERT on PaymentReceipt; UPDATE on Invoice and InsuranceClaim. Patient-linked list/PDF flows also invoke privacy decision auditing. No blanket grant across all billing/insurance models is justified.
+- Pharmacy stock adjustment/void require SELECT/UPDATE on InventoryBatch; absence of an explicit stock adjustment ledger in these endpoints is a separate domain evidence gap, not a grant recommendation.
+- No final SQL statement capture, live PostgreSQL catalog/trigger comparison, external bank-feed proof, insurer settlement concurrency/idempotency proof, or independent workload-role ACL test was performed.
+
+No production grant SQL is approved. PostgreSQL database-per-tenant remains invariant. No runtime/SQL/migration/Compose/credential/secret/database/production change; no patient or financial records were accessed or mutated.
