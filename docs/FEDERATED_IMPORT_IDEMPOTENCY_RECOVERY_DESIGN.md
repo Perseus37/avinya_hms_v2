@@ -305,3 +305,41 @@ The source pointer generation is a snapshot for the operation, not a mutable poi
 The proposed UUID and generation contract does not decide the legal retention period for pointer tombstones, the authorization policy for administrative pointer repair, or the control-plane disaster-recovery procedure for UUID collision detection. Those require named owners and explicit decisions. The repository audit has not enumerated every pointer writer or inspected live database contents; those are implementation discovery tasks, not assumed complete.
 
 No runtime implementation, migration, database query, deployment or production operation is authorized by this proposal. PostgreSQL database-per-tenant remains unchanged.
+## 12. Pointer-writer inventory — source audit, 2026-11-13
+
+Status: **PARTIAL REPOSITORY INVENTORY — NOT YET PROVEN EXHAUSTIVE**. This inventory is based on read-only inspection of PR #19 head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`, including `backend/control_plane/models.py`, `backend/domains/federation/router.py`, `backend/domains/patients/router.py`, selected control-plane fleet/migration/provisioning routers, privacy runtime/retention modules, and federation/privacy tests. A complete all-file writer scan and independent review remain required.
+
+### 12.1 Confirmed mutation paths
+
+| Path | Current behavior | Required generation/tombstone treatment |
+|---|---|---|
+| `backend/domains/federation/router.py::sync_patient_pointer` — existing pointer update | Refreshes phone hash, ABHA, source MRN, critical-allergy flag and `last_clinical_update_at`; commits control-plane row. | Lock row and compare prior generation. Increment when source identity/routing meaning changes (especially MRN/source identity changes); do not increment for a pure timestamp or display/clinical-summary refresh unless the approved contract defines that as a semantic source version. Make identifier/payload update and generation update atomic. |
+| `backend/domains/federation/router.py::sync_patient_pointer` — insert | Creates a new `GlobalPatientPointer`. | New pointer starts at generation 1; identity tuple must include immutable tenant UUID plus pointer ID. |
+| `backend/domains/federation/router.py::sync_patient_pointer` — patient opt-out and `ISOLATED_SILO` branches | Deletes an existing pointer and commits. | Replace physical-delete-only invalidation with durable tombstone carrying pointer identity, last generation and reason category; revoke/invalidate outstanding receipts and make retry observe the tombstone. |
+| `backend/domains/patients/router.py::deactivate_patient` (around lines 336–364) | Deactivates tenant patient, then directly deletes matching control-plane pointer. | Same tombstone/invalidation requirement. This direct writer currently bypasses `sync_patient_pointer`; route through one controlled invalidation service/transaction contract. |
+| `backend/domains/patients/router.py::register_patient` (around lines 93–151) | Calls `sync_patient_pointer` after tenant patient commit; retries once on `IntegrityError`. | Initial pointer generation 1. Cross-database partial success must be represented/reconciled; retry must not reset generation or overwrite newer pointer state. |
+| `backend/domains/patients/router.py::update_patient` (around lines 305–333) | Calls `sync_patient_pointer` after tenant patient commit. | Increment only when source identity/routing semantics change; phone/ABHA changes affect lookup identity and must invalidate old receipt snapshots. Ordinary non-identity edits need not increment under the proposed contract. |
+| `backend/domains/patients/router.py::chart_patient_allergy` (around lines 367–426) | Calls `sync_patient_pointer` after allergy commit to update critical-allergy discoverability. | Treat as summary/policy metadata unless the approved receipt snapshot binds this field; avoid generation churn for non-identity summary changes. If current authorization/discoverability changes, explicitly invalidate affected receipts according to policy. |
+| `backend/domains/federation/router.py::publish_local_patient_to_discovery_index` (around lines 270–320) | Explicit endpoint calls `sync_patient_pointer`. | Same insert/update/invalidation rules as the shared service; no separate mutation implementation should be introduced. |
+| `backend/domains/federation/router.py::import_federated_patient_locally` (around lines 978–993) | After destination patient commit, calls `sync_patient_pointer` for the imported local patient. | New destination pointer generation 1 or update existing destination pointer under row lock. Import operation must record/reconcile this second-DB effect; failure after patient commit must remain recoverable. |
+
+### 12.2 Read-only references and adjacent paths
+
+- Federation discovery, receipt snapshot creation/validation, and fleet dashboard counts/search read `GlobalPatientPointer`; these are not pointer writers in the inspected code.
+- The selected privacy runtime and retention modules did not expose a direct `GlobalPatientPointer` mutation in the inspected excerpts. Privacy opt-out deletion is currently implemented in `sync_patient_pointer`, not established as a complete privacy lifecycle writer inventory.
+- The inspected control-plane provisioning/migration routers did not expose a direct pointer mutation. Control-plane migrations and data-repair scripts still require a repository-wide scan before claiming no such writers exist.
+- Tests create/read pointers for fixtures and assertions; test fixture writes are not production mutation paths but must be updated to include generation/tombstone invariants when implemented.
+
+### 12.3 Implementation consequences and blockers
+
+1. Centralize pointer mutations behind one control-plane service with explicit `create`, `refresh`, `reassign`, and `invalidate` operations. Prevent ad hoc ORM deletes/updates from bypassing generation fencing.
+2. `phone_hash` and `abha_number` changes alter the discovery candidate set. The approved contract must decide whether each is a generation-changing identity mutation; conservative safe default is to increment and invalidate old receipts whenever the searchable identity tuple changes.
+3. `source_mrn` or tenant identity reassignment is always a semantic identity change and must increment generation under row lock; if identity changes require a new pointer row, retain a tombstone for the old identity and issue a new pointer identity rather than silently repurposing it.
+4. `has_critical_allergies` and `last_clinical_update_at` are summary/freshness fields. Do not let routine refreshes churn generation unless the receipt authorization/snapshot contract explicitly binds them. Any policy-driven removal from discoverability must tombstone/invalidate.
+5. Current receipt FK `ON DELETE CASCADE` means physical pointer deletion can erase receipt evidence. Tombstones and durable operation references must remove that destructive dependency before generation-bound operations are enabled.
+6. The patient tenant DB commits before control-plane pointer synchronization in registration, update, allergy charting and import. These are cross-database partial-success boundaries; generation correctness alone does not repair them. Durable retry/reconciliation is still required.
+7. Before implementation, perform a complete symbol/reference scan across all 334 Python files in the inspected PR #19 tree (including scripts, migrations, tests and less-obvious service modules), enumerate raw SQL/table-name writes as well as ORM references, and add a CI guard/test that rejects unreviewed pointer mutation sites.
+
+### 12.4 Evidence limitation
+
+This is a candidate writer inventory, not a claim of complete enumeration. The GitHub code-search endpoint returned no usable matches for the symbol during this pass, and the audit fetched a targeted subset of source files rather than all 334 Python files. No runtime tests, database queries, migrations, production access or patient-data access occurred. The inventory must be completed and independently reviewed before a generation migration or implementation is authorized. PostgreSQL database-per-tenant remains unchanged.
