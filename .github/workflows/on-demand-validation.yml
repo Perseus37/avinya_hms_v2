@@ -68,9 +68,7 @@ jobs:
           ENVIRONMENT: testing
         run: |
           python -m pytest -q --durations=10 \
-            tests/test_26_reconciliation_governance.py \
-            tests/test_27_reconciliation_governance_regressions.py \
-            tests/test_28_reconciliation_governance_regressions.py
+            tests/test_64_reconciliation_escalation_engine.py
 
       - name: Run backend suite
         if: ${{ inputs.scope == 'backend' || inputs.scope == 'full' }}
