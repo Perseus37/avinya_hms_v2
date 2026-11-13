@@ -347,16 +347,19 @@ The test is intentionally a characterization proof of current behavior, not a pa
 
 Safety boundary: the workflow uses only an ephemeral GitHub Actions PostgreSQL service, a fixed synthetic CI-only setup password, and synthetic database names. It does not read `.env.production`, mount production secrets, contact any shared database, or run the complete HMS bootstrap.
 
-Evidence status: files and workflow job were added to PR #71, but no workflow run has yet been observed for this new job. Do not report these assertions as executed/passed until GitHub Actions reports a completed successful run on the current PR head. This proof still does not establish corrected least-privilege behavior, application connection wiring, per-tenant migration ownership, backup scoping, or provisioning handoff.
+Execution evidence (2026-11-13): workflow-dispatch run [43406334294](https://github.com/Perseus37/avinya_hms_v2/actions/runs/43406334294) completed successfully on PR #71 head `d9fa717849b672b1ff768915d9aa252d49916c0d`. The production role-bootstrap proof job passed; its log reports `1 passed in 0.16s`. The reconciliation regression job and the separate disposable PostgreSQL workload-isolation proof also passed. Frontend production builds and Docker Compose validation were skipped by the selected `reconciliation` scope. The preceding run on the earlier harness commit failed because database creation occurred inside a transaction; PR #71 corrected the harness to enable autocommit before entering the connection context, and the rerun passed.
+
+Interpretation: this successful test confirms the characterization assertions above on a disposable PostgreSQL 17 cluster. It reproduces the current ACL/role-policy gaps; it is not a least-privilege acceptance test and does not establish corrected behavior, application connection wiring, per-tenant migration ownership, backup scoping, or provisioning handoff.
 
 No production runtime, SQL, Compose deployment configuration, credentials, or database topology were changed.
 
 ## 25.1. Harness execution-environment correction (2026-11-13)
 
-Review of the new PR #71 test harness found that the extracted production `apply_database_roles()` function references `ISOLATION_LEVEL_AUTOCOMMIT`, but the isolated execution namespace initially did not provide that symbol. The test would therefore have failed before exercising PostgreSQL.
+Two harness-only execution defects were identified and corrected before the successful run:
 
-PR #71 now imports `ISOLATION_LEVEL_AUTOCOMMIT` from `psycopg2.extensions` and injects it into the extracted function namespace (commit `71a9d95f64c802448cb0e25a5277a5c4be95ef93`). The current harness file was re-fetched and confirms the correction is present.
+1. The extracted production `apply_database_roles()` function references `ISOLATION_LEVEL_AUTOCOMMIT`; PR #71 injects that symbol from `psycopg2.extensions` into the isolated namespace (commit `71a9d95f64c802448cb0e25a5277a5c4be95ef93`).
+2. The first execution attempted `CREATE DATABASE` inside a psycopg2 connection context, which opened a transaction despite setting `conn.autocommit = True` inside the context. The harness now sets autocommit before entering the cursor/context and closes the connection explicitly (commit `d9fa717849b672b1ff768915d9aa252d49916c0d`).
 
-Evidence status remains unchanged: no workflow-dispatch run has been observed for the current PR head. `fetch_commit_workflow_runs` returned no PR-triggered runs for the fix commit; this workflow is explicitly `workflow_dispatch` only. A maintainer must manually select the `security/aud004-disposable-postgres-proof` branch and `reconciliation` scope in GitHub Actions. Do not treat the characterization assertions as executed or passed until that run completes.
+The corrected harness passed in workflow run [43406334294](https://github.com/Perseus37/avinya_hms_v2/actions/runs/43406334294), on the exact corrected PR #71 head. The role-bootstrap test log reports `1 passed in 0.16s`; see Section 25 for the full run and interpretation. This confirms the characterization test executed successfully; it does not resolve the production least-privilege gaps it intentionally demonstrates.
 
 No production runtime, SQL, Compose deployment configuration, credentials, or database topology were changed.
