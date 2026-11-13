@@ -1923,3 +1923,55 @@ renderDynamicCatalogs() inserts blueprint names/descriptions, bundle names/codes
 **Assessment:** Section 66's two demonstrated stored-data sinks are part of a broader unsafe-rendering pattern across the authenticated control-plane console. The additional inline-event-handler contexts increase the number of ways persisted or reflected data can become executable in an operator session. Treat the entire console as unsafe for production operator use until all sinks are removed and browser-level regression tests pass.
 
 **Boundary:** source review only. No runtime, browser, endpoint, credential, tenant, backup, database, migration or production state changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+
+## 68. Control-plane authentication rate limits are accidentally fail-open; MFA setup challenge is replayable
+
+**Sources reviewed on main:**
+- backend/control_plane/services/auth.py
+- backend/core/dependencies.py (RateLimiter)
+- backend/control_plane/app.py
+- backend/control_plane/models.py (ControlPlaneOperator, ControlPlaneOperatorSession)
+
+Static source review only. No login attempts, MFA challenge, Redis outage, operator account or session was exercised.
+
+### 68.1 RateLimiter scope-prefix mismatch disables fail-closed behavior for control-plane login/MFA
+
+The control-plane login endpoint configures RateLimiter with scope `control_plane_auth_login`; MFA confirmation and login verification use `control_plane_auth_mfa`.
+
+The shared RateLimiter determines whether an endpoint is security-sensitive using:
+
+`self.scope.startswith(("auth_login", "auth_mfa"))`
+
+Neither control-plane scope starts with either prefix. Consequently, when Redis is absent or a Redis operation raises an exception, the limiter takes its generic/non-sensitive path and returns without enforcing the limit. This differs from the fail-closed branch that returns HTTP 503 for sensitive authentication paths.
+
+The control-plane routes therefore have a concrete fail-open mismatch: the decorators are present, but the shared dependency does not classify their actual scope names as sensitive. The configured 10-per-60-second login and 5-per-300-second MFA limits can be bypassed during Redis unavailability. Database-level account lockout after five failed password attempts still exists, but it is not a substitute for the intended IP/rate control and can be targeted against individual operator accounts.
+
+### 68.2 MFA setup endpoint has no rate-limit dependency and setup challenge is not consumed
+
+The password-login flow issues a signed `operator_mfa_setup` challenge with a five-minute expiry when MFA is not yet enabled. `/api/auth/mfa/setup` validates that token and returns the operator's decrypted TOTP secret and provisioning URI.
+
+Unlike `/mfa/confirm` and `/mfa/verify-login`, `/mfa/setup` has no RateLimiter dependency. The setup challenge has no unique identifier or persisted one-time-use/consumption record. While the challenge remains valid and the operator has not completed MFA enrollment, the same challenge can be replayed to retrieve the same TOTP secret repeatedly. The challenge is password-gated and short-lived, so this is not unauthenticated access; it does increase the impact of challenge-token disclosure and leaves a sensitive secret-release endpoint without throttling.
+
+The confirm endpoint does rate-limit code attempts, and successful confirmation sets `mfa_enabled`; subsequent setup calls reject the already-enabled state. These controls reduce but do not eliminate the pre-enrollment replay window.
+
+### 68.3 Additional lifecycle observations
+
+- MFA login challenges are signed JWTs with purpose and expiry, but no challenge ID or server-side consumption state. The TOTP counter check prevents reuse of an already accepted counter; it does not make the challenge itself one-time.
+- Access tokens have server-side session rows and are checked for revocation/expiry on each authenticated request, which is a useful control.
+- Logout revokes all active sessions for the operator rather than only the presented session. This is consistent with the response message but should be an explicit product/security decision because it forces all operator devices to reauthenticate.
+- The operator middleware queries session and operator state for each bearer-authenticated request. No cache invalidation issue was inferred because the implementation does not cache identity state here.
+
+### 68.4 Required remediation and proof
+
+1. Replace prefix inference with an explicit security-sensitive flag or a canonical scope taxonomy shared by route declarations and RateLimiter. Add unit tests for the exact `control_plane_auth_login` and `control_plane_auth_mfa` values.
+2. Prove that missing Redis and Redis exceptions both fail closed for control-plane login and MFA verification, and that healthy Redis enforces the configured fixed-window limits.
+3. Add a dedicated limit to `/mfa/setup`, and make setup challenges one-time or otherwise bind them to a server-side enrollment transaction with a short expiry and explicit consumption.
+4. Avoid returning an already-enrolled TOTP secret on repeat setup calls; require a separately authorized recovery/rotation procedure for MFA secret replacement.
+5. Add tests for challenge replay, expiry, concurrent setup/confirm, operator deactivation during challenge lifetime, repeated secret retrieval, and concurrent failed login attempts.
+6. Review whether per-IP controls, per-account controls and lockout reset semantics compose safely without enabling trivial account-lockout denial of service.
+7. Record security-relevant enrollment, recovery, disablement and session-revocation events with named operator attribution and without logging the TOTP secret or provisioning URI.
+
+**Assessment:** The control-plane login and MFA rate limits do not reliably fail closed under Redis outage because of a literal scope-prefix mismatch. The MFA setup endpoint additionally permits repeated retrieval of the same TOTP secret using a still-valid setup challenge and lacks its own rate limit. These are high-priority authentication-hardening gaps; source review does not establish that Redis is currently unavailable or that any account/challenge has been abused.
+
+**Boundary:** source review only. No authentication requests, Redis changes, MFA enrollment, operator/session changes, database writes, runtime changes or production operations were performed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
