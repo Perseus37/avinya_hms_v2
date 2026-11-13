@@ -200,3 +200,15 @@ PR #23 now contains Section 12, a **partial** pointer-writer inventory based on 
 PR #23 design head is now `051a11f281a05da7ef70a011d1d277033610c006` (design document blob `8143a788e27e6560cb03e5c3700311430774996c`). The inventory is expressly **not exhaustive**: this pass inspected targeted files, not all 334 Python files, and did not prove absence of raw SQL or indirect writes in other modules. A complete all-file scan, CI guard and independent review remain prerequisites before any generation migration or implementation.
 
 Required next steps: complete repository-wide ORM/raw-SQL writer enumeration; centralize pointer mutations; define whether searchable identity changes invalidate receipts; replace physical-delete-only invalidation with durable tombstones; and prove cross-database retry/reconciliation for each patient lifecycle call site. No runtime code, migrations, database operations, tests or production resources were changed. PR #23 remains draft/stacked on PR #19; PR #70 remains draft/main-based; PR #19 remains open/blocked. PostgreSQL **database-per-tenant** remains unchanged.
+## 16. Pointer revocation and stale-index findings — 2026-11-13
+
+Deeper inspection of `sync_patient_pointer` and its callers in PR #19 identified additional correctness gaps recorded in PR #23 Section 12.5:
+
+- A denied `federation.patient.publish_pointer` data-use decision returns before patient opt-out and branch-isolation cleanup, so an existing pointer can remain published after disclosure is denied. The publish endpoint's 403 does not itself revoke it.
+- `allow_network_sharing=False` is checked after the privacy decision; revocation must be processed as a restrictive action even when disclosure is denied.
+- `EMERGENCY_ALLERGIES_ONLY` can return without removing an existing non-critical pointer, and the `has_critical_allergies or pointer.has_critical_allergies` update prevents a previous critical flag from clearing.
+- Pointer refresh currently uses an ordinary select/update without row locking or expected-generation fencing. Concurrent writers can overwrite newer state.
+- PatientUpdate exposes phone and ABHA changes but not MRN; any MRN reassignment path outside this public route remains to be found in the full repository scan.
+- Patient lifecycle routes commit tenant data before the control-plane pointer action, leaving split-commit stale-index windows if control-plane synchronization fails.
+
+PR #23 Section 12.5 adds required tests for denied-policy revocation, opt-out, branch policy transitions, critical-allergy removal, concurrent refresh and cross-database failure recovery. These are repository-source findings, not runtime test results. PR #23 remains proposed/draft; no implementation, migrations, tests, database queries or production changes were performed. The all-file ORM/raw-SQL writer scan is still incomplete. PostgreSQL **database-per-tenant** remains unchanged.
