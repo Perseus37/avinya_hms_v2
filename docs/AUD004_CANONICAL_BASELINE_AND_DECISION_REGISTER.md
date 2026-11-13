@@ -661,3 +661,78 @@ Inspected `backend/domains/billing/rcm_services.py` and `backend/domains/billing
 6. Capture SQL against disposable migrated CP and tenant databases, including cascades, trigger effects, sequences and transaction boundaries; test using independent workload logins and adversarial cross-tenant sessions. Only then draft table/sequence/type/function grants and obtain DBA/security review.
 
 No final grant SQL is approved. PostgreSQL database-per-tenant remains invariant. No runtime/SQL/migration/Compose/credential/secret/database/production change; no patient data or destructive retention execution.
+
+
+## Section 27 — BCMA, controlled substances, supplier-bank reconciliation and patient billing operations
+
+**Scope.** Source review of current branch paths listed below. This is an ORM operation trace, not exhaustive SQL capture, catalog proof, effective-ACL proof or clinical/financial workflow certification. No clinical or financial operation was executed.
+
+### 27.1 BCMA / eMAR
+
+Inspected `backend/domains/pharmacy/services.py:evaluate_bcma_five_rights` and `execute_bcma_administration`, called by `backend/domains/pharmacy/router.py:/bcma/verify-and-administer`.
+
+- Evaluation reads `PatientEncounter`, `Patient`, `PrescriptionItem` and its prescription/medication relationships, validating encounter linkage, active prescription, patient barcode, drug identifier, dose, route and administration time.
+- Execution can INSERT `BCMAScanAuditLog` and commit it even for blocked mismatch or unapproved time-window warning; successful administration reads allergy-related records through `check_allergy_hard_stop`, checks prior `MedicationAdministrationLog` records, INSERTs eMAR and BCMA audit rows, increments `PrescriptionItem.dispensed_quantity`, then commits.
+- Minimum trace therefore includes SELECT on encounter/patient/prescription/item/medication, allergy and existing administration/audit context; INSERT on BCMA audit and eMAR; UPDATE on prescription item. Exact allergy helper tables and all relationship loader SQL still require capture.
+- The blocked/warning audit commit before raising an HTTP error is intentional evidence persistence, not a read-only failed request. Grant design must include these INSERT paths without permitting mutation of the audit rows after insertion.
+
+### 27.2 Pharmacy returns and controlled substances
+
+Inspected `backend/domains/pharmacy/router.py:return_dispensed_medication` and controlled-substance endpoints, plus `backend/domains/pharmacy/services.py:process_controlled_substance_movement`.
+
+- Prescription return locks prescription, latest non-void invoice, prescription items and inventory batches; reads medication and invoice lines; restores stock, decrements dispensed quantities, mutates/deletes matching draft invoice lines and recalculates invoice totals; INSERTs `PharmacyReturnLog`. If the invoice is PAID, it INSERTs `RefundVoucher`. It then UPDATEs prescription status.
+- Controlled-substance movements lock `ControlledSubstanceVault`; witness verification reads `User` and permission/credential context. Dispense/return optionally read encounter and prescription item. Return sums prior `ControlledSubstanceMovementLog` DISPENSE and RETURN_TO_VAULT quantities; movement updates vault balance and optional tamper seal, then INSERTs a movement log with actors, witness, quantity, before/after and clinical linkage. Receipt/dispense/wastage/return all use the same service but have different read predicates and evidence requirements.
+- Section 21 records DB append-only protection for the controlled-substance movement ledger. Runtime should have SELECT/INSERT on movement log and SELECT/UPDATE on vault, not ledger UPDATE/DELETE. The exact trigger and physical relation still need catalog proof.
+- The source trace does not prove every return/disposal workflow, witness credential dependency, nor whether all external credential checks are tenant-local; these require statement capture and negative tests.
+
+### 27.3 Supplier bank-statement reconciliation
+
+Inspected `backend/domains/procurement/bank_reconciliation.py`.
+
+- Statement import checks duplicate batch identity, INSERTs `BankStatementBatch`, checks existing `BankStatementLine` transaction IDs in chunks, then INSERTs statement lines and commits. Integrity conflicts are mapped to HTTP 409.
+- Read routes SELECT batches, lines and supplier payments with allocations.
+- Match operation locks statement line and supplier payment; checks prior match pair and aggregate amounts already matched against each line/payment; INSERTs `SupplierPaymentBankMatch`. Section 21 records bank batch/line/match tables as append-only trigger-protected evidence: runtime requires SELECT/INSERT, not UPDATE/DELETE.
+- This is manual matching of a debit line to a supplier payment. It is not proof of bank feed signature verification, automated reconciliation, statement authenticity, settlement finality or complete external bank integration.
+
+### 27.4 Supplier payment request and execution
+
+Inspected `backend/domains/procurement/router.py` request, cancel, review and execute paths.
+
+- Request creation locks vendor, reads duplicate references against supplier payment and request ledgers, locks vendor invoices, reads/locks linked expenses and aggregates prior payments/reservations; INSERTs mutable `SupplierPaymentRequest` and request-allocation children.
+- List reads requests and allocations. Cancel/review lock and UPDATE request workflow state; review additionally checks request allocations/invoices and may read/update approval state.
+- Execution locks request, vendor, invoices and expenses; reads duplicate payment reference, existing supplier payments and request reservation aggregates; INSERTs append-only `SupplierPayment` and `SupplierPaymentAllocation`; conditionally UPDATEs invoice and expense status/reference; UPDATEs request execution status, payment linkage, timestamps and updater.
+- Section 21 records supplier payment/allocation ledgers as append-only. Do not confuse mutable request/request-allocation workflow tables with the immutable executed payment ledger. Exact request-allocation lifecycle and trigger coverage need metadata proof.
+
+### 27.5 Reconciliation investigations and notification governance
+
+Inspected `backend/domains/procurement/investigations.py`, `escalation.py`, and `notification_inbox.py`.
+
+- Investigation creation reads source record and active SLA policy, checks duplicate investigation, INSERTs mutable investigation and immutable `ReconciliationInvestigationEvent` OPENED event.
+- Assignment/transition/reopen/quality-review lock and UPDATE investigation state/version/assignee/resolution/quality fields; append corresponding immutable event rows. Event history routes SELECT event rows.
+- SLA policy and escalation-policy endpoints INSERT/SELECT policy records; escalation-policy replacement UPDATEs prior active policy flags and INSERTs a new version plus immutable `ReconciliationNotificationConfigEvent`.
+- User notification preference updates SELECT/lock and INSERT or UPDATE mutable preference rows, then INSERT immutable config event. Inbox read SELECTs recipient-owned outbox rows; marking read locks and UPDATEs `ReconciliationNotificationOutbox.read_at`.
+- Governance report generation reads reconciliation sources and inserts immutable report records (recorded in Section 21); the complete report aggregation query graph was not fully traced here.
+- Keep mutable investigation/policy/preference/outbox state separate from append-only investigation/config/governance evidence. Exact physical names and trigger coverage remain subject to migration/catalog validation.
+
+### 27.6 Patient billing: payments, reversals, deposits and refunds
+
+Inspected `backend/domains/billing/router.py`.
+
+- Payment capture locks invoice; checks duplicate transaction reference; INSERTs `PaymentReceipt`; UPDATEs invoice paid amount/status.
+- Payment listing reads invoice and receipts and invokes privacy evaluation, inheriting privacy policy/consent reads and decision-audit INSERT from Section 25.
+- Payment reversal locks invoice, reads receipt and may lock/update linked deposit; UPDATEs invoice paid amount/status and DELETEs the payment receipt. Insurance receipts are rejected from this direct reversal path.
+- Deposit collection reads active patient and optional encounter; INSERTs `PatientDeposit`.
+- Deposit listing invokes privacy evaluation. Applying a deposit locks invoice and deposit; UPDATEs deposit balance/status and invoice paid amount/status; INSERTs an `ADVANCE_ADJUSTMENT` PaymentReceipt.
+- Deposit refund locks deposit; UPDATEs remaining balance/status and INSERTs `RefundVoucher`. Refund listing invokes privacy evaluation and SELECTs vouchers.
+- These source paths show that payment receipt and refund voucher are not uniformly immutable at DB level: payment reversal explicitly DELETEs `PaymentReceipt`; Section 21 trigger inventory does not list payment receipts as DB append-only. Do not apply an append-only grant policy without an explicit reversal design decision and catalog proof.
+
+### 27.7 Privilege and control implications
+
+1. BCMA and controlled-substance services are distinct clinical evidence workflows. Ordinary pharmacy DML cannot be inferred to cover BCMA audit/eMAR or controlled ledger requirements; grant them by exact table and operation.
+2. Keep controlled-substance and procurement evidence ledgers SELECT/INSERT only. Verify triggers and independent-session UPDATE/DELETE denial.
+3. Supplier payment execution needs SELECT/INSERT on immutable payment ledgers plus UPDATE on request, vendor invoice and expense workflow rows. Bank reconciliation adds append-only statement/match evidence.
+4. Investigation and notification design mixes mutable current-state rows with append-only event rows; avoid blanket grants across model families.
+5. Patient billing requires targeted invoice/deposit UPDATE, receipt INSERT and currently observed receipt DELETE reversal, plus refund voucher INSERT and privacy audit side effects. This is a high-risk finance identity and needs explicit approval/audit policy.
+6. Complete the remaining bank-reconciliation candidate aggregation, report generation and all model/migration/trigger relationships with disposable PostgreSQL SQL capture. Then test each workload role independently, including raw SQL attempts against evidence tables and cross-tenant/CP connection denial.
+
+No final grant SQL is approved. PostgreSQL database-per-tenant remains invariant. No runtime/SQL/migration/Compose/credential/secret/database/production change; no patient or financial records were accessed or mutated.
