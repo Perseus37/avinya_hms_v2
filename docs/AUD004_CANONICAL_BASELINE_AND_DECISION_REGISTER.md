@@ -225,3 +225,10 @@ Direct inspection of the PR #19 source commit (`0d20e97ba5eb2f603fbadf677c2f01dc
 - The other inspected control-plane migrations and migration router/catalog showed no additional pointer writers. This is a bounded control-plane/migration audit, not a completed all-repository writer inventory.
 
 No runtime behavior or migrations were changed. PR #23 Section 12.6 records the design implication. Database-per-tenant remains the architecture; this finding does not authorize a topology change.
+## 18. Additional pointer-writer inventory pass (2026-11-13)
+
+A targeted pass inspected adjacent FHIR, ABDM, integrations and encounter routers/services; control-plane provisioning/fleet/network routers; patient service/break-glass modules; privacy decision/runtime/retention modules; and seed/restore scripts. No additional pointer ORM writes, raw table writes or `sync_patient_pointer` calls were found in those inspected files.
+
+`backend/control_plane/api/routers/fleet_ops.py` reads `GlobalPatientPointer` for fleet counts and operator MPI lookup; the inspected route writes only a separate `ControlPlaneAuditLog` record. This is a read/audit path, not a pointer writer.
+
+The known mutation paths remain the federation synchronization function and the direct patient-deactivation deletion path previously recorded. The all-file inventory remains incomplete: the majority of unrelated backend Python files and all raw-SQL matches have not been exhaustively scanned; GitHub code-search yielded no indexed results for the pointer symbols. Do not treat this targeted pass as proof that no other writer exists.
