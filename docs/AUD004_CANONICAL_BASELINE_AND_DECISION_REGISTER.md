@@ -559,3 +559,21 @@ Contract: Section 22 in `AUD004_POSTGRESQL_LEAST_PRIVILEGE_REMEDIATION_CONTRACT.
 - No grant SQL or code/SQL/migration/Compose/credential/secret/database/production changes were made. Database-per-tenant remains the invariant.
 
 Next gate: complete tenant-domain router/service call graph and map every table to SELECT/INSERT/UPDATE/DELETE/raw SQL per execution identity; then build disposable PostgreSQL independent-session privilege tests. Do not draft final grant SQL before this mapping is complete.
+
+
+## 39. Tenant-domain route/service operation trace — second source batch (13 Nov 2026)
+
+**Status:** Contract Section 24 adds a bounded, evidence-backed sample of billing, pharmacy, diagnostics, privacy-runtime, HL7 and queue paths.
+
+- Billing invoice creation reads patient/optional encounter and inserts an invoice; line addition reads/locks invoice and service catalog, inserts line items and updates invoice totals; draft line removal performs SQL DELETE plus invoice UPDATE. The invoice listing/export path also invokes privacy evaluation and audit writes.
+- Pharmacy formulary deactivation is an HTTP DELETE route but performs SQL UPDATE of `is_active`; inventory receipt inserts batches after reading medication master. This confirms privilege mapping must follow emitted SQL, not HTTP verb names.
+- Diagnostics catalog create/list/update/deactivate paths expose SELECT/INSERT/UPDATE patterns; deactivation is an UPDATE. Diagnostic order/task and auto-billing paths remain incomplete.
+- Privacy runtime adds transitive patient, consent and policy reads plus decision-audit writes to routes such as billing. A route's direct model imports are not a complete privilege map.
+- HL7 listener currently reads CP tenant configuration and then obtains a tenant engine for result processing. The processor's exact writes remain to be traced; this reinforces the separate ingress-resolver and tenant-bound processor requirement.
+- Queue enqueue defaults to `sync_fallback=True`; on Redis failure, the producer may execute a registered handler inline. This can transfer worker DB requirements into the producer process and must be represented in workload mapping.
+- The source trace is bounded, not exhaustive. It does not prove all ORM cascades, emitted SQL, raw/bulk statements, DB trigger effects or deployed ACLs. No final grant SQL can be generated from this sample.
+- Next gate: finish pharmacy/diagnostics/billing handlers, retention and worker call graphs, remaining tenant domains, then capture actual statements against disposable migrated PostgreSQL and test per-workload grants with independent sessions.
+
+No runtime/SQL/migration/Compose/credential/secret/database/production change. PostgreSQL database-per-tenant remains invariant.
+
+Contract: Section 24 in `AUD004_POSTGRESQL_LEAST_PRIVILEGE_REMEDIATION_CONTRACT.md`.
