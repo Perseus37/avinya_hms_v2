@@ -187,3 +187,9 @@ PostgreSQL **database-per-tenant** remains unchanged. Emergency federation remai
 ## 13. Recovery-design reference refresh — 2026-11-13 13:47 IST
 
 Live GitHub metadata and file contents were re-fetched before this register update. PR #23 is still open/draft, based on PR #19's branch rather than `main`, at head `99719aeb5f8c24efc018f9886ca223ec03351355`; its design document blob is `a1b07e636ac7afb524612470f3c84cc340e86056`. PR #70 is still open/draft and main-based; this register update is being made against its current head. PR #19 remains the parent runtime-remediation PR. This refresh corrects the stale PR #23 head reference in Section 10; it does not represent independent review, implementation approval, merge approval, test execution or production evidence. PostgreSQL **database-per-tenant** remains unchanged. No runtime code, migration, database or production resource was changed.
+
+## 14. Tenant identity and pointer-generation contract refresh — 2026-11-13
+
+PR #23 design head is now 5fa4a7aa6ddd981a49c369e98dd141f0f95d0576 (design document blob de5f26e69d9a9d5f42ce8ba78c357ece1f7365fb). Section 11 proposes a dedicated immutable tenant UUID, monotonically increasing source-pointer generation, generation-bound discovery receipts, tombstone semantics, and canonical idempotency-key inputs. The existing TenantRegistry integer primary key remains intact; UUID supplements it. Existing database-per-tenant routing, branch codes and database names are not replaced.
+
+These are proposed contracts, not approved decisions or implemented behavior. Required follow-up includes inventorying every pointer writer, defining tombstone retention and administrative repair authorization, resolving disaster-recovery identity reconciliation, and independently reviewing the migration/backfill and rollout plan. PR #23 remains draft and stacked on PR #19. No runtime code, migration, test execution, database query or production operation occurred in this update.
