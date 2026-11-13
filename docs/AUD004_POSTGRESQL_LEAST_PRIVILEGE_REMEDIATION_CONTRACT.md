@@ -274,3 +274,49 @@ Required target: backup-sidecar receives only the intended backup credential and
 This map is bounded by the files listed. It is not an exhaustive proof that no other database connection path exists. The complete connection-consumer inventory in Section 13.5 is still required.
 
 **Disposition:** repository evidence demonstrates that role separation requires application architecture and deployment changes, not just replacement SQL. The next implementation proposal must first resolve the single-process multi-tenant credential boundary. No code, SQL, migration, Compose, secret, database or production setting was changed by this audit.
+## 14. Additional connection-consumer and privileged-path cross-check (2026-11-13)
+
+**Scope:** targeted static inspection of the queue, worker, integration listener, fleet operations, control-plane migration routes, restore drill and host backup/restore scripts on `main`. This supplements Section 13; it does not claim a repository-wide proof that every database access has been found.
+
+### 14.1 Additional runtime and background access paths
+
+| Path | Current access evidenced | Required identity boundary |
+|---|---|---|
+| `backend/core/queue.py` | Queue processing opens `ControlSessionLocal` and obtains tenant engines from `tenant_engine_pool` for job execution (`:352-361`, `:428-431`). | A queued `db_name` is routing data only. Authenticate the job's tenant binding, authorize it against immutable tenant identity, and execute with a tenant-bound capability; never let a payload choose an arbitrary database. |
+| `backend/domains/integrations/listener.py` | HL7 listener reads control-plane metadata and obtains a tenant engine from `tenant_engine_pool` (`:12`, `:68`, `:137`). | Integration credentials must be scoped to the assigned tenant and interface; listener must not inherit a fleet-wide tenant login. Validate tenant/interface binding before opening a session. |
+| `backend/control_plane/api/routers/fleet_ops.py` | Fleet operations obtains tenant engines at multiple paths (`:132`, `:343`, `:382`, `:494`, `:780`, `:844`, `:862`, `:998`, `:1050`, `:1252`); one path builds a tenant URL and invokes migration (`:864-865`). | Split read-only fleet observation from tenant mutation/migration. Each operation must declare tenant scope and minimum privileges; fleet control-plane identity must not itself imply unrestricted clinical DB access. Privileged migration is delegated to a separate runner. |
+| `backend/control_plane/api/routers/migration.py` | Control-plane migration routes obtain tenant engines directly (`:483`, `:554`) and maintain CP sessions (`:21`, `:531`). | The control-plane web process must enqueue an approved migration request, not hold tenant DDL credentials. A separately authenticated migration runner validates immutable tenant identity and approved version/operation. |
+| `backend/control_plane/app.py` | Control-plane app imports and disposes the shared tenant engine registry (`:34`, `:62`) in addition to using CP sessions. | Onboarding/control-plane runtime should not be able to instantiate arbitrary tenant engines. Remove tenant registry access from this process or place the operation behind an independently enforced broker/worker boundary. |
+| `backend/scripts/build_indexes_concurrently.py` | CLI accepts a database URL and creates engines; it also reads CP URL and tenant URLs from registry (`:209-239`). | Treat as a privileged maintenance CLI. Require explicit allowlisted tenant scope, short-lived migration/maintenance identity, operator authorization and auditable per-database execution. Do not accept an untrusted arbitrary URL. |
+| `backend/scripts/restore_drill.py` | Restore drill constructs administrative and target engines, runs `pg_restore`, and reads CP registry (`:142`, `:162-176`, `:203`, `:260`, `:307`). | Isolate in a DR-only environment with a dedicated restore capability and quarantined target. Never expose admin credentials to API/worker; verify artifact, target ownership and restore result before any registry cutover. |
+
+### 14.2 Host-level PostgreSQL backup and restore scripts
+
+- `deployments/backup-postgres.sh` connects inside the PostgreSQL container using `POSTGRES_USER`/`POSTGRES_PASSWORD` for database inventory, `pg_dump` and `pg_dumpall --globals-only` (`:79`, `:130`, `:139`). This is effectively an infrastructure/cluster backup path, not a tenant-scoped `backup_service.py` path. Its global-role dump is especially privileged and must be isolated from application credentials. The target design needs a separately approved cluster-global backup identity/process plus per-database data backup scope, or an explicitly reviewed equivalent.
+- `deployments/restore-postgres.sh` uses the same configured PostgreSQL login to check target existence, create the target database owned by `POSTGRES_USER`, and run `pg_restore` (`:66`, `:72`, `:74-75`). It therefore restores as the configured owner/superuser-equivalent identity rather than a narrowly scoped restore capability. Keep it out of normal application service environments; require a new quarantined target and a separate reviewed cutover.
+- These host scripts are additional to `backend/scripts/backup_service.py` and `backend/scripts/restore_tenant.py`; they must not be collapsed into one assumed execution model. Their actual scheduler, host access, environment source, mounted backup paths and operator privileges remain deployment evidence to collect.
+
+### 14.3 Expanded privilege-boundary findings
+
+1. The shared `tenant_engine_pool` is reachable from queue processing, the HL7 listener, fleet operations and the control-plane app/routes, not only the primary API request path. A role split cannot be completed by changing `Settings.DATABASE_URL` alone.
+2. Migration execution has at least three surfaces: bootstrap/migrate scripts, control-plane migration/fleet routes, and the concurrent-index maintenance CLI. All must be routed through one governed migration capability or explicitly separated profiles.
+3. Backup/restore has at least four distinct code/ops surfaces: `backup_service.py`, `restore_tenant.py`, `restore_drill.py`, and host-level `backup-postgres.sh` / `restore-postgres.sh`. Their credential and artifact boundaries differ and need separate tests.
+4. The queue is a security boundary: tenant identifiers in queued messages must be treated as untrusted selectors until checked against a signed/server-owned job record. A background worker with unrestricted registry access is still a cross-tenant credential path.
+5. The current `worker.py` entry point itself contains no direct SQL connection call in the inspected file; the relevant access is delegated to `core.queue` and task modules. This does not imply that worker execution is database-free.
+
+### 14.4 Additional static source references
+
+| Repository path | Inspected `main` blob SHA |
+|---|---|
+| `backend/core/queue.py` | `aad0c663e52e7a73d7261658f5ecc1889b7e36b7` |
+| `backend/domains/integrations/listener.py` | `3b3a72669f7b2746785ea874a728f145af607067` |
+| `backend/control_plane/api/routers/fleet_ops.py` | `b286c202182e9af9b2ea5ed485d66889bf7409d9` |
+| `backend/control_plane/api/routers/migration.py` | `d0660422e781ff913788d31664be69191fc269e0` |
+| `backend/control_plane/app.py` | `cae7f78718cbf5356f9766361f91ab2fb4362322` |
+| `backend/scripts/build_indexes_concurrently.py` | `6ac8804343a81407d724110882a733f09d87d7e2` |
+| `backend/scripts/restore_drill.py` | `85c0fdf555f24ee87aab7bcab70671b2195a44bf` |
+| `deployments/backup-postgres.sh` | `a66b9d45362b2e393bc50cddc1aa20eb2b053d95` |
+| `deployments/restore-postgres.sh` | `0c21ae21b3630b1c0570b9012b44b9bd19041982` |
+| `docker-compose.yml` | `0faced7760516a84ec096f49ea84ec1c5a8d65bc` |
+
+**Disposition:** the additional paths strengthen the finding that CP web processes and generic workers currently reach tenant databases through a shared engine registry, while maintenance and host backup/restore scripts use broadly privileged configured credentials. The inventory remains static and bounded; the next step is a path-by-path source audit of every tenant-engine call site and task payload, followed by isolated PostgreSQL tests. No code, SQL, migration, Compose, secret, database, patient data or production setting was changed.
