@@ -542,3 +542,20 @@ Privileged operations requiring separate identities include CREATE DATABASE, `pg
 - No grant SQL, model, migration, runtime, Compose, credential, secret, database or production configuration changed. Database-per-tenant remains the architecture invariant.
 
 Contract: Section 22 in `AUD004_POSTGRESQL_LEAST_PRIVILEGE_REMEDIATION_CONTRACT.md`.
+
+
+## 38. Route/worker/listener database-operation map — first-pass source trace (13 Nov 2026)
+
+**Status:** A bounded route-level trace has been added as Section 23 of the least-privilege contract.
+
+- Confirmed tenant API router registration across the principal clinical, patient, identity, billing, diagnostics, pharmacy, insurance, surgery, blood bank, finance, integrations, procurement, privacy, workforce, ABDM, quality and related domains in `backend/main.py`.
+- Confirmed the separate CP app registers fleet operations, pricing, migration, provisioning, SaaS billing, UI, network and operator authentication. Separation of FastAPI apps does not establish database capability isolation.
+- Fleet routes directly access tenant engines for telemetry/analytics, key rotation, admin reset, schema status/sync, federation policy and sandbox clone. Clone performs `CREATE DATABASE ... WITH TEMPLATE` and terminates source connections; sync invokes tenant migrations. These require isolated tenant-bound or privileged runners, not CP web credentials.
+- CP CSV mapping preview reads tenant rows; execution dynamically selects target models and writes tenant rows. Requires a constrained tenant-bound import worker with explicit table/field allow-list and durable operation state.
+- Federation discovery/import currently spans CP pointer metadata, source tenant reads and destination tenant writes. Source release and destination import must be separate tenant-bound capabilities.
+- Queue has email, retention execution and daily retention scheduler handlers. Scheduler should be CP-only; retention execution must be bound to one tenant and its actual service/table operations still need tracing.
+- HL7 listener tenant routing and ORU writes remain a separate ingress/processor boundary; facility/interface identity must be trusted before tenant binding.
+- Initial operation matrix and exclusions are in Contract Section 23. It is explicitly incomplete: remaining tenant domain routers/services, retention call graph, HL7 processor, payment and workflow paths, outbox workers and scripts still require tracing.
+- No grant SQL or code/SQL/migration/Compose/credential/secret/database/production changes were made. Database-per-tenant remains the invariant.
+
+Next gate: complete tenant-domain router/service call graph and map every table to SELECT/INSERT/UPDATE/DELETE/raw SQL per execution identity; then build disposable PostgreSQL independent-session privilege tests. Do not draft final grant SQL before this mapping is complete.
