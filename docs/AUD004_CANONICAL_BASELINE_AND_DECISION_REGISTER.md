@@ -157,7 +157,7 @@ A read-only review note with this trace was added to PR #19. The two core data-i
 Live GitHub metadata was rechecked after the PR #19 source trace:
 
 - **PR #19** remains open, non-draft, based on `main`, head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; GitHub reports `mergeable_state=blocked`. The latest recorded check-run set has six successful jobs (Python tests/PostgreSQL 17 migrations, hospital UI, onboarding UI, Compose validation, image build/scan, and scanned-image handoff) and one skipped job (`Publish, attest, and verify release images`). These CI successes do not prove the missing import recovery invariants and do not constitute production approval.
-- **PR #23** remains open/draft and is stacked on PR #19's branch, not `main`. Its current head is `1da364b3954da3fa4d4ebd8acc7decd4c28f13ca`. The PR has no submitted GitHub reviews. The design-review comment is feedback, not approval.
+- **PR #23** remains open/draft and is stacked on PR #19's branch, not `main`. Its current head at this register refresh is `99719aeb5f8c24efc018f9886ca223ec03351355`; the recovery-design document blob is `a1b07e636ac7afb524612470f3c84cc340e86056`. The PR has no submitted GitHub reviews. The design-review comment is feedback, not approval.
 - **PR #70** remains open/draft, based on `main`, with the current canonical-document commit as its head. This register is still a proposal pending independent review and merge; it is not yet the repository's accepted baseline on `main`.
 
 The PR #19 check-run snapshot is tied to the exact head listed above. Recheck CI after any subsequent commit. A skipped image publication/attestation job must not be described as a successful release-image publication. No PR was merged or closed in this review.
@@ -182,3 +182,8 @@ AUD-004 implementation remains blocked until the Critical and High items are res
 This is a documentation consolidation only. It does not authorize runtime code changes, SQL, migrations, PostgreSQL role/ACL/network/secret changes, production or patient-data access, partner onboarding, trust provisioning, federation activation, emergency access, pilot, deployment, release or merge.
 
 PostgreSQL **database-per-tenant** remains unchanged. Emergency federation remains disabled. All linked PRs remain draft/unmerged unless separately and explicitly authorized.
+
+
+## 13. Recovery-design reference refresh — 2026-11-13 13:47 IST
+
+Live GitHub metadata and file contents were re-fetched before this register update. PR #23 is still open/draft, based on PR #19's branch rather than `main`, at head `99719aeb5f8c24efc018f9886ca223ec03351355`; its design document blob is `a1b07e636ac7afb524612470f3c84cc340e86056`. PR #70 is still open/draft and main-based; this register update is being made against its current head. PR #19 remains the parent runtime-remediation PR. This refresh corrects the stale PR #23 head reference in Section 10; it does not represent independent review, implementation approval, merge approval, test execution or production evidence. PostgreSQL **database-per-tenant** remains unchanged. No runtime code, migration, database or production resource was changed.
