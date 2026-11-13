@@ -415,3 +415,88 @@ Minimum safe order for a future approved implementation:
 - Prove the resulting topology with independent PostgreSQL logins/processes, cross-tenant negative tests, queue tampering/revocation tests, exporter privilege tests, and backup/restore isolation drills.
 
 **Disposition:** this matrix identifies the smallest meaningful workload boundaries; it is not an approved deployment design or implementation authorization. No Compose, Dockerfile, runtime, SQL, migration, credential, database, storage, patient-data or production setting was changed. PostgreSQL database-per-tenant is preserved.
+
+
+## 17. Minimum target deployment topology and phased isolation plan (2026-11-13)
+
+### 17.1 Design constraints
+
+This target is intentionally a **small number of privilege-separated workloads**, not a microservices decomposition. Preserve:
+- PostgreSQL database-per-tenant; one tenant's clinical records remain in its tenant database.
+- The existing modular-monolith codebase and domain boundaries unless an independently justified extraction is required.
+- Existing Compose deployment as the initial packaging mechanism; do not introduce Kubernetes, a service mesh, or a fleet of always-on per-tenant containers by default.
+- Explicitly separate control-plane metadata from tenant clinical data, and separate ordinary runtime from provisioning, migration, backup and break-glass authority.
+
+A Compose service boundary counts as a security boundary only when its environment, secrets, database grants, mounted volumes, network access, process identity and callable operations are independently constrained.
+
+### 17.2 Minimum logical workload set
+
+| Logical workload | Responsibility | Permitted database scope | Must not possess |
+|---|---|---|---|
+| **Control-plane web** (onboarding portal/API) | Authentication, tenant registry, subscriptions, routing metadata, user/tenant lifecycle metadata and CP-owned configuration. | Control-plane DB only. | Tenant clinical DB credentials, tenant engine registry capability, backup artifacts, migration/DDL or cluster administration. |
+| **Tenant clinical API** | Authenticated hospital/branch requests and clinical/business transactions. | Only the tenant DB selected from trusted server-side identity and bound to the request execution context. CP lookup is via a narrow, separately authenticated resolver or signed tenant context, not unrestricted CP ORM access. | Arbitrary tenant DB selection, fleet tenant secrets, cluster administration, backup storage and migration privileges. |
+| **Tenant-bound background execution** | Queue jobs that mutate or read tenant data (including privacy retention and imports). | One tenant DB per execution context/job; tenant and operation are revalidated at execution. | Trust in queue-supplied DB names/tenant slugs, a generic fleet-wide DB login, or ability to reuse a stale tenant engine after revocation. |
+| **Integration ingress and tenant processor** | Authenticate HL7/interface sender, resolve a trusted facility/interface mapping, validate message and submit a tenant-bound result operation. | Ingress: no direct clinical DB access (CP routing metadata only through a narrow resolver). Processor: one authorized tenant DB for the operation. | Treating MSH-4, source IP or an unverified message field as authorization; fleet-wide tenant DB credentials in the listener. |
+| **Privileged operations runner** | Database creation, role/ACL reconciliation, tenant migrations, seed/initialization, tenant clone and other DDL/provisioning operations. | Only the explicitly named target DB(s) for a short-lived approved operation; cluster-level authority only for provisioning/role tasks that require it. | Long-running API/worker credentials, general clinical traffic, automatic execution from an ordinary request or queue payload. |
+| **Backup/restore executor** | Inventory, consistent dump, encryption, artifact validation, restore drills and approved recovery. | Read/dump only the assigned database set; restore authority restricted to isolated restore targets until verification and approval. | API/worker access to backup volumes, general clinical writes, unverified tenant routing/cutover. |
+| **Monitoring/exporter** | PostgreSQL health and approved statistics. | Monitoring/catalog/statistics only as required by proven collectors. | Clinical table reads, writes, DDL, tenant secrets or shared application login. |
+| **Existing infrastructure services** | PostgreSQL, Redis, reverse proxy, scanner, metrics, UI. | No direct tenant clinical access except the separately constrained exporter. | Application DB credentials in UI, proxy, scanner or unrelated infrastructure containers. |
+
+### 17.3 Deployment shape: avoid a container per tenant as the default
+
+**Recommended initial target:** retain one deployable application codebase but use two web trust domains (CP-only and tenant clinical) plus separately scoped background/operations workloads. Tenant execution must be bound to a tenant-specific credential capability at the process or connection boundary.
+
+There are two acceptable implementation patterns; select one in an ADR before coding:
+
+**Pattern A — tenant-bound execution instances.** Run tenant API/worker execution instances with access only to the tenant DB credential(s) assigned to that instance. This gives the clearest PostgreSQL and secret boundary, but creates operational overhead as tenant count grows. It is appropriate for a small/regulated deployment or high-risk tenants, not automatically one container per branch.
+
+**Pattern B — constrained credential/connection broker.** A small broker holds or obtains tenant credentials and issues a connection only after authenticating the calling workload, validating the operation and binding it to an immutable tenant identity. The broker must not expose a caller-controlled arbitrary DB-name/password lookup. It needs workload authentication, signed/short-lived capabilities, tenant and operation allowlists, TTL, replay protection, revocation, audit, rate limits, pool invalidation and negative tests. The broker itself is a high-value security boundary and must be isolated from ordinary CP/API processes.
+
+A process that can read every tenant password and call `get_engine(db_name)` is **not** Pattern B; it remains a fleet-wide credential oracle. Per-database PostgreSQL logins do not repair that process-level flaw if all secrets are available to the same workload.
+
+**Decision gate:** choose Pattern A or B based on expected tenant count, deployment operations, threat model and acceptable blast radius. Do not implement both or create a permanent per-tenant container fleet without measured need. A hybrid can reserve Pattern A for high-risk tenants and Pattern B for standard tenants, but only after a documented threat model and operational proof.
+
+### 17.4 Minimum Compose-level target (logical, not a literal service-name prescription)
+
+| Current service | Minimum target disposition |
+|---|---|
+| `api` | Split the current combined API surface into CP-only web and tenant clinical request surfaces. Keep the same repository/domain modules where practical. |
+| `onboarding-portal` | CP-only; remove tenant engine access and backup volume. |
+| `worker` | Split consumers by privilege class: tenant-bound clinical/privacy/import jobs versus CP-only scheduling/dispatch. Do not split every domain into a service. |
+| `hl7-listener` | Keep as a small ingress process with no direct clinical DB credential; delegate authenticated tenant-bound processing. |
+| `db-init` | Replace the ambiguous combined role with explicit, separately invoked provision, role-reconcile, migrate and initialize commands. Each command gets only the authority it needs. |
+| `postgres-exporter` | Dedicated monitoring identity and verified minimal collector grants. |
+| Host backup/restore | Dedicated executor and protected storage; keep out of API/worker containers. Identify and verify the actual production scheduler before deployment changes. |
+| `db`, `redis`, proxy, UI, scanner and metrics | Retain as infrastructure; no broad tenant credentials. |
+
+Do not mechanically split services until route and dependency inventories identify which endpoints require CP metadata and which require tenant clinical sessions. The existing shared application package may remain a modular monolith behind separate entrypoints.
+
+### 17.5 Implementation phases and gates
+
+| Phase | Scope | Exit evidence / gate |
+|---|---|---|
+| **0 — design freeze** | Decide Pattern A or B; map endpoints/jobs to CP vs tenant operations; inventory secret sources, environment variables, mounts, networks and connection pools. | Approved ADR, threat model, workload identity contract, tenant binding contract, rollback and migration plan. No production credentials changed yet. |
+| **1 — CP isolation** | Make CP web genuinely CP-only; remove tenant registry/engine capability and backup mount; split CP scheduler from tenant job execution. | Static import/route scan plus runtime tests show CP identity cannot connect to any tenant DB; CP workflows still pass. |
+| **2 — tenant execution isolation** | Implement tenant-bound request and job contexts; remove fleet credentials from general API/worker; enforce revocation and pool invalidation. | Independent-session tests prove tenant A cannot connect to B; queue tampering and tenant-disable tests fail closed; concurrency tests pass. |
+| **3 — ingress and privileged operations** | Move HL7 writes behind tenant-bound processor; split bootstrap provisioning, role reconciliation, migrations and initialization. | Sender/facility spoofing tests; each privileged command tested with only its intended grant; ordinary API cannot perform DDL/provisioning. |
+| **4 — backup, restore and monitoring** | Dedicated dump/restore and exporter identities; isolate artifact storage; prove actual scheduler and off-host delivery. | Cross-tenant dump denial, restore-to-isolated-target drill, artifact integrity/provenance checks, exporter cannot read clinical rows, off-host failure is surfaced as failure. |
+| **5 — production readiness gate** | Full security, operational and recovery verification in a production-like environment. | Independent penetration/security review, backup restore evidence, load/concurrency tests, incident/credential-rotation drills, audit-log verification, compliance review and explicit release approval. |
+
+### 17.6 Non-negotiable acceptance criteria
+
+- No general-purpose web or worker process can retrieve credentials for every tenant and select arbitrary DB names.
+- Every tenant DB operation has a server-validated immutable tenant binding and an operation-specific authorization decision.
+- CP runtime cannot query tenant clinical tables.
+- Tenant A credentials cannot connect to tenant B or CP unless a separately documented capability explicitly permits that access.
+- Queue payloads, HL7 headers, request parameters and federation pointers are never authorization sources.
+- Tenant disablement/revocation invalidates queued work, credential capabilities and pooled connections within a documented bounded interval.
+- Provisioning, migration, backup, restore, exporter and break-glass support identities are distinct from ordinary clinical runtime.
+- Existing sessions, PUBLIC ACLs, role membership, object ownership and default privileges are tested, not inferred from role SQL text alone.
+- Backup and restore evidence includes the actual production host/scheduler, protected secrets, storage mount, off-host target and a completed restore drill.
+- No patient data or production credentials are used in CI; synthetic independent DBs/logins are used for isolation tests.
+
+### 17.7 Explicit non-goals
+
+This milestone does not authorize schema-per-tenant, microservices, Kubernetes, service mesh, a new database platform, a tenant-per-container fleet, a change to patient/branch data ownership, or a production credential/ACL rollout. It does not establish HIPAA, DPDP, GDPR or other compliance certification.
+
+**Disposition:** this is the minimum target topology and a phased decision framework. Pattern A versus Pattern B remains an explicit architecture decision; no runtime implementation or production change is authorized by this document.
