@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import psycopg2
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP_SOURCE = ROOT / "backend" / "scripts" / "bootstrap.py"
@@ -23,6 +24,7 @@ def _load_production_role_function():
         "logging": logging,
         "logger": logging.getLogger("aud004.production-bootstrap-proof"),
         "psycopg2": psycopg2,
+        "ISOLATION_LEVEL_AUTOCOMMIT": ISOLATION_LEVEL_AUTOCOMMIT,
         "settings": SimpleNamespace(
             POSTGRES_USER=os.environ["AUD004_SETUP_USER"],
             POSTGRES_PASSWORD=os.environ["AUD004_SETUP_PASSWORD"],
