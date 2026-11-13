@@ -2162,3 +2162,44 @@ For source hospitals configured as `FULL_MESH`, the branch-fetch path does not r
 **Assessment:** The normal fleet suspension route synchronizes the tenant and node flags, but the federation API-key dependency does not enforce that invariant and discovery does not reject a missing active caller registry. A stale active/orphan node can therefore remain a valid federation caller against `FULL_MESH` sources. Treat this as a medium-priority federation lifecycle authorization gap until caller ownership/activity is enforced at the authentication boundary and covered by tests. This is a conditional state-drift finding, not evidence that a currently suspended tenant can bypass the normal status endpoint.
 
 **Boundary:** static source review only. No runtime federation, key, tenant lifecycle, patient data, transfer log, database or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+## 74. PostgreSQL least-privilege roles are not wired into application or tenant database connections
+
+**Sources reviewed on main:**
+- `backend/core/config.py` (`Settings.DATABASE_URL`)
+- `backend/core/database.py` (`build_db_url`, `control_engine`, `TenantEngineRegistry`)
+- `backend/scripts/bootstrap.py` (`apply_database_roles`, `bootstrap_system`)
+- `deployments/postgres-roles.sql`
+- `docker-compose.yml` (PostgreSQL, db-init, API and backup service wiring)
+- `.env.production.example`
+
+Static configuration/source review only. No PostgreSQL role, database, grant, connection or production setting was changed or queried.
+
+### 74.1 All control-plane and tenant connection URLs inherit the same configured database login
+
+`Settings.DATABASE_URL` constructs a PostgreSQL URL using `POSTGRES_USER` and `POSTGRES_PASSWORD`. `build_db_url(db_name)` changes only the database name; it preserves that same username and password. The control-plane engine is built with `build_db_url(CONTROL_PLANE_DB_NAME)`, and every tenant engine returned by `TenantEngineRegistry.get_engine(db_name)` uses the same builder. Thus application runtime sessions for the control plane and every hospital database share one PostgreSQL login identity; the database-per-tenant boundary is not backed by distinct per-database runtime credentials in this implementation.
+
+The same configured identity is also used by provisioning/database creation, migration helpers and the backup script's `pg_dump` invocation. Those are privileged operational tasks and should not share credentials with ordinary API request handling.
+
+### 74.2 The repository's least-privilege role script is optional and does not establish the runtime role
+
+`bootstrap.py` defines `apply_database_roles()`, but it runs only when the explicit `--apply-roles` argument is supplied or `POSTGRES_APPLY_ROLES` is set to a truthy value. The production Compose `db-init` command invokes only `python backend/scripts/bootstrap.py`; it does not pass `--apply-roles`. The production environment template does not set `POSTGRES_APPLY_ROLES`. Therefore the checked-in production bootstrap path does not apply the role script by default.
+
+Even if applied, `deployments/postgres-roles.sql` creates `hms_app`, `hms_migrator`, `hms_backup` and `hms_exporter`, but the runtime URL builder never selects `hms_app` or `hms_migrator`. The script grants application and migration privileges on the database named `postgres`, not on the control-plane database or each dynamically provisioned tenant database. It also does not assign login passwords to the created roles. Its current grants therefore do not demonstrate a usable, per-tenant least-privilege runtime path.
+
+For a fresh Compose-managed PostgreSQL volume, the official PostgreSQL image initializes `POSTGRES_USER` as its bootstrap database superuser unless an initialization customization changes that behavior. The repository's Compose service mounts no PostgreSQL initialization directory or custom role bootstrap at database-container startup. The production template describes this as a dedicated database user, but does not itself constrain its PostgreSQL attributes. The exact live role attributes remain a deployment fact that requires catalog verification; the source proves that the application does not switch to the separately declared `hms_app` role.
+
+### 74.3 Required remediation and acceptance evidence
+
+1. Split database identities by responsibility: a tightly controlled bootstrap/DB-owner identity, migration identity, API runtime identity, backup identity and monitoring identity. Do not pass bootstrap credentials into the serving API container.
+2. Provision the runtime role and grants explicitly for the control-plane database and each tenant database. The runtime role must not be superuser, database owner, role creator, database creator, replication-capable or able to connect to unrelated tenant databases.
+3. Ensure the API can connect only to the control-plane database and the one tenant database selected by the trusted control-plane resolver. Prefer distinct tenant-scoped credentials/roles or another PostgreSQL-enforced boundary; do not rely solely on changing the database name in a URL.
+4. Use a separate migration role for Alembic and provisioning, and a read-only backup role for `pg_dump`; define the backup role's cross-database scope explicitly without granting it application write privileges.
+5. Make role provisioning an explicit, idempotent, reviewed bootstrap prerequisite with safe secret delivery/rotation. Remove the misleading optional script path or make it a verified deployment gate.
+6. Add disposable PostgreSQL tests that inspect `rolsuper`, `rolcreatedb`, `rolcreaterole`, `rolreplication`, database ownership, CONNECT, schema/table/sequence grants and default ACLs for the control plane and at least two tenant databases.
+7. Prove that the API role can perform required tenant operations in its assigned database but cannot connect to, read, write, create objects in, or change ownership/grants on another tenant database or the control-plane database unless explicitly required.
+8. Add deployment validation that fails startup/release if the configured API identity has privileged role attributes or grants outside its approved database allowlist. Keep migration and backup jobs on separate credentials and verify that their secrets are not present in the API container environment.
+
+**Assessment:** The declared PostgreSQL least-privilege roles are not integrated into the application's connection configuration or normal production bootstrap. All control-plane and tenant engines inherit `POSTGRES_USER`, and the optional role script neither configures that runtime identity nor grants the created application role across the actual control-plane/tenant databases. On a fresh standard Compose PostgreSQL initialization, this is likely the bootstrap superuser identity; confirm live catalog attributes before making a deployment-specific assertion. This is a high-priority database isolation and blast-radius gap: separate PostgreSQL databases exist, but the checked-in application configuration does not establish least-privilege database authorization between them.
+
+**Boundary:** static source/configuration review only. No database, role, grant, credential, tenant, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
