@@ -784,3 +784,21 @@ This revalidation confirms the previously documented fleet-wide retention and ba
 **Classification:** federation discovery/import are direct destination-side foreign-tenant access paths and remain the P0 source-owned-boundary issue. Provisioning, migration, retention sweep, backup and restore are privileged operational capabilities that require distinct identities, explicit target scope, audit and isolation from ordinary API/federation workloads. The email-only handler is a candidate for a database-free worker class, subject to transitive-import verification.
 
 No runtime code, SQL, migration, Compose configuration, environment file, credential, database or patient data was changed by this revalidation.
+
+
+### 11.7 Worker import and synchronous-fallback boundary revalidation — 2026-11-13
+
+The queue and worker source snapshots were fetched again from the default branch during the transitive-capability check.
+
+| Source file | Fetched blob | Exact code evidence | Security implication |
+|---|---|---|---|
+| `backend/core/queue.py` | `aad0c663e52e7a73d7261658f5ecc1889b7e36b7` | Lines 18–21 import `ControlSessionLocal` and `tenant_engine_pool` from `backend.core.database` at module import time. | Every process importing this queue module loads the shared database module and its database-capable dependencies, including a process intended only to deliver email. |
+| `backend/worker.py` | `b0fb87568caab841c6557082f885ca39bbb78ca0` | Lines 16–25 import `get_redis` and queue dispatch/registry functions; lines 101–112 resolve and invoke the registered handler in the same worker process. | The current worker is a mixed-capability task host. Task-name separation does not isolate credentials or process capabilities. |
+| `backend/core/queue.py` | `aad0c663e52e7a73d7261658f5ecc1889b7e36b7` | Lines 69–76 define `enqueue_task` with `sync_fallback: bool = True`; lines 130–134 look up and invoke the handler synchronously when Redis enqueue fails. | Any caller using the default can execute a database-capable handler in its own process during Redis failure. This defeats a proposed worker-only boundary unless callers explicitly opt out and the dispatch contract is redesigned/tested. |
+| `backend/core/queue.py` | `aad0c663e52e7a73d7261658f5ecc1889b7e36b7` | Lines 302–322 register `email.send`; lines 325 onward register tenant retention execution; lines 409 onward register a fleet-wide scheduled retention sweep. | Email, tenant-retention and fleet-scheduler handlers share one registry/module and worker process. The email handler's lack of a direct tenant query is not proof of a database-free process. |
+
+**Disposition:** this is an additional source-level P0/P1 isolation finding for the workload-boundary plan. Do not claim an email-only worker is database-free based on its handler body. A safe future split must account for module import closure, task registration, Redis-failure behavior, synchronous fallbacks, periodic scheduling and every enqueue caller. The fleet-wide retention scheduler must be separated from tenant-bound retention execution; the scheduler should use control-plane metadata and enqueue only, while execution must receive a tenant-bound identity and cannot obtain other tenants' credentials. An email-only worker must not import a module that imports tenant DB engines or receive tenant/control-plane DB credentials.
+
+**No runtime change is authorized or made by this inventory.** In particular, do not simply set `sync_fallback=False` globally without reviewing every caller's retry/error semantics, and do not split the worker until task routing, deployment service definitions, secrets and operational ownership are reviewed together.
+
+This source inspection still does not prove which task names are currently enqueued by each deployed API process or what credentials each deployed container receives. Enqueue call-site and deployment-environment mapping remain required evidence. No production or development database, credential, queue, worker deployment, task payload or patient data was changed.
