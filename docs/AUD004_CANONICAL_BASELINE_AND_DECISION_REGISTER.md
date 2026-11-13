@@ -390,3 +390,18 @@ A follow-up cross-check against the existing Section 11.2/11.18 findings in `AUD
 The checked-in `docker-compose.prod.yml` does not declare those two services. This is a production deployment-profile gap to resolve, not evidence that no backup service runs in production. The actual production scheduler/container/host and its secrets/mounts must be identified and independently verified. The least-privilege contract now records this distinction and requires a credential-free vault identity, separated artifact write boundary, and effective volume/storage immutability tests.
 
 No runtime, Compose, volume, credential or storage configuration was changed. Database-per-tenant remains unchanged; PR #70 remains draft/open/unmerged.
+## 29. Additional PostgreSQL connection-consumer cross-check (2026-11-13)
+
+The least-privilege contract Section 14 now records additional database access surfaces found in a targeted static review of the queue, integration listener, control-plane fleet/migration routes, maintenance CLI, restore drill and host-level backup/restore scripts.
+
+Newly explicit access paths:
+- `backend/core/queue.py` obtains tenant engines for queued work; queued tenant/database selectors must be bound to a server-owned authorized job, not trusted as arbitrary routing input.
+- `backend/domains/integrations/listener.py` reads CP metadata and obtains tenant engines; integration execution must be tenant/interface-bound.
+- `backend/control_plane/api/routers/fleet_ops.py`, `backend/control_plane/api/routers/migration.py` and `backend/control_plane/app.py` expose tenant engine access from CP-side surfaces. CP runtime cannot be considered CP-only while it can instantiate this shared registry.
+- `backend/scripts/build_indexes_concurrently.py` is an additional privileged maintenance/DDL surface.
+- `backend/scripts/restore_drill.py` is an additional DR/admin surface.
+- `deployments/backup-postgres.sh` uses configured PostgreSQL credentials for database inventory, `pg_dump` and global-role dump; `deployments/restore-postgres.sh` uses the configured login to create an owned target and restore it. These host scripts are distinct from the Python backup/restore paths.
+
+Result: the shared tenant engine registry is reachable beyond the primary API request path, and backup/restore has multiple distinct execution surfaces. Migration also spans bootstrap/migrate scripts, CP routes/fleet operations and maintenance CLI. These require separate workload identity and negative-test coverage; changing role SQL or the primary API configuration alone cannot close the boundary.
+
+Scope remains a targeted static cross-check, not a complete proof of every repository connection consumer or deployed access. Contract Section 14 records source blob SHAs and explicit limitations. No code, SQL, migration, Compose, secret, database, patient data or production setting changed. PR #70 remains draft/open/unmerged.
