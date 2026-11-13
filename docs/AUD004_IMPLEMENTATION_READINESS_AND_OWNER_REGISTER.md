@@ -217,6 +217,32 @@ The next work should be engineering evidence, not more design PRs.
 
 Stop if any unknown/unsupported privilege, identity, route, provider scope or host control could permit a cross-tenant read or unlogged disclosure.
 
+### 8.1 Concrete source-owned federation extraction seam
+
+A fresh read of `backend/domains/federation/router.py` and `backend/core/database.py` on `main` identifies the first runtime seams. This is a code-path map, not authorization to change runtime behavior.
+
+| Current code path | Observed behavior | Required boundary change |
+|---|---|---|
+| `discover_and_aggregate_patient_across_branches()` | Reads global pointers and tenant registry metadata, resolves foreign DB names, then submits each pointer to nested `_fetch_branch_data()` | Keep only non-PHI routing metadata in the destination. Replace each foreign DB session with a typed source-service request after the approved challenge/assertion flow exists. |
+| Nested `_fetch_branch_data()` | Calls `tenant_engine_pool.get_engine(branch_db_name)`, reads source policy/patient/allergies, calls `evaluate_tenant_data_use(... actor_user_id=None)`, writes `FederationTransferLog`, commits, then returns source-derived data | Move selector resolution, source policy, actor authorization, minimal data selection and source audit into the source-owned workload. A node API key plus `actor_user_id=None` is not verified clinician authorization. |
+| `import_federated_patient_locally()` | Resolves a foreign `TenantRegistry.db_name`, opens `tenant_engine_pool` source session, re-reads patient/policy/allergies and writes source transfer log from destination request | Destination must consume a source-authenticated, operation-bound response; it must not open a source DB session or accept a client-supplied summary as provenance. Reconcile with PRs #23/#24 import operation, fencing and provenance requirements before implementation. |
+| `TenantEngineRegistry.get_engine(db_name)` / `build_db_url(db_name)` | Accepts a DB name and changes the database component of the shared `settings.DATABASE_URL` | Do not use this generic registry from a tenant-facing federation request to reach foreign databases. Preserve it only where separately approved operational workloads require it; later split identities by workload and tenant under an independently reviewed rollout. |
+| `ensure_postgres_db_exists(db_name)` | Builds a connection to the `postgres` database from the same configured URL and can create databases | Keep provisioning/admin capability out of API and source-disclosure runtime identities. This is a separate privileged-operational-workload gate, not part of the first federation route extraction. |
+
+#### Safe implementation order after wire-profile approval
+
+1. Freeze the normative wire profile by reconciling PR #30 with the outstanding R74/R76/R77 review findings. It must specify exact parsing/validation rules, approved crypto profile, issuer trust, audience and workload identity, actor mapping, operation binding, nonce/replay transaction, revocation effective time, anti-enumeration behavior, response integrity and negative test vectors. Do not choose these in application code.
+2. Define a source-service interface whose configuration fixes exactly one source tenant identity and one source database credential. Its request type must have no DB locator, DSN, tenant override, SQL/model/table selector or caller-controlled actor role.
+3. Implement and test the source workload independently against synthetic tenant B: it resolves its own tenant DB, authenticates destination and clinician under the approved profile, evaluates current policy, commits source audit before response, and cannot connect to tenant A.
+4. Implement the destination client with only destination-A DB access and source-service transport. Prove it cannot retrieve B credentials and cannot reach B PostgreSQL directly.
+5. Replace the discovery nested foreign-session function and import foreign-session block with that client. Preserve the existing route contracts only where the reviewed protocol permits; do not retain an alternate in-process/local-branch direct-SQL path.
+6. Reconcile discovery and import with the accepted PR #23/#24 durable operation, fencing, provenance, response-integrity and acknowledgement state machine. Do not infer a new idempotency model from the current demographic matching logic.
+7. Run the synthetic proof matrix from actual workload containers, including source outage/no-fallback, audit commit failure, replay/concurrency, revocation, response substitution and local cross-branch parity. Keep emergency federation denied.
+
+#### Explicit pre-implementation stop
+
+PR #30 is still a proposed design and explicitly leaves cryptographic algorithms, key custody, trust onboarding and operational lifetimes open. The current source-owned proof contract also says no wire profile is selected. Therefore the present evidence supports a precise extraction plan, but **not yet a safe runtime federation implementation**. The next implementation must wait for a reviewed, approved wire-profile artifact and named source-service/database/platform owners. No production role, secret, network, deployment, tenant registry or connection-routing change is authorized by this report.
+
 ## 9. Explicit non-authorization
 
 This report authorizes documentation and non-production synthetic-data assessment only. It does not authorize:
