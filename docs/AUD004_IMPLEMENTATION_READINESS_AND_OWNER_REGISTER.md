@@ -1345,3 +1345,24 @@ No runtime/SQL/migration/Compose/credential/secret/database/production change. N
 **Gate:** no production grant generation until metadata-vs-catalog deltas and workload-role proofs are complete. The current source trace narrows the inventory boundary but is not an actual PostgreSQL inventory or permission certification.
 
 No production/runtime/SQL/migration/Compose/credential/secret/database change. PostgreSQL database-per-tenant remains invariant.
+
+
+### Section 45 — CI proof harness gap: migration execution and catalog parity remain unimplemented
+
+**Evidence batch:** existing AUD-004 role-bootstrap test, on-demand workflow, isolated tenant A/B/CP Compose fixture, and both Alembic configuration paths. Source-only review; no database migration or live catalog capture was executed.
+
+#### Established
+- The existing role-bootstrap CI test runs the actual production role function against disposable PostgreSQL and intentionally characterizes unsafe current grants. It does not invoke Alembic.
+- The separate identity fixture proves synthetic tenant A, tenant B and CP connection boundaries using isolated probe containers. It does not build the production ORM object set or execute the migration graph.
+- Tenant and CP Alembic have separate URL resolution and metadata roots. CI must set explicit per-database URLs before each migration invocation and verify the resulting version table in the intended database.
+
+#### Blocking actions
+1. **Backend:** add deterministic sorted exports for tenant `Base.metadata` and CP `ControlBase.metadata`; keep exports separate.
+2. **Platform/DBA:** execute CP migration and tenant migration independently against three synthetic PostgreSQL databases in an isolated job; assert migration heads/version state for each target.
+3. **Security/DBA:** capture owners, ACLs, default ACLs, memberships, PUBLIC, extensions, sequences, views, materialized views, RLS, large objects, trigger definitions and function security attributes from each database.
+4. **QA:** compare metadata and catalogs, classify all differences, and fail on unexplained drift or missing expected protection. Include raw SQL UPDATE/DELETE attempts against claimed append-only tables.
+5. **Platform/DR:** restore a disposable backup and rerun the same inventory/ACL comparison before restore parity can be accepted.
+
+**Gate:** AUD-004 remains blocked. Existing passing CI proofs are valuable but orthogonal: neither proves the migrated production object inventory, trigger integrity, restore parity nor final least-privilege grants. No final grant SQL is approved.
+
+No runtime/SQL/migration/Compose/credential/secret/database/production change. PostgreSQL database-per-tenant remains invariant.
