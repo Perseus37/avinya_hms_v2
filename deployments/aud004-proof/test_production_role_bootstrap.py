@@ -52,13 +52,18 @@ def _admin_connection():
 def test_actual_production_role_bootstrap_exposes_current_acl_gaps():
     # This job uses a brand-new, disposable PostgreSQL service. Create only
     # synthetic HMS-like databases; never point this test at a shared server.
-    with _admin_connection() as conn:
+    conn = _admin_connection()
+    try:
+        # Set autocommit before entering a connection context; CREATE DATABASE
+        # is prohibited inside a transaction block.
         conn.autocommit = True
         with conn.cursor() as cur:
             for database in ("aud004_control_plane", "aud004_tenant_a", "aud004_tenant_b"):
                 cur.execute("CREATE DATABASE " + '"' + database + '"')
             cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'hms_app'")
             assert cur.fetchone() is None, "Expected a fresh PostgreSQL role catalog"
+    finally:
+        conn.close()
 
     apply_database_roles = _load_production_role_function()
     apply_database_roles()
