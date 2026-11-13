@@ -880,3 +880,10 @@ Implementation status on 13 November 2026:
 - The test is characterization only. It does not yet prove raw SQL append-only denial, least-privilege role behavior, restore parity, or complete cluster-global/large-object ACL semantics. Those remain separate gates.
 
 No production/runtime/SQL/migration/Compose/credential/secret/database/production change. Only test code and an on-demand CI workflow job were added. PostgreSQL database-per-tenant remains invariant.
+
+
+### Section 32 — Catalog capture scope clarified after source review
+
+A source-level review of the PR #71 harness found that ACL/default-ACL and role-membership snapshots are already captured in the JSON artifact. The report wording was corrected so it no longer incorrectly describes those snapshots as absent. The evidence boundary is now explicit: those snapshots are recorded but not interpreted or asserted; column, sequence, routine and type ACLs, role attributes and cluster-wide settings are not inventoried in this pass. Trigger/routine definitions and security settings are captured but not evaluated, and raw-SQL append-only denial remains untested.
+
+This correction changes only the characterization report's limitation text. It does not change migration execution, grants, runtime behavior, production configuration or tenant database topology. The workflow remains unexecuted on the latest PR head; no migration or parity result is claimed.
