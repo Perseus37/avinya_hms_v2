@@ -707,20 +707,20 @@ The implementation should add a dedicated opt-in test harness (for example, \`de
 - Keep the current SQLite suite unchanged for fast application/domain tests.
 - A separately named PostgreSQL integration job now exists in the dedicated AUD-004 proof workflow and starts the harness from a clean runner.
 - The PostgreSQL proof runs inside the isolated Compose network and does not silently fall back to SQLite.
-- The recorded successful run is [workflow run 43354810585](https://github.com/Perseus37/avinya_hms_v2/actions/runs/43354810585), on PR #71 head `02f6dd756c9091a89ee4f858684bea6ae2d5c8d8`: 27 disposable PostgreSQL ACL assertions and 10 reconciliation regression tests passed; disposable resources were torn down.
-- That run predates the current PR #71 documentation-only head `5e00ea31e8b0f1c99b6668bbf33923caac0fe1e5`; do not describe the latest head as having been rerun.
+- The latest-head run is [workflow run 43364452642](https://github.com/Perseus37/avinya_hms_v2/actions/runs/43364452642), executed against PR #71 head `ae28c153abd4ada2a257fa360c699c24acc3bb0c`: the disposable PostgreSQL proof passed **27 assertions** (9 for each of tenant A, tenant B and control plane); reconciliation regression tests passed **10 tests** (one existing deprecation warning); disposable container, network, named volume and temporary secrets were cleaned up.
+- The selected `reconciliation` scope skipped frontend production builds and the general Compose configuration job. This run must not be represented as validating those scopes.
 - Preserve test logs, image digest, Compose configuration hash, fixture manifest and redacted catalog evidence as CI artifacts.
 - Do not place reusable credentials in repository secrets. Use short-lived CI job-scoped values for the disposable cluster only.
 
 ### 15.5 Execution boundary and current status
 
-The dedicated Compose harness, PostgreSQL 17 fixture, synthetic tenant/control-plane databases, low-privilege runtime roles, ACL assertions and on-demand CI workflow now exist in draft PR #71. The recorded run above passed its bounded fixture-level proof and completed disposable teardown.
+The dedicated Compose harness, PostgreSQL 17 fixture, synthetic tenant/control-plane databases, low-privilege runtime roles, ACL assertions and on-demand CI workflow exist in draft PR #71. The latest PR-head run above passed its bounded fixture-level proof and completed disposable teardown.
 
-**What this evidence establishes:** the tested synthetic PostgreSQL configuration denied the tested cross-database CONNECT attempts and passed the 27 implemented ACL assertions. The reconciliation regression job also passed 10 tests.
+**What this evidence establishes:** for the tested synthetic PostgreSQL configuration, the three isolated test identities each passed their nine implemented assertions, including own-database positive access, foreign-database CONNECT denial and selected role/privilege checks. The reconciliation regression job passed 10 tests.
 
-**What it does not establish:** complete cluster-wide role/object/default-privilege inventory; actual deployed PostgreSQL grants; container/workload identity isolation; secret-provider isolation; network egress enforcement; source-owned federation API/authorization; audit-before-disclosure; credential rotation/revocation; existing connection-pool draining; or full lifecycle proof. The source-owned federation service remains unimplemented, and the current federation router still opens foreign tenant database sessions from destination-side discovery/import request paths.
+**What it does not establish:** complete cluster-wide role/object/default-privilege inventory; actual deployed PostgreSQL grants; production container/workload identity isolation; secret-provider isolation; network egress enforcement; source-owned federation API/authorization; audit-before-disclosure; credential rotation/revocation; existing connection-pool draining; or full lifecycle proof. The source-owned federation service remains unimplemented, and the current federation router still opens foreign tenant database sessions from destination-side discovery/import request paths.
 
-The successful proof was run on PR #71 head `02f6dd756c9091a89ee4f858684bea6ae2d5c8d8`. PR #71's latest head is `5e00ea31e8b0f1c99b6668bbf33923caac0fe1e5`, which contains a subsequent README clarification; the proof has not been rerun on that exact head. The evidence is synthetic-only and does not validate production infrastructure or credentials.
+The latest proof was run against exact PR #71 head `ae28c153abd4ada2a257fa360c699c24acc3bb0c`. It is synthetic fixture-level evidence only and does not validate production infrastructure, credentials or deployed ACLs.
 
 No existing development or production database, named volume, production credential, patient data, deployment configuration, role bootstrap, tenant registry, or runtime connection routing was changed. AUD-004 remains **NOT READY** and a release blocker. PostgreSQL **database-per-tenant** remains the architecture; no schema-per-tenant migration is proposed.
 
