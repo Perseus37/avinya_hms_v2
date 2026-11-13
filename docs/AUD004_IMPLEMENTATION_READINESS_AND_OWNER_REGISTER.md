@@ -725,3 +725,40 @@ The successful proof was run on PR #71 head `02f6dd756c9091a89ee4f858684bea6ae2d
 No existing development or production database, named volume, production credential, patient data, deployment configuration, role bootstrap, tenant registry, or runtime connection routing was changed. AUD-004 remains **NOT READY** and a release blocker. PostgreSQL **database-per-tenant** remains the architecture; no schema-per-tenant migration is proposed.
 
 The next implementation slice must address the source-owned federation boundary under a separately reviewed wire profile and isolated workload identities. Do not change production identity, role bootstrap, secret, network, deployment or runtime configuration until the disposable evidence and independent review gates are satisfied.
+
+
+## 16. Existing design reconciliation — avoid duplicate protocol proposals
+
+The existing design documents were cross-checked before any further implementation planning. They contain useful, complementary design material, but none of the following draft PRs is an approved normative implementation contract. Their existence must not be represented as approval or as closure of the corresponding review findings.
+
+| Existing artifact | Material already specified | What remains unresolved / required disposition |
+|---|---|---|
+| PR #20 — signed clinician actor assertion | Human actor is distinct from node identity; issuer-scoped subject; signed assertion; source-side issuer/key trust; action, purpose, destination, resource and scope binding; source authorization and audit; replay controls. It recommends a per-hospital Avinya backend issuer as a possible first model. | The issuer recommendation is conditional, not an accepted governance decision. Identity authority, clinician classes/credential assurance, external identity mapping, key custody/rotation, status freshness and revocation SLA still need named owners and approval. Local tenant profile fields are not external license verification. |
+| PR #30 — discovery, replay and transfer integrity | Source-created challenge; source-side selector canonicalization; no patient-existence disclosure before authorization; opaque resource handles; operation-specific challenge/assertion; atomic replay prevention; durable source audit before response release; response integrity and destination acknowledgement distinctions. | It explicitly leaves cryptographic algorithms, canonicalization/digest construction, challenge/assertion/handle/artifact lifetimes, revocation semantics, trust onboarding and response-artifact retry policy open. Its logical operations must be reconciled with the final approved wire profile and import lifecycle contract. |
+| PR #44 — database-per-tenant identity proposal | Retains one PostgreSQL database per tenant; separates tenant-local app, source, migration, provisioning, backup and control-plane identities; prohibits destination-side foreign DB sessions; requires local cross-branch calls to use the same source-owned protocol as remote federation. | It is a proposed ADR, not accepted. Actual deployed role grants, secret-provider policy, workload identity, network reachability, pool lifecycle and cluster-wide ACL evidence remain unproven. The proposal does not authorize role/bootstrap/Compose changes. |
+
+### 16.1 Canonical responsibility split
+
+These documents should be reconciled into one implementation plan, not copied into another protocol proposal:
+
+1. **Actor assertion and issuer trust:** use PR #20 as the actor-identity design source. Its per-hospital issuer recommendation remains a decision candidate until identity-governance approval.
+2. **Challenge, discovery privacy, replay and transfer lifecycle:** use PR #30 as the protocol-flow design source, reconciled with the existing import/idempotency work in PRs #23/#24 and runtime remediation in PR #19.
+3. **Database and workload isolation:** use PR #44 as the database-per-tenant identity design source. Keep the existing PostgreSQL database-per-tenant topology; do not introduce schema-per-tenant.
+4. **Evidence and release readiness:** use this report and the PR #71 disposable proof as evidence tracking. A passing synthetic ACL harness is not proof of deployed workload or secret isolation.
+
+### 16.2 Blocking decision/evidence crosswalk
+
+| Review item | Existing design coverage | Closure evidence still required |
+|---|---|---|
+| R74 — revocation authority/effective time | PR #20 describes issuer/key/clinician revocation categories; PR #30 treats revocation as a freshness dependency. | Named authority for issuer, key and clinician status; authoritative event/effective-time semantics; propagation and cache invalidation SLA; race tests for revocation between challenge, assertion, authorization and disclosure; independent approval. |
+| R76 — immutable wire profile | PRs #20 and #30 define logical claims and flows but intentionally leave critical wire/crypto choices open. | Versioned normative envelope and serialization; algorithm/key/trust profile; issuer/audience/resource/action semantics; canonicalization; freshness/replay rules; response integrity; key rotation/revocation; conformance vectors and independent cryptographic review. |
+| R77 — polling/redemption and anti-enumeration | PR #30 specifies privacy-preserving challenge bootstrap and common observable outcomes; PR #20 requires source challenge binding. | Exact authenticated polling/redemption contract; recipient and operation binding; idempotency and retry semantics; uniform status/body/size/timing policy; throttling and abuse controls; concurrent replay and enumeration tests. |
+| DBID/source boundary — foreign database access | PR #44 defines the intended per-tenant identity boundary; PR #71 proves a bounded synthetic PostgreSQL ACL configuration. | Actual deployment role/ACL/ownership/default-privilege inventory; per-workload secret retrieval evidence; destination A denied access to B from real workload containers; source B positive access only to B; no alternate route/job/support/recovery bypass; pool drain and revocation evidence. |
+
+### 16.3 Implementation stop rule
+
+Do not create another design-only PR to restate these same responsibilities. Do not implement the source-owned federation service, freeze cryptographic choices, create trust entries or signing keys, alter PostgreSQL roles/bootstrap, change tenant routing, or enable local/remote federation based solely on these proposals.
+
+The next implementation authorization must identify the accountable identity, security, database and platform owners; approve the normative wire profile and source-owned API contract; and define a bounded non-production implementation slice with acceptance tests. Until then, continue only with read-only repository inspection and evidence reconciliation in the existing PR #70/#71.
+
+**Architecture reaffirmation:** PostgreSQL database-per-tenant remains unchanged. JSON Schema (where used) means validation of a JSON document; it is not a PostgreSQL tenant schema and does not alter the storage topology.
