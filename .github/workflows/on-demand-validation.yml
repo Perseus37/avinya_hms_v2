@@ -204,3 +204,39 @@ jobs:
             docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml down --volumes --remove-orphans || true
             rm -rf -- "$AUD004_SECRETS_DIR"
           fi
+
+  aud004-production-role-bootstrap-proof:
+    name: AUD-004 production role-bootstrap function proof
+    if: ${{ inputs.scope == 'reconciliation' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        env:
+          POSTGRES_USER: aud004_setup
+          POSTGRES_PASSWORD: aud004-disposable-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aud004_setup -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install isolated PostgreSQL client dependency
+        run: python -m pip install --no-cache-dir psycopg2-binary==2.9.13
+      - name: Execute actual production role-bootstrap function
+        env:
+          AUD004_SETUP_USER: aud004_setup
+          AUD004_SETUP_PASSWORD: aud004-disposable-ci-only
+          AUD004_PGHOST: 127.0.0.1
+          AUD004_PGPORT: "5432"
+        run: python -m pytest -q deployments/aud004-proof/test_production_role_bootstrap.py
