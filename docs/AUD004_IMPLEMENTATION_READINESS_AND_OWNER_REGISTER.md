@@ -2127,3 +2127,38 @@ This is distinct from Section 62's missing named-operator authorization on the g
 **Assessment:** A system-internal zero-price sandbox bundle is reachable through the general tenant entitlement update contract without a sandbox-eligibility check. This is a high-priority commercial entitlement and contract-integrity defect. Runtime billing and module enforcement impact should be independently verified; no broader payment-bypass claim is made.
 
 **Boundary:** static source review only. No entitlement mutation, billing operation, tenant database, catalog row or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+## 73. Federation API-key authentication does not enforce the owning tenant's active lifecycle state
+
+**Sources reviewed on main:**
+- `backend/core/dependencies.py` (`get_federated_node`)
+- `backend/domains/federation/router.py` (`discover_and_aggregate_patient_across_branches`)
+- `backend/control_plane/api/routers/fleet_ops.py` (`toggle_tenant_circuit_breaker`)
+- `backend/control_plane/models.py` (`TenantRegistry`, `FederatedNode`)
+
+Static source review only. No federation key was used, no discovery request was sent, and no tenant, node, pointer, database or production state was changed.
+
+### 73.1 Federation authentication checks node state but not tenant lifecycle state
+
+`get_federated_node()` hashes the supplied `X-Federation-API-Key` and selects a `FederatedNode` by matching hash plus `FederatedNode.is_active == True`. It does not join or otherwise resolve the owning `TenantRegistry`, and it does not require that a matching tenant registry row exists and has `is_active == True`.
+
+The fleet status endpoint does attempt to keep the two records synchronized: `PATCH /api/tenants/{slug}/status` updates `TenantRegistry.is_active` and, when a matching node exists, sets `FederatedNode.is_active` to the same value in the same control-plane transaction. Federation-key revocation likewise disables the node. That synchronization is a useful lifecycle path, but it is not an authentication invariant: the federation dependency trusts the node flag alone and does not fail closed when the tenant registry is inactive, missing or inconsistent.
+
+### 73.2 Discovery does not reject an inactive calling tenant
+
+After authenticating the node, the discovery handler separately looks up the calling tenant registry with both the node's branch code and `TenantRegistry.is_active == True`. If no active row is found, it sets `calling_group_id = None`; it does not reject the authenticated caller.
+
+For source hospitals configured as `FULL_MESH`, the branch-fetch path does not require a non-null caller registry/group and continues to evaluate source-side privacy, sharing and patient identity conditions. The missing caller registry only prevents access to `CORPORATE_GROUP_ONLY` sources, whose group comparison explicitly fails closed. Therefore, if an active or orphaned `FederatedNode` remains after its tenant registry becomes inactive or disappears, its key can still authenticate and can discover records from eligible `FULL_MESH` source tenants. The existing fleet status route normally disables both records together; this finding is about the missing enforcement at the authentication/discovery boundary if that cross-record state ever drifts.
+
+### 73.3 Required remediation and acceptance evidence
+
+1. Make federation authentication resolve the node's owning tenant registry by an immutable tenant identity and require exactly one matching, active tenant before accepting the key. Reject missing, duplicate or inactive ownership with the same unauthorized response used for revoked keys.
+2. In the discovery handler, require the authenticated caller's active tenant context explicitly; do not convert a missing/inactive registry into a nullable group and continue under `FULL_MESH`.
+3. Define and enforce a unique control-plane relationship between a federation node and its tenant identity. Branch code alone should not be the only ownership binding if it can be changed or reused.
+4. Add tests for active node + inactive tenant, active node + missing tenant, mismatched branch ownership, revoked node, and active tenant + active node. Assert no source-tenant database is queried and no transfer log is written for invalid callers.
+5. Add a reconciliation check that reports node/tenant active-state mismatches and orphan nodes; repair must be an explicit audited operation rather than silently reactivating either side.
+6. Preserve the existing source-side privacy, purpose, patient-identity and sharing-policy checks; caller lifecycle validation is an additional prerequisite, not a replacement.
+
+**Assessment:** The normal fleet suspension route synchronizes the tenant and node flags, but the federation API-key dependency does not enforce that invariant and discovery does not reject a missing active caller registry. A stale active/orphan node can therefore remain a valid federation caller against `FULL_MESH` sources. Treat this as a medium-priority federation lifecycle authorization gap until caller ownership/activity is enforced at the authentication boundary and covered by tests. This is a conditional state-drift finding, not evidence that a currently suspended tenant can bypass the normal status endpoint.
+
+**Boundary:** static source review only. No runtime federation, key, tenant lifecycle, patient data, transfer log, database or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
