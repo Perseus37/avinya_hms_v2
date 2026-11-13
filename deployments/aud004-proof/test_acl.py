@@ -1,13 +1,16 @@
-"""Single-identity PostgreSQL proof; each container receives one login only."""
+"""Single-identity PostgreSQL proof; each container receives only its own secret mounts."""
 import os
+from pathlib import Path
 
 import psycopg2
 import pytest
 
 HOST = os.getenv("AUD004_PGHOST", "127.0.0.1")
 PORT = int(os.getenv("AUD004_PGPORT", "55439"))
-USER = os.environ["AUD004_DB_USER"]
-PASSWORD = os.environ["AUD004_DB_PASSWORD"]
+SECRET_DIR = Path("/run/secrets")
+EXPECTED_SECRET_FILES = {"db_user", "db_password"}
+USER = (SECRET_DIR / "db_user").read_text(encoding="utf-8").strip()
+PASSWORD = (SECRET_DIR / "db_password").read_text(encoding="utf-8").strip()
 OWN_DATABASE = os.environ["AUD004_OWN_DATABASE"]
 FOREIGN_DATABASES = [
     value for value in os.environ["AUD004_FOREIGN_DATABASES"].split(",") if value
@@ -26,6 +29,11 @@ def connect(database: str = OWN_DATABASE):
         connect_timeout=3,
         application_name="aud004-single-identity-proof",
     )
+
+
+def test_container_mounts_only_its_own_database_secret_pair():
+    assert {entry.name for entry in SECRET_DIR.iterdir()} == EXPECTED_SECRET_FILES
+    assert USER and PASSWORD
 
 
 def test_identity_can_read_only_its_own_synthetic_marker():
