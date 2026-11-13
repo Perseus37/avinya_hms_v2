@@ -762,3 +762,25 @@ Do not create another design-only PR to restate these same responsibilities. Do 
 The next implementation authorization must identify the accountable identity, security, database and platform owners; approve the normative wire profile and source-owned API contract; and define a bounded non-production implementation slice with acceptance tests. Until then, continue only with read-only repository inspection and evidence reconciliation in the existing PR #70/#71.
 
 **Architecture reaffirmation:** PostgreSQL database-per-tenant remains unchanged. JSON Schema (where used) means validation of a JSON document; it is not a PostgreSQL tenant schema and does not alter the storage topology.
+
+
+### 11.6 Source snapshot revalidation — 2026-11-13
+
+The following current default-branch files were fetched again during this review. The blob identifiers make the inspected source snapshots reproducible; they are not deployment evidence.
+
+| Source file | Fetched blob | Revalidated finding |
+|---|---|---|
+| `backend/core/database.py` | `043f4ccbdad4d2bfe4c89af0b46988ce60610b01` | `build_db_url` derives from shared `settings.DATABASE_URL`; `ensure_postgres_db_exists` connects to `postgres` and can issue `CREATE DATABASE`; `TenantEngineRegistry.get_engine(db_name)` builds an engine from the caller-supplied database name. |
+| `backend/domains/federation/router.py` | `4dd93e0b370e0214c9db19b097e34a3f8efff5bd` | Discovery opens foreign branch sessions at the nested `_fetch_branch_data` path; import opens a source session from `source_registry.db_name`. |
+| `backend/control_plane/api/routers/provisioning.py` | `40bb98fc9f79fb700b8b9484688d818c3ef1c441` | Hospital provisioning calls the database-creation helper, runs tenant migration, then opens a tenant engine/session to seed the database. |
+| `backend/control_plane/api/routers/migration.py` | `d0660422e781ff913788d31664be69191fc269e0` | Bulk migration preview opens the selected tenant engine; background execution opens it again for the selected tenant. This is a privileged migration path, not ordinary federation routing. |
+| `backend/core/queue.py` | `aad0c663e52e7a73d7261658f5ecc1889b7e36b7` | `privacy.retention.execute` resolves a tenant and opens its DB; `privacy.retention.scheduled_daily_sweep` enumerates active tenants and opens each tenant DB before enqueueing work. `email.send` has no direct tenant DB access in the inspected handler. |
+| `backend/scripts/backup_service.py` | `8ad90420fb4c2f487ed3c6318f657411e3b9cfa8` | Backup uses configured `POSTGRES_USER`/`POSTGRES_PASSWORD` for `pg_dump), enumerates active cloud tenants and decrypts each tenant backup key from control-plane metadata. |
+| `backend/scripts/restore_tenant.py` | `33598657b29ae4e24f136d079543e02dc91098e6` | Restore accepts a target database name, invokes the database-creation helper and runs `pg_restore` using the configured PostgreSQL login. Treat as an isolated recovery interface with approved target binding, not a runtime capability. |
+| `backend/worker.py` | `b0fb87568caab841c6557082f885ca39bbb78ca0` | No direct tenant engine creation is visible in this file; the registered handler call graph in `backend/core/queue.py` determines the worker's effective DB capability. |
+
+This revalidation confirms the previously documented fleet-wide retention and backup/restore paths; it does not establish that those paths are currently deployed, scheduled, or reachable in production. It also does not prove effective PostgreSQL grants or secret-manager permissions.
+
+**Classification:** federation discovery/import are direct destination-side foreign-tenant access paths and remain the P0 source-owned-boundary issue. Provisioning, migration, retention sweep, backup and restore are privileged operational capabilities that require distinct identities, explicit target scope, audit and isolation from ordinary API/federation workloads. The email-only handler is a candidate for a database-free worker class, subject to transitive-import verification.
+
+No runtime code, SQL, migration, Compose configuration, environment file, credential, database or patient data was changed by this revalidation.
