@@ -1413,3 +1413,14 @@ The disposable PostgreSQL catalog report now expands database, schema and defaul
 **Boundary:** catalog visibility/capture is not a least-privilege verdict. Effective privileges inherited through role memberships, implicit ownership authority, PUBLIC defaults, predefined-role semantics and privileges outside the connected database still require dedicated interpretation and independent-session tests. The latest workflow head has not been executed; SQL compatibility and report output remain unverified. AUD-004 remains blocked.
 
 No production/runtime/SQL/migration/Compose/credential/secret/database/role change. Test-only catalog queries/report fields were added. PostgreSQL database-per-tenant remains invariant.
+
+
+### Section 51 — Synthetic workload proof extended to object-level write and DDL denial
+
+PR #71 now extends the independent-login PostgreSQL fixture beyond database CONNECT isolation. Each tenant A, tenant B and control-plane probe asserts that its own synthetic marker is readable, schema USAGE is allowed, schema CREATE is denied, and the marker relation grants SELECT without INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES or TRIGGER. Negative execution checks attempt INSERT, UPDATE, DELETE, TRUNCATE, CREATE SCHEMA and CREATE TABLE under the corresponding unprivileged login and require PostgreSQL insufficient-privilege errors.
+
+**Boundary:** this verifies the fixture's intended narrow ACL contract only. The synthetic roles and marker relations are not the deployed HMS runtime roles or migrated application objects. It does not prove production role mapping, per-table grant completeness, sequence/function/type rights, ownership, inherited memberships, effective privileges on every relation, append-only evidence-table triggers, or backup/restore behavior.
+
+**Execution status:** the test changes are committed on PR #71 at `e8c9f730cdd0ff6a9a0660f8f4207e44f868384c`. No workflow run for this head has been observed; these assertions are not yet reported as passing. The on-demand reconciliation workflow must be dispatched and its three independent probe jobs reviewed before this proof slice can be accepted.
+
+No production/runtime/SQL/migration/Compose/credential/secret/database/role change. Only the synthetic test assertions changed. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
