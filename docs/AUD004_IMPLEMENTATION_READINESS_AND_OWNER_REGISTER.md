@@ -2088,3 +2088,42 @@ The control-plane audit record is committed only after the tenant database commi
 **Assessment:** The break-glass reset query can choose an unrelated superuser instead of the registered tenant administrator, and the returned temporary password is not accompanied by an enforced one-time/forced-change state in the inspected handler. This is a high-priority privileged-account recovery correctness and credential-handling gap. It requires exact target binding and a separately verified recovery lifecycle before production use.
 
 **Boundary:** static source review only. No reset endpoint, user account, credential, tenant database, session, audit row or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+
+## 72. Reserved zero-price SANDBOX_UAT bundle is accepted by the ordinary tenant entitlement update path
+
+**Sources reviewed:**
+- `backend/control_plane/services/pricing.py` (`get_bundle_catalog`, `compute_contract_fee_paise`)
+- `backend/control_plane/api/routers/fleet_ops.py` (`EntitlementsUpdateRequest`, `PATCH /api/tenants/{slug}/entitlements`)
+
+Static source review only. No entitlement endpoint was invoked and no tenant commercial record or production state was changed.
+
+### 72.1 The system-only sandbox bundle is exposed to the general pricing resolver
+
+`get_bundle_catalog()` loads active commercial bundles from the control-plane catalog, then unconditionally injects a synthetic `SANDBOX_UAT` bundle with:
+- all currently active module codes,
+- a bundle annual price of zero.
+
+`compute_contract_fee_paise()` resolves a supplied pricing model against this combined dictionary. When `SANDBOX_UAT` is selected and no non-negative custom fee override is supplied, the resolver treats it as an ordinary bundle and computes a zero annual fee (and zero monthly/per-active-bed fee after cycle conversion). The bundle's module composition is the complete active module list.
+
+### 72.2 The ordinary entitlement mutation accepts this reserved identifier
+
+The fleet entitlement request defines `pricing_model` as an unconstrained string. The `PATCH /tenants/{slug}/entitlements` handler accepts the request for any registered tenant, assigns the supplied pricing model and billing cycle, stores the supplied module JSON, and calls the shared pricing resolver. The inspected handler contains no guard that limits `SANDBOX_UAT` to a sandbox tenant or a sandbox lifecycle state.
+
+Consequently, a caller authorized to use this control-plane mutation can assign the zero-price, all-active-modules sandbox bundle to an ordinary registered tenant. The source establishes the persisted commercial fee and selected bundle composition; it does not, by itself, establish that a payment processor is bypassed or that every runtime module gate consumes this bundle. The immediate proven impact is that the control-plane contract calculation can record a zero recurring license fee for a non-sandbox tenant while resolving the bundle as all active modules.
+
+This is distinct from Section 62's missing named-operator authorization on the general entitlement mutation: Section 72 records the reserved commercial identifier being accepted and its pricing semantics, not the authorization boundary.
+
+### 72.3 Required remediation and acceptance evidence
+
+1. Separate system-only bundle definitions from the customer-selectable commercial catalog; do not expose `SANDBOX_UAT` through the ordinary bundle resolver.
+2. Replace free-form `pricing_model` with a strict allowlisted enum or catalog lookup that excludes reserved internal identifiers for ordinary tenants.
+3. Enforce tenant lifecycle/type eligibility server-side before applying sandbox pricing; never trust a caller-provided pricing identifier to prove that a tenant is a sandbox.
+4. Reject invalid/inactive bundle codes rather than silently converting unknown values into a custom à-la-carte contract.
+5. Add pricing unit tests proving ordinary tenants cannot resolve to `SANDBOX_UAT`, that sandbox eligibility is explicit, and that each billing cycle produces the expected fee.
+6. Add endpoint tests asserting a normal tenant cannot persist the reserved bundle or a zero fee through this route, including requests with and without `base_license_fee_paise`.
+7. Add a control-plane reconciliation check for existing non-sandbox tenants whose stored pricing model is reserved or whose recurring fee is unexpectedly zero.
+
+**Assessment:** A system-internal zero-price sandbox bundle is reachable through the general tenant entitlement update contract without a sandbox-eligibility check. This is a high-priority commercial entitlement and contract-integrity defect. Runtime billing and module enforcement impact should be independently verified; no broader payment-bypass claim is made.
+
+**Boundary:** static source review only. No entitlement mutation, billing operation, tenant database, catalog row or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
