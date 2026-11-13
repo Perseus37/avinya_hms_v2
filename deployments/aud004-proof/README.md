@@ -38,7 +38,7 @@ Build and run the dedicated proof container. Its Python dependencies are install
 
     docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps proof
 
-The runner connects to the PostgreSQL service as `postgres:5432`; there is no host-published database port. It fails if the server is unreachable; it does not substitute SQLite. A denied connection passes only when PostgreSQL returns SQLSTATE 42501.
+The runner connects to the PostgreSQL service as `postgres:5432`; there is no host-published database port. It fails if the server is unreachable; it does not substitute SQLite. For denied startup connections, PostgreSQL sends an explicit FATAL response containing `permission denied for database "<name>"` and `User does not have CONNECT privilege.`. psycopg2 exposes this startup-time denial as `OperationalError` without a populated `pgcode`, so the test asserts both exact server-message fragments rather than relying on `exc.pgcode == "42501"`. DNS, server, missing-database, and password failures do not satisfy the assertion.
 
 ## Run through GitHub Actions
 
