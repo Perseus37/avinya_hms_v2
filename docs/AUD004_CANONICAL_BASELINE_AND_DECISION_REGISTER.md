@@ -527,3 +527,18 @@ Section 21 identifies append-only/immutable table families in inspected migratio
 Privileged operations requiring separate identities include CREATE DATABASE, `pg_terminate_backend`, template clone, tenant/CP Alembic DDL, concurrent index DDL, `pg_dump`, cluster-global export and restore. The document records migration advisory-lock and trigger/function needs, and the remaining backup/restore completeness proofs.
 
 **Limitations:** this is an initial source-grounded inventory, not a complete route-by-route or model-wide query certification and not proof of deployed permissions. Exact grants remain blocked on metadata/query inventory, full append-only table discovery, independent PostgreSQL login tests, backup/restore proofs and DBA/security approval. No implementation or production changes were made. PR #70 remains draft/open/unmerged.
+
+
+## 37. Source-declared SQLAlchemy object inventory (13 Nov 2026)
+
+**Status:** First-pass static declaration inventory added to the AUD-004 least-privilege contract, Section 22. This is not an executed `MetaData` dump or live PostgreSQL catalog proof.
+
+- Tenant registry: `backend.core.database.Base`; tenant Alembic explicitly imports 23 model modules: ABDM, audit, billing, blood bank, clinical, diagnostics, encounters, facility, federation, finance, identity, insurance, integrations, patients, pharmacy, policies, privacy, procurement, quality, reports, service operations, surgery and workforce.
+- CP registry: `backend.control_plane.models.ControlBase`; CP Alembic targets only `ControlBase.metadata`.
+- Static literal extraction found tenant model table declarations across those 23 modules and 11 CP table declarations: `tenant_registry`, `federated_nodes`, `global_patient_pointers`, `control_plane_audit_logs`, `tenant_snapshots_registry`, `module_catalog`, `bundle_catalog`, `blueprint_catalog`, `migration_schemas`, `control_plane_operators`, `control_plane_operator_sessions`.
+- Enum classes are declared in multiple tenant modules and three CP enum classes. No explicit SQLAlchemy `Sequence(...)` declaration was found in the scanned model files; autoincrement does not establish exact PostgreSQL sequence names or SERIAL versus identity implementation.
+- Source model inventory is not an operation-level privilege matrix. It does not prove runtime access, complete migrated object coverage, live ownership/ACLs, sequence/type names, views, functions, extensions, triggers or handwritten migration objects.
+- Next evidence gate: deterministic metadata extraction from the exact Alembic import graph; disposable PostgreSQL migration; source-to-catalog diff for relations, sequences, enum/domain types, functions, triggers, views, extensions, ownership, ACLs, default ACLs, role memberships and PUBLIC; route/worker/listener/script-to-object operation map; independent-session positive and negative privilege tests.
+- No grant SQL, model, migration, runtime, Compose, credential, secret, database or production configuration changed. Database-per-tenant remains the architecture invariant.
+
+Contract: Section 22 in `AUD004_POSTGRESQL_LEAST_PRIVILEGE_REMEDIATION_CONTRACT.md`.
