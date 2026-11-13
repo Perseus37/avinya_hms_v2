@@ -1238,3 +1238,38 @@ No PRs were closed, merged, rebased or retargeted during this inventory. No runt
 Complete remaining pharmacy BCMA and controlled-substance return/administration paths, procurement supplier payment and bank reconciliation plus patient-indent return, billing payment/deposit/refund/RCM and all remaining worker handlers. Then run SQL capture on disposable migrated PostgreSQL databases and independent-login positive/negative privilege tests. No production grants until that evidence and independent DBA/security review are complete.
 
 No runtime/SQL/migration/Compose/credential/secret/database/production change. No destructive retention execution or patient-data access. PostgreSQL database-per-tenant remains invariant.
+
+
+## Section 42 — Extended domain operation and privilege map: BCMA, controlled substances, supplier settlement and patient billing
+
+**New source paths reviewed:** `backend/domains/pharmacy/services.py`, `backend/domains/pharmacy/router.py`, `backend/domains/procurement/bank_reconciliation.py`, `backend/domains/procurement/investigations.py`, `backend/domains/procurement/escalation.py`, `backend/domains/procurement/notification_inbox.py`, `backend/domains/procurement/router.py`, and `backend/domains/billing/router.py`.
+
+| Workflow | Database operations established from source | Privilege boundary / unresolved proof |
+|---|---|---|
+| BCMA verification | SELECT encounter/patient/prescription/item/medication, allergy and prior eMAR context; INSERT blocked/warning/success BCMA audit; INSERT eMAR; UPDATE prescription dispensed count | Targeted clinical evidence identity; allergy helper and exact loader SQL need capture |
+| Pharmacy return | SELECT/lock prescription, invoice, item, batch and medication; UPDATE stock, dispensed quantity, draft invoice lines/totals and prescription status; DELETE fully returned draft invoice line; INSERT return log; optionally INSERT refund voucher | Mixed mutable inventory/billing state and return evidence; no broad table grant |
+| Controlled-substance movement | SELECT/lock vault, witness user/permissions, optional encounter/prescription, prior movement aggregates; UPDATE vault; INSERT movement log | Movement ledger SELECT/INSERT only per Section 21; verify trigger and exact relations |
+| Bank statement import | SELECT duplicate batch/transaction identities; INSERT statement batch and lines | Append-only statement evidence; SELECT/INSERT only, verify unique constraints and triggers |
+| Bank-payment matching | SELECT/lock statement line/payment and prior match aggregates; INSERT match row | Append-only match ledger SELECT/INSERT only |
+| Supplier payment request | SELECT/lock vendor/invoices/expenses and duplicate/paid/reserved aggregates; INSERT request and allocation rows | Mutable request workflow is distinct from executed payment ledger |
+| Supplier payment execution | SELECT/lock request/vendor/invoice/expense and payment aggregates; INSERT supplier payment/allocation; UPDATE invoice, expense and request state | Executed payment/allocation ledger SELECT/INSERT only per Section 21; workflow rows mutable |
+| Reconciliation investigations | SELECT source/SLA/user; INSERT investigation and immutable events; UPDATE current investigation state/version/assignment/quality; SELECT history | Split mutable case state from append-only event evidence |
+| Escalation/preferences/inbox | SELECT/UPDATE policy and preferences; INSERT version/config events; SELECT outbox; UPDATE read timestamp | Config events append-only; preference/policy/outbox current state mutable |
+| Patient payment | SELECT/lock invoice; duplicate check; INSERT payment receipt; UPDATE invoice paid amount/status | Payment capture needs targeted billing DML |
+| Payment reversal | SELECT/lock invoice/receipt/deposit; UPDATE invoice/deposit; DELETE payment receipt | Explicit DELETE is present; payment receipt not established as immutable ledger |
+| Deposit and refund | SELECT patient/encounter; INSERT deposit; UPDATE deposit and invoice during application/refund; INSERT adjustment receipt/refund voucher; privacy audit reads/writes on listing | Finance workload plus privacy audit transitive operation |
+
+### Additional readiness notes
+
+- BCMA writes audit evidence on blocked and warning outcomes before returning a conflict response. Tests must assert that failed clinical verification attempts persist the evidence row, while no eMAR administration is created.
+- Controlled-substance service maintains a running vault balance and validates return quantity against prior movement-log aggregates. The ledger is source-grounded as append-only by Section 21, but trigger/catalog proof and independent raw-SQL denial remain required.
+- Supplier payment request tables are workflow state; supplier payment and allocation tables are executed settlement evidence. Bank statement batches/lines and payment-match rows are separately append-only evidence.
+- Reconciliation investigation rows are mutable; investigation event rows are immutable evidence. Notification preferences and outbox read state are mutable, while notification configuration events are append-only.
+- Payment reversal currently deletes a receipt and adjusts invoice/deposit balances. The final financial audit model must explicitly decide whether reversal is allowed to delete or should instead create a compensating reversal event; no implementation change is made here.
+- No full statement-level SQL capture, complete catalog/trigger comparison, independent workload-role tests or external bank-provider proof has been performed.
+
+### Updated next gate
+
+Finish source tracing for the remaining bank reconciliation candidate/aggregation and governance report paths, remaining billing RCM/insurance settlement workflows, pharmacy return/adjustment routes and all queue handlers. Then capture SQL on disposable migrated PostgreSQL databases and execute positive/negative tests with independent workload logins. Retain the current database-per-tenant architecture and do not produce production grants until DBA/security review.
+
+No runtime/SQL/migration/Compose/credential/secret/database/production change. No patient or financial data access or mutation. PostgreSQL database-per-tenant remains invariant.
