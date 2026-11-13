@@ -1379,3 +1379,10 @@ No runtime/SQL/migration/Compose/credential/secret/database/production change. P
 **Status:** source and workflow files were re-fetched and verified on PR #71. The GitHub integration available in this session cannot dispatch Actions, so the new workflow job is committed but not yet executed. Migration success, actual catalog parity and resulting deltas are not claimed. The next acceptance action is to dispatch the on-demand workflow with scope `reconciliation`, inspect the new job logs and review the uploaded report; fix any migration failure or unexplained delta before advancing.
 
 **Gate:** AUD-004 remains blocked. This is a characterization harness, not a least-privilege or restore acceptance result. Raw SQL append-only denial, independent workload-role tests, restore parity and production identity/secret/network proof remain outstanding.
+
+
+### Section 47 — Catalog characterization boundaries corrected after code review
+
+A source-level review confirmed that PR #71 already records table grants, database/schema ACLs, default ACLs and role memberships. The harness report's limitation text was corrected to distinguish *captured* evidence from *evaluated* evidence. These ACL/membership snapshots are captured but not interpreted or asserted. Column, sequence, routine and type ACLs, role attributes and cluster-wide settings remain outside this pass. Trigger/routine definitions and security settings are captured but not evaluated; raw SQL append-only denial is still outstanding.
+
+This is a test-report accuracy correction only. It does not add a least-privilege assertion or alter production/runtime/SQL/migration/Compose/credential/secret/database behavior. Latest-head migration execution and catalog artifact review remain pending. AUD-004 remains blocked.
