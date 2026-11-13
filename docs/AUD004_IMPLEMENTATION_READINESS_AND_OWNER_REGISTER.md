@@ -1049,3 +1049,20 @@ Cross-checked the restore implementation and the existing backup/DR test module 
 5. Do not introduce a new database layout, schema-per-tenant, shared tenant schema, or global queue-policy change as part of this correction.
 
 No code or tests were changed or executed. This section records a remediation candidate, not a patch. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains draft/open and no new PR was created.
+
+### 11.16 Restore preparation ordering and artifact selection — 2026-11-13
+
+A focused read of the complete restore endpoint (source commit `20b8a5e48518c81820a7e28494fd73aeda33b46f`, `backend/control_plane/api/routers/fleet_ops.py`, lines 656–735) found two additional control-boundary concerns:
+
+1. **Database connections are terminated before the safety snapshot.** `_terminate_db_connections(control_db, tenant.db_name)` runs synchronously in the request handler before `_execute_restore` is registered. The mandatory safety snapshot is only attempted later inside the background callback. Therefore a missing helper or snapshot failure still aborts before `pg_restore`, but it does not prevent the earlier connection termination. This contradicts the stronger operational expectation that safety snapshot completion precedes restore preparation that interrupts tenant service.
+2. **Snapshot selection is path-sanitized but not visibly tenant-bound.** The route reduces the supplied filename to `Path(filename).name` and joins it to the shared `backups` directory. In the inspected handler there is no explicit check that the artifact filename is associated with the requested tenant/database, nor a lookup of an artifact manifest binding tenant ID, database name, checksum and key version. Tenant-key decryption may reject an artifact encrypted for another tenant, but that is not a substitute for an explicit ownership check and integrity verification before destructive operations. This is a static observation of the handler; it is not evidence that cross-tenant restore succeeded.
+
+#### Required remediation/test conditions
+
+- Move connection termination into the controlled restore execution sequence and only perform it after a verified pre-restore safety snapshot; re-check active-connection handling and race conditions before `pg_restore`.
+- Bind every restore artifact to the target tenant/database using trusted metadata or a signed/verified manifest. Reject mismatched ownership before terminating connections.
+- Verify the selected artifact checksum and expected encryption/key metadata before any destructive action. Treat missing, malformed or mismatched metadata as a hard stop.
+- Add tests proving: wrong-tenant artifact rejected with no connection termination; safety snapshot failure leaves tenant connections untouched and never calls restore; successful snapshot precedes termination and restore; checksum failure prevents termination and restore; restore failure is audited.
+- Preserve the existing fail-closed rule. Do not simply remove the safety snapshot or catch-and-continue.
+
+No runtime code or tests were changed or executed. PostgreSQL **database-per-tenant** remains unchanged; PR #70 remains draft/open; no new PR was created.
