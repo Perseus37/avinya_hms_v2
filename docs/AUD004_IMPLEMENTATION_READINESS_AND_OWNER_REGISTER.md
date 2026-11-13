@@ -972,3 +972,50 @@ These must be treated as separate reliability contracts. “Queued”, “proces
 This pass establishes the specific in-process dispatch call sites above; it is not yet a complete repository-wide AST/data-flow inventory of every BackgroundTasks callback or dynamic task wrapper.
 
 No runtime code, tests, queue policy, worker, Compose file, environment, secret, credential, database, migration or patient data was changed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the consolidated readiness report; no new PR was created.
+
+
+### 11.14 Callback execution, transaction and credential trace — 2026-11-13
+
+Followed the backup, restore and CSV migration callbacks into their implementation helpers at source commit `20b8a5e48518c81820a7e28494fd73aeda33b46f`.
+
+#### 11.14.1 Restore path has a statically confirmed import failure
+
+- `backend/control_plane/api/routers/fleet_ops.py` imports `create_encrypted_backup` inside `_execute_restore` from `backend.scripts.backup_service`, then calls it for the mandatory pre-restore safety snapshot.
+- The complete fetched `backend/scripts/backup_service.py` (blob `8ad90420fb4c2f487ed3c6318f657411e3b9cfa8`, 276 lines) defines `_dump_and_encrypt` and `run_backup_cycle`, but contains no `create_encrypted_backup` definition or import.
+- Consequently, on this inspected source snapshot, the callback's import raises `ImportError`; its safety-snapshot exception handler records `PRE_RESTORE_SAFETY_SNAPSHOT_FAILED` and raises before calling `restore_encrypted_backup`.
+- This is a **restore-blocking defect** in the inspected code, not merely a missing test. The fail-closed behavior prevents the destructive restore from proceeding, which is safer than restoring without a safety copy, but the endpoint cannot complete until the safety-backup helper reference is reconciled.
+- Do not bypass the safety snapshot or weaken fail-closed behavior. Correct the helper/API mismatch and add a test proving snapshot success precedes restore, and snapshot failure prevents restore.
+
+#### 11.14.2 Backup credentials and artifact lifecycle
+
+- Manual backup decrypts `tenant.backup_encryption_key` in the control-plane request handler and captures the resulting plaintext `raw_key` in the in-process callback closure.
+- `_dump_and_encrypt` uses `settings.POSTGRES_USER` and `settings.POSTGRES_PASSWORD` (passed as `PGPASSWORD`) for `pg_dump`, selecting the database by name. The source does not show a tenant-specific database login for this path.
+- The helper encrypts pg_dump stdout, writes an encrypted temporary artifact and atomically renames it, then writes a SHA-256 sidecar. A failure after the encrypted artifact is renamed but before the checksum is written can leave an artifact without its sidecar; no durable job state or retry reconciliation is established here.
+- The callback records completion/failure in the control-plane audit table. Audit-write failures are caught and logged, so task completion can occur without a persisted outcome audit.
+- The callback captures plaintext backup key in process memory until execution/closure release. This is not evidence of a leak to logs, but it is a credential-lifetime and process-boundary concern.
+
+#### 11.14.3 Restore credential and ordering details
+
+- The restore callback captures the encrypted tenant backup key and passes it to `restore_encrypted_backup`; that helper decrypts it, decrypts the artifact into a sibling `.restoring.dump` file, and removes that temporary dump in a `finally` block.
+- The restore helper calls `ensure_postgres_db_exists(target_db_name)` and then invokes `pg_restore` using the shared configured PostgreSQL URL credentials, with `--clean --if-exists --no-owner --no-acl`.
+- The control-plane endpoint terminates current DB connections before scheduling the callback, not inside a durable maintenance job. The request audit is committed after the callback is registered, and the callback executes after response handling.
+- On the current source snapshot, the missing safety-backup helper prevents reaching the decrypt/pg_restore stage. Even after that mismatch is fixed, restore remains a destructive operation whose in-process dispatch has no durable restart/recovery contract.
+
+#### 11.14.4 CSV migration transaction and temporary-file behavior
+
+- The migration callback opens the temporary CSV and one tenant session. Each row uses a nested transaction/savepoint; row validation or constraint errors are counted and processing continues. A single outer `target_db.commit()` occurs after the loop.
+- An outer exception records a failure audit and the session context closes; the source does not implement resumable chunk checkpoints or a durable per-row job cursor. A process death before the final commit can lose all uncommitted successful rows, and a retry can replay the whole file.
+- The callback's `finally` removes the temp file after normal completion or Python-level exception. A process/container crash can bypass `finally`, leaving orphaned files; a restart can also lose a file held only on ephemeral container storage.
+- The API writes and closes the temp file before registering the callback, commits the “started” audit, and returns a processing response. The source does not establish a durable job record tying the audit row to an immutable input artifact or execution attempt.
+- Migration completion/failure audit writes use a separate control-plane session and swallow audit persistence errors after logging.
+
+#### 11.14.5 Required remediation evidence
+
+1. Reconcile the restore helper name/signature; retain the mandatory pre-restore snapshot and fail-closed gate.
+2. Add restore tests for missing helper, snapshot failure, snapshot success, pg_restore failure, retry and concurrent restore exclusion.
+3. Replace shared PostgreSQL credentials in tenant-targeted backup/restore processes with a separately approved backup/restore identity and explicit database allowlist, consistent with PostgreSQL database-per-tenant.
+4. Avoid capturing plaintext backup keys in long-lived API-process closures; use a bounded worker identity and controlled secret retrieval.
+5. Make backup artifacts/checksums a reconciled atomic unit with manifest/status, and make restore/migration jobs durable, observable and restart-safe.
+6. For migration, define chunk/checkpoint and idempotency semantics before enabling automatic retry; preserve row-level error reporting and tenant-scoped execution.
+
+No runtime code or tests were changed. These are source-inspection findings and proposed evidence requirements, not a claim that production credentials or deployments were inspected. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the existing consolidated report; no new PR was created.
