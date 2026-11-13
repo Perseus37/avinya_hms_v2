@@ -1597,3 +1597,98 @@ A source review of `backend/control_plane/services/auth.py`, `backend/control_pl
 **Required proof:** route-level tests for every fleet endpoint across viewer, support, ops, billing and superadmin named sessions; tests for missing, invalid and valid vendor keys; tests with legacy mode explicitly false and true in isolated settings; assert that legacy static credentials cannot silently gain superadmin privileges; verify audit actor attribution for every accepted authentication mode; assert deployment-mode changes and partial fleet sync outcomes are recorded; and test that lower-privilege roles cannot read cross-tenant financial/clinical aggregates or CP-wide audit details.
 
 **Boundary:** source review only. No authentication configuration, secret, operator account, role, route, runtime or production state was changed or inspected. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
+
+
+## 63. Sandbox clone sanitization coverage, retained identities and credential reset boundary
+
+**Sources reviewed on `main`:**
+- `backend/control_plane/services/sandbox_sanitizer.py`
+- `backend/control_plane/api/routers/fleet_ops.py` (`_scrub_sandbox_tenant_data`, `clone_hospital_to_sandbox_environment`)
+- `backend/domains/identity/models.py` (`User`, `DoctorProfile`)
+- `backend/domains/federation/models.py` (`FederatedClient`)
+
+This is static source inspection only. No database was cloned, scrubbed, queried or modified. No runtime tests were executed.
+
+### 63.1 Classification is table-name fail-closed, not a complete data-discovery boundary
+
+- The sanitizer calls SQLAlchemy Inspector `get_table_names()` and rejects names outside the three hard-coded sets: master/config, purged logs and scrubbed data.
+- This detects a newly added ordinary table in the inspected schema if its name is absent from the sets. It does not establish complete inventory of views, materialized views, foreign tables, routines, large objects, external object storage, file attachments, database-level secrets or data in other schemas.
+- The classification sets are table-level only. They do not define a reviewed per-column inventory of direct identifiers, indirect identifiers, free text, credentials, external references and regulated data.
+- Several entries in `SCRUBBED_DATA_TABLES` only increment `stats["scrubbed_tables"]` without issuing a scrub statement in the inspected function (including `payroll_periods`, `user_roles` and `who_surgical_safety_checklists`). A counter increment is not evidence that every row or sensitive field was transformed.
+- A complete table-name allowlist therefore does not prove that all cloned information has been anonymized or that every non-table data surface has been considered.
+
+### 63.2 User identity and doctor profile fields remain identifiable
+
+The `users` loop changes password hash, MFA fields, failed-login/lock state, phone number and email. It does not change:
+- `login_id`;
+- `full_name`;
+- `gender`;
+- `status` (including ACTIVE);
+- `is_superuser`;
+- role assignments in `user_roles` (the sanitizer only increments its scrubbed counter for that table).
+
+The inspected `User` model confirms `login_id` and `full_name` are persisted identity fields. The result is that real staff names, usernames, gender, account activation state and privilege assignments can survive the clone even though email and phone are replaced.
+
+For `doctor_profiles`, the sanitizer only replaces `medical_registration_number`. The model also stores `clinical_id`, qualification, specialization, medical council name, registration-validity date, consultation fee and the user relationship. These values are not transformed in the shown scrub statement; in combination with the retained user name/login ID they can identify a real clinician and preserve operationally sensitive profile data.
+
+Patient demographic scrubbing is more comprehensive, but setting DOB to January 1 of the original year retains birth year, while gender and patient-linked clinical/transactional relationships remain. This is pseudonymization, not proof of irreversible anonymization; rare combinations and longitudinal linkage can remain identifying.
+
+### 63.3 Federation partner identity and access state survive
+
+For `federated_clients`, the sanitizer changes only `api_key_hash` to a deterministic `SANDBOX_SCRUBBED_KEY_<id>` string. It leaves `branch_code`, partner `name`, `api_key_prefix`, `is_active` and `last_used_at` unchanged. The model confirms these are stored fields.
+
+Consequences:
+- partner organization identity and operational metadata remain in the clone;
+- partner records remain marked active;
+- the replacement hash is predictable and is not generated as a fresh credential hash using the normal federation key lifecycle;
+- no post-scrub proof is shown that the sandbox cannot accept a copied production credential, that every integration secret is invalidated, or that outbound federation/network activity is disabled.
+
+The sanitizer also leaves master/config data by design. A separate secret/config inventory is needed to prove that cloned integration endpoints, webhook credentials, signing material, tokens, certificates, file URLs and external service configuration are either removed or safely sandboxed. The inspected classification alone does not establish this.
+
+### 63.4 Temporary password is shared across all cloned users
+
+The clone route generates one random `sandbox_admin_password` and passes it to the sanitizer. The sanitizer hashes that same value once and assigns the resulting hash to every row in `users`, regardless of role or status. The response returns this single password as `temporary_admin_password`.
+
+This means the returned administrator credential is also the password for every retained staff account. It does not establish a single administrator-only bootstrap identity, least-privilege access, per-user reset, forced password change, or account disablement for non-admin users. Combined with retained `login_id` values and role mappings, this can create a broad, shared-access sandbox credential.
+
+The generated password is random per clone, which is better than the sanitizer's hard-coded fallback `DUMMY_SANDBOX_PASSWORD`; however, the fallback remains in the service and should not be accepted for a production-derived clone. The route's current call supplies a generated password, but the sanitizer itself permits callers to omit it.
+
+### 63.5 Clone failure can leave an unregistered, unsanitized database
+
+The caller's order is:
+1. terminate source-tenant connections;
+2. create the sandbox database from the source database template;
+3. generate the sandbox password;
+4. run the sanitizer;
+5. generate sandbox secrets and add the sandbox registry/audit rows;
+6. commit the control-plane transaction.
+
+There is no visible exception handler around clone creation/sanitization that quarantines or removes the newly created database if the sanitizer raises. The sanitizer intentionally raises before destructive work when it encounters an unclassified table. A scrub statement, model import, trigger recreation or commit can also fail. In these cases the route exits before registry insertion, leaving a database created from the production source but not registered as a sandbox. The failure path does not establish that the database is inaccessible, quarantined, sanitized or cleaned up.
+
+The sanitizer uses one SQLAlchemy session and commits after the scrub operations; PostgreSQL transactional DDL/DML can keep its own changes atomic when the transaction rolls back. That does not make the preceding database creation atomic with the sanitizer or the separate control-plane registry commit.
+
+### 63.6 Append-only guards are temporarily removed during purge
+
+The sanitizer drops and recreates selected PostgreSQL append-only triggers so it can delete cloned audit/ledger rows. This is performed by the same scrub session before its final commit, and the shown code recreates the listed guards before continuing. This is a privileged schema operation, not an ordinary tenant runtime capability.
+
+Required proof is broader than successful function return:
+- compare trigger/function definitions, enabled state, owner and security mode before and after scrub;
+- prove every expected guard is restored on every supported database dialect;
+- inject failures after each trigger drop, delete and recreate step and verify rollback leaves the clone in a safe, non-exposed state;
+- verify no additional trigger or rule was silently omitted from the hard-coded drop/recreate lists.
+
+### 63.7 Required remediation and acceptance evidence
+
+1. Replace the broad zero-leakage assertion with a versioned, reviewed per-table/per-column sanitization manifest generated from the migrated PostgreSQL catalog. Include every schema, view/materialized view, foreign table, routine, sequence, large object, attachment/object-store reference and external integration configuration in scope.
+2. Classify every field as retain, generalize, pseudonymize, purge or regenerate. Include direct and quasi-identifiers, free text, staff/clinician identities, role memberships, audit/provenance, integration configuration and clinical/financial metadata.
+3. Give sandbox users synthetic login IDs and names; remove or replace clinician identifiers/profile data; review whether roles should be reduced to a dedicated sandbox role set. Disable non-bootstrap accounts by default.
+4. Create one dedicated sandbox administrator identity with a one-time credential; do not set the same password on every retained account. Force rotation and record controlled delivery/expiry. Remove or fail closed on the hard-coded fallback password.
+5. Regenerate or disable all federation clients and integration identities; default federation, outbound webhooks and external integrations to disabled. Verify no production credential or live endpoint remains usable.
+6. Make clone lifecycle durable and fail closed: reserve a clone operation ID, create into a quarantined/non-routable state, scrub, run independent post-scrub scans, validate ownership/ACLs/secrets/feature flags, then atomically publish registry state. On any failure, retain a durable failed/quarantined record and prove the database cannot be reached by tenant users; cleanup must be a separately authorized, audited action.
+7. Build synthetic canary fixtures with unique marker values in every sensitive field and assert none survive in the clone. Include staff, clinicians, patients, free-text notes, insurance, billing, payroll, procurement, federation, integrations, attachments, logs, and unknown schema objects.
+8. Test that the returned temporary credential authenticates only the dedicated bootstrap account, not other staff accounts; prove retained production passwords, MFA seeds, sessions, reset tokens, federation keys and integration secrets are unusable.
+9. Run independent post-scrub scans over all cataloged data surfaces and verify the report itself contains no raw patient/staff values or secrets. Obtain privacy/security and database-owner sign-off before enabling sandbox clone in a production-connected environment.
+
+**Assessment:** the source contains a useful fail-closed table-name check, broad field scrubbing and a per-clone random password, but it does not support a zero-leakage guarantee. Retained staff/clinician identities, account roles/status, active federation-client metadata, shared user password reset and the unsanitized-clone failure window are release-blocking concerns for production-derived sandbox cloning.
+
+**Boundary:** source review only. No runtime, migration, database, trigger, credential, network, feature-flag, clone or production state changed. PostgreSQL database-per-tenant remains the project architecture. AUD-004 remains blocked.
