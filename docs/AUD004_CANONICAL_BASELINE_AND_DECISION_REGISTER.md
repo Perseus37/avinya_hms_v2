@@ -117,7 +117,23 @@ The latest inspected PR #19 head still has these explicit follow-ups:
 
 The PR discussion links a proposed durable idempotency and recovery design in PR #23. That proposal is design evidence only; it does not mean the runtime fix exists. Do not treat PR #19's successful workflow as proof that these follow-ups are implemented, tested or independently accepted.
 
-## 8. Evidence gates before implementation or release
+## 8. PR #23 design review — proposed, not implementation-ready
+
+PR #23 provides a useful design direction for PR #19's concurrent-import and post-commit pointer-sync failures. Its current text correctly identifies a server-derived operation identity, durable import state, destination correlation marker, recoverable pointer synchronization, cross-database partial progress, and PostgreSQL concurrency/failure-injection tests.
+
+The independent review comment on PR #23 requires these details to become normative before implementation:
+
+- mandatory monotonic fencing generation for every claim, state transition and destination commit; explicit lease expiry, renewal and takeover semantics;
+- two durable uniqueness barriers: unique control-plane operation identity and unique destination-side correlation marker committed atomically with the patient/allergy clone;
+- versioned, domain-separated and unambiguous canonical identity encoding using destination identity, immutable source pointer identity/generation, source branch identity and protocol version; no demographics;
+- provenance verification before uncertain-commit reconciliation, preventing attachment to an unrelated patient;
+- explicit receipt consumption and expiry semantics, plus source identity/policy revalidation on retries;
+- machine-readable API states, operation identifiers, polling/retry behavior and safe disclosure boundaries;
+- PostgreSQL tests across independent sessions and separate worker processes, including stale-worker fencing, lock/unique conflicts and process termination at every cross-database boundary.
+
+Until these details are accepted and implemented, PR #23 is a proposed design only. It does not remediate PR #19, authorize a migration or close the data-integrity findings. PR #19 remains open and unmerged; AUD-004 remains a separate release blocker.
+
+## 9. Evidence gates before implementation or release
 
 1. Formalize the database-per-tenant identity ADR and assign accountable database/security/platform owners.
 2. Approve the source-owned boundary and remove all direct foreign-tenant database sessions from runtime paths.
@@ -132,7 +148,7 @@ The PR discussion links a proposed durable idempotency and recovery design in PR
 
 AUD-004 implementation remains blocked until the Critical and High items are resolved with objective evidence and independent sign-off.
 
-## 9. Non-authorization and change control
+## 10. Non-authorization and change control
 
 This is a documentation consolidation only. It does not authorize runtime code changes, SQL, migrations, PostgreSQL role/ACL/network/secret changes, production or patient-data access, partner onboarding, trust provisioning, federation activation, emergency access, pilot, deployment, release or merge.
 
