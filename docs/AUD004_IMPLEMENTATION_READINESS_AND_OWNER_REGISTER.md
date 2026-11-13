@@ -1692,3 +1692,77 @@ Required proof is broader than successful function return:
 **Assessment:** the source contains a useful fail-closed table-name check, broad field scrubbing and a per-clone random password, but it does not support a zero-leakage guarantee. Retained staff/clinician identities, account roles/status, active federation-client metadata, shared user password reset and the unsanitized-clone failure window are release-blocking concerns for production-derived sandbox cloning.
 
 **Boundary:** source review only. No runtime, migration, database, trigger, credential, network, feature-flag, clone or production state changed. PostgreSQL database-per-tenant remains the project architecture. AUD-004 remains blocked.
+
+
+## 64. Tenant provisioning bootstrap-secret delivery, split-commit recovery and webhook audit gaps
+
+**Sources reviewed on main:**
+- backend/control_plane/api/routers/provisioning.py
+- backend/control_plane/api/routers/saas_billing.py
+- backend/control_plane/models.py (TenantRegistry, FederatedNode, ControlPlaneAuditLog)
+- backend/control_plane/services/auth.py (operator identity and vendor-key authorization)
+
+This is static source inspection only. No tenant was provisioned, no webhook was submitted, and no credentials, databases or production state were accessed or changed.
+
+### 64.1 Provisioning returns all initial credentials in one API response
+
+The provisioning handler generates four high-value secrets:
+- initial tenant administrator password;
+- tenant JWT signing secret;
+- tenant backup-encryption key;
+- raw federation API key.
+
+The handler persists the tenant JWT and backup key in encrypted form in the control-plane registry, and stores federation key hashes in the tenant and control-plane federation records. It then returns the raw values together in the successful JSON response (admin_password, jwt_secret_key, backup_encryption_key, federation_api_key).
+
+The welcome email intentionally sends only hospital/branch details, URL and administrator email, and explicitly says initial credentials/recovery keys are not sent by email. This is a positive separation, but it does not mitigate the API response surface: the full credential bundle is available to the caller and may be retained by browser history/devtools, API clients, reverse-proxy/APM response capture, support exports or operator workstations. The source does not show response-field redaction or a one-time credential retrieval/acknowledgement/expiry lifecycle.
+
+The provisioning endpoint accepts a shared master setup key and verifies the control-plane secret. It does not declare a named MFA-authenticated operator role dependency in the route. This is consistent with the shared-key authorization concern in Section 62: the operation is not bound in the route to a specific named operator, role, approval reference or attributable human session.
+
+**Required boundary:** return a non-secret provisioning receipt from the ordinary API response. Deliver each credential through a separate, time-limited, single-use bootstrap channel with audience binding, retrieval audit, acknowledgement and expiry. Keep JWT/backup/federation material out of browser-facing responses and ordinary logs. Provisioning must require a named operator with a specific role and, for credential release, an independently approved break-glass/secret-release action. If machine-to-machine provisioning is required, use a distinct narrowly scoped service identity and record both service principal and initiating human approval.
+
+### 64.2 Tenant database creation and initialization precede control-plane registration
+
+The route's sequence is:
+1. check the current control-plane registry for duplicate slug/branch;
+2. create the tenant database and run tenant Alembic migrations;
+3. open a tenant session, seed the administrator/reference data, create the active tenant-local federation client, apply federation policy and blueprint, then commit the tenant DB;
+4. construct the tenant registry and control-plane federation node;
+5. insert those rows plus the PROVISION_HOSPITAL audit event and commit the control-plane DB;
+6. construct and return the credential-bearing response, then attempt welcome email delivery.
+
+These are separate database transactions. A tenant database can be successfully created, migrated and seeded before the control-plane registry/federation/audit transaction commits. If that final control-plane commit fails, the tenant database and its administrator/federation state can remain without a committed registry record or durable provisioning operation state. Similarly, failures during tenant initialization occur after database creation/migration; the shown failure handler records a generic CP failure event but does not demonstrate quarantine, compensation or cleanup of the partially created database.
+
+The preflight duplicate check is not a durable operation reservation. No operation ID, uniqueness reservation/lease, idempotency key, resumable phase ledger or reconciliation worker is visible in this route. Concurrent or retried requests therefore need explicit proof that they cannot attach credentials to an unintended existing database, seed twice, or leave an orphan database.
+
+### 64.3 Provisioning error and email-delivery state are not a complete lifecycle ledger
+
+The failure branches write a PROVISION_FAILED audit row after tenant database/migration or initialization failures, but they do not include a stable provisioning operation ID or phase checkpoint. The final successful registry/federation/audit write is transactionally coupled within the CP DB, but not with the already committed tenant DB.
+
+Welcome-email delivery happens after the successful CP commit. If delivery fails, the route commits a separate PROVISION_EMAIL_FAILED audit event and still returns the full credential bundle plus email_dispatched=false and email_error. This makes the HTTP response the practical credential delivery path even when the configured email channel fails. The source does not show a controlled re-delivery workflow with recipient verification, single-use credential release, expiry or delivery acknowledgement.
+
+The mailer exception string is also returned in email_error and stored as audit details. The mailer implementation and exception redaction policy were not part of this bounded review; do not assume that transport/provider details are safe for API or audit disclosure without checking them.
+
+### 64.4 Stripe subscription webhook changes tenant availability without an event ledger
+
+The Stripe webhook verifies the signature using the configured webhook secret and updates the matching tenant registry row:
+- invoice.payment_succeeded sets is_active=True and updates license_valid_till from the first invoice line's period end;
+- invoice.payment_failed and customer.subscription.deleted set is_active=False and a maintenance notice.
+
+The inspected handler does not persist Stripe event ID, event type, customer/subscription/invoice reference, prior/new state, processing outcome or a control-plane audit event. It does not show an idempotency ledger or ordering guard. Stripe retries can therefore repeat state changes without a recorded deduplication decision, and out-of-order success/failure events need explicit handling so an older event cannot overwrite a newer subscription state. The code also assumes the first invoice line contains the relevant period end; multi-line invoice semantics are not characterized here.
+
+A verified webhook signature authenticates the Stripe message; it does not by itself establish durable replay handling, ordering, tenant-state transition policy or a forensic event record.
+
+### 64.5 Required remediation and acceptance evidence
+
+1. Remove all raw credentials from the provisioning response. Return a non-secret operation receipt and use separately authorized, short-lived, single-use secret release with recipient/audience binding, expiry, acknowledgement and redacted observability.
+2. Require named MFA-authenticated operator identity and explicit provisioning role. Record actor ID, service principal (if any), approval/reference, target tenant, request/correlation ID and before/after state. Do not treat a shared vendor key as human authorization.
+3. Introduce a durable provisioning operation ledger with idempotency key and explicit phases: reserved, database-created, migrated, initialized, CP-registered, credential-issued, delivery-confirmed, failed/quarantined. Reconcile the tenant DB and CP record across crash windows.
+4. Create the database in a quarantined/non-routable state. On any failure before final verification, prove no tenant login, federation, external routing or normal runtime access is possible. Cleanup or retry must be idempotent, scoped and audited.
+5. Add failure-injection tests after database creation, each migration phase, tenant seed commit, blueprint commit, CP registry/federation/audit commit, credential release and email delivery. Include concurrent duplicate requests and process restart/retry tests using independent PostgreSQL sessions.
+6. Add Stripe event inbox/deduplication keyed by Stripe event ID, persist signature-verified event metadata and processing outcome, and apply monotonic subscription-state transitions using authoritative subscription/invoice timestamps or current Stripe object retrieval. Test duplicate, delayed and out-of-order success/failure/deletion events.
+7. Write append-only CP audit events for provisioning phase transitions and Stripe subscription state changes, with stable operation/event IDs and attributable actor/source. Keep webhook payloads and secrets out of audit details; retain only a minimal redacted evidence set.
+8. Verify that secret release is never included in API, proxy, application, mailer, audit or support logs, and that revoked/expired bootstrap credentials cannot be replayed.
+
+**Assessment:** tenant provisioning currently has a split-database lifecycle without a durable cross-database operation ledger, and returns the complete bootstrap credential bundle from the endpoint. The Stripe webhook performs subscription-driven access changes without a visible event-id deduplication or audit ledger. These are release-blocking lifecycle and credential-governance gaps for production onboarding and automated tenant suspension/reactivation.
+
+**Boundary:** source review only. No runtime, route, auth, credential, migration, database, webhook, network or production state changed. PostgreSQL database-per-tenant remains the project architecture. AUD-004 remains blocked.
