@@ -450,8 +450,9 @@ def test_migrate_and_capture_three_independent_postgres_catalogs(tmp_path: Path)
         "limitations": [
             "This is a characterization artifact, not a least-privilege acceptance test.",
             "No application rows are inserted or exported.",
-            "Owner inventory is captured; ACL/default-ACL and membership inventory is a subsequent proof step.",
-            "Trigger/function counts are captured; definitions and raw SQL immutability tests remain subsequent proof steps.",
+            "Object owners, table grants, database/schema ACLs, default ACLs, and role memberships are captured but not interpreted or asserted.",
+            "This pass does not inventory column, sequence, routine, or type ACLs, role attributes, or cluster-wide settings.",
+            "Trigger and routine definitions/security settings are captured but not evaluated; raw SQL append-only denial is not tested.",
             "No backup/restore parity is asserted by this test.",
         ],
     }
