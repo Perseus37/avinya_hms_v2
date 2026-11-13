@@ -434,3 +434,26 @@ Key findings:
 Section 16 defines the current-to-target matrix for DB, API, CP portal, worker, HL7 ingress, db-init, exporter, development backup/vault services, host backup/restore, Redis and non-DB-facing services, plus the minimum safe implementation sequence. It explicitly retains PostgreSQL **database-per-tenant**.
 
 Disposition: this is static repository evidence and a proposed topology contract, not proof of deployed environment, actual grants, production scheduler, host controls, network policy or runtime secret isolation. No Compose, Dockerfile, runtime, SQL, migration, credential, database, storage or production setting changed. PR #70 remains draft/open/unmerged.
+
+
+## 32. Minimum target deployment topology and phased isolation plan (2026-11-13)
+
+The least-privilege contract Section 17 defines a minimum privilege-separated deployment topology while retaining the modular monolith and PostgreSQL **database-per-tenant** architecture.
+
+Target logical workloads:
+- CP-only web runtime.
+- Tenant clinical API with a server-validated tenant-bound DB capability.
+- Tenant-bound background execution, separated from CP scheduling/dispatch.
+- HL7 ingress without direct clinical DB credentials, delegating to a tenant-bound processor.
+- Short-lived privileged operations runner for provisioning, role reconciliation, migrations and initialization.
+- Dedicated backup/restore executor and artifact storage.
+- Dedicated monitoring/exporter identity.
+- Infrastructure services without broad tenant credentials.
+
+The contract deliberately avoids a default container-per-tenant fleet and records two viable tenant execution patterns requiring an ADR:
+- Pattern A: tenant-bound execution instances with access only to assigned tenant DB credentials.
+- Pattern B: a constrained credential/connection broker with workload authentication, immutable tenant binding, operation allowlists, short-lived capabilities, replay protection, revocation, audit and pool invalidation. A shared process that can read all tenant passwords is explicitly not an acceptable broker.
+
+Section 17 phases the work: design freeze; CP isolation; tenant execution isolation; ingress and privileged operations; backup/restore and monitoring; production readiness gate. It specifies independent PostgreSQL-session acceptance tests, queue/HL7 tampering tests, revocation tests, exporter restrictions and a verified restore drill.
+
+Open decision: Pattern A versus Pattern B remains unresolved pending tenant-count, deployment-operations, threat-model and blast-radius analysis. No implementation, Compose, runtime, SQL, migration, secret, database, storage, patient-data or production change was made. No schema-per-tenant or microservices redesign is proposed.
