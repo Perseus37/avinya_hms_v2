@@ -679,14 +679,23 @@ The implementation should add a dedicated opt-in test harness (for example, \`de
 ### 15.4 CI behavior
 
 - Keep the current SQLite suite unchanged for fast application/domain tests.
-- Add a separately named PostgreSQL integration job that starts the dedicated harness from a clean runner.
-- The PostgreSQL job must not silently fall back to SQLite.
-- A required security gate must report an explicit failure or blocked status if the integration environment cannot be provisioned; it must not report isolation as passed.
+- A separately named PostgreSQL integration job now exists in the dedicated AUD-004 proof workflow and starts the harness from a clean runner.
+- The PostgreSQL proof runs inside the isolated Compose network and does not silently fall back to SQLite.
+- The recorded successful run is [workflow run 43354810585](https://github.com/Perseus37/avinya_hms_v2/actions/runs/43354810585), on PR #71 head `02f6dd756c9091a89ee4f858684bea6ae2d5c8d8`: 27 disposable PostgreSQL ACL assertions and 10 reconciliation regression tests passed; disposable resources were torn down.
+- That run predates the current PR #71 documentation-only head `5e00ea31e8b0f1c99b6668bbf33923caac0fe1e5`; do not describe the latest head as having been rerun.
 - Preserve test logs, image digest, Compose configuration hash, fixture manifest and redacted catalog evidence as CI artifacts.
 - Do not place reusable credentials in repository secrets. Use short-lived CI job-scoped values for the disposable cluster only.
 
 ### 15.5 Execution boundary and current status
 
-This section is a design and safety specification only. No Compose harness, Docker container, PostgreSQL cluster, database, role, credential, test fixture, CI workflow or teardown command has been created or executed. No existing database or named volume has been touched.
+The dedicated Compose harness, PostgreSQL 17 fixture, synthetic tenant/control-plane databases, low-privilege runtime roles, ACL assertions and on-demand CI workflow now exist in draft PR #71. The recorded run above passed its bounded fixture-level proof and completed disposable teardown.
 
-The next code change, if authorized, should be limited to adding the dedicated harness and non-destructive integration assertions. It must not alter the default development/production Compose files, application connection routing, role bootstrap, tenant registry, migrations or runtime credentials in the same change. Role bootstrap and runtime identity changes should follow only after the isolated proof is reproducible and independently reviewed.
+**What this evidence establishes:** the tested synthetic PostgreSQL configuration denied the tested cross-database CONNECT attempts and passed the 27 implemented ACL assertions. The reconciliation regression job also passed 10 tests.
+
+**What it does not establish:** complete cluster-wide role/object/default-privilege inventory; actual deployed PostgreSQL grants; container/workload identity isolation; secret-provider isolation; network egress enforcement; source-owned federation API/authorization; audit-before-disclosure; credential rotation/revocation; existing connection-pool draining; or full lifecycle proof. The source-owned federation service remains unimplemented, and the current federation router still opens foreign tenant database sessions from destination-side discovery/import request paths.
+
+The successful proof was run on PR #71 head `02f6dd756c9091a89ee4f858684bea6ae2d5c8d8`. PR #71's latest head is `5e00ea31e8b0f1c99b6668bbf33923caac0fe1e5`, which contains a subsequent README clarification; the proof has not been rerun on that exact head. The evidence is synthetic-only and does not validate production infrastructure or credentials.
+
+No existing development or production database, named volume, production credential, patient data, deployment configuration, role bootstrap, tenant registry, or runtime connection routing was changed. AUD-004 remains **NOT READY** and a release blocker. PostgreSQL **database-per-tenant** remains the architecture; no schema-per-tenant migration is proposed.
+
+The next implementation slice must address the source-owned federation boundary under a separately reviewed wire profile and isolated workload identities. Do not change production identity, role bootstrap, secret, network, deployment or runtime configuration until the disposable evidence and independent review gates are satisfied.
