@@ -1403,3 +1403,13 @@ PR #71's disposable migration/catalog characterization test now expands explicit
 **Boundary:** this is capture, not acceptance. The harness does not yet interpret effective privileges, calculate inherited/ownership rights, assert least privilege, or test connection/object access under each production workload identity. The migration/catalog workflow has not been executed on this new head, so SQL compatibility and artifact contents remain unverified. AUD-004 remains blocked.
 
 No production/runtime/SQL/migration/Compose/credential/secret/database/role change. The additions are test-only catalog queries and report fields. PostgreSQL database-per-tenant remains invariant.
+
+
+
+### Section 50 — Expanded database, schema and default ACL capture added
+
+The disposable PostgreSQL catalog report now expands database, schema and default-object ACLs into individual privilege records, preserving PUBLIC grantees, grantors, privilege names and grant-option flags. The original raw ACL text snapshots remain available for cross-checking. This complements the explicit relation, column, routine and type ACL expansion in Section 49.
+
+**Boundary:** catalog visibility/capture is not a least-privilege verdict. Effective privileges inherited through role memberships, implicit ownership authority, PUBLIC defaults, predefined-role semantics and privileges outside the connected database still require dedicated interpretation and independent-session tests. The latest workflow head has not been executed; SQL compatibility and report output remain unverified. AUD-004 remains blocked.
+
+No production/runtime/SQL/migration/Compose/credential/secret/database/role change. Test-only catalog queries/report fields were added. PostgreSQL database-per-tenant remains invariant.
