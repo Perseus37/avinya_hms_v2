@@ -301,3 +301,33 @@ Use a fresh PostgreSQL 17 disposable cluster and run the exact production `boots
 After an approved remediation design, repeat the proof with distinct CP runtime, per-tenant runtime, migration, backup, and provisioning identities. Test positive intended access and explicit negative cross-database access, including tenant A to tenant B and CP, tenant B to tenant A and CP, CP to tenant databases, and backup scope. Verify migrations and provisioning can perform only their approved operations, and verify backup can read/restore only its approved database set. The proof must test the actual Compose service environment/secret mounts and production bootstrap code, not just hand-created synthetic roles.
 
 No runtime, Compose, SQL, credentials, or database topology changes were made. No live PostgreSQL server was contacted; this section records static source findings and a proposed disposable-only evidence plan.
+## 24. Production Compose startup gate: `db-init` performs full bootstrap, not a role-only task (2026-11-13)
+
+The exact `db-init` service definition in `docker-compose.prod.yml` is:
+
+- Image: `avinya-hms-api:${VERSION:-v4.5.0}`.
+- Environment: full `.env.production` via `env_file`, plus timezone settings.
+- Command: `python backend/scripts/bootstrap.py --apply-roles`.
+- Dependency: PostgreSQL `db` must be healthy.
+
+The `api`, `worker`, `hl7-listener`, and `onboarding-portal` services declare `db-init` with `condition: service_completed_successfully`. Consequently, the role-application command is also a startup gate for those services: a failure anywhere in the complete bootstrap prevents dependent services from starting.
+
+Important execution detail: `main()` passes `apply_roles=True` into `bootstrap_system()`, but that flag does not return after `apply_database_roles()`. The function continues to:
+
+1. Ensure the control-plane and default-tenant physical databases exist.
+2. Apply the role SQL if requested.
+3. Upgrade the control-plane database.
+4. Seed control-plane data and create the default tenant registry entry if absent.
+5. In development/testing, migrate and seed all active cloud tenants; in production, migrate/seed the default tenant only when it was newly created, otherwise skip existing tenant upgrades.
+6. In non-development environments, validate tenant database URLs for active cloud tenants.
+
+Therefore `db-init` is not a narrowly scoped PostgreSQL role initializer. It runs the full environment-sensitive bootstrap workflow with the shared production environment. Any disposable proof that invokes `bootstrap.py --apply-roles` must isolate the entire bootstrap side-effect surface, not merely point the role SQL at a disposable server and assume the command exits after role creation. The safest first proof target is the exact `apply_database_roles()` function in a disposable cluster, with environment overrides and explicit before/after catalog assertions; separately test `bootstrap_system()` sequencing with stubbed migration/seed dependencies or a fully disposable end-to-end fixture.
+
+Security and operational implications:
+
+- The production API startup is coupled to control-plane migration/seed/tenant-validation success, not just role creation.
+- The bootstrap container receives the same `.env.production` values as the other services; the dedicated role credentials are not injected or selected by this path.
+- The current `apply_database_roles()` implementation does not provision the role passwords needed to authenticate as the newly created roles.
+- Do not execute the full `bootstrap.py --apply-roles` against any shared, developer, staging, or production database as part of this proof.
+
+No runtime, Compose, SQL, credentials, or database topology changes were made. This is a static source trace; no PostgreSQL cluster was started and no bootstrap function was executed.
