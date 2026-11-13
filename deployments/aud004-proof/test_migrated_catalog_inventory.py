@@ -402,6 +402,30 @@ def _metadata_manifest() -> dict:
     }
 
 
+def _column_deltas(metadata_tables: dict, catalog: dict) -> dict:
+    """Report ORM-vs-live column name differences without declaring them acceptable."""
+    catalog_columns: dict[str, set[str]] = {}
+    for row in catalog["columns"]:
+        schema, table, _ordinal, column_name = row[:4]
+        catalog_columns.setdefault(f"{schema}.{table}", set()).add(column_name)
+
+    missing_from_catalog = {}
+    extra_in_catalog = {}
+    for table_name in sorted(set(metadata_tables) | set(catalog_columns)):
+        expected = set(metadata_tables.get(table_name, {}).get("columns", []))
+        actual = catalog_columns.get(table_name, set())
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        if missing:
+            missing_from_catalog[table_name] = missing
+        if extra:
+            extra_in_catalog[table_name] = extra
+    return {
+        "metadata_columns_missing_from_catalog": missing_from_catalog,
+        "catalog_columns_missing_from_metadata": extra_in_catalog,
+    }
+
+
 def test_migrate_and_capture_three_independent_postgres_catalogs(tmp_path: Path) -> None:
     """Run real migration graphs only against three newly-created CI databases."""
     os.environ.update(_base_environment())
@@ -446,6 +470,11 @@ def test_migrate_and_capture_three_independent_postgres_catalogs(tmp_path: Path)
             "tenant_migration_only": sorted(
                 set(catalogs["tenant_a"]["tables"]) - set(metadata["tenant"])
             ),
+        },
+        "column_deltas": {
+            "control_plane": _column_deltas(metadata["control_plane"], catalogs["control_plane"]),
+            "tenant_a": _column_deltas(metadata["tenant"], catalogs["tenant_a"]),
+            "tenant_b": _column_deltas(metadata["tenant"], catalogs["tenant_b"]),
         },
         "limitations": [
             "This is a characterization artifact, not a least-privilege acceptance test.",
