@@ -475,3 +475,26 @@ Evidence behind the recommendation:
 Pattern A does not mean a permanent container-per-branch fleet by assumption. The implementation must define tenant-bound process/secret/pool/routing contracts and quantify the deployment footprint. Keep the modular monolith and PostgreSQL **database-per-tenant** architecture. Reopen Pattern B only after measured active/forecast tenant counts, peak concurrency/connection demand, per-tenant process cost, operational toil, hosting profiles, broker ownership/HA/DR plan and independent adversarial PostgreSQL proof are available.
 
 Section 18 includes the comparative matrix, broker acceptance requirements, provisional decision, reconsideration evidence and implementation sequence. No runtime, SQL, migration, Compose, credential, secret, database, storage, patient-data or production change was made. PR #70 remains draft/open/unmerged.
+
+
+## 34. Pattern A tenant-bound execution contract (2026-11-13)
+
+The least-privilege contract Section 19 now defines the required tenant-bound execution contract for the recommended Pattern A architecture.
+
+The contract requires an immutable server-assigned tenant identity bound to one canonical tenant database, one execution-unit identity, one tenant-specific credential reference, one privilege class and a versioned/revocable binding generation. Existing `TenantRegistry.id` is an integer primary key; whether it remains the canonical immutable identity or is replaced by a UUID is explicitly an ADR/migration decision, not assumed.
+
+It defines the target HTTP flow: trusted ingress maps host to active tenant metadata; requests reach only the assigned tenant execution unit; the unit validates user/session tenant identity against its own binding and opens only its configured DB. Host, JWT slug, header override, request tenant ID and database name remain selectors, never authorization. Unknown/inactive/mismatched/stale tenant routing fails closed.
+
+Process and secret requirements: one tenant DB credential reference per tenant clinical execution unit; no fleet credential enumeration, CP write access, DDL, backup or cluster privilege; independent workload identity, protected secret delivery, no shared fleet-wide secret map. The repository does not yet establish a tenant-specific PostgreSQL credential store/secret manager. Existing encrypted tenant JWT/HL7 secrets are not PostgreSQL credentials.
+
+The contract also defines:
+- Tenant-specific PostgreSQL login and grants limited to the assigned DB and approved runtime operations; explicit PUBLIC ACL, role membership, ownership and existing-session verification.
+- Authenticated, expiring, audience-bound, generation-bound job envelopes; CP-only scheduler/dispatcher; tenant-bound workers; no trust in queue-supplied slug/DB name; no synchronous execution fallback from CP/API when queue is unavailable.
+- HL7 ingress without clinical DB credentials and tenant-bound processing; source-owned federation reads and destination-owned writes.
+- Auditable tenant disablement, credential rotation, queue cancellation/quarantine, active-session termination, pool disposal and bounded revocation propagation.
+- Automated tenant-bound replicas, measured resource/connection budgets, signed/versioned recovery bindings and restore validation before tenant cutover.
+- Adversarial routing, PostgreSQL, queue, HL7, federation, rotation, revocation, outage and recovery tests.
+
+Open implementation decisions include canonical tenant identity and migration, host-to-execution routing topology, secret/workload identity provider, per-tenant role/ownership model, process orchestration and scale, durable queue/capability/idempotency protocol, revocation SLA, CP metadata delivery and on-prem profile.
+
+Section 19 is a design and verification contract, not runtime implementation authorization. No runtime, queue, listener, router, SQL, migration, Compose, credential, secret, database, patient-data or production change was made. PostgreSQL **database-per-tenant** remains invariant. PR #70 remains draft/open/unmerged.
