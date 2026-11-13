@@ -241,3 +241,14 @@ A targeted review of patient/privacy/identity/federation/FHIR/ABDM tenant migrat
 - This immutable tenant-local transfer history must not be confused with control-plane `federated_discovery_receipts`. It does not provide pointer revocation tombstones or durable import operation recovery.
 
 This was a targeted migration review, not an exhaustive scan of every migration/SQL statement. The all-repository pointer-writer inventory remains incomplete.
+## 20. Deployment PostgreSQL role script does not establish tenant-isolated credentials
+
+Inspection of `deployments/postgres-roles.sql` found that the documented role bootstrap is broad rather than tenant-scoped:
+
+- `hms_app` is granted `CONNECT` on the literal database `postgres`, plus DML on all current tables and sequences in `public` and matching default privileges for future objects.
+- `hms_migrator` receives `CONNECT, TEMPORARY` on `postgres`, all privileges on the `public` schema, all current tables/sequences, and broad default privileges.
+- `hms_backup` is granted PostgreSQL's cluster-wide `pg_read_all_data` predefined role.
+
+This script does not demonstrate a distinct runtime identity and least-privilege grant set per tenant database, nor a narrowly scoped control-plane identity. The literal `postgres` database grants also do not by themselves establish the intended tenant database grants. Treat this as deployment-RBAC evidence gap / high-priority design defect to resolve before production, not as proof of an exploitable deployed environment. Validate intended roles, memberships, ownership, `CONNECT` grants, default privileges, and actual credentials on a disposable PostgreSQL instance before proposing replacement SQL.
+
+No role script or credentials were changed. This inspection was static; no PostgreSQL server was contacted.
