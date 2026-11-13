@@ -1766,3 +1766,62 @@ A verified webhook signature authenticates the Stripe message; it does not by it
 **Assessment:** tenant provisioning currently has a split-database lifecycle without a durable cross-database operation ledger, and returns the complete bootstrap credential bundle from the endpoint. The Stripe webhook performs subscription-driven access changes without a visible event-id deduplication or audit ledger. These are release-blocking lifecycle and credential-governance gaps for production onboarding and automated tenant suspension/reactivation.
 
 **Boundary:** source review only. No runtime, route, auth, credential, migration, database, webhook, network or production state changed. PostgreSQL database-per-tenant remains the project architecture. AUD-004 remains blocked.
+
+
+## 65. Visual ETL model discovery exposes tenant identity and patient-sharing security fields
+
+**Sources reviewed on main:**
+- backend/control_plane/api/routers/migration.py
+- backend/control_plane/services/migration_catalog.py
+- backend/domains/identity/models.py (User, UserRole)
+- backend/domains/patients/models.py (Patient)
+- backend/control_plane/services/auth.py (control-plane secret and vendor-key checks)
+
+Static source review only. No CSV was uploaded, no tenant endpoint was called, and no tenant data or account was changed.
+
+### 65.1 The migration studio discovers nearly every tenant ORM model as an import target
+
+get_migration_models() imports every domain models.py file and exposes every mapper registered in the shared tenant Base. The resulting ENTITY_MODEL_MAP is not a purpose-built, low-risk import allowlist. It includes sensitive identity and patient entities, including User and Patient.
+
+_validate_mapping() permits every non-primary-key column except the small SYSTEM_FIELDS set and PROTECTED_FIELDS = {api_key_prefix, api_key_hash}. There is no denylist or approval boundary for account privilege, authentication, patient privacy or network-sharing fields.
+
+The User model's is_superuser, status, mfa_enabled, mfa_secret, failed_login_attempts and other authentication/account fields are not protected by either set. UserRole's composite primary-key fields are excluded, but that does not protect the direct is_superuser flag on User.
+
+### 65.2 CSV import can create or elevate a tenant superuser
+
+The mapping validator permits User.is_superuser and User.status. The value coercion path accepts boolean values such as true/1/yes and enum status values. User.hashed_password is also an allowed destination; the mapping path hashes the supplied value before persistence.
+
+The background executor supports duplicate_policy=update: it looks up a matching User by a selected single-column unique field and assigns every mapped field to the existing ORM object. Therefore, a CSV mapping can create a new active superuser or elevate an existing matching user by setting is_superuser=true and status=ACTIVE. The import route has no additional per-field approval, identity proof, tenant-admin confirmation or privileged-account creation workflow in the inspected code.
+
+Both preview and execute endpoints are protected by the router-level control-plane secret and _verify_vendor_key(master_setup_key), but neither declares a named operator-role dependency. Section 62 already records that shared vendor-key authorization is not attributable human authorization. This finding is more specific: the reachable import target includes a direct tenant superuser privilege field.
+
+The exact exploitability in a deployment depends on who can obtain the control-plane secret and vendor key, whether the migration routes are exposed, and tenant model/runtime behavior. The source path nevertheless permits the sensitive field; this is not a claim that an external unauthenticated caller can reach it.
+
+### 65.3 Patient network-sharing consent can be defaulted to enabled
+
+_apply_dynamic_mapping() unconditionally sets allow_network_sharing=True whenever the destination model exposes that field, unless a mapping already supplied it. Patient.allow_network_sharing is a non-null boolean field.
+
+Thus an imported Patient row that omits this field is explicitly created with network sharing enabled, irrespective of source-system consent state. This is not a safe migration default for patient privacy. The same helper also defaults is_active=True for any target model exposing that field; an import can unintentionally reactivate records unless the mapping explicitly supplies a different value.
+
+This default is independent of the model's own defaults and applies in the shared ETL helper. Preview output shows transformed data, so the default may be visible in preview, but visibility does not make the privacy default safe or consent-authorized.
+
+### 65.4 Import execution also has incomplete operational containment
+
+The execute route queues work through FastAPI BackgroundTasks, which runs within the API process lifecycle rather than a durable worker ledger. The start event is committed before the response, but it does not carry a stable operation ID or durable progress state. The background job commits successful rows as one tenant transaction and writes completion/failure evidence afterward using a new CP session; the helper assigns actor VENDOR_CONSOLE and logs audit persistence failures only.
+
+Row errors are copied into completion audit details and service logs. Some error strings include rejected values (for example, a missing patient MRN or an invalid enum value). Preview also returns transformed row data and validation errors to the caller. This can expose patient/staff source values to the operator/API client and to CP-wide audit/log sinks if raw values appear in errors. A dedicated redaction policy and data-minimized import evidence are not shown.
+
+### 65.5 Required remediation and acceptance evidence
+
+1. Replace mapper-wide discovery with a reviewed explicit import allowlist. Exclude User, roles/permissions, authentication/session/MFA/recovery entities, federation credentials, privacy/consent controls, audit evidence and other security-sensitive models unless a separately authorized migration workflow is designed for them.
+2. Add a field-level denylist/allowlist that blocks is_superuser, account status, MFA state/secrets, lockout counters, role/permission assignments, patient network-sharing/consent flags and all other security/privacy control fields from generic CSV mapping and update policies.
+3. For any privileged account migration, use a separate audited workflow requiring named operator role, approval, identity validation, one-time bootstrap credential and forced MFA/password enrollment. Never let a generic ETL update set tenant superuser privileges.
+4. Change patient privacy defaults to fail closed: preserve verified source consent with provenance, otherwise set allow_network_sharing=false and require explicit consent before federation/network sharing. Do not infer consent from missing CSV columns or ORM defaults.
+5. Require explicit mapping for stateful flags such as is_active; reject omitted values or apply a documented safe default per entity. Add preview warnings for all security/privacy-affecting fields.
+6. Redact row values from exceptions, audit details and logs. Store only row number, field name, stable error code and aggregate counts; ensure preview/export permissions and retention are narrowly scoped.
+7. Move imports to a durable tenant-bound worker with operation ID, actor/approval provenance, resumable phase ledger, bounded retries, per-tenant concurrency controls and a durable terminal state. Do not report completion until tenant commit and CP evidence are reconciled.
+8. Add tests proving the ETL schema does not expose User.is_superuser or any authentication/authorization field; attempted create/update of a superuser is rejected; omitted patient consent never enables sharing; and raw patient/staff values do not appear in API errors, CP audit records or logs.
+
+**Assessment:** the generic ETL model/field discovery currently exposes a direct path to create or elevate tenant superusers through CSV import, and it defaults omitted patient network-sharing consent to enabled. These are critical authorization and privacy defects, not merely migration usability issues. Disable the visual ETL endpoints or block sensitive models/fields before any production use until independently tested remediation is approved.
+
+**Boundary:** source review only. No runtime, endpoint, credential, database, tenant account, consent, migration or production state changed. PostgreSQL database-per-tenant remains the project architecture. AUD-004 remains blocked.
