@@ -886,3 +886,30 @@ The first two caller classes and the scheduler/child-task path are confirmed, no
 - Only after the caller contract and complete inventory are reviewed, propose a narrow runtime change with tests. Do not globally disable synchronous fallback as a shortcut.
 
 No runtime code, queue policy, worker, Compose file, environment, secret, credential, database, migration, or patient data was changed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the existing consolidated report; no new PR was created.
+
+
+### 11.11 Provisioning welcome email bypasses the task queue — 2026-11-13
+
+The test suite exposed a second email dispatch mechanism that is not covered by the identity `enqueue_email` path.
+
+| Source file | Fetched blob | Exact code evidence | Operational implication |
+|---|---|---|---|
+| `backend/control_plane/api/routers/provisioning.py` | `40bb98fc9f79fb700b8b9484688d818c3ef1c441` | Lines 28, 116–135 import and call `backend.core.mailer.send_email` directly inside `_dispatch_welcome_email`; the helper catches `MailDeliveryError` and returns a boolean/error tuple. | Control-plane provisioning performs synchronous provider delivery in the provisioning API process. This path does not enqueue `email.send` and therefore has a different failure, latency and retry contract from identity notifications. |
+| `backend/control_plane/api/routers/provisioning.py` | same blob | Lines 353 onward call `_dispatch_welcome_email` after constructing the provisioning result, record `email_dispatched` / `email_error`, and add a `PROVISION_EMAIL_FAILED` audit record when delivery fails. | Provisioning explicitly surfaces welcome-email failure in its result/audit flow, unlike the best-effort identity dispatch helper. The precise transaction ordering and API response semantics need to be assessed before unifying these paths. |
+| `tests/test_24_mail_and_document_profiles.py` | fetched at PR #70 head `20b8a5e48518c81820a7e28494fd73aeda33b46f` | `test_provisioning_welcome_email_never_includes_generated_credentials` monkeypatches `provisioning.send_email` and verifies that the welcome message excludes generated password, federation key and backup key. | Existing coverage protects against credential disclosure in the welcome message, but it does not test provider outage, queue outage, retry/idempotency or provisioning recovery semantics. |
+| `tests/test_40_background_worker_and_queue.py` | `1cdbd993f27426baa8b0f71f942cdefa60aaaf50` | Tests use a `FakeRedis`; enqueue and worker tests generally pass `sync_fallback=False`, exercise task status/retry/dead-letter behavior and register a synthetic worker task. | Queue tests validate basic Redis-backed queue mechanics and worker dispatch, but do not exercise Redis-unavailable synchronous fallback, mail-provider failure inside the fallback handler, or the API notification contracts described above. |
+
+#### 11.11.1 Updated email dispatch map
+
+There are at least two distinct email dispatch contracts in the inspected source:
+
+1. **Identity/security notifications:** identity router → `enqueue_email` → `enqueue_task("email.send", sync_fallback=True)`; enqueue exceptions may be suppressed, and Redis failure can invoke the handler in the API process.
+2. **Control-plane provisioning welcome email:** provisioning route → direct `send_email` in the API process; delivery failure is returned and recorded in a control-plane audit entry.
+
+These paths should not be collapsed into a single delivery guarantee without an explicit product contract. In particular, provisioning may need durable post-provisioning notification/recovery, while authentication/security notifications need a clearly defined best-effort versus durable-dispatch guarantee. A queue/outbox design must preserve the credential-exclusion property already tested for provisioning emails.
+
+#### 11.11.2 Test gap and disposition
+
+Add explicit tests for (a) Redis unavailable with the identity enqueue helper, (b) mail provider unavailable during synchronous fallback, (c) direct provisioning provider failure and recovery, (d) duplicate delivery/retry idempotency, and (e) post-commit delivery failure without losing the notification intent. Keep provisioning welcome email free of generated credentials. No runtime code or tests were modified in this documentation-only pass.
+
+No runtime, queue, worker, provisioning, email, Compose, secret, credential, database, migration or patient data was changed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the consolidated readiness report; no new PR was created.
