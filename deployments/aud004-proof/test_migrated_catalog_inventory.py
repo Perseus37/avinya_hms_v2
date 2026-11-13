@@ -120,10 +120,15 @@ def _create_empty_databases() -> None:
 def _run_alembic(config_path: str, database: str) -> None:
     env = _base_environment()
     env["DATABASE_URL"] = _database_url(database)
+    # The CP Alembic ini prepends backend/core to sys.path. That directory
+    # contains queue.py, which otherwise shadows Python's stdlib queue module
+    # while logging.handlers (and redis) import it. Preload stdlib queue before
+    # Alembic parses its config and mutates sys.path; this keeps the fix local
+    # to the disposable harness without changing application Alembic config.
     command = [
         sys.executable,
-        "-m",
-        "alembic",
+        "-c",
+        "import queue; from alembic.config import main; main()",
         "-c",
         str(ROOT / config_path),
         "upgrade",
