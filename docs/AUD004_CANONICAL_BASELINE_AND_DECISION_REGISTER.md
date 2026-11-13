@@ -214,3 +214,14 @@ Deeper inspection of `sync_patient_pointer` and its callers in PR #19 identified
 PR #23 Section 12.5 adds required tests for denied-policy revocation, opt-out, branch policy transitions, critical-allergy removal, concurrent refresh and cross-database failure recovery. These are repository-source findings, not runtime test results. PR #23 remains proposed/draft; no implementation, migrations, tests, database queries or production changes were performed. The all-file ORM/raw-SQL writer scan is still incomplete. PostgreSQL **database-per-tenant** remains unchanged.
 
 PR #23 reference at this refresh: head `8a859dfe5b23e03dbb126bf8e8d3d577123ba7f0`; design document blob `23eef980164235eca0780c6af6054597c47ebdb2`. This is a documentation-only design update, not independent review or approval.
+
+## 17. Pointer migration and receipt-retention constraints (2026-11-13)
+
+Direct inspection of the PR #19 source commit (`0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`) confirms:
+
+- Control-plane baseline migration `95769c3ab4b3_baseline.py` creates `global_patient_pointers` with uniqueness `(phone_hash, branch_code, source_mrn)` and no tenant UUID or pointer generation column.
+- Control-plane migration `6c9f2a1d8b40_federated_discovery_receipts.py` gives `federated_discovery_receipts.source_pointer_id` an `ON DELETE CASCADE` foreign key to the pointer table.
+- Physical pointer deletion can therefore cascade-delete linked receipt evidence. Any future tombstone, revocation and receipt-consumption design must preserve audit/recovery evidence independently of the pointer row and explicitly revise this FK/retention model.
+- The other inspected control-plane migrations and migration router/catalog showed no additional pointer writers. This is a bounded control-plane/migration audit, not a completed all-repository writer inventory.
+
+No runtime behavior or migrations were changed. PR #23 Section 12.6 records the design implication. Database-per-tenant remains the architecture; this finding does not authorize a topology change.
