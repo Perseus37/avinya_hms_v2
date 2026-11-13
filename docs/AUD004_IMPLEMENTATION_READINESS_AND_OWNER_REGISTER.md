@@ -1439,3 +1439,12 @@ The catalog check also asserts that each expected trigger is enabled for ordinar
 The expected trigger map now also includes `security_audit_export_register`, whose PostgreSQL trigger is installed by migration `a9c4e7b2d610`. This closes an omission in the source-derived evidence-table inventory; it does not add or alter the migration itself. The disposable harness also now checks actual raw SQL UPDATE/DELETE rejection on a populated synthetic row for this register in both tenant databases, with all fixture writes rolled back.
 
 No production/runtime/SQL/migration/Compose/credential/secret/database/role change. Only disposable test assertions and catalog capture changed. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
+
+
+### Section 53 — RLS table enablement state and tenant catalog delta reporting completed
+
+The PR #71 catalog snapshot now records `relrowsecurity` and `relforcerowsecurity` for every ordinary and partitioned application table in each disposable database, in addition to enumerating `pg_policies`. This distinguishes tables with RLS enabled/forced from policy rows alone, including the important case where RLS is enabled but no policy exists. The table-delta artifact also reports tenant A and tenant B migration-only tables independently instead of using tenant A as a proxy for both.
+
+**Boundary:** RLS state is captured, not approved. The harness does not yet evaluate policy expressions, effective role behavior under RLS, `BYPASSRLS`, ownership bypass, or FORCE RLS behavior using the deployed workload identities. No least-privilege conclusion follows from this snapshot. The latest-head workflow remains unexecuted; the new SQL and report fields require CI execution and artifact review.
+
+No production/runtime/SQL/migration/Compose/credential/secret/database/role change. Only disposable catalog capture and report fields changed. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
