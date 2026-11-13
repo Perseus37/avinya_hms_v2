@@ -129,8 +129,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Refuse pre-existing proof resources
         id: preflight
-        env:
-          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
         run: |
           if docker volume inspect aud004-proof-pgdata >/dev/null 2>&1; then
             echo "::error::Refusing to reuse existing aud004-proof-pgdata volume"
@@ -146,24 +144,52 @@ jobs:
             exit 1
           fi
           echo "safe_to_cleanup=true" >> "$GITHUB_OUTPUT"
+      - name: Generate disposable credentials and per-workload secret files
+        id: secrets
+        run: |
+          python - <<'PY'
+          import os
+          import secrets
+          import tempfile
+          from pathlib import Path
+
+          directory = Path(tempfile.mkdtemp(prefix="aud004-secrets-"))
+          os.chmod(directory, 0o700)
+          values = {
+              "AUD004_SETUP_PASSWORD": secrets.token_urlsafe(32),
+              "AUD004_TENANT_A_PASSWORD": secrets.token_urlsafe(32),
+              "AUD004_TENANT_B_PASSWORD": secrets.token_urlsafe(32),
+              "AUD004_CP_PASSWORD": secrets.token_urlsafe(32),
+          }
+          files = {
+              "tenant_a_db_user": "tenant_a_api_test",
+              "tenant_a_db_password": values["AUD004_TENANT_A_PASSWORD"],
+              "tenant_b_db_user": "tenant_b_api_test",
+              "tenant_b_db_password": values["AUD004_TENANT_B_PASSWORD"],
+              "control_plane_db_user": "control_plane_test",
+              "control_plane_db_password": values["AUD004_CP_PASSWORD"],
+          }
+          for name, value in files.items():
+              path = directory / name
+              path.write_text(value, encoding="utf-8")
+              os.chmod(path, 0o600)
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"AUD004_SECRETS_DIR={directory}\n")
+              for name, value in values.items():
+                  env_file.write(f"{name}={value}\n")
+          PY
       - name: Start isolated PostgreSQL 17 fixture
-        env:
-          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
         run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait postgres
       - name: Run tenant A identity proof in its own container
-        env:
-          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
         run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps tenant_a_probe
       - name: Run tenant B identity proof in its own container
-        env:
-          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
         run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps tenant_b_probe
       - name: Run control-plane identity proof in its own container
-        env:
-          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
         run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps control_plane_probe
-      - name: Tear down only the disposable proof project
+      - name: Tear down only the disposable proof project and secrets
         if: always() && steps.preflight.outputs.safe_to_cleanup == 'true'
-        env:
-          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
-        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml down --volumes --remove-orphans
+        run: |
+          if [ -n "${AUD004_SECRETS_DIR:-}" ] && [ -d "$AUD004_SECRETS_DIR" ]; then
+            docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml down --volumes --remove-orphans || true
+            rm -rf -- "$AUD004_SECRETS_DIR"
+          fi
