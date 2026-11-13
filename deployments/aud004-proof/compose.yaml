@@ -7,8 +7,6 @@ services:
       POSTGRES_USER: aud004_setup
       POSTGRES_PASSWORD: ${AUD004_SETUP_PASSWORD:?Set AUD004_SETUP_PASSWORD to a disposable local-only value}
       POSTGRES_DB: postgres
-    ports:
-      - "127.0.0.1:55439:5432"
     volumes:
       - aud004_pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/01-aud004-init.sql:ro
@@ -20,6 +18,20 @@ services:
     networks: [aud004-only]
     security_opt: ["no-new-privileges:true"]
     restart: "no"
+
+  proof:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AUD004_PGHOST: postgres
+      AUD004_PGPORT: "5432"
+    networks: [aud004-only]
+    restart: "no"
+
 volumes:
   aud004_pgdata:
     name: aud004-proof-pgdata
