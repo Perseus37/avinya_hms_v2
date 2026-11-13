@@ -1111,3 +1111,112 @@ Then, against a disposable PostgreSQL instance migrated from the repository's ex
 Finally, map each table to concrete request routes, worker task handlers, listener paths and scripts, and mark operation classes separately: SELECT, INSERT, UPDATE, DELETE, sequence nextval/currval/setval, COPY, temporary objects, DDL, and maintenance. Use that mapping—not module names—to define runtime grants. The final allow-list must be generated deterministically, reviewed, and tested with independent PostgreSQL login sessions for CP, tenant A, tenant B, migrator, backup and monitoring identities.
 
 **Implementation status:** documentation and source inspection only. No model, migration, SQL, runtime, Compose, credential, secret, database or production configuration was changed. PostgreSQL database-per-tenant remains mandatory.
+
+
+## 23. Route, worker and listener to database-object operation map — first-pass source trace
+
+**Evidence status:** bounded source trace of the currently inspected control-plane fleet/migration routers, federation router, queue handlers and application router registration. This is not a complete tenant-domain route audit. The method is to identify concrete model/table access and execution boundary; exact column-level or per-endpoint grants are not proposed here.
+
+### 23.1 Runtime router registration and privilege domains
+
+`backend/main.py` registers tenant-domain routers for authentication, patients, break-glass, FHIR, clinical, federation, reports/registers, UI, websocket, tenant policies, audit, OPD/ADT, facility, pharmacy, diagnostics, billing, insurance, surgery, blood bank, analytics, finance, integrations, procurement, service operations, privacy, workforce, ABDM and quality. This confirms the ordinary tenant API has a broad domain surface; it does not prove each route needs access to every model imported by a module.
+
+`backend/control_plane/app.py` separately registers CP fleet operations, pricing, migration, provisioning, SaaS billing, UI console, network and operator authentication. Despite the separate app, some CP route handlers directly acquire tenant engines. Router separation alone therefore does not establish database capability isolation.
+
+### 23.2 Control-plane fleet operations
+
+Source: `backend/control_plane/api/routers/fleet_ops.py`.
+
+| Endpoint | CP database objects observed | Tenant database objects / privileged operations observed | Operation and boundary finding |
+|---|---|---|---|
+| `GET /fleet/overview` | `tenant_registry` | Tenant engine reads; fleet aggregates include patient/bed/revenue indicators | CP SELECT plus cross-tenant clinical reads. Replace with approved tenant-produced aggregate projection; CP web must not connect to tenant DBs. |
+| `GET /tenants` | `tenant_registry`, `federated_nodes`, `global_patient_pointers` | None established by this route's primary registry reads | CP SELECT. |
+| `PATCH /tenants/{slug}/status` | `tenant_registry`, `federated_nodes`, `control_plane_audit_logs` | None in primary path | CP read/update of registry and node state; audit insert. |
+| `PATCH /tenants/{slug}/deployment-mode` | `tenant_registry` | None established | CP registry read/update. |
+| `POST /tenants/{slug}/rotate-keys` | `tenant_registry`, `federated_nodes`, `control_plane_audit_logs` | `federated_clients` in tenant DB | CP read/update + audit insert; tenant-bound federation key update must be delegated. |
+| `POST /tenants/{slug}/reset-admin-password` | `tenant_registry`, `control_plane_audit_logs` | `users`, `auth_sessions`, `password_reset_tokens` | Tenant user read/update and session/token DELETE; privileged, audited tenant-bound support operation, not CP runtime DML. |
+| `PATCH /tenants/{slug}/entitlements` | `tenant_registry`, `control_plane_audit_logs` | No tenant table DML established in primary path | CP registry update + audit insert. |
+| `GET /tenants/{slug}/telemetry` | `tenant_registry` | Tenant telemetry reads | CP SELECT plus cross-tenant reads; replace with narrow approved read-only projection. |
+| Backup list/trigger/restore endpoints | `tenant_registry`, `control_plane_audit_logs` | Host/filesystem/backup/restore executor; restore is privileged | CP metadata/audit only; separate backup/restore identity and process. |
+| `POST /tenants/{slug}/clone-sandbox` | `tenant_registry`, `control_plane_audit_logs` | Executes `CREATE DATABASE ... WITH TEMPLATE`, terminates source connections, clones and scrubs tenant DB | Cluster provisioning/clone capability; never grant to CP web or tenant runtime. |
+| `GET /fleet/schema-status` | `tenant_registry` | Connects to tenant DBs to read `alembic_version` | CP SELECT plus cross-tenant metadata probes; isolate to read-only fleet checker or report published status. |
+| Tenant sync endpoints | `tenant_registry`, `control_plane_audit_logs` | Tenant Alembic migration and seed operations | CP metadata/audit plus DDL/seed runner. Migration role only; split fleet scheduler from per-tenant migrator. |
+| `GET /tenants/{slug}/details` | `tenant_registry` | Tenant details/telemetry paths require further line-level decomposition | CP SELECT; tenant access must be replaced by approved projection if present. |
+| `GET /federation/topology` | `tenant_registry`, `federated_nodes`, `global_patient_pointers` | Reads tenant federation policy | CP SELECT plus tenant policy read; prefer CP-authoritative projection or scoped policy service. |
+| `GET /mpi/lookup` | `global_patient_pointers`, `control_plane_audit_logs` | No tenant patient row read established in primary lookup path | CP SELECT and audit insert. |
+| `GET /fleet/audit-logs` | `control_plane_audit_logs` | None | CP audit SELECT only. |
+| `GET /fleet/analytics` | `tenant_registry` | Reads tenant `users`, `invoices`, `patient_encounters`, `beds_master` or related aggregate source rows | CP SELECT plus cross-tenant tenant-data reads; publish minimal aggregates rather than granting CP web access. |
+| SaaS charge endpoint | `tenant_registry`, `control_plane_audit_logs` | Tenant-specific billing context needs further decomposition | CP metadata/audit; isolate payment provider and tenant entitlement update path as separate capabilities. |
+
+**Important audit distinction:** the method-level scan detects `db.add()`, `execute()` and `commit()` but cannot infer whether an ORM object was mutated in memory before commit. In particular, a commit on a route is not proof of INSERT-only behavior. The route-level classification above must be treated as candidate operation scope pending exact assignment/attribute-write inspection.
+
+### 23.3 Control-plane CSV migration routes
+
+Source: `backend/control_plane/api/routers/migration.py`.
+
+| Endpoint | CP objects | Tenant objects | Operations / disposition |
+|---|---|---|---|
+| `POST /{slug}/analyze-csv` | `tenant_registry` SELECT | No tenant data access established in the analyze path | CP lookup and file/schema analysis. |
+| `POST /{slug}/preview-mapping` | `tenant_registry`, `control_plane_audit_logs` | `patients`, `invoices`, `users` or dynamically selected registered entity models are inspected for duplicate/constraint preview | Tenant SELECT; CP audit INSERT. Preview must execute through a tenant-bound read capability. |
+| `POST /{slug}/execute-node-mapping` | `tenant_registry`, `control_plane_audit_logs` | Dynamically selected entity model rows; duplicate lookup and bulk entity INSERT | Tenant SELECT + INSERT (and inspect dynamic conflict/update behavior before final grant); CP audit INSERT. Execute through a tenant-bound import worker with idempotency and durable operation state. |
+
+The migration route dynamically selects entity models and fields based on mapping metadata. This is a strong reason not to infer a narrow grant list from its static imports alone. The allowed entity/table/column set must be explicit, validated and versioned before the worker receives a write capability.
+
+### 23.4 Federation router
+
+Source: `backend/domains/federation/router.py`.
+
+| Endpoint | CP objects | Tenant objects | Operation / boundary |
+|---|---|---|---|
+| `POST /clients` | `federated_nodes` | `federated_clients` lifecycle/registration context | CP and tenant metadata writes. Separate partner registration/credential operation; no general tenant runtime key-management grant. |
+| `GET /clients` | Federation partner metadata | None established | Read-only partner listing; exact CP/tenant source depends on helper path and must be confirmed in final route audit. |
+| `DELETE /clients/{client_id}` | Partner metadata and audit path | Federated-client revocation context | Revocation is a write operation; preserve as separately authorized, audited capability. |
+| Publish local patient pointer | `global_patient_pointers`, `tenant_registry` | Local `patients`, `patient_allergies`, `hospital_policy_settings` reads | Source tenant authorizes its own patient disclosure; CP pointer is a minimal discovery index. |
+| Discover patient | `global_patient_pointers`, `tenant_registry` | Source tenant patient/allergy reads; `federation_transfer_logs` evidence writes | Source-owned read/release per tenant. Do not let destination or generic CP process connect directly to source clinical DBs. |
+| Import patient | `global_patient_pointers`, `tenant_registry` | Source patient/allergy reads; destination `patients`, `patient_allergies` writes; destination/source transfer evidence paths | Split source read/release and destination write into separate tenant-bound capabilities. Preserve durable idempotency/recovery requirements tracked by AUD-003/PR #23. |
+
+Federation is not safely modeled as one runtime identity with access to all participating databases. The source-side operation must execute under source ownership and policy; the destination-side operation must write only to the destination tenant. CP pointer metadata is not authorization to read a clinical record.
+
+### 23.5 Background queue and HL7 ingress
+
+Source: `backend/core/queue.py`; listener source previously inspected at `backend/domains/integrations/listener.py`.
+
+Queue handlers currently registered in `backend/core/queue.py`:
+- `email.send`: external email delivery; no PostgreSQL model access identified in this handler.
+- `privacy.retention.execute`: resolves a tenant database and performs tenant retention work; tenant-bound worker operation with policy SELECT and data lifecycle operations. Exact affected tables and DELETE/update semantics require tracing the privacy service called by the handler.
+- `privacy.retention.scheduled_daily_sweep`: enumerates active tenants from CP and enqueues tenant work; CP scheduler should have CP-only read/enqueue authority and must not open tenant clinical DBs.
+
+The queue's tenant database selector and task payload are not authorization. The current shared tenant engine registry and synchronous fallback path remain incompatible with a strict tenant-bound worker boundary. Split CP scheduler, tenant-bound retention executor and privileged retention/deletion workflow where required.
+
+HL7 listener source: `backend/domains/integrations/listener.py`. The listener resolves an inbound facility/interface to a tenant and processes ORU result writes. MSH-4/facility identifiers are untrusted routing inputs until matched to a trusted configured interface. Separate ingress resolution from tenant-bound result processing; ingress must not hold fleet-wide clinical DB credentials.
+
+### 23.6 Candidate operation matrix by execution identity
+
+| Execution identity / process | Candidate operation scope | Explicit exclusions |
+|---|---|---|
+| Tenant clinical API bound to one tenant | Table-scoped SELECT/INSERT/UPDATE/DELETE only for route-owned tables; immutable evidence tables SELECT/INSERT only | Other tenant DBs, CP DB, DDL, ownership, cluster administration, backup/restore |
+| CP API | CP metadata SELECT and table-scoped registry/operator/config DML; CP audit SELECT/INSERT | Every tenant DB, patient/clinical rows, migrations, clone, backup/restore |
+| CP fleet scheduler | CP registry SELECT and durable enqueue/operation-record writes | Tenant DB CONNECT, clinical rows, DDL |
+| Tenant-bound retention worker | Tenant policy SELECT plus only the reviewed retention operation set for its single bound tenant | Other tenants, CP DB unless separately brokered, fleet credential access |
+| Tenant-bound import worker | Approved target-table SELECT/INSERT and any specifically justified conflict operation | Arbitrary model/table selection, other tenants, DDL |
+| Federation source worker | Source tenant policy/patient/allergy SELECT and source-owned release/evidence writes | Destination DB, unrelated tenants |
+| Federation destination worker | Destination patient/allergy INSERT and destination evidence writes | Source DB, unrelated tenants |
+| HL7 tenant processor | Single tenant result/order-related SELECT/INSERT/UPDATE as justified by processing path | Fleet tenant selection and other tenant DBs |
+| Migration runner | DDL and migration data backfill on one explicitly selected target DB | General HTTP/worker runtime credentials |
+| Provisioner/clone runner | Explicit database lifecycle and narrowly scoped session management | General CP/tenant runtime |
+| Backup/restore executor | Tenant-scoped dump/restore and isolated artifact access; separate cluster-global export where approved | Clinical HTTP runtime and general worker |
+| Monitoring/exporter | Catalog/statistics read-only access | Clinical table DML, DDL, backup/restore |
+
+### 23.7 Completion gaps and next source-trace batch
+
+This first pass does **not** yet cover every tenant domain router, nested router, service layer or repository abstraction. It does not yet trace the concrete retention service, HL7 processor call graph, billing/payment integrations, clinical workflows, pharmacy inventory, diagnostics, procurement, privacy, workforce, ABDM or reporting routes down to every mapped table and mutation. It also does not prove actual PostgreSQL grants.
+
+Next required work:
+1. Inventory each router registered by `backend/main.py`, including nested routers and service-layer calls; trace every mapped model/table and actual read/create/attribute-update/delete.
+2. Trace queue handlers to the called service and enumerate affected objects, including bulk SQL and raw SQL.
+3. Trace HL7 listener parsing, trusted interface resolution, tenant selection and final result/order writes.
+4. Trace background schedulers, notification/outbox workers, exports and scripts; include all DB access paths.
+5. Record each table's required operation set per identity, and compare with immutable-trigger tables from Section 21.
+6. Add executable route/service-level SQL statement characterization and independent PostgreSQL role tests before any grant SQL is drafted.
+
+**Implementation status:** documentation/source inspection only. No application code, SQL, migrations, Compose, credentials, secrets, database, patient data or production configuration changed. PostgreSQL database-per-tenant remains mandatory.
