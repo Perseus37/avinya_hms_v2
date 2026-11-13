@@ -131,3 +131,88 @@ def test_runtime_has_no_membership_in_predefined_or_privileged_roles():
                 """
             )
             assert cur.fetchall() == []
+
+def test_runtime_has_select_only_on_its_synthetic_marker():
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    has_schema_privilege(current_user, 'synthetic', 'USAGE'),
+                    has_schema_privilege(current_user, 'synthetic', 'CREATE'),
+                    has_table_privilege(
+                        current_user,
+                        'synthetic.' || %s,
+                        'SELECT'
+                    ),
+                    has_table_privilege(
+                        current_user,
+                        'synthetic.' || %s,
+                        'INSERT'
+                    ),
+                    has_table_privilege(
+                        current_user,
+                        'synthetic.' || %s,
+                        'UPDATE'
+                    ),
+                    has_table_privilege(
+                        current_user,
+                        'synthetic.' || %s,
+                        'DELETE'
+                    ),
+                    has_table_privilege(
+                        current_user,
+                        'synthetic.' || %s,
+                        'TRUNCATE'
+                    ),
+                    has_table_privilege(
+                        current_user,
+                        'synthetic.' || %s,
+                        'REFERENCES'
+                    ),
+                    has_table_privilege(
+                        current_user,
+                        'synthetic.' || %s,
+                        'TRIGGER'
+                    )
+                """,
+                (MARKER_TABLE,) * 7,
+            )
+            assert cur.fetchone() == (
+                True, False, True, False, False, False, False, False, False
+            )
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "INSERT INTO synthetic.{table} (marker) VALUES ('UNAUTHORIZED_WRITE')",
+        "UPDATE synthetic.{table} SET marker = 'UNAUTHORIZED_WRITE'",
+        "DELETE FROM synthetic.{table}",
+        "TRUNCATE TABLE synthetic.{table}",
+    ],
+)
+def test_runtime_cannot_mutate_its_synthetic_marker(statement):
+    # MARKER_TABLE is a fixed identifier supplied by the checked-in CI Compose
+    # definition, not user input. Validate it before interpolation.
+    assert MARKER_TABLE.replace("_", "").isalnum()
+    with connect() as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute(statement.format(table=MARKER_TABLE))
+        conn.rollback()
+
+
+def test_runtime_cannot_create_schema_or_table():
+    with connect() as conn:
+        with conn.cursor() as cur:
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute("CREATE SCHEMA aud004_runtime_must_not_create")
+        conn.rollback()
+        with conn.cursor() as cur:
+            with pytest.raises(psycopg2.errors.InsufficientPrivilege):
+                cur.execute(
+                    "CREATE TABLE synthetic.aud004_runtime_must_not_create "
+                    "(id integer)"
+                )
+        conn.rollback()
