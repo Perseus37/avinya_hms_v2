@@ -861,3 +861,22 @@ Source-traced on 13 November 2026:
 - Do not generate or apply final grant SQL from ORM metadata alone. PostgreSQL database-per-tenant remains invariant.
 
 No runtime/SQL/migration/Compose/credential/secret/database/production change; no patient or financial records accessed or mutated.
+
+
+### Section 31 — Disposable three-database Alembic/catalog characterization harness added
+
+Implementation status on 13 November 2026:
+- PR #71 now contains `deployments/aud004-proof/test_migrated_catalog_inventory.py` and a dedicated `aud004-migrated-catalog-proof` job in `.github/workflows/on-demand-validation.yml`.
+- The job is restricted to the existing manually-dispatched `reconciliation` scope and uses a fresh PostgreSQL 17 GitHub Actions service with synthetic CI credentials. It creates three uniquely named databases and refuses to reuse any pre-existing database with those names.
+- It invokes the real tenant Alembic graph independently against tenant A and tenant B, and the real CP Alembic graph against the CP database. It does not use `metadata.create_all()`, bootstrap the product, seed hospital data, or connect to any non-disposable server.
+- It asserts each database has Alembic version state and that tenant A/B migration version sets match. It captures sorted ORM metadata separately from the live database catalogs.
+- The report captures schemas, tables, views/materialized views, columns, constraints, indexes, enum labels, sequences, migration versions, object owners, extensions, functions (including security mode/configuration/owner/definition), triggers and trigger functions, RLS policies, table grants, default ACLs, role memberships, database ACL and schema ACL. It records metadata-to-catalog table deltas rather than silently treating them as approved.
+- The workflow uploads the JSON report as a short-retention CI artifact. It contains catalog definitions and ownership/ACL metadata, not application rows or secrets.
+
+#### Current verification boundary
+- The new source files and workflow insertion were fetched again from the PR branch and their blob hashes verified. The PR head is updated and remains draft/open/unmerged.
+- This GitHub connection does not expose a workflow-dispatch action. Therefore the new job has **not** yet been executed in this batch; no successful migration run or catalog artifact is claimed.
+- Migration failures, model/catalog deltas, and PostgreSQL version compatibility remain unknown until the workflow is manually dispatched on the PR branch and its logs/artifact are reviewed.
+- The test is characterization only. It does not yet prove raw SQL append-only denial, least-privilege role behavior, restore parity, or complete cluster-global/large-object ACL semantics. Those remain separate gates.
+
+No production/runtime/SQL/migration/Compose/credential/secret/database/production change. Only test code and an on-demand CI workflow job were added. PostgreSQL database-per-tenant remains invariant.
