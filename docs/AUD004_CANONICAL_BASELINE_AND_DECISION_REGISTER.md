@@ -418,3 +418,19 @@ Key conclusions:
 - Federation discovery and source-side import reads are cross-tenant access paths; source data release must execute inside the source tenant boundary, while destination writes use destination identity.
 
 Section 15 records the call-site table, classifications and negative-test acceptance criteria. This confirms that the next architecture decision is workload/process isolation (or a rigorously constrained broker), not simply a replacement role SQL file. No runtime, SQL, migration, Compose, credentials, database, patient data or production setting changed. PR #70 remains draft/open/unmerged.
+
+## 31. Compose workload topology and minimum isolation boundaries (2026-11-13)
+
+The least-privilege contract Section 16 now maps the checked-in development and production Compose services, Dockerfile entrypoints, bootstrap behavior, exporter configuration and host backup/restore scripts to their required database identities and workload boundaries.
+
+Key findings:
+- Production `api`, `worker`, `hl7-listener`, `onboarding-portal` and `db-init` all receive the same `.env.production`; they are separate containers but not separate PostgreSQL credential boundaries.
+- The onboarding portal is not CP-only today: inspected CP fleet/support/migration routes can instantiate the shared tenant engine registry.
+- The API and worker mount the shared backup volume read-write; onboarding also mounts it read-write. These are unnecessary by default for the intended workload boundaries and require explicit justification.
+- Production `postgres-exporter` uses the shared `POSTGRES_USER`/`POSTGRES_PASSWORD` rather than a dedicated monitoring identity.
+- Production Compose does not declare the development `backup-sidecar` or `backup-vault`; host backup/restore scripts are separate execution paths. The actual production scheduler, host, secrets and storage isolation remain unverified.
+- Important bootstrap behavior: production runs `bootstrap.py --apply-roles`, but the inspected `bootstrap_system(apply_roles=True)` continues after role application into physical DB provisioning, CP/tenant migrations and seeding. This is not a roles-only command.
+
+Section 16 defines the current-to-target matrix for DB, API, CP portal, worker, HL7 ingress, db-init, exporter, development backup/vault services, host backup/restore, Redis and non-DB-facing services, plus the minimum safe implementation sequence. It explicitly retains PostgreSQL **database-per-tenant**.
+
+Disposition: this is static repository evidence and a proposed topology contract, not proof of deployed environment, actual grants, production scheduler, host controls, network policy or runtime secret isolation. No Compose, Dockerfile, runtime, SQL, migration, credential, database, storage or production setting changed. PR #70 remains draft/open/unmerged.
