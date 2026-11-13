@@ -154,7 +154,7 @@ def test_runtime_has_no_membership_in_predefined_or_privileged_roles(identity):
                 """
                 SELECT r.rolname
                 FROM pg_roles AS r
-                WHERE r.rolname LIKE 'pg\\_%' ESCAPE '\\'
+                WHERE r.rolname LIKE 'pg!_%' ESCAPE '!'
                   AND r.rolname <> 'pg_database_owner'
                   AND pg_has_role(current_user, r.oid, 'MEMBER')
                 UNION
