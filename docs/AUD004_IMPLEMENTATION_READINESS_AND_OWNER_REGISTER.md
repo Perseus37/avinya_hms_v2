@@ -1123,3 +1123,34 @@ Inspected the backup-related service definitions in `docker-compose.yml` at sour
 7. Keep tenant backup encryption keys and PostgreSQL database access out of the vault-copy identity. Preserve PostgreSQL **database-per-tenant**; this finding does not justify changing database topology.
 
 No Compose/runtime code, tests, volumes, secrets or deployment settings were changed or executed. This is a static configuration review of the cited source snapshot, not proof of effective production mounts or permissions. PR #70 remains the consolidated draft/open report; no new PR was created.
+
+
+### 11.19 Off-host backup delivery is not a uniform completion condition — 2026-11-13
+
+Compared the scheduled backup cycle, manual backup endpoint, S3/remote delivery helper and \`tests/test_45_offhost_backups_and_restore_drills.py\` at source commit \`20b8a5e48518c81820a7e28494fd73aeda33b46f\`.
+
+#### Confirmed source behavior
+
+1. **Manual backup skips off-host delivery.** \`trigger_manual_backup_snapshot()\` in \`backend/control_plane/api/routers/fleet_ops.py\` calls \`_dump_and_encrypt(tenant_db_name, raw_key, backup_dir)\`, then records \`BACKUP_COMPLETED\`. It does not call \`deliver_backup_offhost()\`. Therefore a manually triggered snapshot can be reported as completed after local artifact creation without being copied to the configured remote directory or S3 target.
+2. **Scheduled cycle does not enforce off-host success.** \`run_backup_cycle()\` calls \`deliver_backup_offhost()\` but does not inspect its returned \`delivered\` field before incrementing the cycle count. The helper reports disabled delivery as \`delivered: false\`, and catches S3 upload errors into a result with \`delivered: false\`; these outcomes do not raise to the caller. The cycle can therefore count a local encrypted dump as a completed backup even when configured off-host delivery failed.
+3. **S3 path has no application-level post-upload verification in this helper.** The code calls \`upload_file()\` for the artifact and checksum sidecar and marks delivery true after both calls return. It does not read the uploaded objects back, compare their bytes/checksum, or request/configure object-lock retention/versioning in this function. Bucket policy, versioning and object-lock settings may exist outside this repository and were not inspected; no claim is made that the deployed bucket lacks them.
+4. **Existing tests do not cover the completion contract.** \`tests/test_45_offhost_backups_and_restore_drills.py\` verifies remote-directory copy/checksum behavior and mocks S3 to assert that two \`upload_file()\` calls occur. It does not test S3 upload failure propagation into \`run_backup_cycle()\`, read-after-write verification, object-lock/retention evidence, or the manual backup endpoint's off-host behavior.
+
+#### Reliability and recovery implications
+
+- A \`BACKUP_COMPLETED\` audit event from the manual endpoint currently means the local encrypted snapshot was created; it does not mean the configured off-host copy exists.
+- A scheduled cycle's returned count can represent local dump creation rather than successful completion of the configured disaster-recovery delivery requirement.
+- S3 SDK upload-call success is evidence that the calls returned without raising, not independent evidence that the expected artifact and trusted metadata are retrievable, correctly bound to the tenant, or protected against deletion/overwrite.
+- This is a source-code and test-coverage finding. Effective S3 bucket policy, object-lock retention, replication, IAM boundaries and remote storage behavior require deployment-side evidence.
+
+#### Required remediation and proof
+
+1. Define distinct lifecycle states and audit events for local snapshot creation, off-host upload acceptance, remote verification and immutable-retention confirmation. Do not label the overall backup as off-host complete until the required configured destination has passed its verification gate.
+2. Reuse one tenant-bound delivery path from both scheduled and manual backup flows. Manual backup must either deliver and verify off-host or explicitly report that it created a local-only snapshot; do not silently imply DR completion.
+3. Make scheduled cycle accounting distinguish local snapshots from off-host-complete snapshots. When off-host delivery is enabled and required, a false delivery result must be surfaced and counted as a delivery failure rather than silently treated as full success.
+4. For S3, verify the uploaded artifact and manifest/checksum through a trusted read-after-write or equivalent provider-supported integrity mechanism. Bind tenant/database/artifact identity in protected metadata; do not treat a colocated mutable SHA-256 sidecar as an authenticity control.
+5. Obtain deployment evidence for bucket versioning, object-lock mode/retention, delete/overwrite permissions, replication, encryption and the exact IAM identity used by the backup writer. Keep vault administration separate from ordinary application identities.
+6. Add tests for: manual backup with off-host enabled and disabled; remote/S3 failure reflected in task status and cycle accounting; partial upload (artifact succeeds, checksum fails); uploaded-object verification failure; idempotent retry; and no false \`BACKUP_COMPLETED\`/DR-complete event before the required delivery gate.
+7. Preserve tenant separation and PostgreSQL **database-per-tenant**. This finding requires consistent backup lifecycle semantics, not a database-topology change.
+
+No runtime code, tests, S3 configuration, bucket policy, credentials or deployment settings were changed or executed. This is a static source/test review; production storage controls remain unverified. PR #70 remains the consolidated draft/open report; no new PR was created.
