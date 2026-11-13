@@ -153,7 +153,17 @@ The receipt/completeness guard in PR #19 remains a positive remediation: import 
 
 A read-only review note with this trace was added to PR #19. The two core data-integrity gaps are therefore confirmed in the current code, not just design concerns. PR #19 should remain unmerged until durable operation identity, both uniqueness barriers, fencing, recoverable pointer synchronization, migration, PostgreSQL concurrency/failure-injection tests and independent review are complete. AUD-004's source-owned database boundary remains a separate release blocker.
 
-## 10. Evidence gates before implementation or release
+## 10. Current PR and CI evidence snapshot — 2026-11-13
+
+Live GitHub metadata was rechecked after the PR #19 source trace:
+
+- **PR #19** remains open, non-draft, based on `main`, head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; GitHub reports `mergeable_state=blocked`. The latest recorded check-run set has six successful jobs (Python tests/PostgreSQL 17 migrations, hospital UI, onboarding UI, Compose validation, image build/scan, and scanned-image handoff) and one skipped job (`Publish, attest, and verify release images`). These CI successes do not prove the missing import recovery invariants and do not constitute production approval.
+- **PR #23** remains open/draft and is stacked on PR #19's branch, not `main`. Its current head is `1da364b3954da3fa4d4ebd8acc7decd4c28f13ca`. The PR has no submitted GitHub reviews. The design-review comment is feedback, not approval.
+- **PR #70** remains open/draft, based on `main`, with the current canonical-document commit as its head. This register is still a proposal pending independent review and merge; it is not yet the repository's accepted baseline on `main`.
+
+The PR #19 check-run snapshot is tied to the exact head listed above. Recheck CI after any subsequent commit. A skipped image publication/attestation job must not be described as a successful release-image publication. No PR was merged or closed in this review.
+
+## 11. Evidence gates before implementation or release
 
 1. Formalize the database-per-tenant identity ADR and assign accountable database/security/platform owners.
 2. Approve the source-owned boundary and remove all direct foreign-tenant database sessions from runtime paths.
@@ -168,7 +178,7 @@ A read-only review note with this trace was added to PR #19. The two core data-i
 
 AUD-004 implementation remains blocked until the Critical and High items are resolved with objective evidence and independent sign-off.
 
-## 11. Non-authorization and change control
+## 12. Non-authorization and change control
 
 This is a documentation consolidation only. It does not authorize runtime code changes, SQL, migrations, PostgreSQL role/ACL/network/secret changes, production or patient-data access, partner onboarding, trust provisioning, federation activation, emergency access, pilot, deployment, release or merge.
 
