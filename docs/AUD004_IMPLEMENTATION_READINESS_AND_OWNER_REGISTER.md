@@ -802,3 +802,31 @@ The queue and worker source snapshots were fetched again from the default branch
 **No runtime change is authorized or made by this inventory.** In particular, do not simply set `sync_fallback=False` globally without reviewing every caller's retry/error semantics, and do not split the worker until task routing, deployment service definitions, secrets and operational ownership are reviewed together.
 
 This source inspection still does not prove which task names are currently enqueued by each deployed API process or what credentials each deployed container receives. Enqueue call-site and deployment-environment mapping remain required evidence. No production or development database, credential, queue, worker deployment, task payload or patient data was changed.
+
+
+### 11.8 Enqueue caller and production service mapping — 2026-11-13
+
+A targeted source and deployment revalidation was performed after Section 11.7. The following exact default-branch snapshots were inspected:
+
+| Source file | Fetched blob | Exact code evidence | Security / operational implication |
+|---|---|---|---|
+| `backend/domains/privacy/router.py` | `e63ec483c6aec0f5e8568b82885e5f0b68d68a31` | Lines 722–739 import `enqueue_task` and enqueue `privacy.retention.execute` without specifying `sync_fallback`. | The retention API route inherits the default `sync_fallback=True`. If Redis enqueue fails, the API process can execute the registered tenant-bound retention handler synchronously. |
+| `backend/core/queue.py` | `aad0c663e52e7a73d7261658f5ecc1889b7e36b7` | Lines 69–76 set `sync_fallback=True` by default; lines 130–134 invoke the registered handler on enqueue failure. Lines 409–455 show the fleet-wide scheduled sweep querying active tenants and enqueueing `privacy.retention.execute` without overriding the default. | The sweep's per-tenant child task can also execute synchronously inside the process running the sweep if Redis fails. This is distinct from the periodic scheduler enqueue in the worker. |
+| `backend/worker.py` | `b0fb87568caab841c6557082f885ca39bbb78ca0` | Lines 79–87 enqueue `privacy.retention.scheduled_daily_sweep` with `sync_fallback=False`; lines 101–112 execute dequeued handlers in the worker process. | The worker's periodic scheduler entry point correctly opts out of synchronous fallback, but its handler later enqueues tenant execution with the default fallback. The single worker still hosts both scheduler and tenant execution handlers. |
+| `docker-compose.prod.yml` | `bfce52948c508e137875a0be2af09ae11178e78f` | API lines 226–230, HL7 listener lines 289–293, worker lines 328–332 and onboarding portal lines 368–372 each load `.env.production`. | These production service definitions share the same environment-file source. This is evidence of shared configuration/credential exposure at the Compose definition level, not proof of the actual values, effective DB grants, or runtime secret-provider policy. |
+| `docker-compose.yml` | `0faced7760516a84ec096f49ea84ec1c5a8d65bc` | Worker lines 146–156 and onboarding portal lines 173–179 load the same `.env`; other service definitions also use that file. | The development Compose topology has the same broad shared-env pattern. It is not evidence of production runtime state. |
+
+#### 11.8.1 Bounded call-site conclusion
+
+The targeted file inspection confirms the retention API route and the retention sweep's child-task enqueue as concrete enqueue paths. The repository code-search endpoint did not return usable indexed matches for `enqueue_task(` or `sync_fallback`; therefore this pass is **not a complete repository-wide inventory of every enqueue caller**. No claim is made that these are the only call sites. A complete caller inventory and handler import-closure review remain open before any task/worker split or fallback-policy change.
+
+#### 11.8.2 Required disposition
+
+1. Treat retention async enqueue as a caller-process execution path during Redis failure until the contract is changed and tested. Do not represent it as worker-only execution.
+2. Treat the scheduled sweep as a fleet-capable process: it reads control-plane tenant metadata and opens tenant databases. It is not a candidate for the email-only worker.
+3. The tenant execution handler should ultimately receive a tenant-bound identity; it must not resolve arbitrary tenant DB credentials from a fleet-wide credential bundle.
+4. An email-only process must have a minimal import closure and no tenant/control-plane database credentials. Merely separating task names or handlers is insufficient.
+5. Before changing fallback defaults, map every caller's failure semantics, retry/idempotency behavior and user-visible response contract. Do not globally disable fallback as a shortcut.
+6. Before changing Compose or secret assignments, inventory actual deployed environment values and secret-provider/workload identity policies. The shared `.env.production` reference alone does not prove the effective credentials or PostgreSQL ACLs.
+
+No queue policy, worker code, runtime behavior, Compose file, environment file, secret, credential, database, migration, or patient data was changed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the sole consolidated readiness report for this work; no new PR was created.
