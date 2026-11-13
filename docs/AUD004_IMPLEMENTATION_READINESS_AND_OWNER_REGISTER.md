@@ -1316,3 +1316,32 @@ No runtime/SQL/migration/Compose/credential/secret/database/production change. N
 **Gate:** source trace is more complete, but AUD-004 is still blocked on deterministic ORM-vs-catalog inventory, SQL/trigger proof, independent PostgreSQL workload-role tests, backup/restore proof, and production identity/network/secret validation. No final grant SQL is approved.
 
 No runtime/SQL/migration/Compose/credential/secret/database/production change. No patient or financial data access or mutation. PostgreSQL database-per-tenant remains invariant.
+
+### Section 44 — Metadata-root and live-catalog proof gap
+
+**Evidence batch:** inspection of both Alembic environments, both declarative bases, CP ORM models, tenant audit model and current production role SQL. Source-only; no live PostgreSQL catalog access.
+
+#### Established facts
+- Tenant Alembic loads 23 domain model modules into tenant `Base.metadata`.
+- CP Alembic uses separate `ControlBase.metadata`, currently containing 11 CP table declarations.
+- CP and tenant migrations use separate metadata roots and the same transaction-scoped advisory-lock key.
+- `ControlPlaneAuditLog` immutability in the inspected CP model is enforced through SQLAlchemy ORM event listeners, not demonstrated DB triggers.
+- The inspected `SecurityAuditExportRegister` model's local trigger DDL is conditional on SQLite. PostgreSQL protection must be demonstrated from migration source and live catalog, not inferred from this file.
+- Current `deployments/postgres-roles.sql` still contains blanket app grants on all public tables/sequences in the literal `postgres` database, cluster-wide `pg_read_all_data` for backup, and `pg_monitor` for exporter. No per-tenant least-privilege grant topology is established by this file.
+
+#### Blocking proof
+1. Export both metadata roots deterministically and compare against fresh migrated CP + two tenant database catalogs.
+2. Include migration-only/script-created objects, functions, triggers, sequences, views, materialized views, extensions, RLS, large objects, owners, ACLs, memberships and PUBLIC grants.
+3. Resolve each append-only claim with PostgreSQL trigger/function definitions and negative raw SQL UPDATE/DELETE tests.
+4. Prove clean restore recreates the same object/owner/ACL/default-privilege inventory before cutover.
+5. Run tenant A / tenant B / CP negative connection and object-access tests with the actual workload identities.
+
+#### Owner and acceptance criteria
+- **DBA/platform:** deliver catalog snapshots from disposable migrated CP + two tenant DBs, with secrets redacted and no patient rows exported.
+- **Backend:** provide stable metadata export and explain every migration-only or script-created object.
+- **Security:** independently verify ACLs, ownership, memberships, PUBLIC privileges, trigger bypass resistance and raw SQL denial.
+- **QA:** preserve the comparison as repeatable CI evidence and fail on unexplained drift.
+
+**Gate:** no production grant generation until metadata-vs-catalog deltas and workload-role proofs are complete. The current source trace narrows the inventory boundary but is not an actual PostgreSQL inventory or permission certification.
+
+No production/runtime/SQL/migration/Compose/credential/secret/database change. PostgreSQL database-per-tenant remains invariant.
