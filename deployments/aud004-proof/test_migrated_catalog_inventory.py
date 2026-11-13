@@ -275,6 +275,7 @@ def _metadata_manifest() -> dict:
 
 def test_migrate_and_capture_three_independent_postgres_catalogs(tmp_path: Path) -> None:
     """Run real migration graphs only against three newly-created CI databases."""
+    os.environ.update(_base_environment())
     _create_empty_databases()
     _run_alembic("backend/control_plane/alembic.ini", DATABASES["control_plane"])
     _run_alembic("backend/alembic.ini", DATABASES["tenant_a"])
