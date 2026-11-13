@@ -822,3 +822,42 @@ Source-traced on 13 November 2026:
 6. Repeat the comparison after migrations and after restore; include a second tenant to prove database-per-tenant isolation and prevent cross-database inventory assumptions.
 
 No live database was queried in this source-only pass. No final grant SQL is approved. No runtime/SQL/migration/Compose/credential/secret/database/production change; no patient or financial records accessed or mutated.
+
+
+### Section 30 — Disposable PostgreSQL proof harness boundary and migration-catalog execution plan
+
+Source-traced on 13 November 2026:
+- `.github/workflows/on-demand-validation.yml`
+- `deployments/aud004-proof/compose.yaml`
+- `deployments/aud004-proof/test_production_role_bootstrap.py`
+- `backend/alembic.ini`, `backend/alembic/env.py`
+- `backend/control_plane/alembic.ini`, `backend/control_plane/alembic/env.py`
+
+#### 30.1 Existing CI proof boundaries
+- The on-demand workflow has a dedicated PostgreSQL 17 service for the production role-bootstrap characterization test. That test creates three synthetic databases and executes the actual `apply_database_roles()` function extracted from `backend/scripts/bootstrap.py`; it proves the current role bootstrap's unsafe behavior. It does not run either Alembic environment or inspect migrated application catalogs.
+- A separate Docker Compose proof project provisions a disposable PostgreSQL service and runs tenant A, tenant B and CP identity probes in separate containers. Its current fixture is intentionally small and marker-table oriented; it proves database connection/object isolation for its synthetic role setup, not the production Alembic object inventory.
+- The workflow's current `reconciliation` scope runs these AUD-004 jobs, while the normal backend scope runs the broader test suite. The existing harness therefore provides a safe disposable-PostgreSQL foundation, but it is not yet the requested migration/catalog acceptance test.
+
+#### 30.2 Migration execution constraints
+- Tenant Alembic reads its URL from Alembic config, `DATABASE_URL`, or application settings; its metadata root is populated by importing 23 tenant model modules.
+- CP Alembic resolves its URL from config, `DATABASE_URL`, or the application database URL with the configured CP database name; it uses the separate CP metadata root.
+- Both online environments execute real migration revisions and take the shared transaction-scoped advisory lock. A test must explicitly set each target URL and must not inherit an ambient developer, staging or production URL.
+- The existing CI role-bootstrap job's Postgres service credentials and the separate Compose proof credentials are synthetic CI-only identities. Reuse neither as application production credentials nor as evidence that a migrated catalog has been captured.
+
+#### 30.3 Safe next implementation sequence
+1. Add a separate, explicitly named migration/catalog proof job to the existing AUD-004 workflow; keep it on the isolated PostgreSQL 17 service or a uniquely named disposable Compose project with preflight refusal of pre-existing resources.
+2. Generate ephemeral setup and workload credentials at job runtime; do not place them in repository files, workflow literals or artifacts. Ensure the job has no production secrets and no network path to any non-disposable database.
+3. Create one CP database and two tenant databases with explicit synthetic names. Run the CP Alembic upgrade against only the CP URL, then run tenant Alembic independently against tenant A and tenant B URLs. Assert each database has the expected Alembic version state before catalog capture.
+4. Export sorted metadata manifests from the actual tenant and CP declarative roots. Capture live catalogs separately from all three migrated databases, including object definitions, ownership, ACLs, default ACLs, role memberships, PUBLIC privileges, extensions, RLS, large objects, views, triggers and function security attributes.
+5. Compare ORM metadata to each live catalog without flattening databases into a schema-per-tenant model. Keep tenant A and B as separate PostgreSQL databases; compare their object inventories independently and explain expected database-local differences.
+6. Run raw SQL append-only UPDATE/DELETE denial tests only after the migration has established the relevant object/trigger/ACL; report missing protection as a failing proof, not as a skipped assertion.
+7. Preserve redacted, deterministic manifests and concise diff summaries as CI artifacts. Never export application rows, secrets, connection strings or patient/financial data.
+8. Repeat the catalog and ACL capture after a disposable backup/restore drill; compare owners, ACLs, default privileges, extensions, triggers and function definitions before calling restore parity established.
+
+#### 30.4 Explicit non-claims
+- The current successful production role-bootstrap test is not an Alembic migration test and does not prove the migrated catalog inventory.
+- The current tenant A/B/CP identity fixture is not proof that the real application schema, migrations, triggers or role grants are correct.
+- No catalog snapshots, migration execution, restore comparison or production privilege certification were performed in this source-only batch.
+- Do not generate or apply final grant SQL from ORM metadata alone. PostgreSQL database-per-tenant remains invariant.
+
+No runtime/SQL/migration/Compose/credential/secret/database/production change; no patient or financial records accessed or mutated.
