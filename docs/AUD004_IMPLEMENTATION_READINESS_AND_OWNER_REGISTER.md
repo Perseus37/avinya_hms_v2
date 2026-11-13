@@ -1492,3 +1492,14 @@ PR #71 corrects this in commit `3b3dd76580cb6e6ec0bf9b1ff6e820425e07ab30`: the a
 **Validation status:** the correction has not yet been run. A new manual reconciliation dispatch on the latest PR #71 head is required. The successful migration steps are now directly observed on PostgreSQL 17; full catalog characterization and artifact review remain pending. AUD-004 remains blocked.
 
 No production/runtime/SQL/migration/Compose/credential/secret/database/role/ACL/topology change. Only a disposable catalog test assertion changed. PostgreSQL database-per-tenant remains invariant.
+
+
+### Section 57 — Control-plane audit-log immutability has no PostgreSQL migration guard
+
+A direct review of the control-plane baseline migration `backend/control_plane/alembic/versions/95769c3ab4b3_baseline.py` confirms that `control_plane_audit_logs` is created with its primary key and ordinary lookup indexes only. The migration does not install an UPDATE/DELETE trigger, revoke mutation privileges, or establish a dedicated append-only database identity. The model `backend/control_plane/models.py` attaches SQLAlchemy `before_update` and `before_delete` listeners that raise `PermissionError`; those listeners protect ORM unit-of-work changes only and are bypassable by raw SQL, SQLAlchemy Core/bulk operations, or another database client.
+
+This differs from the tenant `security_audit_export_register`, for which a PostgreSQL migration-installed trigger is now present and covered by the disposable tenant catalog test. No equivalent PostgreSQL guard has been found for the control-plane audit log in the baseline migration reviewed.
+
+**Required proof/remediation:** decide whether CP audit rows are truly append-only evidence. If yes, implement only under a separately approved migration/remediation change: database-level UPDATE/DELETE protection plus a CP runtime identity with SELECT/INSERT but no UPDATE/DELETE/TRUNCATE/ownership/trigger-disable authority. Add a disposable CP fixture row and raw SQL UPDATE/DELETE/TRUNCATE attempts under the actual intended CP runtime identity; verify the expected denial and that permitted audit insertion still works. Also test the control-plane audit route's actor/target attribution and ensure no application operation needs to mutate existing audit rows. Do not treat ORM event listeners as the database security boundary.
+
+**Boundary:** this is source inspection only. No migration, trigger, grant, role, runtime, or production change was made. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
