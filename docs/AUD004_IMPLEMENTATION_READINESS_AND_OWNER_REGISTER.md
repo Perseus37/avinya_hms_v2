@@ -1066,3 +1066,30 @@ A focused read of the complete restore endpoint (source commit `20b8a5e48518c818
 - Preserve the existing fail-closed rule. Do not simply remove the safety snapshot or catch-and-continue.
 
 No runtime code or tests were changed or executed. PostgreSQL **database-per-tenant** remains unchanged; PR #70 remains draft/open; no new PR was created.
+
+### 11.17 Backup catalog versus restore authorization and integrity — 2026-11-13
+
+A follow-up compared the tenant backup listing, manual backup writer, restore endpoint and existing backup tests at source commit `20b8a5e48518c81820a7e28494fd73aeda33b46f`.
+
+#### Confirmed source behavior
+
+- `list_tenant_backup_snapshots(slug, ...)` enumerates only files matching `{tenant.db_name}_*.dump.enc` under the shared `backups` directory. This is a tenant-scoped presentation/catalog filter.
+- `_dump_and_encrypt(db_name, ...)` names artifacts using `{db_name}_{UTC timestamp}.dump.enc` and writes a sibling `.sha256` sidecar after the encrypted artifact has been atomically renamed into place.
+- `restore_tenant_from_snapshot(slug, filename, ...)` does **not** reuse the catalog filter or check that the selected filename begins with the requested tenant's database name. It accepts any existing basename under `backups/`.
+- The restore handler does not read or verify the corresponding `.sha256` sidecar before terminating connections. The restore helper decrypts the artifact with the selected tenant's key later, after connection termination; Fernet authentication is useful cryptographic protection, but it does not replace explicit tenant/artifact authorization or the pre-disruption integrity gate.
+- The current DR tests verify checksum behavior in `restore_drill` and off-host delivery, but the inspected test module does not exercise the control-plane restore route's catalog/restore authorization boundary.
+
+#### Risk and required remediation
+
+The UI/list endpoint's tenant-specific filename filter is not an authorization control. A caller with restore-route access can supply the name of another existing artifact in the shared directory. A mismatched encryption key may cause decryption to fail, but the attempt can still terminate the requested tenant's database connections first. This is a cross-tenant operational disruption risk; the inspected source does not prove that foreign data can be successfully restored.
+
+Before any connection termination, the restore flow should:
+1. Resolve the requested artifact through a tenant-bound backup catalog/manifest, or at minimum enforce the expected database-name prefix as an additional check (not the sole trust anchor).
+2. Verify manifest tenant ID, database name, artifact identity, encryption/key version and checksum against trusted metadata.
+3. Reject missing, mismatched or unverifiable metadata without terminating connections or invoking restore.
+4. Create and verify the pre-restore safety snapshot, then terminate connections, then restore.
+5. Add route-level tests for foreign-tenant filename rejection, missing/tampered checksum, malformed or mismatched manifest, and assertions that every rejection occurs before connection termination.
+
+The existing filename convention and SHA-256 sidecar can support integrity checks, but a mutable sidecar stored beside the artifact is not by itself a trusted ownership manifest. A signed manifest or independently protected catalog record is needed for a strong tenant binding.
+
+No runtime code or tests were changed or executed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the consolidated draft/open report; no new PR was created.
