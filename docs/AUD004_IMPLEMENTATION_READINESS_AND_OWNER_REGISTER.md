@@ -913,3 +913,27 @@ These paths should not be collapsed into a single delivery guarantee without an 
 Add explicit tests for (a) Redis unavailable with the identity enqueue helper, (b) mail provider unavailable during synchronous fallback, (c) direct provisioning provider failure and recovery, (d) duplicate delivery/retry idempotency, and (e) post-commit delivery failure without losing the notification intent. Keep provisioning welcome email free of generated credentials. No runtime code or tests were modified in this documentation-only pass.
 
 No runtime, queue, worker, provisioning, email, Compose, secret, credential, database, migration or patient data was changed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the consolidated readiness report; no new PR was created.
+
+
+### 11.12 Full test-tree literal dispatch scan — 2026-11-13
+
+A bounded but complete **test-tree file inventory scan** was completed against source commit `20b8a5e48518c81820a7e28494fd73aeda33b46f`. The recursive Git tree contained 85 Python files under `tests/`; all 85 were fetched and scanned. This extends the earlier focused review of queue, mail, privacy, identity and deployment tests.
+
+| Scope | Scan method | Result |
+|---|---|---|
+| All 85 tracked Python test files under `tests/` | Literal pattern scan for `enqueue_task`, `enqueue_email`, `sync_fallback`, `registry.register`, `email.send`, `privacy.retention`, `send_email`, `BackgroundTasks`, `asyncio.create_task` and `create_task(` | No new queue or mail dispatch implementation/caller was identified outside the already documented queue/mail tests. |
+| `tests/test_16_websocket_and_realtime_events.py` | Same scan | One `asyncio.create_task(...)` occurrence starts the ASGI application task in a WebSocket test; it is not evidence of a background business-task dispatcher. |
+| `tests/test_40_background_worker_and_queue.py` and `tests/test_24_mail_and_document_profiles.py` | Previously inspected in detail | Existing queue mechanics and credential-exclusion coverage remain as described in Section 11.11; no Redis-down fallback or mail-provider-failure recovery proof was found. |
+
+#### 11.12.1 Interpretation and limits
+
+- The test-tree inventory is complete for Python files present under `tests/` at the inspected source commit.
+- The scan is lexical, not a Python AST/data-flow proof. It can miss aliased imports, dynamically assembled task names, indirect wrappers, plugin registration and behavior expressed without these literal strings.
+- This test-tree scan does **not** complete the backend-wide caller inventory. Production source modules, scripts, deployment runtime configuration and import closures still require a reproducible repository-wide scan and execution-level tracing.
+- The only new occurrence of `asyncio.create_task` in the newly scanned test batches is the WebSocket ASGI harness task; it does not change the queue/email map or justify a runtime change.
+
+#### 11.12.2 Disposition
+
+No additional queue caller, email dispatch path, task registration or test proving Redis-unavailable fallback/recovery was established by this test-tree pass. Retain the Section 11.11 test gaps and the Section 11.10 requirement for a reproducible full-repository scan. Do not change the default `sync_fallback`, introduce a queue split, or claim complete production caller coverage on this evidence alone.
+
+No runtime code, tests, queue policy, worker, Compose file, environment, secret, credential, database, migration or patient data was changed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the existing consolidated report; no new PR was created.
