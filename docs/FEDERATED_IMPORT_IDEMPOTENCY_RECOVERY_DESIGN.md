@@ -256,3 +256,52 @@ The existing receipt migration is the latest known control-plane federation migr
 **Current blockers identified by this audit:** no pointer generation field; no dedicated immutable tenant UUID; receipt FK cascade semantics are unsuitable for durable operation retention; no tenant-local federation correlation model; and existing fleet migration excludes ON_PREM tenants. These are design prerequisites, not proof that a particular live database is missing a migration.
 
 This audit was based on read-only source inspection of PR #19 branch `fix/audit-remediation-clean-main-2026-11-11`; no runtime tests, database queries, migration execution, production changes or patient-data access occurred.
+
+## 11. Normative identity and pointer-generation contract — proposed
+
+This section resolves the two identity prerequisites for implementation planning. It remains a proposal until independently reviewed and explicitly approved.
+
+### 11.1 Immutable tenant identity
+
+Use a dedicated, randomly generated UUID as the canonical federation tenant identity. Do not use branch_code, db_name, subdomain, hospital name, or a caller-supplied value as the immutable identity.
+
+- Add a non-null unique tenant_uuid to TenantRegistry; generate it once during provisioning and backfill existing registry rows with cryptographically random UUIDs in a reviewed control-plane migration.
+- The UUID is immutable after assignment. Enforce this in the persistence boundary (database trigger or equivalent database-enforced rule), not only through ORM conventions.
+- Keep the existing integer TenantRegistry.id as the local relational primary key and preserve existing branch-code/database-name routing. The UUID supplements rather than replaces existing keys.
+- A restore, tenant rename, branch-code change or database rename must preserve the UUID for the same tenant. A genuinely new tenant receives a new UUID. Cloning a control-plane database into a separate environment requires an explicit environment/tenant identity reconciliation procedure; it must not silently create two live installations claiming the same tenant identity.
+- Include the UUID in canonical import identity and provenance records. Never expose it as an authorization credential; it is an identifier, not proof of caller identity.
+
+### 11.2 Source-pointer identity and generation
+
+A pointer is identified by the tuple (tenant_uuid, pointer_id). pointer_id remains the existing control-plane row identity; the UUID prevents accidental identity collision across independently restored or replicated control-plane installations.
+
+- Add a non-null monotonically increasing generation (initial value 1) to GlobalPatientPointer.
+- Increment generation transactionally on every semantic change to the pointer's source identity or routing meaning, including source tenant reassignment, source MRN change, patient-link replacement, or an explicit invalidation/reinstatement. Do not increment for unrelated metadata such as a display-only refresh.
+- All writers must lock the pointer row (SELECT FOR UPDATE or an equivalent conditional update) and update its payload and generation in the same control-plane transaction. A conditional update must require the previously observed generation; zero affected rows means stale state and must be retried from a fresh authorized discovery, not silently overwritten.
+- Never reset or reuse a generation. Deletion must leave a durable tombstone/invalidation record with the last generation and reason category; do not rely on deleting the pointer row to communicate revocation to in-flight operations.
+- A discovery receipt binds the tenant UUID, pointer ID and exact generation. Import revalidates all three, plus current source policy and patient authorization, at consumption time.
+- A generation mismatch invalidates the receipt and prevents a new import attempt from treating the old source pointer as current. If an import operation already has an uncertain destination commit, it enters reconciliation; it must not select a replacement source based on demographic similarity.
+
+### 11.3 Canonical operation identity inputs
+
+The versioned, domain-separated idempotency key must be derived from an unambiguous canonical encoding of: protocol_version, destination tenant_uuid, source tenant_uuid, source pointer_id, source pointer generation, and the immutable transfer-operation identity issued by the control plane.
+
+Use length-prefixed or canonical structured encoding before cryptographic hashing; do not concatenate ambiguous strings. Do not include patient name, phone, date of birth, ABHA, MRN, branch display name, or other demographics in the idempotency key. Store the protocol/key version alongside the digest so future encoding changes do not reinterpret existing operations.
+
+The source pointer generation is a snapshot for the operation, not a mutable pointer to be followed during retry. Reconciliation must verify the destination marker's exact source tenant UUID, pointer ID, generation, protocol version and operation digest before associating an existing patient with the operation.
+
+### 11.4 Backfill, uniqueness and rollout safeguards
+
+- Backfill tenant UUIDs without changing existing tenant IDs, branch codes, database names or tenant database topology. Verify one-to-one uniqueness before making the column non-null.
+- Initialize existing pointer generations to 1; ensure all pointer mutation paths are updated before enabling generation-based receipt validation.
+- Do not infer generations from updated_at; timestamps are not monotonic fencing tokens.
+- Add database constraints for UUID uniqueness/non-nullability and pointer generation positivity. Add a database-enforced immutability guard for assigned tenant UUIDs.
+- Inventory every pointer writer (federation discovery/import, patient registration/linking, privacy deletion/invalidation, administrative repair and migration jobs) and prove each writer increments generation when semantics change.
+- Roll out the control-plane migration first, deploy compatible readers/writers, verify all pointer writers, then enable receipt generation binding. Feature enablement is per environment only after migration-head and writer-coverage checks pass.
+- Existing active operations without generation-bound receipts must expire or be explicitly quarantined; do not silently upgrade their snapshots.
+
+### 11.5 Decisions still requiring independent approval
+
+The proposed UUID and generation contract does not decide the legal retention period for pointer tombstones, the authorization policy for administrative pointer repair, or the control-plane disaster-recovery procedure for UUID collision detection. Those require named owners and explicit decisions. The repository audit has not enumerated every pointer writer or inspected live database contents; those are implementation discovery tasks, not assumed complete.
+
+No runtime implementation, migration, database query, deployment or production operation is authorized by this proposal. PostgreSQL database-per-tenant remains unchanged.
