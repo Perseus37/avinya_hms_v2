@@ -68,9 +68,7 @@ jobs:
           ENVIRONMENT: testing
         run: |
           python -m pytest -q --durations=10 \
-            tests/test_26_reconciliation_governance.py \
-            tests/test_27_reconciliation_governance_regressions.py \
-            tests/test_28_reconciliation_governance_regressions.py
+            tests/test_64_reconciliation_escalation_engine.py
 
       - name: Run backend suite
         if: ${{ inputs.scope == 'backend' || inputs.scope == 'full' }}
@@ -88,18 +86,15 @@ jobs:
     steps:
       - name: Check out selected branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "20"
-
       - name: Build hospital UI
         working-directory: hospital-ui
         run: |
           npm ci --no-audit --no-fund
           npm run build
-
       - name: Test and build onboarding UI
         working-directory: onboarding-ui
         run: |
@@ -115,13 +110,183 @@ jobs:
     steps:
       - name: Check out selected branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
       - name: Validate development Compose configuration
         run: |
           cp .env.example .env
           docker compose --env-file .env -f docker-compose.yml config --quiet
-
       - name: Validate production Compose configuration
         run: |
           cp .env.production.example .env.production
           docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
+
+  aud004-postgres-proof:
+    name: AUD-004 disposable PostgreSQL workload-isolation proof
+    if: ${{ inputs.scope == 'reconciliation' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Refuse pre-existing proof resources
+        id: preflight
+        run: |
+          if docker volume inspect aud004-proof-pgdata >/dev/null 2>&1; then
+            echo "::error::Refusing to reuse existing aud004-proof-pgdata volume"
+            exit 1
+          fi
+          if docker network inspect aud004-proof-only >/dev/null 2>&1; then
+            echo "::error::Refusing to reuse existing aud004-proof-only network"
+            exit 1
+          fi
+          # Inspect Compose labels directly: the Compose file has required secret
+          # variable interpolation, but secrets are intentionally created only
+          # after this preflight succeeds.
+          existing_containers="$(docker ps -a --filter label=com.docker.compose.project=aud004-proof --format '{{.ID}}')"
+          if [ -n "$existing_containers" ]; then
+            echo "::error::Refusing to reuse an existing aud004-proof Compose project"
+            exit 1
+          fi
+          echo "safe_to_cleanup=true" >> "$GITHUB_OUTPUT"
+      - name: Generate disposable credentials and per-workload secret files
+        id: secrets
+        run: |
+          python - <<'PY'
+          import os
+          import secrets
+          import tempfile
+          from pathlib import Path
+
+          directory = Path(tempfile.mkdtemp(prefix="aud004-secrets-"))
+          os.chmod(directory, 0o700)
+          # Publish the path immediately so the always-run cleanup can remove
+          # this directory even if later secret generation fails.
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"AUD004_SECRETS_DIR={directory}\n")
+          values = {
+              "AUD004_SETUP_PASSWORD": secrets.token_urlsafe(32),
+              "AUD004_TENANT_A_PASSWORD": secrets.token_urlsafe(32),
+              "AUD004_TENANT_B_PASSWORD": secrets.token_urlsafe(32),
+              "AUD004_CP_PASSWORD": secrets.token_urlsafe(32),
+          }
+          files = {
+              "tenant_a_db_user": "tenant_a_api_test",
+              "tenant_a_db_password": values["AUD004_TENANT_A_PASSWORD"],
+              "tenant_b_db_user": "tenant_b_api_test",
+              "tenant_b_db_password": values["AUD004_TENANT_B_PASSWORD"],
+              "control_plane_db_user": "control_plane_test",
+              "control_plane_db_password": values["AUD004_CP_PASSWORD"],
+          }
+          for name, value in files.items():
+              path = directory / name
+              path.write_text(value, encoding="utf-8")
+              os.chmod(path, 0o600)
+          # Keep passwords in a mode-0600 Compose interpolation file instead
+          # of GITHUB_ENV: Actions prints step environment variables in logs.
+          env_path = directory / "compose.env"
+          env_path.write_text(
+              "".join(f"{name}={value}\n" for name, value in values.items()),
+              encoding="utf-8",
+          )
+          os.chmod(env_path, 0o600)
+          PY
+      - name: Start isolated PostgreSQL 17 fixture
+        run: docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait postgres
+      - name: Run tenant A identity proof in its own container
+        run: docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps tenant_a_probe
+      - name: Run tenant B identity proof in its own container
+        run: docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps tenant_b_probe
+      - name: Run control-plane identity proof in its own container
+        run: docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps control_plane_probe
+      - name: Tear down only the disposable proof project and secrets
+        if: always() && steps.preflight.outputs.safe_to_cleanup == 'true'
+        run: |
+          if [ -n "${AUD004_SECRETS_DIR:-}" ] && [ -d "$AUD004_SECRETS_DIR" ]; then
+            docker compose --env-file "$AUD004_SECRETS_DIR/compose.env" -p aud004-proof -f deployments/aud004-proof/compose.yaml down --volumes --remove-orphans || true
+            rm -rf -- "$AUD004_SECRETS_DIR"
+          fi
+
+  aud004-migrated-catalog-proof:
+    name: AUD-004 disposable Alembic migration and catalog capture
+    if: ${{ inputs.scope == 'reconciliation' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        env:
+          POSTGRES_USER: aud004_setup
+          POSTGRES_PASSWORD: aud004-disposable-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aud004_setup -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-integrations.txt
+            requirements-dev.txt
+      - name: Install migration and model dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run real Alembic migrations on three disposable databases
+        env:
+          AUD004_PGUSER: aud004_setup
+          AUD004_PGPASSWORD: aud004-disposable-ci-only
+          AUD004_PGHOST: 127.0.0.1
+          AUD004_PGPORT: "5432"
+          AUD004_CATALOG_REPORT: artifacts/aud004-catalog-report.json
+        run: python -m pytest -q -s deployments/aud004-proof/test_migrated_catalog_inventory.py
+      - name: Upload redacted catalog characterization
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aud004-migrated-catalog-report
+          path: artifacts/aud004-catalog-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  aud004-production-role-bootstrap-proof:
+    name: AUD-004 production role-bootstrap function proof
+    if: ${{ inputs.scope == 'reconciliation' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+        env:
+          POSTGRES_USER: aud004_setup
+          POSTGRES_PASSWORD: aud004-disposable-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aud004_setup -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install isolated PostgreSQL client dependency
+        run: python -m pip install --no-cache-dir pytest==9.2.0 psycopg2-binary==2.9.13
+      - name: Execute actual production role-bootstrap function
+        env:
+          AUD004_SETUP_USER: aud004_setup
+          AUD004_SETUP_PASSWORD: aud004-disposable-ci-only
+          AUD004_PGHOST: 127.0.0.1
+          AUD004_PGPORT: "5432"
+        run: python -m pytest -q deployments/aud004-proof/test_production_role_bootstrap.py
