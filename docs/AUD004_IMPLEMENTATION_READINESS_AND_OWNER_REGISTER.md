@@ -830,3 +830,26 @@ The targeted file inspection confirms the retention API route and the retention 
 6. Before changing Compose or secret assignments, inventory actual deployed environment values and secret-provider/workload identity policies. The shared `.env.production` reference alone does not prove the effective credentials or PostgreSQL ACLs.
 
 No queue policy, worker code, runtime behavior, Compose file, environment file, secret, credential, database, migration, or patient data was changed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the sole consolidated readiness report for this work; no new PR was created.
+
+
+### 11.9 Email enqueue and API-process fallback — 2026-11-13
+
+The email path was inspected separately because an email-only worker is a candidate workload for reduced database capability.
+
+| Source file | Fetched blob | Exact code evidence | Security / operational implication |
+|---|---|---|---|
+| `backend/core/mailer.py` | `689acd3a6d1de0078f43a13a84431237012cec7b` | Lines 83–105 define `enqueue_email`, import `backend.core.queue.enqueue_task`, enqueue `email.send`, and explicitly pass `sync_fallback=True`. | If Redis enqueue fails, `enqueue_task` invokes the email handler in the calling API process. Email delivery is not strictly worker-only. |
+| `backend/domains/identity/auth_router.py` | `fae5f7fc1d19af76360059365c56ad18461106db` | Lines 40–54 import `enqueue_email` and route normal dispatch through `_dispatch_email`; lines 329, 497, 677, 806 and 959 call that helper for security alerts, password reset, account unlock and MFA enrollment messages. | The authentication API is a confirmed email enqueue caller. Several of these paths run after DB state changes/commit, so queue failure behavior and delivery guarantees must be treated as part of the auth workflow contract. |
+| `backend/domains/identity/auth_router.py` | `fae5f7fc1d19af76360059365c56ad18461106db` | Lines 46–55 show `_dispatch_email` catches and suppresses enqueue exceptions; some callers also wrap dispatch in an additional catch. | The API may return its normal response despite a failed enqueue when Redis is unavailable and synchronous send fails; the fallback handler logs and suppresses delivery exceptions internally. This behavior needs explicit product/security semantics and tests before changing it. |
+| `backend/core/queue.py` | `aad0c663e52e7a73d7261658f5ecc1889b7e36b7` | Lines 302–322 register `email.send`; the handler imports `backend.core.mailer.send_email` and performs provider delivery. | The same queue module that imports DB-capable shared database components registers the email handler. A separate email process must not import this module in its current form. |
+
+#### 11.9.1 Email workload disposition
+
+The current design has two independent barriers to a database-free email worker:
+
+1. The shared queue module imports control-plane and tenant-engine database capabilities at module import time.
+2. The email enqueue helper permits API-process synchronous delivery on Redis failure.
+
+A safe separation requires a queue/dispatch module whose import closure is database-free, an email worker with only mail-provider and queue credentials, and an explicit failure contract for Redis outage (durable retry/outbox, or a deliberately synchronous fallback in a separately approved process). Do not silently drop auth/security notifications or claim they are delivered because an enqueue call returned a task ID. The current fallback returns the task ID even when the synchronous handler catches a delivery error; this does not constitute durable queue acceptance or successful delivery.
+
+Before changing this behavior, define whether the auth endpoint guarantees only best-effort notification, durable dispatch acceptance, or confirmed delivery; then add tests for Redis unavailable, mail provider unavailable, duplicate retry, and post-commit notification recovery. No email delivery, queue semantics, API response, runtime code, DB, credential or deployment configuration was changed in this inspection.
