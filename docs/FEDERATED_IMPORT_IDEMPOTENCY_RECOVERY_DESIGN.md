@@ -383,3 +383,8 @@ A targeted pass over the tenant Alembic migrations named for patient, privacy, i
 - This immutable tenant-local transfer history is distinct from the control-plane discovery receipt. It provides a useful precedent for preserving audit evidence, but does not solve pointer revocation history, operation idempotency, receipt lifecycle, or cross-database recovery.
 
 The reviewed tenant migrations were a targeted name-filtered set, not every migration or every SQL statement in the repository. The writer inventory remains partial.
+### 12.9 Remaining control-plane and adjacent-module reader pass
+
+A further targeted pass found the control-plane UI console renders pointer counts only; it does not mutate pointer rows. The identity login router's branch-code assignment is tenant-context selection for a non-production hospital-slug override, not a pointer mutation. The inspected clinical, audit, identity, and policy modules contained no pointer-table references or `sync_patient_pointer` calls. GitHub code search still returns no indexed matches for the pointer symbols, so that result is not proof of absence.
+
+Repository-wide writer inventory remains incomplete. The direct patient-deactivation deletion and `sync_patient_pointer` paths remain the known mutation paths from the earlier review.
