@@ -209,3 +209,50 @@ Pointer synchronization currently operates on the control-plane index and can re
 - Independent technical review and explicit project-owner approval are recorded.
 
 This design does not resolve AUD-004. Signed clinician actor verification, source-side clinician authorization, source-owned database isolation and governance decisions remain separate release blockers. No merge, deployment, production data operation, migration execution or emergency federation authorization is implied.
+
+## 10. Repository-grounded implementation dependency map (read-only audit)
+
+This section records the existing repository structures inspected for implementation planning. It is not a migration specification approval and does not authorize runtime changes.
+
+### 10.1 Existing model and migration boundaries
+
+| Concern | Existing repository location | Observed structure | Implementation consequence |
+|---|---|---|---|
+| Control-plane ORM | `backend/control_plane/models.py` | `ControlBase`; `TenantRegistry`, `GlobalPatientPointer`, `FederatedDiscoveryReceipt` | Durable operation/receipt-consumption models belong to `ControlBase`, not tenant metadata |
+| Tenant ORM | `backend/core/database.py` and domain model imports | `Base`; tenant `Patient` is in `backend/domains/patients/models.py` | Correlation/provenance rows belong to tenant `Base` and are independently installed in each tenant DB |
+| Control-plane Alembic | `backend/control_plane/alembic/env.py` | `target_metadata = ControlBase.metadata` | Control-plane migration must be authored in this history |
+| Tenant Alembic | `backend/alembic/env.py` | `target_metadata = Base.metadata`; imports tenant federation and patient models | Tenant marker migration must be authored in this separate history |
+| Migration orchestration | `backend/scripts/migrate.py` | Control plane upgrade is separate; tenant rollout uses default canary then fleet | New feature stays disabled until both histories are verified at the required revisions |
+| Tenant routing | `backend/core/database.py` | `TenantEngineRegistry.get_engine(db_name)`; `build_db_url` selects a PostgreSQL database name | Existing database-per-tenant routing remains the target; no schema-per-tenant work is implied |
+| Patient identity | `backend/domains/patients/models.py::Patient` | Unique tenant-local MRN, nullable unique ABHA, no federation source pointer/operation field | Demographic unique fields cannot act as federation idempotency; new marker must link the exact imported patient |
+| Source pointer | `backend/control_plane/models.py::GlobalPatientPointer` | Integer row ID, branch_code, source_mrn, phone hash and update timestamp; no explicit pointer generation | Pointer generation/version is a missing prerequisite; timestamp alone is not a safe generation token |
+| Tenant identity | `backend/control_plane/models.py::TenantRegistry` | Integer primary key, unique branch_code, unique db_name; no immutable UUID field | Decide whether the immutable registry row ID is the canonical tenant identity or add a dedicated immutable UUID; do not silently assume branch_code is immutable |
+| Discovery receipt | `backend/control_plane/models.py::FederatedDiscoveryReceipt` and migration `6c9f2a1d8b40` | Token-hash primary key; source pointer FK uses `ON DELETE CASCADE`; two-minute expiry is enforced by import handler | A durable operation must not depend on receipt retention or cascade-delete with its pointer; preserve a non-PHI pointer snapshot/tombstone and receipt-consumption audit link |
+| Source transfer audit | `backend/domains/federation/models.py`; tenant migration chain includes `f9b7c3d1e205` and `a7c4e9d2b615` | Transfer log is tenant-local and made immutable by PostgreSQL trigger; requesting node attribution is stored as scalar snapshots | Keep source audit in the source tenant DB; do not add cross-database foreign keys; design a distinct operation/correlation audit record rather than mutating immutable transfer logs |
+
+### 10.2 Migration rollout constraints discovered
+
+The existing migration runner has two separate flows:
+
+1. `upgrade_control_plane_database_url` uses `backend/control_plane/alembic`.
+2. `upgrade_tenant_database_url` uses `backend/alembic`, and `migrate_default_canary` applies control-plane upgrade before the configured default tenant canary.
+3. `migrate_remaining_fleet` selects active `TenantRegistry` rows with `deployment_mode == CLOUD`; it does not include ON_PREM tenants in that fleet query.
+4. Tenant rollout is recorded through control-plane audit entries and validates the default canary revision before proceeding.
+
+Therefore a tenant correlation-marker migration is not fleet-complete merely because the existing `--fleet` command succeeds. An explicit, separately controlled ON_PREM migration and verification path is required before the feature can be enabled for those branches. The implementation rollout must also define behavior for inactive tenants, newly provisioned tenants, regions that are temporarily unreachable, and partial fleet migration. No feature flag may enable imports against a tenant database whose marker migration is absent.
+
+The existing receipt migration is the latest known control-plane federation migration in the inspected PR #19 branch, but this audit did not independently resolve the full Alembic revision graph or query any live database. Do not treat a repository file list as proof of live migration head.
+
+### 10.3 Required implementation order and review gates
+
+1. **Identity prerequisite:** decide immutable tenant identity and add pointer generation semantics; define how pointer updates increment generation and how deletion/reassignment is represented.
+2. **Control-plane contract:** add durable operation and receipt-consumption models plus a control-plane migration; define retention and prevent pointer/receipt cascades from erasing active or completed operation evidence.
+3. **Tenant contract:** add tenant-local immutable correlation/provenance model and unique constraints; define patient deletion behavior and how old clones without provenance are treated (never infer them by demographics).
+4. **Fencing proof:** specify and prove the atomic destination-side fencing protocol against concurrent takeover. A Python pre-check of the control-plane generation is not sufficient; a stale worker must not be able to overwrite a newer destination fence.
+5. **Transaction orchestration:** implement the recoverable saga only after the two persistence contracts and API state machine are independently reviewed.
+6. **PostgreSQL evidence:** add independent-session/process race tests, commit-boundary crash injection, stale-worker tests and cross-database recovery tests.
+7. **Rollout:** migrate control plane, canary tenant, cloud tenant fleet and ON_PREM tenants under explicit gates; verify every target's migration head and schema diff; only then enable the import path.
+
+**Current blockers identified by this audit:** no pointer generation field; no dedicated immutable tenant UUID; receipt FK cascade semantics are unsuitable for durable operation retention; no tenant-local federation correlation model; and existing fleet migration excludes ON_PREM tenants. These are design prerequisites, not proof that a particular live database is missing a migration.
+
+This audit was based on read-only source inspection of PR #19 branch `fix/audit-remediation-clean-main-2026-11-11`; no runtime tests, database queries, migration execution, production changes or patient-data access occurred.
