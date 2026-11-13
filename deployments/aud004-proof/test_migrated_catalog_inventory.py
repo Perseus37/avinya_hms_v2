@@ -471,6 +471,7 @@ def _capture_catalog(database: str) -> dict:
 
 EXPECTED_APPEND_ONLY_TRIGGERS = {
     "federation_transfer_logs": "trg_federation_transfer_logs_immutable",
+    "security_audit_export_register": "trg_security_audit_export_no_mutation",
     "procurement_supplier_payments": "trg_procurement_supplier_payments_immutable",
     "procurement_supplier_payment_allocations": "trg_procurement_supplier_payment_allocations_immutable",
     "procurement_bank_statement_batches": "trg_procurement_bank_statement_batches_immutable",
