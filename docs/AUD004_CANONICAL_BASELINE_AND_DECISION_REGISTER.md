@@ -275,3 +275,29 @@ PR #71 (`security/aud004-disposable-postgres-proof`, head `ae28c153abd4ada2a257f
 That evidence is still a fixture-level proof. It does not exercise the production `bootstrap.py` role script, the actual `Settings.DATABASE_URL`/`build_db_url()` connection construction, Compose-provided application credentials, provisioning/migration role handoff, or backup/restore logins. The next implementation proof must test the actual production role/bootstrap configuration against a disposable PostgreSQL cluster and prove that the real app, control-plane, migration, provisioning, and backup identities each have only their intended database access. It must also verify that a tenant A application login cannot connect to tenant B or control-plane DB, and vice versa, while each service's intended functions continue to work.
 
 Do not treat the 27 synthetic assertions as closing the production role-wiring finding. PR #71 remains draft/unmerged; no production or application runtime was changed.
+## 23. Bootstrap ordering and role-script execution semantics (2026-11-13)
+
+Further source tracing establishes the exact production startup sequence:
+
+1. `docker-compose.prod.yml` starts `db-init` with the complete `.env.production` and runs `python backend/scripts/bootstrap.py --apply-roles`.
+2. `bootstrap_system()` calls `provision_physical_databases()` first, then `apply_database_roles()`, then upgrades the control-plane database and (for a newly created default tenant) the tenant database.
+3. `apply_database_roles()` opens a connection to the literal `postgres` database using `POSTGRES_USER` / `POSTGRES_PASSWORD`, and executes the entire `deployments/postgres-roles.sql` script on that connection.
+4. The SQL grants object privileges only on the `postgres` database's `public` schema and database. It does not connect to the configured control-plane DB or any tenant DB.
+5. `ControlSessionLocal`, `build_db_url()`, tenant migration engines, provisioning, and the backup/restore helpers continue using the shared configured login; no `hms_app`, `hms_migrator`, or `hms_backup` credentials are selected by these paths.
+
+Additional role-script correctness gaps:
+
+- Role creation is guarded by `IF NOT EXISTS`; existing roles are not reconciled with the declared attributes, passwords, or membership policy. A prior role with unsafe attributes would remain unchanged.
+- The four roles are created with `LOGIN`, but this script does not set passwords or provision secret files for them. The disposable PR #71 harness's per-service secret pairs are not connected to these role definitions.
+- The `ALTER DEFAULT PRIVILEGES` statements execute as the bootstrap connection's current role and in the `postgres` database context. They do not establish default privileges for objects created by `hms_migrator` in each control-plane/tenant database.
+- The `hms_backup` grant of `pg_read_all_data` is cluster-wide by design; it is not the least-privilege, per-database backup identity implied by the role-script header.
+
+These facts reinforce the prior high-priority/critical repository finding: the role bootstrap runs, but does not implement the advertised isolation. The actual power of `POSTGRES_USER` remains dependent on the external PostgreSQL initialization and live grants; static review does not establish that production login's effective role attributes.
+
+### Required disposable-cluster proof before changing runtime
+
+Use a fresh PostgreSQL 17 disposable cluster and run the exact production `bootstrap.py --apply-roles` path with synthetic-only credentials. Capture SQL role attributes, role memberships, database ACLs, schema/table/sequence grants, object ownership, and default privileges before and after bootstrap. Exercise both first-run and rerun cases, including pre-existing roles with deliberately unsafe attributes. Assert the current behavior first so the gap is reproducible; then design the intended role model separately.
+
+After an approved remediation design, repeat the proof with distinct CP runtime, per-tenant runtime, migration, backup, and provisioning identities. Test positive intended access and explicit negative cross-database access, including tenant A to tenant B and CP, tenant B to tenant A and CP, CP to tenant databases, and backup scope. Verify migrations and provisioning can perform only their approved operations, and verify backup can read/restore only its approved database set. The proof must test the actual Compose service environment/secret mounts and production bootstrap code, not just hand-created synthetic roles.
+
+No runtime, Compose, SQL, credentials, or database topology changes were made. No live PostgreSQL server was contacted; this section records static source findings and a proposed disposable-only evidence plan.
