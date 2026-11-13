@@ -787,3 +787,38 @@ Source-traced on 13 November 2026 from the current `main` source:
 - No final SQL statement capture, live PostgreSQL catalog/trigger comparison, external bank-feed proof, insurer settlement concurrency/idempotency proof, or independent workload-role ACL test was performed.
 
 No production grant SQL is approved. PostgreSQL database-per-tenant remains invariant. No runtime/SQL/migration/Compose/credential/secret/database/production change; no patient or financial records were accessed or mutated.
+
+### Section 29 — Alembic metadata boundary and deterministic inventory limitations
+
+Source-traced on 13 November 2026:
+- `backend/alembic/env.py`
+- `backend/control_plane/alembic/env.py`
+- `backend/core/database.py`
+- `backend/control_plane/models.py`
+- `backend/domains/audit/models.py`
+- `deployments/postgres-roles.sql`
+
+#### 29.1 Two independent declarative metadata roots
+- Tenant `Base` is declared in `backend.core.database`; the tenant Alembic environment imports 23 domain model modules before setting `target_metadata=Base.metadata`. The imports cover ABDM, audit, billing, blood bank, clinical, diagnostics, encounters, facility, federation, finance, identity, insurance, integrations, patients, pharmacy, policies, privacy, procurement, quality, reports, service operations, surgery and workforce.
+- Control-plane `ControlBase` is declared in `backend.control_plane.models`; the CP Alembic environment imports that module and sets `target_metadata=ControlBase.metadata`. The current module declares 11 CP tables: tenant registry, federated nodes, global patient pointers, CP audit logs, tenant snapshot registry, module catalog, bundle catalog, blueprint catalog, migration schemas, CP operators and CP operator sessions.
+- These are separate PostgreSQL databases and separate metadata roots. Do not combine the two metadata sets into one grant inventory or infer a PostgreSQL schema-per-tenant design.
+
+#### 29.2 Metadata is not a live database inventory
+- Alembic metadata describes ORM-declared tables and constraints only after the configured imports execute. It does not by itself enumerate live catalog-only objects, views, materialized views, manually-created functions, triggers, extensions, sequences without mapped ownership, grants, role memberships, PUBLIC privileges, large objects or objects created by scripts.
+- Tenant environment imports 23 modules explicitly, while CP environment imports a single module containing CP table declarations. This establishes intended ORM metadata loading paths, not proof that every model class, relationship dependency, migration revision or live database object is present and synchronized.
+- Both Alembic environments take a configured URL or environment URL and apply a transaction-scoped advisory lock. That lock serializes migrations using the same key; it does not restrict the migration identity's authority or establish target-database authorization.
+
+#### 29.3 Evidence and immutability caveats
+- `ControlPlaneAuditLog` has SQLAlchemy `before_update` and `before_delete` listeners in `backend/control_plane/models.py`. These listeners protect ORM unit-of-work paths only; raw SQL, Core/bulk operations and another DB client are outside that guard. Its DB-level immutability remains unproven until the actual CP migration/catalog trigger and ACL are captured.
+- `SecurityAuditExportRegister` declares table creation listeners whose shown trigger DDL is explicitly SQLite-only. This source file alone does not establish PostgreSQL trigger installation; PostgreSQL migration and live catalog evidence are required. Do not treat SQLite DDL as PostgreSQL proof.
+- The production role SQL still grants `hms_app` CRUD on all tables and sequence UPDATE in the literal `postgres` database, gives `hms_backup` `pg_read_all_data`, and grants `hms_exporter` `pg_monitor`. It does not establish per-tenant database grants or per-object creator-aware default privileges. This remains characterization evidence, not a least-privilege configuration.
+
+#### 29.4 Required deterministic inventory proof
+1. Execute a deterministic, versioned metadata-export script in a disposable environment for both metadata roots; record table, column, PK, FK, unique/check constraint, index, enum, sequence and schema names with stable sorting.
+2. Independently capture `pg_catalog` and `information_schema` from a clean migrated CP database and at least two independently migrated tenant databases.
+3. Compare expected ORM metadata, migration history and live catalog objects; classify every delta as intentional, migration-only, script-created, extension-owned, drift or defect.
+4. Enumerate triggers with function definitions, function security mode/owner/search path, views/materialized views, extensions, large objects, sequences/ownership/default ACL, RLS policies, grants, role memberships, PUBLIC ACLs and object owners.
+5. Reconcile append-only claims from Sections 21, 27 and 28 against actual PostgreSQL trigger definitions and raw SQL UPDATE/DELETE denials. Do not rely on ORM listeners or SQLite-only DDL.
+6. Repeat the comparison after migrations and after restore; include a second tenant to prove database-per-tenant isolation and prevent cross-database inventory assumptions.
+
+No live database was queried in this source-only pass. No final grant SQL is approved. No runtime/SQL/migration/Compose/credential/secret/database/production change; no patient or financial records accessed or mutated.
