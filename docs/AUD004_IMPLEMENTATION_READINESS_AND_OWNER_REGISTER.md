@@ -1386,3 +1386,10 @@ No runtime/SQL/migration/Compose/credential/secret/database/production change. P
 A source-level review confirmed that PR #71 already records table grants, database/schema ACLs, default ACLs and role memberships. The harness report's limitation text was corrected to distinguish *captured* evidence from *evaluated* evidence. These ACL/membership snapshots are captured but not interpreted or asserted. Column, sequence, routine and type ACLs, role attributes and cluster-wide settings remain outside this pass. Trigger/routine definitions and security settings are captured but not evaluated; raw SQL append-only denial is still outstanding.
 
 This is a test-report accuracy correction only. It does not add a least-privilege assertion or alter production/runtime/SQL/migration/Compose/credential/secret/database behavior. Latest-head migration execution and catalog artifact review remain pending. AUD-004 remains blocked.
+
+
+### Section 48 — Column-level ORM/catalog characterization added
+
+The PR #71 report now computes column-name deltas for each of the three independently migrated databases. It identifies metadata columns missing from the live catalog and catalog columns missing from the relevant ORM metadata, complementing table-level deltas. This is a report-only comparison; it does not assert parity, compare type/constraint/index semantics, or approve any difference.
+
+The workflow has not yet been run on this new head. AUD-004 remains blocked pending real CI execution, artifact review, and the separate privilege/immutability/restore proofs.
