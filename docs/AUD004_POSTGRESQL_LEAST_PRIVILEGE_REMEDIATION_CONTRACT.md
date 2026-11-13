@@ -764,3 +764,127 @@ Before any clinical tenant is routed to Pattern A, prove at minimum:
 10. Explicit acceptance by architecture, DBA, application security, platform and operations owners.
 
 **Disposition:** this is a detailed tenant-bound execution contract and verification baseline. It deliberately leaves provider-specific secrets, identity, routing, orchestration and immutable-ID migration decisions open. No runtime, queue, listener, router, SQL, migration, Compose, secret, database, patient-data or production change was made. PostgreSQL database-per-tenant remains invariant.
+
+
+## 20. PostgreSQL tenant role and credential lifecycle contract (2026-11-13)
+
+**Status: proposed design and verification contract; not SQL or rollout authorization.** This section translates Sections 17–19 into a database-per-tenant role lifecycle. It deliberately does not finalize literal role names, exact grants, ownership commands, secret provider or backup platform until DBA/platform review and a disposable-cluster proof.
+
+### 20.1 Current repository behavior verified
+
+The inspected source revisions show the following:
+
+- `deployments/postgres-roles.sql` creates four cluster roles only when absent: `hms_app`, `hms_migrator`, `hms_backup` and `hms_exporter`. The script sets several attributes at creation but does not reconcile attributes on an already-existing role. It does not configure passwords or a credential handoff.
+- The same SQL grants `pg_read_all_data` to `hms_backup` and `pg_monitor` to `hms_exporter`. The former is cluster-wide data-read capability, not tenant-scoped backup access. The app/migrator grants shown in the file target the literal database `postgres`, not the control-plane database or each tenant database. The file does not revoke PUBLIC CONNECT/TEMP, assign database ownership, or establish a per-tenant role/grant lifecycle.
+- `backend/scripts/bootstrap.py::apply_database_roles()` connects with `settings.POSTGRES_USER/PASSWORD` to database `postgres` and executes the SQL file. `provision_physical_databases()` uses the same configured login to create the control-plane/default tenant databases. Migration URLs are built from the same configured `DATABASE_URL`; tenant initialization and seeding then use those URLs.
+- `bootstrap_system(apply_roles=True)` is not a roles-only operation. It provisions physical databases, applies role SQL, upgrades the control-plane DB, seeds CP data, may create/upgrade/seed the default tenant, and validates active production tenant revisions. A production command or Compose entrypoint using `--apply-roles` therefore has a much broader effect than its option name suggests.
+- `backend/core/database.py::build_db_url(db_name)` changes only the database component of the configured URL. `ensure_postgres_db_exists()` uses that same configured login for cluster-level database creation. The runtime engine registry and CP engine also derive from the shared URL.
+- `deployments/backup-postgres.sh` runs database inventory queries, `pg_dump` for every application DB, and `pg_dumpall --globals-only` as `POSTGRES_USER` inside the database container. It does not use `hms_backup`. The global dump is a separate cluster-level operation and must not be conflated with a tenant-scoped database dump.
+- `deployments/restore-postgres.sh` checks/creates the isolated `restore_*` target as `POSTGRES_USER`, assigns that login as owner, and runs `pg_restore --no-owner --no-acl` as the same login. This is a diagnostic restore path, not yet a tenant-role-aware restore/cutover process. The script explicitly says not to route tenants to the target before verification.
+
+These are source-level observations, not proof of deployed role attributes, environment values, effective grants, host controls or production scheduler configuration. Source blob revisions were inspected on 2026-11-13: roles SQL `315ab21d141cd5a9e4b7d973c6ad4eb6e41e1ebe`; bootstrap `418a6f6641c17f2bc17b22f4bc09371ae9857bfd`; database module `043f4ccbdad4d2bfe4c89af0b46988ce60610b01`; backup script `a66b9d45362b2e393bc50cddc1aa20eb2b053d95`; restore script `0c21ae21b3630b1c0570b9012b44b9bd19041982`.
+
+### 20.2 Target role classes and boundaries
+
+The target separates cluster administration, database ownership, application login and operational capabilities. A PostgreSQL role is not automatically a workload identity; credential delivery and process isolation remain mandatory under Pattern A.
+
+| Role class | Scope and intended capability | Explicit exclusions |
+|---|---|---|
+| Cluster bootstrap/provisioner | Short-lived infrastructure identity for approved role creation/reconciliation and database creation. Executes a separately approved provisioning operation. | Never present in API, CP portal, generic worker or HL7 ingress. No routine clinical DML. No unattended fleet-wide credential exposure to application processes. |
+| Database owner (NOLOGIN group role) | Owns exactly one application database (CP or one tenant DB) and its intended objects; receives ownership only during provisioning/migration/restore handoff. | Not used as a connection login; no cross-tenant ownership. Do not make the application runtime a database owner. |
+| CP runtime login | Connects only to the control-plane DB and performs the minimum CP metadata operations. | No tenant DB CONNECT, tenant credentials, tenant clinical tables, DDL, provisioning, backup or cluster administration. |
+| Tenant runtime login | One distinct login per tenant DB and assigned tenant execution unit; DML/sequence/function permissions only where required by application behavior. | No CP or other-tenant CONNECT, DDL, ownership, role membership, database creation, backup, restore, replication or cluster-wide read roles. |
+| Tenant migration identity | Short-lived, explicitly invoked identity scoped to one target database for approved schema migrations. Object creation/ownership and default privileges must be deliberately coordinated with the database owner role. | Not available to the running API, CP portal, general tenant worker or HL7 ingress; no cluster-wide role administration. |
+| Backup executor identity | Dedicated backup operation identity with only the database/object-read capability required for the assigned DB(s), plus a separately reviewed cluster-inventory mechanism if required. | No application writes, schema ownership, DDL, role administration, tenant runtime use or general-purpose API/worker access. No default cluster-wide `pg_read_all_data` grant to a tenant-scoped executor. |
+| Restore executor identity | Creates/restores only an explicitly named isolated target under an approved operation, then applies/validates intended owner and ACL state before handoff. | No tenant routing/cutover authority by virtue of DB creation; no API/worker use; no overwrite of an existing target. |
+| Monitoring/exporter identity | Statistics/catalog visibility required for monitoring, using the narrowest supported monitoring capability. | No clinical table data, backup artifacts, write privileges, migration or tenant application login. |
+
+A separate NOLOGIN owner/group role per database is the preferred model to evaluate: one CP owner and one owner per tenant database. Runtime and operational login roles receive explicit membership/grants appropriate to their task without becoming owners. The DBA must decide whether migration creates objects as the owner role (for example, via tightly controlled role switching) or uses an equivalent ownership/default-privilege pattern. Do not assume that granting broad schema privileges to a migrator automatically produces correct ownership for future tables, sequences, functions or extensions.
+
+### 20.3 Database creation, ownership and ACL lifecycle
+
+Provisioning must be an explicit state machine, not an incidental side effect of application startup:
+
+1. An approved provisioner creates the CP or tenant database using a validated canonical database identity and a safe identifier-quoting strategy.
+2. The database is assigned to its intended NOLOGIN owner role. The owner role is unique to that database; it is not shared across tenants.
+3. PUBLIC database privileges are reconciled. The target policy explicitly revokes unneeded PUBLIC CONNECT and TEMPORARY privileges, then grants CONNECT only to the database owner/approved runtime, migration and operational identities. Any exception must be documented and tested.
+4. The public schema and any additional schemas have explicit ownership and USAGE/CREATE policy. Do not assume that the `public` schema is the only schema or that PostgreSQL-version defaults are identical across supported versions.
+5. Runtime privileges are granted to the tenant-specific runtime identity only for the application objects and operations it needs. Sequence, function, type, large-object and extension privileges must be inventoried rather than inferred from table DML grants.
+6. Default privileges are configured for the actual object-creating role(s), in the correct database and schema. PostgreSQL default privileges are creator-role-specific; a default-privilege statement executed as the wrong role does not solve ownership or future-object access.
+7. Migration, initialization and seed operations run under their separately approved identity. After completion, verify object ownership, ACLs, default ACLs, role memberships and effective privileges before the tenant is marked ready.
+8. The CP registry is updated to active/routable only after DB identity, ownership, grants, migration revision, seed invariants and connection tests pass.
+
+Database-per-tenant remains the isolation unit. No schema-per-tenant conversion is implied. Database names, branch codes, slugs and hostnames are validated identifiers/selectors, not authorization tokens.
+
+### 20.4 Migration and initialization lifecycle
+
+Separate the current combined bootstrap behavior into independently invocable, idempotent operations with distinct identities and explicit target confirmation:
+
+- cluster role bootstrap/reconciliation;
+- CP database provisioning and CP migration;
+- individual tenant database provisioning;
+- individual tenant migration;
+- tenant initialization/seeding;
+- verification and activation.
+
+A role-reconciliation command must not silently create databases, migrate schemas, seed users or activate tenants. A migration command must name one approved database/tenant binding, validate its current lifecycle/generation and expected revision, acquire a migration lock, record start/result, and fail closed on identity mismatch. Fleet migration is a separately approved orchestrated operation with bounded batches/canaries and per-tenant outcomes; it must not be an implicit API/worker startup side effect.
+
+Migration object ownership must remain stable across upgrades. The design must cover Alembic version tables, tables, indexes, sequences, views, functions, triggers, extensions and any objects created outside the migration owner. The runtime login must not inherit migration/owner privileges after migration completes.
+
+### 20.5 Role reconciliation and credential issuance
+
+Role SQL must become declarative reconciliation, not create-if-absent-only behavior. Every run must inspect and enforce approved role attributes (LOGIN/NOLOGIN, SUPERUSER, CREATEDB, CREATEROLE, REPLICATION, BYPASSRLS, INHERIT/NOINHERIT, connection limits and valid-until policy), membership edges, database ACLs, schema/object ACLs, ownership and default privileges. Unexpected grants or attributes must be reported and corrected only by an approved reconciliation operation. Reconciliation must be idempotent and safe to re-run.
+
+Credentials are provisioned out-of-band through the approved secret-delivery mechanism; no plaintext passwords are committed to SQL, source, CI logs or generated docs. Each tenant runtime credential is unique to one tenant execution boundary. CP, tenant runtime, migrator, backup, restore, monitoring and cluster provisioner credentials are distinct. Credential references are bound to immutable tenant identity, database, role class, execution unit and binding generation.
+
+The exact secret provider, rotation API and on-prem equivalent remain open decisions. A single shared `POSTGRES_USER/PASSWORD` injected into all containers is not an acceptable target. A tenant unit must not be able to enumerate or retrieve another tenant's credential.
+
+### 20.6 Rotation, revocation and emergency response
+
+Normal rotation uses a bounded overlap: issue a new credential; deploy it only to the matching execution unit; prove a fresh connection and required application operation; stop new checkouts on the old pool; drain/terminate old sessions; revoke or expire the old credential; and prove the old credential cannot reconnect. Record role, tenant identity, generation, actor, timestamps, affected sessions and verification result without logging secret material.
+
+Tenant disablement/reassignment follows Section 19.7: increment binding generation, block routing and jobs, revoke the tenant login or CONNECT, terminate sessions, invalidate secret leases and dispose pools. Revoking a role alone is insufficient evidence if already-open sessions remain active. Re-enablement requires fresh credentials and independent positive/negative tests.
+
+Cluster provisioner and migration credentials require shorter lifetimes and explicit operation windows. Break-glass use is separate, approved, time-bounded, attributable and reviewed after use. The emergency process must not silently restore a broad shared login to application containers.
+
+### 20.7 Backup and restore identity contract
+
+Tenant DB backup must be scoped to an assigned DB and a reviewed read capability. Evaluate whether a non-owner backup role can read all required tables, sequences, large objects, metadata and extension state using explicit grants, or whether an owner/backup role is temporarily assumed under a controlled executor. Do not grant `pg_read_all_data` cluster-wide to a tenant-scoped backup identity by default. If a cluster-wide globals/roles export is required, treat it as a distinct cluster-administration artifact and operation, protect it separately, and do not pass that identity to a tenant dump worker.
+
+The backup executor must enumerate only authorized databases from trusted control-plane/infra inventory, not accept arbitrary database names from callers. Artifact write access is isolated from API, worker, CP portal and HL7 workloads. The file-copy vault receives no DB credential. Backup success requires encrypted dump validation, integrity manifest, remote/off-host completion where required, and durable status that distinguishes local snapshot from off-site replication.
+
+Restore runs in an isolated target database, never overwrites a live tenant DB, and initially remains unroutable. A restore executor creates the target with a controlled owner; restores data; applies the approved owner/ACL/default-privilege policy; validates tenant identity, schema revision, integrity and application invariants; and produces evidence for a separately authorized cutover. Because current `pg_restore --no-owner --no-acl` leaves restored objects owned according to the restoring context, ownership normalization must be an explicit post-restore step, not assumed. Global role restore is a separate reviewed operation and must not be run as part of a routine tenant restore.
+
+### 20.8 Required disposable-PostgreSQL proof matrix
+
+Extend the existing PR #71 characterization harness into acceptance tests only after the target role model is approved. Use a fresh disposable PostgreSQL cluster and independent login connections; never use production credentials or patient data.
+
+| Proof area | Required positive proof | Required negative proof |
+|---|---|---|
+| Cluster identities | Provisioner can create only approved roles/DBs in the test fixture; exporter can read required monitoring statistics. | CP/tenant runtime, tenant migrator, backup and exporter cannot administer roles or create arbitrary DBs. |
+| CP boundary | CP runtime connects to CP DB and performs approved CP metadata operations. | CP runtime cannot CONNECT to tenant A/B or read clinical objects. |
+| Tenant A/B | A runtime connects to A and performs required DML; B runtime does the same on B. | A is denied B and CP; B is denied A and CP; neither can create roles/DBs, alter schema or assume owner/migrator. |
+| Ownership/default ACL | Provisioning and migration create expected owner, object ACLs and future-object defaults for tables, sequences, functions and other supported objects. | Runtime cannot become owner; objects created by an unexpected role do not silently receive broad runtime grants. |
+| PUBLIC and membership | Approved explicit grants allow only intended identities; catalog and effective privilege checks match the matrix. | PUBLIC CONNECT/TEMP, nested membership, predefined roles, inherited privileges or ownership do not bypass the tenant boundary. |
+| Reconciliation | Reapply converges drifted role attributes, membership, ACLs and ownership to approved state. | Existing unsafe attributes, unexpected memberships or stale grants do not survive an apparently successful no-op run. |
+| Migration | Scoped migrator can upgrade one target and leave ownership/default ACLs correct. | Migrator for A cannot migrate B/CP; runtime cannot run DDL or inherit migrator rights. |
+| Backup | Backup executor dumps the assigned DB and validates the artifact; separately approved globals export is tested independently. | Tenant A backup identity cannot dump B/CP or access cluster globals; API/worker cannot read/write backup artifacts. |
+| Restore | Isolated restore target is created, restored, normalized to expected owner/ACL and verified before simulated cutover. | Existing DB cannot be overwritten; restored DB cannot become routable before verification; restore login cannot access unrelated tenant DBs. |
+| Rotation/revocation | New credential works during approved overlap and old credential is revoked after pool drain. | Old login cannot reconnect; pre-existing sessions are terminated; stale pool/job/capability cannot use the old generation. |
+
+Tests must inspect `pg_roles`, `pg_auth_members`, `pg_database`, `pg_namespace`, `pg_class`, `pg_default_acl`, `pg_proc`, database/schema/object ACLs, ownership and effective privilege functions. Include existing-session tests, nested membership, PUBLIC defaults, reapply after deliberate drift, multiple independent sessions and failure injection between every provisioning/restore stage. The existing PR #71 test is a characterization proof of current unsafe behavior, not a pass of this acceptance matrix.
+
+### 20.9 Decisions and approvals still required
+
+1. Final NOLOGIN owner-role and LOGIN role naming convention, including per-tenant identity uniqueness and naming-length constraints.
+2. Whether migration assumes a per-database owner role or uses a separately controlled object-ownership/default-privilege model.
+3. Exact runtime privileges for tables, sequences, functions, large objects, extensions and future objects, based on a complete application query inventory.
+4. Supported PostgreSQL versions and PUBLIC/schema default behavior across those versions.
+5. Provisioner implementation, execution environment, approval model, credential TTL and audit ownership.
+6. Secret provider/workload identity and on-prem deployment equivalent.
+7. Tenant-scoped backup privilege strategy, cluster globals export owner, off-host storage and restore executor separation.
+8. Role/credential rotation overlap and maximum revocation/session-termination SLA.
+9. Safe split of the current `bootstrap.py --apply-roles` command into explicit operations without accidental migration/seeding side effects.
+10. DBA, architecture, application-security, platform and operations sign-off plus passing independent-session disposable-PostgreSQL tests.
+
+**Disposition:** this section is a proposed role/credential lifecycle contract. It identifies concrete mismatches in the current role SQL, bootstrap, shared URL construction and host backup/restore scripts. It does not authorize SQL/runtime/Compose/migration/secret changes. PostgreSQL **database-per-tenant** and Pattern A remain the target baseline; no schema-per-tenant change is proposed.
