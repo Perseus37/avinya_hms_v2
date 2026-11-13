@@ -1093,3 +1093,33 @@ Before any connection termination, the restore flow should:
 The existing filename convention and SHA-256 sidecar can support integrity checks, but a mutable sidecar stored beside the artifact is not by itself a trusted ownership manifest. A signed manifest or independently protected catalog record is needed for a strong tenant binding.
 
 No runtime code or tests were changed or executed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the consolidated draft/open report; no new PR was created.
+
+### 11.18 Shared backup-volume access and vault environment scope — 2026-11-13
+
+Inspected the backup-related service definitions in `docker-compose.yml` at source commit `20b8a5e48518c81820a7e28494fd73aeda33b46f`.
+
+#### Confirmed deployment configuration
+
+- `api`, `worker`, `onboarding-portal` and `backup-sidecar` all mount the same named `hms_backups` volume at `/app/backups` without a read-only suffix; these are read-write mounts.
+- The `backup-vault` mounts that volume at `/source:ro` and a separate `hms_vault_storage` volume at `/vault`. The read-only source mount is a positive control.
+- The `backup-vault` service also declares `env_file: .env`, while its vault-mode code path scans/copies backup files and writes checksum sidecars; that code path does not require tenant database credentials or control-plane database access.
+- The vault service runs the same application image and backup script as the backup sidecar, but with `--vault-mode`. Its current implementation copies newly seen encrypted dump files and sidecars, then chmods the destination files read-only. This is application-level file mode protection, not proof of storage-level WORM/immutability against a process with sufficient volume or host privileges.
+
+#### Security and recovery implications
+
+- A compromise or unintended file operation in any service with the shared read-write mount can potentially read, overwrite or delete the shared encrypted backup artifacts and checksum sidecars for multiple tenants. Encryption at rest limits plaintext exposure where tenant keys remain unavailable, but does not prevent backup deletion, replacement or denial of recovery.
+- The shared writable mount also broadens the number of processes that can tamper with the artifact/sidecar pair. A checksum stored beside a mutable artifact cannot independently establish authenticity if both can be changed by the same writer.
+- Supplying the complete `.env` to the vault-copy service expands the secrets available inside a component whose stated file-copy role does not need database or application credentials. This is a configuration exposure, not evidence that the vault process currently uses those credentials.
+- The current Compose file does not by itself prove the underlying named-volume permissions, host access controls, backup retention policy, cloud object-lock configuration or production deployment overrides. Those require deployment evidence.
+
+#### Required remediation and proof
+
+1. Give each service only the backup access it needs. Prefer a dedicated backup writer and read-only consumers; remove the worker's backup mount if no reviewed worker task requires it.
+2. Avoid mounting the full shared backup directory read-write into the general API and onboarding portal. Route backup operations through a narrowly scoped backup service or worker boundary.
+3. Remove the full `.env` injection from `backup-vault`; provide only non-secret vault polling/configuration values and a minimal runtime identity.
+4. Enforce immutability at the storage layer (for example, object lock/WORM or a separately administered append-only vault), not solely through `chmod 0400` in the same container.
+5. Separate artifact and trusted manifest/checksum protection; prove that ordinary API/worker identities cannot rewrite or delete sealed artifacts or trusted ownership metadata.
+6. Add deployment tests/evidence for mount read/write modes, effective container UID/GID and volume permissions, secret mounts/environment per service, and attempted cross-service artifact read/write/delete operations.
+7. Keep tenant backup encryption keys and PostgreSQL database access out of the vault-copy identity. Preserve PostgreSQL **database-per-tenant**; this finding does not justify changing database topology.
+
+No Compose/runtime code, tests, volumes, secrets or deployment settings were changed or executed. This is a static configuration review of the cited source snapshot, not proof of effective production mounts or permissions. PR #70 remains the consolidated draft/open report; no new PR was created.
