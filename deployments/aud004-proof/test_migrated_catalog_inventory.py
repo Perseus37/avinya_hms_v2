@@ -521,6 +521,75 @@ def _assert_expected_append_only_triggers(catalog: dict) -> None:
         )
 
 
+def _assert_security_audit_export_register_rejects_raw_mutation(database: str) -> None:
+    """Exercise the migrated append-only trigger against one synthetic populated row."""
+    conn = psycopg2.connect(
+        host=os.environ["AUD004_PGHOST"],
+        port=int(os.environ["AUD004_PGPORT"]),
+        dbname=database,
+        user=os.environ["AUD004_PGUSER"],
+        password=os.environ["AUD004_PGPASSWORD"],
+        connect_timeout=5,
+        application_name="aud004-append-only-trigger-proof",
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (
+                    login_id, email, hashed_password, full_name, gender,
+                    status, is_superuser, failed_login_attempts
+                )
+                VALUES (
+                    'aud004-trigger-fixture', 'aud004-trigger-fixture@example.invalid',
+                    'not-a-real-password-hash', 'AUD004 Synthetic Actor', 'OTHER',
+                    'ACTIVE', FALSE, 0
+                )
+                RETURNING id
+                """
+            )
+            actor_id = cur.fetchone()[0]
+            cur.execute(
+                """
+                INSERT INTO security_audit_export_register (
+                    actor_user_id, event_count, byte_count, criteria_json, payload_sha256
+                )
+                VALUES (%s, 0, 0, '{}', %s)
+                RETURNING id
+                """,
+                (actor_id, "0" * 64),
+            )
+            export_id = cur.fetchone()[0]
+
+            cur.execute("SAVEPOINT aud004_before_update")
+            try:
+                cur.execute(
+                    "UPDATE security_audit_export_register SET byte_count = 1 WHERE id = %s",
+                    (export_id,),
+                )
+            except psycopg2.errors.RaiseException as exc:
+                assert "append-only" in str(exc).lower()
+                cur.execute("ROLLBACK TO SAVEPOINT aud004_before_update")
+            else:
+                raise AssertionError("Raw SQL UPDATE unexpectedly changed the audit export register")
+
+            cur.execute("SAVEPOINT aud004_before_delete")
+            try:
+                cur.execute(
+                    "DELETE FROM security_audit_export_register WHERE id = %s",
+                    (export_id,),
+                )
+            except psycopg2.errors.RaiseException as exc:
+                assert "append-only" in str(exc).lower()
+                cur.execute("ROLLBACK TO SAVEPOINT aud004_before_delete")
+            else:
+                raise AssertionError("Raw SQL DELETE unexpectedly removed the audit export register")
+    finally:
+        # Fixture actor and export evidence are rolled back; no synthetic rows persist.
+        conn.rollback()
+        conn.close()
+
+
 def _metadata_manifest() -> dict:
     # Import exactly the same model modules as the tenant Alembic env.
     from backend.core.database import Base
@@ -618,6 +687,10 @@ def test_migrate_and_capture_three_independent_postgres_catalogs(tmp_path: Path)
     # Verify migration-installed append-only guards in both independent tenant DBs.
     _assert_expected_append_only_triggers(catalogs["tenant_a"])
     _assert_expected_append_only_triggers(catalogs["tenant_b"])
+    # Raw SQL behavior proof for the security export register only; other
+    # append-only tables still have catalog assertions but no populated-row test.
+    _assert_security_audit_export_register_rejects_raw_mutation(DATABASES["tenant_a"])
+    _assert_security_audit_export_register_rejects_raw_mutation(DATABASES["tenant_b"])
 
     # Both tenant databases must independently reach the same migration state.
     assert catalogs["tenant_a"]["migration_versions"] == catalogs["tenant_b"]["migration_versions"]
@@ -657,10 +730,10 @@ def test_migrate_and_capture_three_independent_postgres_catalogs(tmp_path: Path)
         },
         "limitations": [
             "This is a characterization artifact, not a least-privilege acceptance test.",
-            "No application rows are inserted or exported.",
+            "Only one synthetic user and one synthetic security-audit-export row are inserted inside a transaction and rolled back; no patient or financial rows are used.",
             "Object owners, table grants, database/schema ACLs, default ACLs, and role memberships are captured but not interpreted or asserted.",
             "Explicit relation, column, routine, and type ACL entries (including PUBLIC grantees) and role attributes are captured, but are not interpreted or asserted; implicit ownership rights and cluster-wide settings still require separate review.",
-            "Trigger and routine definitions/security settings are captured but not evaluated; raw SQL append-only denial is not tested.",
+            "Trigger and routine definitions/security settings are captured; raw SQL UPDATE/DELETE denial is exercised against a populated synthetic security_audit_export_register row in both tenant databases only. The other expected append-only tables receive catalog assertions, not populated-row mutation tests.",
             "No backup/restore parity is asserted by this test.",
         ],
     }
