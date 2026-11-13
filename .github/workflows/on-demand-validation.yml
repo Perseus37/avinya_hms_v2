@@ -184,7 +184,7 @@ jobs:
           # of GITHUB_ENV: Actions prints step environment variables in logs.
           env_path = directory / "compose.env"
           env_path.write_text(
-              "".join(f"{name}={value}\\n" for name, value in values.items()),
+              "".join(f"{name}={value}\n" for name, value in values.items()),
               encoding="utf-8",
           )
           os.chmod(env_path, 0o600)
