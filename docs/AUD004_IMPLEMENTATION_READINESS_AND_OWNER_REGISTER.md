@@ -2047,3 +2047,44 @@ Adding a column alone would not establish a safe custom-domain feature. A future
 **Assessment:** The current endpoint is unusable because it references an ORM attribute absent from the mapped model, and the inspected control-plane migration history does not supply that field. The feature's domain ownership/verification lifecycle is also not represented in the inspected provisioning contract. Treat custom-domain routing as unavailable until the model, migration, verified-ownership workflow and proxy integration are implemented and tested.
 
 **Boundary:** static source/migration review only. No runtime, route, proxy, tenant, database, migration, DNS, credential or production state changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+
+## 71. Break-glass tenant administrator reset can select a different superuser and returns an unforced temporary password
+
+**Source reviewed:**
+- `backend/control_plane/api/routers/fleet_ops.py` (`POST /api/tenants/{slug}/reset-admin-password`)
+- `backend/control_plane/models.py` (`TenantRegistry.admin_email`)
+
+Static source review only. The reset endpoint was not invoked; no tenant account, password, session, database or production state was changed.
+
+### 71.1 Target selection is broader than the registered tenant administrator
+
+The endpoint selects the first user ordered by ascending `User.id` where either:
+
+`User.email == tenant.admin_email OR User.is_superuser == True`
+
+This is not an exact lookup of the registered administrator. If the tenant has an earlier-created superuser whose email differs from `TenantRegistry.admin_email`, that unrelated account can be selected and reset instead. With multiple superusers, the lowest-ID matching superuser can win even when the designated admin exists. The operation can therefore reset a different privileged account than the operator intended based on the route's tenant-admin semantics.
+
+The handler then returns the selected account's email, so the response may reveal which account was actually changed, but only after the password reset has already committed.
+
+### 71.2 The generated password is returned without a forced-change state
+
+The handler generates a random one-time-looking password, hashes and stores it, sets the selected user's status to ACTIVE, clears failed-login attempts, updates `password_changed_at`, and deletes that user's active sessions and password-reset tokens. It then commits the tenant database and returns the plaintext `one_time_password` in the control-plane API response.
+
+The inspected handler does not set a password-change-required flag or otherwise establish that the next login must replace this credential. A random password is not automatically single-use: absent a separate enforcement path, it remains a normal valid password until changed or reset again. Returning it in the response also exposes it to the same browser, proxy, observability and support tooling boundaries as other privileged API response secrets; this is distinct from, but related to, Section 64's provisioning-secret response issue.
+
+The control-plane audit record is committed only after the tenant database commit. If the control-plane audit commit fails, the credential reset and session invalidation have already taken effect without the corresponding durable control-plane audit event.
+
+### 71.3 Required remediation and acceptance evidence
+
+1. Resolve the reset target by an exact, immutable tenant-admin user identifier or exact normalized `tenant.admin_email` match. If the designated administrator is absent or ambiguous, fail closed; do not fall back to an arbitrary `is_superuser` account.
+2. If emergency superuser recovery is a separate supported operation, expose it as a separately named workflow requiring explicit target selection, stronger authorization and a recorded reason.
+3. Enforce a password-change-required state at next login, or use a one-time recovery flow that cannot authenticate as a normal session and expires after a short, bounded interval.
+4. Avoid returning reusable credentials in the ordinary JSON response. Use a narrowly scoped, one-time secret-delivery mechanism with explicit audience, expiry and access audit.
+5. Add tests with multiple superusers, a non-superuser registered admin, mismatched/missing admin email, and a lower-ID unrelated superuser. Assert that only the exact intended account can be reset.
+6. Add failure-injection tests around tenant commit, control-plane audit commit and response delivery; define a durable operation/audit strategy for the split-database boundary.
+7. Verify that session/reset-token invalidation and forced credential replacement are atomic with the intended account reset, and that no credential appears in logs or ordinary audit details.
+
+**Assessment:** The break-glass reset query can choose an unrelated superuser instead of the registered tenant administrator, and the returned temporary password is not accompanied by an enforced one-time/forced-change state in the inspected handler. This is a high-priority privileged-account recovery correctness and credential-handling gap. It requires exact target binding and a separately verified recovery lifecycle before production use.
+
+**Boundary:** static source review only. No reset endpoint, user account, credential, tenant database, session, audit row or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
