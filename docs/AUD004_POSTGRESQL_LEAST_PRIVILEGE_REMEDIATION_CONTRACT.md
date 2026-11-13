@@ -1220,3 +1220,87 @@ Next required work:
 6. Add executable route/service-level SQL statement characterization and independent PostgreSQL role tests before any grant SQL is drafted.
 
 **Implementation status:** documentation/source inspection only. No application code, SQL, migrations, Compose, credentials, secrets, database, patient data or production configuration changed. PostgreSQL database-per-tenant remains mandatory.
+
+
+## 24. Tenant-domain route/service-to-object operation trace — evidence-backed sample (13 Nov 2026)
+
+**Status:** Second bounded source-trace batch. This section records operations visible in the inspected route/service implementations. It is deliberately a sample, not a complete route inventory or final privilege allow-list. Operation labels describe the code path, not a recommendation to grant the general API role every listed right.
+
+### 24.1 Billing API — `backend/domains/billing/router.py`
+
+Observed paths and objects:
+
+| Path / behavior | Source-declared objects | Observed operation shape | Privilege implication |
+|---|---|---|---|
+| Create invoice | `invoices`, `patients`, optionally `patient_encounters` | SELECT patient/encounter; INSERT invoice; refresh/read invoice | Invoice creation identity needs narrowly scoped INSERT plus the referenced lookup SELECTs. |
+| List/read invoice and CSV export | `invoices`, related `invoice_line_items`, payment relation, optionally `patients`; privacy runtime also reads consent/policy data and records decision audit | SELECT with joins/count/pagination/export; privacy evaluation can add SELECT and audit INSERT | Read/export is not a pure invoice SELECT. Keep privacy evaluation and audit writes in the same transaction identity or split behind a narrowly defined service. |
+| Add invoice line | `invoices`, `invoice_line_items`, `service_catalog`, price-resolution dependencies | SELECT invoice with row lock, SELECT catalog/pricing, INSERT line, UPDATE invoice totals/tax fields | This workflow needs invoice UPDATE as well as line INSERT; it should not imply UPDATE on all billing tables. |
+| Remove draft line | `invoices`, `invoice_line_items` | SELECT/row lock; DELETE line; UPDATE invoice totals | DELETE is present in a draft-only path. It is not a basis for DELETE on finalized financial evidence or unrelated billing objects. |
+
+Model and route imports additionally identify `PaymentReceipt`, `PatientDeposit` and `RefundVoucher`; their individual endpoint semantics and write patterns still require complete handler tracing. The `RefundVoucher` model docstring calls it an immutable financial audit voucher, but no DB trigger/ACL proof is inferred from that comment.
+
+### 24.2 Pharmacy API — `backend/domains/pharmacy/router.py`
+
+Observed paths and objects:
+
+| Path / behavior | Source-declared objects | Observed operation shape | Privilege implication |
+|---|---|---|---|
+| Add/list/update/deactivate formulary item | `medication_master` | SELECT duplicate/existing row; INSERT; SELECT list; UPDATE attributes; deactivation is UPDATE of `is_active` | The DELETE HTTP verb for deactivation does not issue SQL DELETE in the inspected handler. Grant operation follows SQL behavior, not HTTP method name. |
+| Receive/list inventory batch | `inventory_batches`, `medication_master` | SELECT medication; INSERT batch; SELECT batches with medication relationship | Batch receipt requires INSERT; listing requires SELECT. |
+| Dispense/returns/controlled-substance workflows | Imported models include `prescriptions`, `prescription_items`, `pharmacy_return_logs`, `controlled_substance_vaults`, `controlled_substance_movement_logs`, `bcma_scan_audit_logs`; related billing models are also imported | Full mutation paths not exhaustively traced in this pass | Do not infer CRUD from imports. Continue handler-by-handler and identify immutable evidence/ledger tables before assigning writes. |
+
+### 24.3 Diagnostics API — `backend/domains/diagnostics/router.py`
+
+Observed catalog paths:
+
+- Create category: duplicate-check SELECT on `service_categories`, then INSERT.
+- List/get category: SELECT on `service_categories`.
+- Update/deactivate category: SELECT then UPDATE; the HTTP DELETE handler deactivates by setting `is_active = False`, not SQL DELETE.
+- Create service catalog item: duplicate-check SELECT on `service_catalog`, then INSERT.
+- List/get service catalog item: SELECT on `service_catalog`.
+
+The same router imports diagnostic order/task models and service functions that auto-bill and reverse cancelled-order billing. Their result-entry, verification, cancellation, billing side-effect and HL7-facing write paths need a separate complete trace; catalog observations do not establish those rights.
+
+### 24.4 Privacy runtime — `backend/domains/privacy/runtime.py`
+
+Observed policy evaluation path:
+
+- Reads active `PrivacyPolicyRevision` and patient rows to derive age/context.
+- Reads `PatientConsentRecord` rows for the requested patient IDs, purpose and active revision.
+- Records decision audit rows through `_record_audits(...)`; the concrete audit model/table and bulk-write statement must be included in statement-level extraction.
+- Some branches intentionally avoid loading patient rows when there is no active policy; the active-policy branch performs additional reads.
+- This helper is called from billing and other patient-data disclosure paths, so its DB operations are transitive dependencies of those routes.
+
+This is a key reason a route's directly imported business model list is not a sufficient privilege inventory.
+
+### 24.5 HL7 listener — `backend/domains/integrations/listener.py`
+
+Observed execution boundary:
+
+1. `_tenant_hl7_config` reads `TenantRegistry` from `ControlSessionLocal` and obtains the tenant DB name plus encrypted shared secret.
+2. Authentication compares the supplied secret using constant-time comparison.
+3. `process_and_route_result` obtains a tenant engine by the resolved DB name and opens a tenant session.
+4. The result processor receives the tenant session. Imports show it works with diagnostic tasks/orders, patient data and integration logs; exact DML must be extracted from `process_hl7_oru_r01_in_session` and its called helpers before assigning grants.
+
+The listener process therefore currently has both CP lookup and tenant-engine connection capability. This code observation reinforces the split ingress-resolver / tenant-bound processor contract; it is not proof that authentication alone makes the shared tenant engine registry an authorization boundary.
+
+### 24.6 Queue execution and transitive DB access
+
+`backend/core/queue.py` declares `enqueue_task(..., sync_fallback=True)` by default. If Redis enqueue fails, the producer may invoke the registered handler inline. This means the producer's process identity can inherit the handler's database requirements, undermining a clean API/worker separation. The default and every call-site override must be included in the operation map; this contract does not authorize changing the default.
+
+The queue module imports `ControlSessionLocal` and `tenant_engine_pool`. The retention scheduler and tenant retention executor must be traced separately, including policy revision reads, retention ledgers, legal holds, deletion/erasure operations and audit events. No blanket DELETE grant is implied.
+
+### 24.7 Operation-map confidence and remaining work
+
+The source evidence above supports only the specific operation shapes stated. It does not prove complete transitive ORM flush behavior, cascades, database triggers, raw SQL, bulk DML, background task registration, route coverage, or deployed grants. SQLAlchemy relationship cascades and database-side trigger effects must be included in the eventual statement/catalog characterization.
+
+Required next batch:
+1. Complete each pharmacy dispense, return and controlled-substance handler.
+2. Complete diagnostic order lifecycle, task result/verification and auto-billing/reversal service paths.
+3. Trace all billing payment, deposit, refund, discount, reconciliation and RCM handlers.
+4. Trace clinical, patient, encounter, identity, surgery, insurance, blood bank, procurement, workforce, ABDM, quality, service-ops and report routers to transitive model/service calls.
+5. Trace privacy retention scheduler/executor and all worker/outbox/notification handlers, including inline fallback call sites.
+6. Capture SQLAlchemy emitted statements and raw SQL against disposable migrated tenant/CP databases; map statement types to exact relation/sequence/type/function objects.
+7. Compare this map against immutable evidence tables in Section 21, then test the proposed per-workload operation matrix using independent PostgreSQL sessions.
+
+**No runtime code, SQL, migrations, Compose, credentials, secrets, databases, patient data or production settings were changed.** Database-per-tenant remains the required architecture. No final grants are approved by this source trace.
