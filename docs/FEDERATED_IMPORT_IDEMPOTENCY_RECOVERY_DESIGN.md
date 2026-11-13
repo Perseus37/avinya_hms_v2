@@ -127,7 +127,66 @@ Specify exact HTTP status mapping, response schema, retry-after behavior, pollin
 
 All concurrency/failure tests must run against PostgreSQL with independent sessions and separate application worker processes. SQLite, a process-local mutex, or mocked repository tests are not sufficient evidence for row-locking, unique-conflict, fencing or crash-recovery behavior.
 
-## 7. Migration and rollout requirements
+## 7. Database contract and migration design (normative)
+
+The following is a logical contract, not a claim about existing tables or a ready-to-run migration. Physical names, key types and FK targets must be reconciled with the actual control-plane and tenant model metadata before implementation.
+
+### 7.1 Control-plane operation table
+
+Add one durable operation row per canonical idempotency key. At minimum, the physical table must enforce:
+
+- primary key or unique constraint on `idempotency_key`;
+- non-null destination tenant/branch identity, source pointer identity/generation, source branch identity and protocol/encoding versions;
+- non-null status and positive monotonic `fencing_generation`;
+- lease owner/expiry fields with a constraint that lease owner and expiry are either both present or both absent;
+- unique opaque `operation_id` for API polling, not derived from patient identifiers;
+- destination correlation marker and destination patient ID nullable until the destination transaction is confirmed;
+- non-PHI fingerprint only; never persist raw receipt bearer token or demographic values as an idempotency key.
+
+Claim algorithm: begin a control-plane transaction; INSERT the canonical key with generation 1 and a fresh lease; on unique conflict, SELECT the existing row FOR UPDATE and return its current state. A takeover is permitted only when the stored lease is expired and the state is nonterminal; takeover increments `fencing_generation` in the same transaction and assigns a new lease owner/expiry. All state updates use compare-and-swap predicates containing operation ID, expected status and expected generation. A zero-row update means stale worker or invalid transition and must abort.
+
+Do not use an application-side check-then-insert, Redis-only lock or in-process mutex as the uniqueness barrier. PostgreSQL unique constraints and row-level transactional coordination are authoritative.
+
+### 7.2 Discovery receipt lifecycle
+
+The current PR #19 receipt table is short-lived and contains a pointer ID, selector/snapshot hashes, summary hash and expiry. Do not extend its two-minute bearer lifetime to cover crash recovery. Instead, in the same control-plane transaction that creates or loads the operation, record a one-way receipt-consumption reference (token hash or dedicated receipt ID) and the operation ID, with a unique constraint preventing the same receipt from starting two different operations. The raw token is never stored.
+
+The receipt must be valid at the initial claim. After a durable operation claim exists, retry/recovery uses the opaque operation ID plus destination authorization and revalidation of current source pointer generation, source branch activation, actor authorization and current source policy. It must not require the expired bearer token to be replayed. An expired, unconsumed receipt cannot create a new operation. Define receipt cleanup so it cannot delete the minimal consumption/audit linkage before the operation's retention period ends.
+
+### 7.3 Destination-tenant correlation table
+
+Add an additive table in each tenant database, separate from patient demographics. It must have:
+
+- unique `operation_id` (or an equally strong globally unique operation key);
+- unique canonical `idempotency_key` within the destination tenant;
+- non-null source pointer identity/generation, source branch identity, destination branch identity, protocol version and fencing generation;
+- non-null patient FK, with restrictive deletion semantics while the correlation/audit retention period applies;
+- creation timestamp and immutable provenance fields.
+
+Insert the patient, permitted allergies and correlation row in the same destination transaction. The unique constraint is the destination-side barrier: a retry cannot create a second clone for the same operation. The correlation row must not be updated to point to another patient. Corrections require a separately audited, authorized reconciliation procedure; normal import code must treat a mismatched existing marker as a hard integrity incident.
+
+Do not add a global unique constraint to ABHA, phone, name or demographic combinations to simulate federation idempotency. Do not use a tenant-local patient MRN as a cross-tenant operation identity. Existing patients without a verified correlation marker are not assumed to be prior imports.
+
+### 7.4 Cross-database transaction sequence
+
+No distributed transaction is assumed. Implement the protocol as a recoverable saga with explicit commit points:
+
+| Step | Database transaction | Durable evidence after commit | Recovery behavior |
+|---|---|---|---|
+| A. Claim | Control plane | Unique operation + lease/fencing generation + receipt-consumption link | Retry loads same operation; expired lease can be taken over with higher generation |
+| B. Source authorization/audit | Source tenant | Source policy decision and requested/disclosure audit event | Revalidate current policy on retry; never infer destination commit from source audit |
+| C. Clone | Destination tenant | Patient + permitted allergies + unique correlation row committed atomically | Find by correlation key and verify provenance; never demographic-match |
+| D. Acknowledge | Control plane | Destination patient reference + `DESTINATION_COMMITTED` state | If missing, reconcile from verified destination marker |
+| E. Publish pointer | Control plane/index plus destination policy context | Pointer update or explicit pending state | Retry pointer publication under current policy; retain `INDEX_SYNC_PENDING` on failure |
+| F. Complete | Control plane | `COMPLETED` state and audit event | Only after destination marker and pointer outcome are verified |
+
+Each step must be idempotent and generation-fenced. If a later worker takes over, an earlier worker must not be able to write the destination correlation marker or advance control-plane state. Since a control-plane lease cannot by itself fence a write in another database, the destination transaction must validate the current operation generation through a trusted, narrowly scoped fencing mechanism. The implementation design must specify how this check is made atomic with the destination insert (for example, a destination-local operation-fence row updated before clone commit); a check performed only in Python before the transaction is insufficient.
+
+### 7.5 Index synchronization is not import completion
+
+Pointer synchronization currently operates on the control-plane index and can return false when destination sharing policy denies publication. The implementation must distinguish policy-denied publication from transient index failure. Persist a machine-readable result such as `PUBLISHED`, `SUPPRESSED_BY_POLICY` or `RETRY_PENDING`; do not spin retrying a deliberate privacy suppression. A policy change before a retry must be re-evaluated. Define whether an import can be `COMPLETED` with a privacy-suppressed pointer (recommended: yes, but only with an explicit terminal suppression outcome and audit record), and ensure API responses do not imply discoverability when publication was suppressed.
+
+## 8. Migration and rollout requirements
 
 - Add a forward-only control-plane migration for the durable import operation, unique idempotency key and fencing/lease fields.
 - Add a destination-tenant provenance/correlation marker and unique constraint with a safe migration strategy for existing rows.
@@ -138,7 +197,7 @@ All concurrency/failure tests must run against PostgreSQL with independent sessi
 - Test PostgreSQL concurrency with independent sessions/processes; SQLite-only tests are insufficient.
 - Provide a reviewed expand/migrate/verify/enable rollout sequence and a forward-recovery plan. Any downgrade must preserve operation, marker and audit evidence; production rollback must not delete provenance or make an uncertain operation repeatable.
 
-## 8. Exit criteria
+## 9. Exit criteria
 
 - All tests in Section 6 pass against PostgreSQL with independent concurrent sessions and separate worker processes.
 - Failure injection demonstrates recovery at every cross-database commit boundary.
