@@ -937,3 +937,38 @@ A bounded but complete **test-tree file inventory scan** was completed against s
 No additional queue caller, email dispatch path, task registration or test proving Redis-unavailable fallback/recovery was established by this test-tree pass. Retain the Section 11.11 test gaps and the Section 11.10 requirement for a reproducible full-repository scan. Do not change the default `sync_fallback`, introduce a queue split, or claim complete production caller coverage on this evidence alone.
 
 No runtime code, tests, queue policy, worker, Compose file, environment, secret, credential, database, migration or patient data was changed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the existing consolidated report; no new PR was created.
+
+
+### 11.13 Control-plane FastAPI background jobs are a third dispatch mechanism — 2026-11-13
+
+The expanded production-source scan identified long-running control-plane operations dispatched through FastAPI `BackgroundTasks`. These are separate from the Redis task queue and from direct provisioning email delivery.
+
+| Source | Fetched blob at source commit | Code evidence | Reliability / isolation implication |
+|---|---|---|---|
+| `backend/control_plane/api/routers/fleet_ops.py` | `b286c202182e9af9b2ea5ed485d66889bf7409d9` | Manual backup endpoint adds `_execute_backup` to `background_tasks`; the callback invokes `_dump_and_encrypt` and writes completion/failure audit events. It commits the request audit and returns a “Snapshot queued” response. | The work is attached to the API response lifecycle, not persisted as a Redis task/job. Process termination/restart after response but before completion can lose the in-memory task. |
+| Same file | same blob | Restore endpoint terminates tenant DB connections, then adds `_execute_restore` to `background_tasks`. The callback attempts a mandatory pre-restore safety backup, aborts restore if that fails, then restores and records completion/failure audit events. | Destructive restore is an API-process background operation. The pre-restore safety snapshot is a useful fail-closed guard, but it does not make dispatch durable or provide restart recovery. |
+| `backend/control_plane/api/routers/migration.py` | `d0660422e781ff913788d31664be69191fc269e0` | CSV upload is written to a local temporary file; `_execute_bulk_migration_background` is added to `background_tasks` with tenant DB name, model, mapping, temp path and duplicate policy. A “started” audit is committed and API returns “processing/queued”. | Job state and temp-file ownership are not shown as durable queue state in this path. API process restart, container replacement or local ephemeral storage loss can strand the operation or its input file. |
+| `backend/control_plane/app.py` | `cae7f78718cbf5356f9766361f91ab2fb4362322` | Global webhook endpoint adds `process_webhook_payload` to FastAPI `background_tasks` and returns HTTP 202. The current callback only logs the event type; its own docstring describes future heavy DB processing. | The current implementation is a placeholder/logging callback, not a durable webhook ingestion pipeline. A 202 response means accepted by this API process, not durably stored or completed. |
+
+#### 11.13.1 Dispatch taxonomy updated
+
+The inspected code now shows at least three distinct asynchronous/background mechanisms plus direct synchronous delivery:
+
+1. **Redis task queue:** identity email and privacy retention tasks; default enqueue behavior may execute synchronously in the API caller when Redis enqueue fails.
+2. **FastAPI in-process BackgroundTasks:** manual backup, restore, CSV visual migration and webhook callback. No durable job record/queue handoff is established by the inspected endpoint code.
+3. **Direct synchronous provider call:** provisioning welcome email uses `send_email` in the control-plane API process.
+4. **Worker execution:** `backend.worker` dequeues Redis tasks, but imports the shared DB-capable queue module.
+
+These must be treated as separate reliability contracts. “Queued”, “processing” and HTTP 202 responses from FastAPI BackgroundTasks must not be interpreted as durable acceptance, worker isolation, retry or completion.
+
+#### 11.13.2 Required follow-up evidence
+
+- Inspect the remainder of `fleet_ops.py` and `migration.py` for every BackgroundTasks call, and map every callback's credentials, transaction boundary, input-file lifecycle, idempotency and audit behavior.
+- Confirm whether a persistent job ledger or external supervisor exists elsewhere; the endpoint snippets alone do not prove absence across the whole system.
+- Design durable job acceptance and status transitions before moving backup, restore or migration work to another worker. Restore must retain its pre-restore safety snapshot and fail-closed behavior.
+- Define restart/retry semantics and tenant-scoped execution identity. A general control-plane API process should not need unrestricted tenant DB credentials merely because it starts a background task.
+- Webhook ingress must authenticate and durably persist/validate events before returning a success status if it is to become a real integration path.
+
+This pass establishes the specific in-process dispatch call sites above; it is not yet a complete repository-wide AST/data-flow inventory of every BackgroundTasks callback or dynamic task wrapper.
+
+No runtime code, tests, queue policy, worker, Compose file, environment, secret, credential, database, migration or patient data was changed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the consolidated readiness report; no new PR was created.
