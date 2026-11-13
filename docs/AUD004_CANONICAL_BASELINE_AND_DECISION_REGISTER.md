@@ -498,3 +498,19 @@ The contract also defines:
 Open implementation decisions include canonical tenant identity and migration, host-to-execution routing topology, secret/workload identity provider, per-tenant role/ownership model, process orchestration and scale, durable queue/capability/idempotency protocol, revocation SLA, CP metadata delivery and on-prem profile.
 
 Section 19 is a design and verification contract, not runtime implementation authorization. No runtime, queue, listener, router, SQL, migration, Compose, credential, secret, database, patient-data or production change was made. PostgreSQL **database-per-tenant** remains invariant. PR #70 remains draft/open/unmerged.
+
+
+## 35. PostgreSQL tenant role and credential lifecycle contract (2026-11-13)
+
+The least-privilege remediation contract Section 20 now defines a proposed role/credential lifecycle for PostgreSQL **database-per-tenant** under Pattern A. It is a design and test contract only; no SQL/runtime/Compose/migration/secret change was authorized.
+
+Repository-grounded gaps recorded in Section 20:
+- Current `postgres-roles.sql` creates roles only when absent, does not reconcile drifted attributes, gives `hms_backup` cluster-wide `pg_read_all_data`, and applies app/migrator grants to the literal `postgres` database rather than CP and tenant DBs. It does not establish per-tenant ownership, PUBLIC ACL revocation or credential handoff.
+- Bootstrap, DB provisioning, migration and tenant initialization use the shared configured PostgreSQL login. `bootstrap.py --apply-roles` is not roles-only: it continues into database provisioning, CP migration/seeding and tenant migration/initialization/validation paths.
+- Host backup/restore scripts use `POSTGRES_USER`, not `hms_backup`; backup performs both tenant DB dumps and a distinct cluster globals dump. Restore creates an isolated target owned by the restoring login and uses `--no-owner --no-acl`, so intended ownership/ACL normalization is not yet explicit.
+
+Target role classes are separated into short-lived cluster provisioner, per-database NOLOGIN owner, CP runtime, per-tenant runtime, scoped migration, tenant-scoped backup, isolated restore, and monitoring/exporter identities. The contract defines explicit database creation/ownership/PUBLIC ACL/grant/default-privilege lifecycle, role reconciliation, credential issuance, bounded rotation/revocation, backup/global-export separation and restore verification before cutover.
+
+Section 20 adds an independent-login disposable-PostgreSQL proof matrix covering CP vs tenant A/B, PUBLIC and inherited privileges, ownership/default ACLs, reconciliation after drift, scoped migrations, backup, isolated restore, active sessions and credential rotation. Existing PR #71 remains characterization evidence of current behavior, not acceptance evidence.
+
+Open decisions require DBA/security/platform/operations approval: exact role/ownership model, object privilege inventory, secret provider/workload identity, provisioner operation model, backup/global export strategy, rotation/revocation SLA and safe decomposition of bootstrap. PR #70 remains draft/open/unmerged. No production change or tenant topology change was made.
