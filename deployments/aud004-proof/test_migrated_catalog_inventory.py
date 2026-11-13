@@ -288,6 +288,37 @@ def _capture_catalog(database: str) -> dict:
                 ORDER BY 1,2,3
                 """
             ).all()
+            memberships = conn.exec_driver_sql(
+                """
+                SELECT member.rolname, granted.rolname, m.admin_option
+                FROM pg_auth_members m
+                JOIN pg_roles granted ON granted.oid=m.roleid
+                JOIN pg_roles member ON member.oid=m.member
+                ORDER BY member.rolname,granted.rolname
+                """
+            ).all()
+            database_acl = conn.exec_driver_sql(
+                """
+                SELECT datname, pg_get_userbyid(datdba), datacl::text
+                FROM pg_database WHERE datname=current_database()
+                """
+            ).all()
+            schema_acl = conn.exec_driver_sql(
+                """
+                SELECT nspname, pg_get_userbyid(nspowner), nspacl::text
+                FROM pg_namespace
+                WHERE nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY nspname
+                """
+            ).all()
+            extensions = conn.exec_driver_sql(
+                """
+                SELECT e.extname, e.extversion, n.nspname, pg_get_userbyid(e.extowner)
+                FROM pg_extension e
+                JOIN pg_namespace n ON n.oid=e.extnamespace
+                ORDER BY e.extname
+                """
+            ).all()
             return {
                 "database": database,
                 "schemas": sorted(schemas),
@@ -306,6 +337,10 @@ def _capture_catalog(database: str) -> dict:
                 "rls_policies": [list(row) for row in policies],
                 "table_grants": [list(row) for row in grants],
                 "default_acls": [list(row) for row in default_acls],
+                "role_memberships": [list(row) for row in memberships],
+                "database_acl": [list(row) for row in database_acl],
+                "schema_acl": [list(row) for row in schema_acl],
+                "extensions": [list(row) for row in extensions],
             }
     finally:
         engine.dispose()
