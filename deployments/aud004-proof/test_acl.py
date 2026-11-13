@@ -37,11 +37,20 @@ def marker(identity: str) -> str:
 
 
 def assert_connect_denied(identity: str, target_database: str):
+    # PostgreSQL rejects CONNECT during startup. psycopg2 exposes this FATAL
+    # response as OperationalError without a pgcode, even for SQLSTATE 42501.
     with pytest.raises(psycopg2.OperationalError) as exc:
         connect(identity, target_database)
-    assert getattr(exc.value, "pgcode", None) == "42501", (
-        f"Expected PostgreSQL CONNECT denial (42501), got {getattr(exc.value, 'pgcode', None)!r}; "
-        "DNS, server, missing-database and password failures are not isolation passes."
+
+    message = str(exc.value)
+    expected_database = TARGET_DATABASES[target_database]
+    assert f'permission denied for database "{expected_database}"' in message, (
+        f"Expected PostgreSQL to deny CONNECT to {expected_database!r}; "
+        f"received a different connection failure: {message!r}"
+    )
+    assert "User does not have CONNECT privilege." in message, (
+        "Connection failed, but not with PostgreSQL's explicit CONNECT ACL denial: "
+        f"{message!r}"
     )
 
 
