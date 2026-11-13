@@ -577,3 +577,20 @@ Next gate: complete tenant-domain router/service call graph and map every table 
 No runtime/SQL/migration/Compose/credential/secret/database/production change. PostgreSQL database-per-tenant remains invariant.
 
 Contract: Section 24 in `AUD004_POSTGRESQL_LEAST_PRIVILEGE_REMEDIATION_CONTRACT.md`.
+
+
+## 40. Tenant-domain mutation and worker trace — third source batch (13 Nov 2026)
+
+Contract Section 25 adds source-backed operation evidence:
+
+- Diagnostic order placement reads patient/catalog/bundle data, inserts order/tasks and calls auto-billing; cancellation updates order/task state and invokes billing reversal. Task result submission updates task state/results and invokes clinical delta-check logic. Delta configuration has SELECT/INSERT/UPDATE behavior.
+- Controlled-substance movement locks and reads the vault, optionally reads encounter/prescription/witness records, updates the mutable vault balance and inserts a movement-log event. The ledger is trigger-protected and must remain SELECT/INSERT-only for runtime.
+- Supplier payment execution reads/locks payment request, vendor, invoices and expenses; inserts payment and allocation ledger rows; updates invoice, expense and request state. The payment/allocation ledgers are append-only trigger-protected; do not grant their UPDATE/DELETE.
+- Privacy evaluation reads active policy, patient and consent data and writes decision-audit rows using Core executemany INSERT. This is a transitive write dependency of routes that perform privacy preflight.
+- Daily retention scheduler currently reads CP tenant registry and then opens every tenant DB to read approved retention policy before enqueuing. The execution handler resolves a tenant from payload via CP, reads approved policy and user rows, then invokes category-specific retention service. This is not the intended CP-only scheduler/tenant-bound executor split. Destructive retention service operations remain untraced; no destructive execution was run.
+- Billing auto-charge helpers read clinical/bed/blood-bank relationships and create/update draft invoice lines; reversal helpers can DELETE matching draft invoice lines. Clinical callers inherit these transitive billing requirements.
+- The trace is still incomplete; it does not prove exact physical names, all ORM cascades, raw SQL, trigger effects, or deployed grants. No final grant SQL is approved.
+
+Next gate: trace retention service, pharmacy dispense/return/BCMA, diagnostic delta-check, procurement reconciliation/returns/indents, billing payment/refund/RCM and remaining worker/domain paths. Then use disposable PostgreSQL statement capture and independent-login privilege tests.
+
+No runtime/SQL/migration/Compose/credential/secret/database/production change. PostgreSQL database-per-tenant remains invariant.
