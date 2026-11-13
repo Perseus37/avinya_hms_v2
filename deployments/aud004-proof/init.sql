@@ -1,7 +1,11 @@
--- Disposable synthetic-only AUD-004 test cluster. Passwords are test fixtures, never reuse.
-CREATE ROLE tenant_a_api_test LOGIN PASSWORD 'aud004-a-api-test-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
-CREATE ROLE tenant_b_api_test LOGIN PASSWORD 'aud004-b-api-test-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
-CREATE ROLE control_plane_test LOGIN PASSWORD 'aud004-cp-test-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+-- Disposable synthetic-only AUD-004 test cluster. Passwords are injected at runtime.
+\getenv tenant_a_password AUD004_TENANT_A_PASSWORD
+\getenv tenant_b_password AUD004_TENANT_B_PASSWORD
+\getenv cp_password AUD004_CP_PASSWORD
+
+CREATE ROLE tenant_a_api_test LOGIN PASSWORD :'tenant_a_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+CREATE ROLE tenant_b_api_test LOGIN PASSWORD :'tenant_b_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+CREATE ROLE control_plane_test LOGIN PASSWORD :'cp_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
 
 CREATE DATABASE aud004_tenant_a;
 CREATE DATABASE aud004_tenant_b;
