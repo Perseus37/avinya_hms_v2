@@ -595,3 +595,172 @@ The architecture decision must compare measured total cost and failure/blast-rad
 7. Measure operating cost and revisit Pattern B only at the evidence gate above.
 
 **Decision status:** Pattern A is the recommended initial target; final implementation approval remains with architecture, DBA, security and operations owners. This decision does not authorize runtime, SQL, migration, Compose, secret, database, patient-data or production changes. PostgreSQL database-per-tenant remains invariant.
+
+
+## 19. Pattern A tenant-bound execution contract (2026-11-13)
+
+This section turns the Section 18 recommendation into a testable design contract. It is not a runtime specification ready for implementation until the open identity, routing, secret-manager and revocation decisions below are approved.
+
+### 19.1 Identity model and immutable binding
+
+Every tenant execution unit MUST have one server-assigned tenant identity and one explicit database authorization scope.
+
+The binding consists of:
+- immutable tenant identifier (not a subdomain, branch code, hospital name, database name or request parameter);
+- canonical tenant database identity, verified against the control-plane registry;
+- deployment/execution-unit identity;
+- credential reference for that tenant's PostgreSQL login (secret material is not part of the binding document);
+- privilege class (clinical runtime, read-only projection, import, integration, etc.);
+- binding generation/version and activation state;
+- issuance time, expiry/rotation metadata and revocation state.
+
+The existing `TenantRegistry.id` is an integer primary key and the current routing record also contains mutable operational identifiers such as `subdomain_slug` and `db_name`. Do not silently assume that an integer ID is the final cross-system immutable identity contract. Before implementation, decide whether to retain the current ID as the canonical identity or introduce a UUID with a safe backfill and uniqueness plan. That is a migration/ADR decision, not part of this documentation-only milestone.
+
+A deployment manifest may contain tenant identity, database identity, credential reference and generation, but MUST be provisioned by a trusted control-plane/operations workflow, integrity-protected, versioned and auditable. Application request data MUST NOT be able to create or mutate this binding.
+
+### 19.2 HTTP ingress and tenant routing
+
+Target request path:
+
+1. Public ingress terminates TLS and validates the requested host against the configured domain policy.
+2. A trusted routing layer resolves the host to an active tenant identity using authoritative control-plane metadata. A host/subdomain is a routing hint, not database authorization.
+3. The routing layer forwards only to the execution unit bound to that tenant. The unit has no ability to select another tenant DB.
+4. The tenant execution unit verifies that the signed user/session identity is valid for its assigned tenant and that token tenant identity equals the unit binding. Host, JWT tenant slug and client-supplied tenant IDs cannot override the assignment.
+5. The unit opens a session only against its configured tenant DB using its tenant-specific login. It does not call a generic `get_engine(db_name)` with a request-derived value.
+6. The unit attaches the immutable tenant identity and privilege class to the DB session for audit and application-level consistency checks; this metadata is supplementary and does not replace PostgreSQL grants.
+
+Routing must fail closed for unknown, inactive, suspended, unassigned, mismatched or stale tenant mappings. The default-tenant fallback must not convert an unknown cloud host into access to a default clinical database. Header-based tenant override remains disabled outside a separately authenticated internal/test path; a proxy-provided header is trusted only when the immediate peer is an explicitly configured trusted proxy.
+
+The current repository uses host/subdomain extraction and control-plane lookup in the shared API, then calls a shared engine registry. That is a useful starting routing mechanism, but it does not meet the target because all tenants still use the same configured PostgreSQL login and the API process can select arbitrary database names.
+
+### 19.3 Process and secret boundary
+
+For Pattern A, the tenant clinical execution unit MUST:
+- receive exactly one tenant DB credential reference for its assigned tenant and privilege class;
+- have no permission to enumerate, decrypt, read or request credentials for other tenants;
+- have no cluster administrator, database creator, role administrator, migrator, backup or exporter credential;
+- have no general control-plane DB write access; any needed lifecycle/routing decision must use a narrow authenticated interface or an independently scoped read-only projection;
+- use a dedicated OS/container workload identity and least-privilege filesystem/network policy;
+- avoid shared environment files containing credentials for multiple workloads; inject secrets at runtime through an approved secret-delivery mechanism;
+- avoid writing credentials, DSNs, capability tokens or patient data into logs, task metadata, crash dumps or metrics;
+- run with a privilege class appropriate to the workload, rather than combining clinical API, support, import, federation source read and migration authority in one process.
+
+**Secret-delivery decision remains open.** The repository currently constructs `DATABASE_URL` from `POSTGRES_USER`/`POSTGRES_PASSWORD` and does not establish a tenant-specific secret manager or workload identity provider. A production secret manager, encrypted deployment secret store or host-level protected secret file may be evaluated, but must be selected and threat-modelled before implementation. The application must receive only its assigned secret; merely encrypting a fleet-wide secret map with a key available to every API process is not isolation.
+
+The existing encrypted `TenantRegistry.jwt_secret_key` and HL7 shared secret are application/authentication secrets, not proof of per-tenant PostgreSQL credential delivery. Do not reuse or relabel them as database credentials.
+
+### 19.4 PostgreSQL login and connection contract
+
+Each tenant execution unit connects using a tenant-specific PostgreSQL login whose grants are limited to:
+- CONNECT on its assigned tenant database only;
+- required schema USAGE and table/sequence/function privileges for the approved runtime role;
+- no CREATE DATABASE, CREATEROLE, SUPERUSER, REPLICATION, BYPASSRLS, ownership or migration privileges;
+- no CONNECT to the control-plane database or another tenant database;
+- no membership in cluster-wide data-reading or administrative roles.
+
+The global PUBLIC CONNECT/TEMP defaults and inherited role memberships must be explicitly reconciled. A role's effective permissions must be tested on the actual PostgreSQL cluster, not inferred from role SQL declarations.
+
+Connection construction MUST use a server-owned database identity from the unit binding. No request, queue payload, HL7 field, federation pointer, slug or database-name string may be passed to a generic URL builder or engine factory as authority.
+
+For Pattern A, the preferred initial pool shape is one tenant DB + one runtime login + one privilege class per process. Pool settings must be sized across all processes/replicas and tenant workloads; do not create unbounded pools or allow an LRU eviction to disguise cross-tenant capability. On shutdown, revocation or rotation, stop new checkouts, drain or terminate sessions, dispose the pool and prove that no old connection remains usable. A stale pool must never be reattached to a new tenant binding.
+
+### 19.5 Background jobs and scheduler separation
+
+Tenant-bound work MUST carry a durable, authenticated execution envelope containing:
+- task ID and idempotency key;
+- immutable tenant identity and binding generation;
+- approved task name/operation and schema/version;
+- actor/initiator and approval reference where applicable;
+- created-at, not-before and expiry;
+- audience/execution-unit identity;
+- integrity protection or a server-side durable operation record that prevents payload tampering.
+
+The worker validates the envelope, tenant lifecycle state, current binding generation, operation allowlist and actor/approval constraints before opening the assigned tenant DB. A payload's `tenant_subdomain`, `db_name`, branch code or tenant ID is a selector only; it is not authority. Replayed, expired, revoked, malformed, wrong-audience or wrong-generation work is rejected and audited.
+
+The producer must not fall back to executing tenant work synchronously inside a CP/API process when the queue is unavailable. The current `enqueue_task(..., sync_fallback=True)` default can run the handler in the producer process; this behavior is incompatible with a strict process boundary for tenant-bound tasks. Queue outage must produce a durable retry/outage state or a clear failure, not privilege-boundary bypass.
+
+The current generic worker imports handlers that can reach the shared tenant registry. The target separates:
+- CP scheduler/dispatcher: CP-only; discovers due work from CP-owned metadata and emits tenant-bound operations, but does not open clinical DBs;
+- tenant-bound worker: executes jobs only for its assigned tenant and privilege class;
+- privileged worker/runner: handles explicitly approved provisioning, migrations, import, backup/restore and break-glass operations under distinct identities.
+
+A fleet sweep must not iterate every tenant DB from a general worker. Each tenant's scheduled operation is emitted with a binding and revalidated at execution. Job acknowledgement, retry, idempotency, dead-letter handling and cancellation/revocation semantics must be durable and testable; Redis queue contents alone are not the authorization record.
+
+### 19.6 HL7 and federation execution
+
+HL7 ingress authenticates the sender/interface and resolves the facility mapping, but the listener itself must not hold fleet-wide clinical DB credentials or select a tenant database for direct writes. It emits an authenticated, tenant-bound processing operation. The processor receives only the assigned tenant DB capability and revalidates sender/interface authorization, tenant lifecycle and message replay/idempotency state.
+
+MSH-4, source IP and message-control ID are untrusted routing/authentication inputs until verified against the configured interface identity. The current listener resolves a branch code and encrypted shared secret from CP metadata, then passes a DB name to the shared tenant engine registry. That is not the target execution boundary.
+
+Federation source reads execute inside the source tenant's own bound execution unit and release only an approved transfer payload. Destination writes execute inside the destination tenant's bound execution unit. Neither side receives the other tenant's DB credential or direct session. Federation pointers and partner-provided identifiers never authorize database selection.
+
+### 19.7 Tenant lifecycle, revocation and rotation
+
+Tenant state transitions MUST be explicit and auditable: provisioned/pending, active, maintenance/read-only, suspended/disabled, deprovisioning and retired (final names remain an application contract decision).
+
+On disablement, suspension, credential compromise or tenant reassignment:
+1. Mark the tenant execution binding revoked/inactive in authoritative control-plane state and increment its generation.
+2. Stop ingress routing and reject new sessions, tokens and job envelopes for the old generation.
+3. Stop/disable tenant-bound workers and cancel or quarantine queued/scheduled work for the tenant.
+4. Revoke the old PostgreSQL login or its CONNECT grants as appropriate, rotate credentials and verify no inherited/public grant bypass remains.
+5. Terminate existing DB sessions and dispose all process pools; revoke cached capabilities and secret leases.
+6. Record actor, reason, timestamps, binding generation, affected execution units, job disposition, session termination evidence and completion status.
+7. Re-enable only after fresh credential issuance, binding deployment and positive/negative connection tests.
+
+The system must define and test a maximum revocation propagation interval. No numeric SLA is assumed here because the repository does not establish deployment latency, session lifetime or operational response objectives. During CP, secret-store or revocation-service unavailability, the execution unit must fail closed for new authorization and must not extend an expired capability indefinitely.
+
+Credential rotation is a controlled overlap: issue new credential, deploy/update the tenant-bound unit, verify new connections, drain old sessions, revoke old credential, then prove old credentials fail. The overlap duration and rollback process must be approved and bounded.
+
+### 19.8 Scaling, availability and disaster recovery
+
+Pattern A must be operated as a fleet of tenant-bound execution units managed by automation, not as manually maintained snowflakes. The unit may have multiple replicas for availability only if every replica receives the same single-tenant binding and credential; it must never become a multi-tenant credential pool. A tenant's API and worker may be separate processes with distinct privilege classes but the same immutable tenant binding.
+
+Before production sizing, measure per-tenant baseline memory/CPU, peak request concurrency, background concurrency, PostgreSQL connection demand, queue depth, cold-start/routing latency and upgrade/restart duration. Define placement constraints and resource quotas to prevent one tenant starving others. A shared ingress/router and deployment controller may serve all tenants but must not hold clinical DB credentials.
+
+Tenant unit recovery must be reproducible from a signed/versioned binding and secret reference. Restore operations remain a separate privileged workflow: a restored DB is not routable until integrity, ownership, role/ACL, schema version, tenant identity and application-level checks pass and an authorized cutover is recorded. Disaster recovery must cover loss of the deployment controller/secret manager as well as the database.
+
+### 19.9 Required verification suite
+
+Before any clinical tenant is routed to Pattern A, prove at minimum:
+
+**Identity and routing**
+- Tenant A host + A token routes to A; A host + B token, B host + A token, unknown host, inactive tenant and stale binding all fail closed.
+- Spoofed `X-Hospital-Subdomain`, `X-Forwarded-Host`, JWT tenant slug, request body tenant ID and direct DB name cannot change the process binding.
+- A tenant unit cannot retrieve B's credential reference or resolve B's DB through any public/internal endpoint.
+
+**PostgreSQL**
+- Independent tenant A login connects to A and is denied B and CP; B login has the inverse result.
+- PUBLIC CONNECT/TEMP, inherited role membership, object ownership, default privileges, functions, sequences and existing sessions are checked.
+- Runtime role cannot create DB/roles, migrate, provision, dump/restore or read backup artifacts.
+- Revocation terminates existing sessions and stale pool reuse fails.
+
+**Queue and worker**
+- Tampered, replayed, expired, wrong-audience, wrong-tenant and stale-generation envelopes are rejected.
+- Tenant A worker cannot execute a job for B, even when Redis payload fields are changed.
+- Queue outage never invokes tenant handlers in CP/API process through synchronous fallback.
+- Scheduler has no tenant clinical DB session; retries, idempotency, cancellation and dead-letter behavior are verified.
+
+**HL7 and federation**
+- Forged MSH-4, invalid shared secret, replayed control ID, inactive interface and stale tenant mapping cannot cause a clinical DB write.
+- HL7 ingress has no tenant DB credentials; processor A cannot connect to B.
+- Federation source A cannot read B; destination B cannot open source A's DB; transfer payload and audit evidence are verified.
+
+**Operations**
+- Rotation, revocation, tenant move/reassignment, process restart, deployment rollback, CP outage, secret-store outage and restore/cutover are failure-injected.
+- Process environment, mounted files, network policy, container identity and runtime secret access are inspected in the production-like deployment.
+- Audit events correlate request/job/interface, tenant immutable identity, process identity, DB role/session and decision without exposing secrets or PHI.
+
+### 19.10 Decisions still required before implementation
+
+1. Canonical immutable tenant identity: retain integer `TenantRegistry.id` or introduce UUID; migration/backfill and federation pointer compatibility.
+2. Routing topology: per-tenant host routing to dedicated service instances, or another ingress/deployment controller design that preserves single-tenant process credentials.
+3. Secret delivery and workload identity provider, including on-prem supported profile and recovery if the secret service is unavailable.
+4. Tenant-specific PostgreSQL login/role lifecycle and exact object ownership/default-privilege model.
+5. Process orchestration, desired tenant scale, replica strategy, autoscaling, resource quotas and deployment/upgrade automation.
+6. Queue technology/contract changes, durable operation record, capability signing, idempotency, retry and revocation behavior.
+7. Revocation and rotation maximum propagation intervals and operational ownership.
+8. Whether CP read-only tenant routing metadata is delivered by a narrow resolver, signed deployment manifest or a read-only projection; no CP clinical DB access is permitted.
+9. How on-prem tenant-dedicated deployments share the same contract without requiring a cloud control plane.
+10. Explicit acceptance by architecture, DBA, application security, platform and operations owners.
+
+**Disposition:** this is a detailed tenant-bound execution contract and verification baseline. It deliberately leaves provider-specific secrets, identity, routing, orchestration and immutable-ID migration decisions open. No runtime, queue, listener, router, SQL, migration, Compose, secret, database, patient-data or production change was made. PostgreSQL database-per-tenant remains invariant.
