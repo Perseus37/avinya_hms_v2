@@ -363,3 +363,14 @@ Two harness-only execution defects were identified and corrected before the succ
 The corrected harness passed in workflow run [43406334294](https://github.com/Perseus37/avinya_hms_v2/actions/runs/43406334294), on the exact corrected PR #71 head. The role-bootstrap test log reports `1 passed in 0.16s`; see Section 25 for the full run and interpretation. This confirms the characterization test executed successfully; it does not resolve the production least-privilege gaps it intentionally demonstrates.
 
 No production runtime, SQL, Compose deployment configuration, credentials, or database topology were changed.
+## 26. PostgreSQL least-privilege remediation contract — proposed, not approved (2026-11-13)
+
+A new design-only companion document, [`AUD004_POSTGRESQL_LEAST_PRIVILEGE_REMEDIATION_CONTRACT.md`](AUD004_POSTGRESQL_LEAST_PRIVILEGE_REMEDIATION_CONTRACT.md), defines the target PostgreSQL identity, ACL, workload, credential-lifecycle, provisioning, migration, backup/restore and disposable-cluster proof requirements.
+
+The contract preserves PostgreSQL **database-per-tenant** and defines the core access matrix: control-plane runtime to CP only; each tenant runtime/source identity to its own tenant DB only; backup scoped to an assigned DB; migration and provisioning identities short-lived and explicitly scoped; destination import has no foreign source DB credential or session capability. It prohibits a tenant-facing fleet credential bundle, cluster-wide `pg_read_all_data` as the default backup model, and reliance on database names as authorization.
+
+It makes PostgreSQL `PUBLIC` CONNECT/TEMP revocation and explicit per-database grants a required design target, with object ownership/default privileges configured in each database for the actual creator role. It also requires catalog-wide membership/ACL/ownership/function inspection, effective-privilege probes using independent logins, and disposable PG positive/negative tests for CP, tenant A/B, provisioning, migration, backup and restore.
+
+Important design caveat: the contract does not select final literal role names, secret manager, workload identity provider, backup topology or supported pooler/platform profile. Those remain owner decisions. The existing PR #71 test is characterization evidence of the current behavior, not acceptance evidence for this target.
+
+PR #70 remains open/draft/unmerged. This document is proposed and requires DBA, application-security, platform and operations review. No SQL, runtime, migrations, Compose, credentials, live database, patient data, production rollout or federation activation changed or was authorized.
