@@ -119,16 +119,20 @@ The PR discussion links a proposed durable idempotency and recovery design in PR
 
 ## 8. PR #23 design review and revised proposal — still unapproved
 
-PR #23's design document was updated at head `84f54fbad1574982e5d4b27f7b47f440cdc6e6c3` to incorporate the independent review requirements as normative contract language. It now explicitly requires:
+PR #23's design document was expanded at head `6771826ac629849b846bc45b42589a556d27bffe` to make the database and cross-database transaction contract normative, in addition to the earlier recovery invariants. It now specifies:
 
 - versioned, unambiguous, domain-separated canonical import identity with test vectors and no demographic fields;
-- receipt consumption into a durable operation, with expiry and revalidation semantics;
-- mandatory monotonic fencing generations, lease renewal/takeover rules and stale-worker rejection at both state-transition and destination-commit boundaries;
-- two durable uniqueness barriers: a control-plane operation key and a destination correlation/provenance marker committed atomically with the clone;
-- safe reconciliation of either partial-barrier state without demographic matching or duplicate creation;
-- explicit machine-readable API states, HTTP mappings, polling authorization and retry guidance;
+- receipt consumption into a durable operation, expiry semantics and revalidation on retries without replaying an expired bearer token;
+- mandatory monotonic fencing generations, lease renewal/takeover and stale-worker rejection;
+- two durable uniqueness barriers: a control-plane operation key and a destination correlation/provenance marker committed atomically with the patient/allergy clone;
+- logical control-plane and tenant-database constraints, transactional claim/compare-and-swap behavior, and an explicit receipt-consumption link;
+- a six-step cross-database saga (claim, source authorization/audit, destination clone, control-plane acknowledgement, pointer publication, completion) with recovery evidence at each commit boundary;
+- separate pointer outcomes for publication, policy suppression and transient retry, avoiding false discoverability/completion claims;
+- machine-readable API states, HTTP mappings, polling authorization and retry guidance;
 - PostgreSQL independent-session and separate-worker concurrency, crash-window, stale-fencing and process-termination tests;
 - forward-only migration, rollout, quarantine and evidence-preserving recovery requirements.
+
+The design explicitly warns that a control-plane lease alone cannot fence writes in a separate destination database; the implementation must make destination-side generation validation atomic with clone commit. It also prohibits demographic uniqueness constraints as a substitute for federation operation identity.
 
 The revised document remains **PROPOSED — NOT APPROVED FOR IMPLEMENTATION OR RELEASE**. PR #23 remains draft and stacked on PR #19, not `main`; no submitted independent GitHub review is recorded. This design refinement does not remediate PR #19, authorize migrations, or close the data-integrity findings. PR #19 remains open and unmerged; AUD-004 remains a separate release blocker.
 ## 9. PR #19 implementation trace against PR #23 recovery criteria
