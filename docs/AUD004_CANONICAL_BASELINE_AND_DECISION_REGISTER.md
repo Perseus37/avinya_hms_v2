@@ -594,3 +594,70 @@ Contract Section 25 adds source-backed operation evidence:
 Next gate: trace retention service, pharmacy dispense/return/BCMA, diagnostic delta-check, procurement reconciliation/returns/indents, billing payment/refund/RCM and remaining worker/domain paths. Then use disposable PostgreSQL statement capture and independent-login privilege tests.
 
 No runtime/SQL/migration/Compose/credential/secret/database/production change. PostgreSQL database-per-tenant remains invariant.
+
+
+## Section 26 — Retention, clinical delta-check, pharmacy, procurement and RCM transitive database operations
+
+**Scope and confidence.** Source review of the current branch only. This section extends the source-grounded operation map; it is not a complete SQL trace, exact PostgreSQL object inventory, effective-grant proof or authorization to execute retention. No destructive operation was run and no patient data was accessed.
+
+### 26.1 Privacy retention executor
+
+Inspected `backend/domains/privacy/retention_service.py` and the queue call path recorded in Section 25.
+
+- Every category execution reads active `PrivacyLegalHold` rows. It derives category-wide and patient-specific holds before selecting candidates.
+- `privacy-decision-audits`: delete action counts and then deletes eligible `PrivacyDecisionAudit` rows older than cutoff, limited to result `ALLOW`, excluding `privacy.retention.execute` and `identity.user.unlock`. Requires SELECT and DELETE on the audit relation; the retention run ledger and execution audit are separately inserted by the revision executor.
+- `patients`: candidate SELECT reads `Patient`; clock modes additionally read `PatientEncounter`, `InpatientAdmission`, and/or `Invoice`. Anonymise updates patient identity/contact/network-sharing fields. Delete performs reference checks against encounter, invoice, allergy, diagnostic order, insurance policy and consent records, then deletes eligible patient rows.
+- Patient-delete reference checks catch broad exceptions and continue. This means a failed dependency query can be omitted from the in-memory reference set; it is not a safe basis for a production hard-delete grant or retention assurance. The reviewed check list is not proven to cover every FK, dependent table, cascade or external reference. Must fail closed and use a catalog-derived dependency inventory before any production deletion.
+- The dry-run path reports candidate count before the hard-delete reference filtering that only runs for non-dry-run execution; therefore dry-run affected count can exceed the actual deletable count. This is a reporting/approval accuracy gap to test.
+- Unknown/custom categories return `NOOP_UNKNOWN_CATEGORY` with zero candidates rather than failing closed. The policy/category validation contract must explicitly decide whether unsupported configured categories should reject execution.
+- Revision executor requires an APPROVED RETENTION revision, validates its document, iterates requested category codes, and on non-dry-run inserts `PrivacyRetentionRunLedger` and `PrivacyDecisionAudit` before commit. The service itself can perform UPDATE/DELETE/INSERT in one tenant session.
+- Exact transaction boundaries, rollback behavior after partial category work, legal-hold race handling, retention ledger trigger/ACL details and every policy category remain to be proven.
+
+### 26.2 Diagnostic LIS delta check
+
+Inspected `backend/domains/clinical/services.py:evaluate_lab_delta_check` and its caller in `backend/domains/diagnostics/router.py:submit_task_result`.
+
+- Reads `LabDeltaCheckConfig` by service ID.
+- Reads the most recent prior `DiagnosticTask` joined to `DiagnosticOrder`, filtered by patient, service, non-null result and configured lookback; optionally excludes current task; ordered by created time and ID.
+- Performs in-memory numeric parsing and threshold comparison; the helper itself does not write. The caller updates the current task result/status/performer/verifier/critical fields and handles delta result/review state in the enclosing workflow.
+- Runtime minimum for this helper is SELECT on config, diagnostic task and order relations. Caller writes are separate and include UPDATE on task; alert/evidence side effects require a complete continuation of the caller and downstream services. Do not infer INSERT requirements from the evaluator alone.
+
+### 26.3 Pharmacy prescription dispensing
+
+Inspected `backend/domains/pharmacy/router.py:dispense_medication`.
+
+- Locks and reads `Prescription`, `PrescriptionItem`, draft `Invoice`, and selected `InventoryBatch`; checks expiry, stock, FEFO and remaining prescription quantity; reads `MedicationMaster`.
+- May INSERT a draft invoice; UPDATEs batch stock, prescription-item dispensed quantity, invoice totals and prescription status; INSERTs `InvoiceLineItem` rows with prescription-item and actor provenance.
+- A correct runtime privilege map must include reads of the medication and encounter relationship data, row-locking SELECTs, mutable inventory/prescription/invoice UPDATEs, and invoice INSERT/line INSERT. The route does not establish the full BCMA administration workflow or its audit/scan relations; those remain separate trace items.
+- No prescription or inventory mutation was executed during this review.
+
+### 26.4 Procurement reconciliation, returns and patient indents
+
+Inspected `backend/domains/procurement/router.py`, `backend/domains/procurement/services.py`, and procurement models.
+
+- Three-way match reads invoice, PO, PO items, GRN, GRN items and quantities; the route locks invoice and updates invoice match status. Posting approved invoice to AP inserts an `ExpenseRecord` and updates the vendor invoice's linked-expense reference.
+- Vendor purchase return locks accepted GRN, GRN items and linked inventory batches; sums prior immutable return-item quantities; inserts purchase-return header and immutable return-item rows; decrements mutable batch stock; inserts a negative approved `ExpenseRecord`. Append-only trigger protection for purchase-return header/detail families was recorded in Section 21; runtime requires SELECT/INSERT on those ledger relations, not UPDATE/DELETE.
+- Patient indent issue locks indent items and inventory batches, validates quantities/expiry, decrements batch stock, increments issued quantity, creates or locks a draft invoice, inserts invoice lines and `PatientIndentIssueAllocation` provenance rows, and updates indent status/invoice total.
+- Patient indent return reads original issue allocations and prior return events, locks inventory batch/indent records, restores stock and records immutable `PatientIndentReturnEvent` rows; invoice credit behavior is constrained to a DRAFT invoice, with non-draft invoices requiring a separate credit-note/refund workflow. Exact per-column writes and full tail of return logic need a focused follow-up.
+- These paths mix mutable workflow state with immutable event/ledger tables. Do not grant blanket UPDATE/DELETE to procurement tables as a group. The Section 21 append-only relation inventory remains subject to migration/catalog trigger verification.
+
+### 26.5 Billing / RCM
+
+Inspected `backend/domains/billing/rcm_services.py` and `backend/domains/billing/services.py`.
+
+- Tariff resolution reads service catalog, encounter, patient insurance policy/plan and tariff records.
+- Draft invoice helper reads encounter and draft invoices; may INSERT an invoice.
+- Clinical charge posting reads charge-capture event for source-reference idempotency, resolves encounter/tariff, inserts invoice line and charge-capture event, recalculates mutable invoice totals/tax fields, and commits.
+- Existing auto-billing helpers read doctor/user, bed-transfer/bed, service catalog, insurance tariff and blood-bank relationships; insert invoice lines and update invoice totals. Diagnostic cancellation reversal locks draft invoices and may DELETE matching draft invoice lines, then recalculates totals.
+- This is not a complete trace of payment capture, deposits, refunds, insurer/TPA settlement, cashbook, bank reconciliation, write-offs or all RCM endpoints. No conclusion about those privilege requirements is approved.
+
+### 26.6 Least-privilege consequences and next proof
+
+1. Retention is a privileged tenant-bound workload: its category executor can DELETE privacy audits and patients, UPDATE patient records, and INSERT tamper-evident run/audit evidence. It must not run under the ordinary clinical HTTP identity. The queue producer/dispatcher must not inherit its tenant DB credential.
+2. Split dry-run/preview from execution identity and enforce immutable approved policy revision, category allowlist, actor/approval, tenant binding, legal-hold snapshot/locking strategy, idempotency and auditable execution result.
+3. Replace swallowed dependency-query exceptions with fail-closed behavior; derive delete dependencies from PostgreSQL catalogs and test concurrent FK insertion/legal-hold changes. Resolve dry-run count semantics and unsupported category behavior before enabling execution.
+4. Distinguish mutable workflow tables (patient, task, prescription, inventory batch, invoice, indent, vendor invoice) from append-only event/ledger tables (retention run ledger, procurement returns, patient indent allocations/returns, charge-capture events, other Section 21 evidence). Prove triggers and raw-SQL denial in disposable PostgreSQL.
+5. Complete BCMA administration, controlled-substance dispense/return, all pharmacy return/adjustment, supplier payment/bank reconciliation, patient-indents return, billing payment/deposit/refund/RCM and every remaining queue handler.
+6. Capture SQL against disposable migrated CP and tenant databases, including cascades, trigger effects, sequences and transaction boundaries; test using independent workload logins and adversarial cross-tenant sessions. Only then draft table/sequence/type/function grants and obtain DBA/security review.
+
+No final grant SQL is approved. PostgreSQL database-per-tenant remains invariant. No runtime/SQL/migration/Compose/credential/secret/database/production change; no patient data or destructive retention execution.
