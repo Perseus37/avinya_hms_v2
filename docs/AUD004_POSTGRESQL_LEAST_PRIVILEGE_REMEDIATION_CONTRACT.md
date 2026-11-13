@@ -888,3 +888,117 @@ Tests must inspect `pg_roles`, `pg_auth_members`, `pg_database`, `pg_namespace`,
 10. DBA, architecture, application-security, platform and operations sign-off plus passing independent-session disposable-PostgreSQL tests.
 
 **Disposition:** this section is a proposed role/credential lifecycle contract. It identifies concrete mismatches in the current role SQL, bootstrap, shared URL construction and host backup/restore scripts. It does not authorize SQL/runtime/Compose/migration/secret changes. PostgreSQL **database-per-tenant** and Pattern A remain the target baseline; no schema-per-tenant change is proposed.
+
+
+## 21. Application PostgreSQL privilege inventory (2026-11-13)
+
+**Status: source-grounded initial inventory; not a final grant script or exhaustive per-route certification.** This section records the database operations visible in the inspected application entry points, operational scripts, migration environment and selected immutable-ledger migrations. It distinguishes ordinary application DML from capabilities that must be removed from general runtime identities. The inventory must be completed against the full route/model/query set and verified against live-like PostgreSQL sessions before exact grants are approved.
+
+### 21.1 Evidence inspected and scope
+
+Inspected source includes tenant/CP session construction and routing (`backend/core/database.py`, `backend/core/dependencies.py`); queue and worker entry points; HL7 listener; CP provisioning, fleet operations and CSV migration routes; Alembic environments for tenant and CP databases; backup, restore and index-maintenance scripts; audit mixins/models; and migrations that install append-only PostgreSQL triggers. This is a source review of the current `main` tree, not deployed database telemetry, a full static call-graph proof or a production permission audit.
+
+The application uses SQLAlchemy ORM sessions for the majority of request/domain operations. The inspected tenant request dependency opens a tenant session after CP tenant lookup; the CP dependency opens a CP session. `AuditMixin` stamps actor IDs in SQLAlchemy `before_flush`; it does not require a separate database privilege. The tenant and CP runtime paths therefore need ordinary SELECT/INSERT/UPDATE/DELETE only on their respective mutable application tables, plus sequence and schema access. The exact table allowlist remains to be generated from model metadata and route/query usage; do not translate this summary into blanket grants on every table.
+
+### 21.2 Workload-to-database operation matrix
+
+| Workload / source path | Observed database operations | Required target capability | Must not inherit |
+|---|---|---|---|
+| Tenant clinical HTTP API (`get_db`, tenant domain routers/services) | ORM reads, inserts, updates and deletes across tenant clinical, identity, facility, finance, billing, diagnostics, pharmacy, procurement, workforce, privacy and related domain models. Audit actor stamping occurs in ORM flush. | Tenant-specific CONNECT; schema USAGE; SELECT/INSERT/UPDATE/DELETE on approved mutable tenant tables; sequence USAGE/SELECT where generated IDs are used; narrowly required type/function access. | CP DB, other tenant DBs, schema CREATE/DDL, ownership, role administration, database creation, TRUNCATE, REFERENCES/TRIGGER, cluster monitoring, backup/restore, or fleet-wide credentials. |
+| Control-plane API (`get_control_db`, CP routers/services) | ORM CRUD over tenant registry, operator/access, pricing/billing metadata, federation node metadata, snapshots registry and CP audit logs; CP routing lookup is read-heavy. | CP-only CONNECT; schema USAGE; CRUD only on mutable CP tables; CP audit log SELECT/INSERT only; required sequence access. | Tenant clinical DBs, tenant credentials, tenant DDL, cluster provisioning, backup/restore and session termination. |
+| CP provisioning route (`control_plane/api/routers/provisioning.py`) | CP metadata reads/writes; creates tenant database; invokes tenant Alembic upgrade; seeds tenant users/roles/reference data and federation configuration. | Split operation: CP API metadata DML; isolated provisioner for CREATE DATABASE/ownership/ACL; scoped tenant migrator for DDL; tenant initializer for approved seed DML. | No single CP web runtime identity should hold all these capabilities. |
+| Fleet/support routes (`fleet_ops.py`) | CP registry CRUD; tenant aggregate/telemetry reads; federation key rotation and admin reset writes; `pg_stat_activity` inspection; `pg_terminate_backend`; sandbox `CREATE DATABASE ... WITH TEMPLATE`; schema-version reads; tenant migrations and seed; backup/restore launch. | Separate read-only aggregate/projection; tenant-bound audited support/key operations; privileged session-management/clone runner; scoped migration runner; backup/restore executor. | General CP API and tenant runtime must not have PG_SIGNAL_BACKEND, CREATEDB, template clone, DDL, backup or arbitrary tenant DB access. |
+| CP CSV migration route (`control_plane/api/routers/migration.py`) | CP tenant lookup; tenant duplicate preview SELECT; tenant bulk import INSERT/UPDATE and related reads. | CP control-plane metadata plus delegated, tenant-bound import worker with only the selected tenant DB DML. | CP web process must not directly open arbitrary tenant DBs for preview/import. |
+| Background worker (`worker.py`, `core/queue.py`) | Redis queue operations; registered task handlers may open CP and tenant sessions, including retention sweeps and other cross-tenant operational tasks. Queue itself does not require PostgreSQL. | Split CP scheduler/dispatcher, tenant-bound worker and privileged operations runner. Assign per-handler DML/read scope after handler inventory. | No shared worker credential capable of selecting every tenant DB; no synchronous fallback from CP/API that executes tenant work in producer context. |
+| HL7 listener (`domains/integrations/listener.py`) | CP facility/interface lookup followed by tenant database processing/write of integration results. | CP-only ingress resolver plus a tenant-bound processor with assigned tenant DML; listener itself holds no fleet clinical credential. | No tenant clinical DB credential in network-facing ingress. |
+| Federation source/destination paths | Source-side patient/pointer/allergy reads and transfer-log writes; destination-side patient/import writes and CP pointer/receipt metadata operations. | Source-owned read/release operation and destination-owned write operation, each in its own tenant-bound context; CP metadata access separately scoped. | No source process opens destination DB; no destination process opens source DB; no generic fleet tenant engine. |
+| Tenant/CP Alembic runners (`backend/alembic/env.py`, `control_plane/alembic/env.py`) | DDL for tables, columns, indexes, constraints, enum types; data backfills; PostgreSQL PL/pgSQL function and trigger creation/removal; transaction advisory lock `pg_advisory_xact_lock`; migration-version table reads/writes. | Short-lived DDL-capable migrator scoped to exactly one target DB; ownership/default-privilege policy for all objects it creates; separately scoped CP migrator. | Runtime/API/worker credentials must not migrate or own schema objects. |
+| Concurrent index maintenance (`scripts/build_indexes_concurrently.py`) | Catalog reads from `pg_index`, `pg_class`, `pg_namespace`; raw autocommit `CREATE INDEX CONCURRENTLY` and `DROP INDEX CONCURRENTLY`. | Explicit maintenance identity scoped to one target DB/schema, with controlled index DDL and audited invocation. | Runtime login and monitoring/exporter cannot create/drop indexes. |
+| Backup daemon/manual backup (`scripts/backup_service.py`, host backup script) | CP registry SELECT; `pg_dump` of selected tenant DBs; host script also inventories databases and runs `pg_dumpall --globals-only`. | Dedicated executor with CP metadata read and per-DB dump access; a distinct, tightly controlled cluster-globals export identity/operation if globals backup is required. | No `pg_read_all_data` for a tenant-scoped identity by default; no backup credential in API, worker, onboarding portal or HL7 listener. |
+| Restore/drill (`restore_tenant.py`, `restore_drill.py`, host restore script) | Isolated database creation, `pg_restore`, schema/object creation and data load; drill drops/recreates its disposable target; post-restore row/schema checks. | Isolated restore executor for an explicit non-live target; controlled owner/ACL normalization; separate approval for cutover. | Runtime identities cannot create/drop databases, restore, or route traffic to unverified targets. |
+| Monitoring/exporter | PostgreSQL statistics/catalog reads via monitoring capability. | Dedicated `pg_monitor`-class read-only identity only if the exact exporter requires it; verify its effective view visibility. | No clinical table reads, application DML, DDL, backup or cluster admin. |
+
+### 21.3 Minimum ordinary runtime privilege shape
+
+The following is the initial least-privilege baseline to validate, not an instruction to apply grants immediately:
+
+**Tenant runtime login**
+- CONNECT only to its assigned tenant database.
+- USAGE on the required application schema(s); no CREATE on schemas.
+- SELECT/INSERT/UPDATE/DELETE only on mutable tables used by that tenant's HTTP/API and assigned worker operations.
+- SELECT/INSERT only on immutable evidence/ledger tables where the business workflow appends and reads records; explicitly no UPDATE/DELETE on those tables.
+- USAGE/SELECT on generated-ID sequences that the runtime inserts into; do not grant sequence UPDATE (which permits `setval`) unless a concrete runtime call site proves it is needed.
+- USAGE on required enum/domain types and EXECUTE only on required functions. Do not blanket-revoke PUBLIC function/type privileges until built-in and custom dependencies are inventoried.
+- No TEMPORARY, TRUNCATE, REFERENCES, TRIGGER, CREATE, ownership, role membership, BYPASSRLS, CREATEDB, CREATEROLE, REPLICATION, SUPERUSER, pg_monitor, pg_read_all_data or pg_signal_backend unless a specific reviewed runtime operation proves otherwise. No temporary-table use was identified in the inspected request paths.
+
+**Control-plane runtime login**
+- CONNECT only to the control-plane database.
+- Schema USAGE; SELECT/INSERT/UPDATE/DELETE only on mutable CP metadata tables required by the CP API.
+- SELECT/INSERT only on `control_plane_audit_logs`; the current immutability guard is a SQLAlchemy ORM event, not a PostgreSQL trigger, so table ACLs are necessary to prevent raw SQL or alternate clients from updating/deleting audit evidence.
+- Required sequence USAGE/SELECT and narrowly required types/functions.
+- No tenant DB CONNECT, tenant engine/credential access, DDL, CREATEDB, PG_SIGNAL_BACKEND, backup/restore or clinical data access.
+
+The existing `postgres-roles.sql` blanket grants to all tables in `public` are not sufficient as a final policy. The grant plan must be table-aware and must account for future tables via creator-role-specific default privileges. Runtime should not inherit the migrator or owner role.
+
+### 21.4 Append-only and immutable evidence tables found
+
+The inspected PostgreSQL migrations/models identify the following table families where ordinary runtime UPDATE/DELETE grants should be withheld, in addition to their database trigger/ORM safeguards:
+
+- `control_plane_audit_logs`: CP audit; ORM `before_update`/`before_delete` listeners only, no DB trigger found in the inspected model.
+- `federation_transfer_logs`: PostgreSQL trigger rejects UPDATE/DELETE.
+- `security_audit_export_register`: PostgreSQL trigger rejects UPDATE/DELETE.
+- `procurement_supplier_payments` and `procurement_supplier_payment_allocations`: PostgreSQL append-only trigger.
+- `procurement_bank_statement_batches`, `procurement_bank_statement_lines` and `procurement_supplier_payment_bank_matches`: PostgreSQL append-only trigger.
+- `procurement_purchase_returns` and `procurement_purchase_return_items`: PostgreSQL immutable trigger.
+- `procurement_patient_indent_issue_allocations` and `procurement_patient_indent_return_events`: PostgreSQL immutable trigger.
+- `procurement_reconciliation_investigation_events`: PostgreSQL immutable trigger.
+- `procurement_reconciliation_notification_config_events`: PostgreSQL append-only trigger.
+- `procurement_reconciliation_governance_reports`: PostgreSQL immutable trigger.
+
+The table list is a verified minimum from inspected migrations, not a guarantee that no other append-only/audit tables exist. Before generating grants, scan all model metadata, migrations and write call sites for audit/event/ledger semantics. Some workflow tables (for example payment requests or investigation case headers) are mutable and must not be confused with their immutable event/ledger companions. Append-only tables still need INSERT and usually SELECT; do not assume every such table is read-only.
+
+### 21.5 Privileged operations that must leave ordinary runtime
+
+1. **Database provisioning:** `ensure_postgres_db_exists()` queries `pg_database` and executes `CREATE DATABASE` using the shared configured URL. Move to a short-lived provisioner with explicit database-name allowlist, owner assignment and ACL setup.
+2. **Connection termination:** `_terminate_db_connections()` calls `pg_terminate_backend` against sessions for a target DB. This requires a privileged signal capability (or superuser); it must not be granted to CP web or tenant runtime. Use an audited operations runner with explicit target binding.
+3. **Sandbox clone:** fleet ops uses `CREATE DATABASE ... WITH TEMPLATE`, terminates source connections and scrubs the cloned tenant. This requires database creation/template-owner privileges and then tenant DML; split into a privileged clone executor plus a tenant-bound scrub operation.
+4. **Migration and seed:** provisioning/sync currently invokes Alembic and universal seeding from CP request/operational paths. DDL and seed DML must be separate identities/steps, with no implicit role reconciliation side effects.
+5. **Backup:** the daemon and host script currently use `POSTGRES_USER`; host backup additionally exports global roles. Separate tenant-scoped dump from cluster-global metadata export and isolate artifact storage.
+6. **Restore:** current restore flows use the configured admin login to create/restore targets. Restore must be isolated and followed by explicit owner/ACL normalization and verification before routing.
+7. **Concurrent indexes:** index maintenance uses raw DB-API autocommit and DDL; invoke only through the approved migration/maintenance runner.
+
+### 21.6 Migration-specific SQL capabilities
+
+The inspected Alembic environments use `pg_advisory_xact_lock` to serialize migration execution and apply transaction-local lock/statement timeouts. The tenant migration chain also contains PostgreSQL-specific enum alterations and custom PL/pgSQL trigger functions/triggers for immutable records. Migration identity therefore needs schema/object DDL and appropriate ownership of objects it creates; a normal runtime role must not receive these grants.
+
+The application DML paths do not directly invoke the custom immutable trigger functions. PostgreSQL fires them as part of INSERT/UPDATE/DELETE processing; the trigger functions are created by migrations. The functions inspected are ordinary trigger functions (no `SECURITY DEFINER` declaration found in those definitions). If PUBLIC EXECUTE is later restricted, preserve the exact privileges required for trigger creation and all application-called built-ins/custom functions; verify with migration and runtime negative tests.
+
+The Alembic advisory lock is a built-in function call, not a reason to grant arbitrary advisory-lock or administrative privileges. Migration table/index DDL, enum changes, trigger/function creation and data backfills remain migrator-only.
+
+### 21.7 Backup and restore privilege details still to prove
+
+The current tenant backup service invokes `pg_dump` as `POSTGRES_USER` and reads CP tenant registry metadata. The host script also queries database inventory and invokes `pg_dumpall --globals-only`. The repository does not yet prove that a non-superuser, per-tenant backup login can produce a complete dump for every supported object type. A disposable proof must include all tables, sequences, views, functions, enum types, extensions, large objects (if used), row-level security behavior and metadata required by restore.
+
+A cluster-global roles/tablespaces export is not the same permission as dumping one tenant database. If required, run it under a separately controlled cluster backup identity and protect the artifact independently. The vault/file-copy process needs artifact access, not PostgreSQL credentials.
+
+Restore currently uses `--no-owner --no-acl` in the host path and a separate encrypted restore helper for tenant snapshots. The exact owner/ACL behavior of each path must be tested. The restoring login must not become the permanent tenant runtime login by accident. After restore, explicitly set the intended database owner, schema/object owners, grants and default privileges, then verify before cutover.
+
+### 21.8 Verification and inventory completion gates
+
+Before drafting exact SQL grants, complete these steps:
+
+1. Generate a deterministic table/sequence/type/function inventory from tenant and CP SQLAlchemy metadata and compare it with the live-like PostgreSQL catalogs after all migrations.
+2. Map each route, background handler, listener operation and script to its actual ORM/raw SQL operations and target DB; identify cross-tenant loops and mixed-privilege processes.
+3. Identify every append-only table and all write paths. Prove application workflows only INSERT/SELECT those records and do not rely on UPDATE/DELETE.
+4. Inventory use of temporary tables, advisory locks, custom functions, extensions, large objects, COPY, TRUNCATE, setval, sequence reads, views/materialized views and row-level security. Absence from the inspected snippets is not proof of absence across the whole repository.
+5. Test each role using independent PostgreSQL logins and sessions, including default ACLs, role membership, ownership, inherited privileges, PUBLIC grants and existing sessions.
+6. Prove tenant A runtime cannot connect to tenant B or CP, CP runtime cannot connect to tenant DBs, and no ordinary process can call `pg_terminate_backend`, create/drop DBs or run DDL.
+7. Prove append-only table runtime logins can SELECT/INSERT but cannot UPDATE/DELETE even when using raw SQL outside SQLAlchemy ORM hooks.
+8. Prove backup/restore completeness and isolation on disposable data, including separate global export and owner/ACL normalization.
+9. Re-run the PR #71 characterization tests as a baseline, then add acceptance tests that fail on current unsafe grants and pass only after approved remediation.
+
+### 21.9 Disposition and limitations
+
+The initial inventory shows that ordinary tenant and CP request traffic can be reduced to database-local, table-scoped DML, while provisioning, fleet support, migrations, index maintenance, backup and restore require separate privileged execution identities. It also identifies multiple append-only tables where table-level UPDATE/DELETE must be denied, not merely rejected by ORM hooks or triggers.
+
+This inventory is not yet a complete route-by-route privilege map, does not prove deployed grants or PostgreSQL role attributes, and does not authorize implementation. The exact table grants, default privileges, ownership transfer and backup role strategy remain pending full metadata/query inventory and DBA/security review. No runtime, SQL, migration, Compose, credential, secret, database, patient-data or production change was made. PostgreSQL **database-per-tenant** remains invariant.
