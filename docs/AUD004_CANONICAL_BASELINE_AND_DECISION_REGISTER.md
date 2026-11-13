@@ -133,7 +133,27 @@ The independent review comment on PR #23 requires these details to become normat
 
 Until these details are accepted and implemented, PR #23 is a proposed design only. It does not remediate PR #19, authorize a migration or close the data-integrity findings. PR #19 remains open and unmerged; AUD-004 remains a separate release blocker.
 
-## 9. Evidence gates before implementation or release
+## 9. PR #19 implementation trace against PR #23 recovery criteria
+
+Read-only static review of PR #19 head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`, performed after the PR #23 design review. This is source inspection only; no tests were executed as part of this review.
+
+| Required invariant | Current PR #19 evidence | Assessment |
+|---|---|---|
+| Server-derived durable import identity | `backend/domains/federation/router.py:915-925` checks ABHA, then phone + DOB + exact name; existing match returns early | **Not met** — demographic lookup is not an operation identity |
+| Atomic durable control-plane claim | `backend/control_plane/models.py` contains the discovery receipt model but no federated-import operation model | **Not met** |
+| Destination-side unique correlation marker | Import creates a patient at `router.py:927-979`; no source-pointer/operation marker is written atomically with the clone | **Not met** |
+| Recover post-commit pointer failure | Patient/allergies commit at `router.py:979`; pointer sync occurs at `router.py:985` | **Not met** — pointer failure occurs after destination commit |
+| Retry repairs pointer | Existing-patient return at `router.py:924` exits before the pointer-sync call | **Not met** |
+| Fencing and stale-worker rejection | No operation generation/lease state or conditional transition is present in the reviewed model/migration | **Not met** |
+| Durable import migration | Migration `6c9f2a1d8b40_federated_discovery_receipts.py` creates only the short-lived discovery receipt table | **Not met** |
+| Concurrency and crash-window proof | `tests/test_07_federation_and_backups.py:853-925` tests receipt rejection, ambiguous phone discovery and partial discovery; no concurrent import, lost-response, pointer-repair or stale-worker test is present | **Not met** |
+| PostgreSQL multi-worker failure injection | No test evidence for independent concurrent sessions/processes at import commit boundaries in the reviewed PR #19 test changes | **Not met** |
+
+The receipt/completeness guard in PR #19 remains a positive remediation: import requires a server-issued receipt and validates its destination, selector, summary and current pointer snapshot before source revalidation. That does not provide durable import idempotency or recovery.
+
+A read-only review note with this trace was added to PR #19. The two core data-integrity gaps are therefore confirmed in the current code, not just design concerns. PR #19 should remain unmerged until durable operation identity, both uniqueness barriers, fencing, recoverable pointer synchronization, migration, PostgreSQL concurrency/failure-injection tests and independent review are complete. AUD-004's source-owned database boundary remains a separate release blocker.
+
+## 10. Evidence gates before implementation or release
 
 1. Formalize the database-per-tenant identity ADR and assign accountable database/security/platform owners.
 2. Approve the source-owned boundary and remove all direct foreign-tenant database sessions from runtime paths.
@@ -148,7 +168,7 @@ Until these details are accepted and implemented, PR #23 is a proposed design on
 
 AUD-004 implementation remains blocked until the Critical and High items are resolved with objective evidence and independent sign-off.
 
-## 10. Non-authorization and change control
+## 11. Non-authorization and change control
 
 This is a documentation consolidation only. It does not authorize runtime code changes, SQL, migrations, PostgreSQL role/ACL/network/secret changes, production or patient-data access, partner onboarding, trust provisioning, federation activation, emergency access, pilot, deployment, release or merge.
 
