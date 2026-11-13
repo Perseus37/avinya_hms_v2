@@ -1483,7 +1483,7 @@ The scripts do **not** yet prove a least-privilege or ownership-preserving recov
 
 ### Section 56 — PostgreSQL migration/catalog workflow rerun reached trigger assertions; assertion ordering corrected
 
-The reconciliation workflow was manually dispatched against PR #71 head `0810745182423ffae5c28a2d22c8cf639dbb2a2a` (run `43441291510`). The earlier `queue` shadowing problem did not recur: the real control-plane migration and both independent tenant migration graphs completed on PostgreSQL 17. The workload-isolation proof and production role-bootstrap function proof jobs completed successfully. The reconciliation regression job was still in progress when inspected.
+The reconciliation workflow was manually dispatched against PR #71 head `0810745182423ffae5c28a2d22c8cf639dbb2a2a` (run `43441291510`). The earlier `queue` shadowing problem did not recur: the real control-plane migration and both independent tenant migration graphs completed on PostgreSQL 17. The workload-isolation proof and production role-bootstrap function proof jobs completed successfully. The reconciliation regression job subsequently completed successfully.
 
 The catalog test then failed at the first append-only trigger assertion for `federation_transfer_logs`. PostgreSQL's `pg_get_triggerdef` rendered the valid event ordering as `BEFORE DELETE OR UPDATE`, while the test expected the equivalent `BEFORE UPDATE OR DELETE` string. The catalog showed the expected trigger was present; the failure was a brittle assertion on PostgreSQL's textual event ordering. Because pytest stopped at this assertion, later trigger checks, raw SQL mutation checks, catalog report generation, and artifact upload were not completed. The upload step ran but warned that no report file existed.
 
