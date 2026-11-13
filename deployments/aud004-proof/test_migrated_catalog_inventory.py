@@ -279,6 +279,80 @@ def _capture_catalog(database: str) -> dict:
                 ORDER BY table_schema,table_name,grantee,privilege_type
                 """
             ).all()
+            # Catalog ACL expansion preserves explicit PUBLIC grants and grants
+            # that information_schema.role_table_grants can hide from the
+            # inspecting role. Keep ownership separate from explicit ACLs.
+            relation_acls = conn.exec_driver_sql(
+                """
+                SELECT n.nspname, c.relname, c.relkind,
+                       CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                            ELSE pg_get_userbyid(acl.grantee) END,
+                       pg_get_userbyid(acl.grantor), acl.privilege_type,
+                       acl.is_grantable
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                CROSS JOIN LATERAL aclexplode(c.relacl) AS acl
+                WHERE c.relacl IS NOT NULL
+                  AND n.nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY n.nspname,c.relname,acl.grantee,acl.privilege_type
+                """
+            ).all()
+            column_acls = conn.exec_driver_sql(
+                """
+                SELECT n.nspname, c.relname, a.attname,
+                       CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                            ELSE pg_get_userbyid(acl.grantee) END,
+                       pg_get_userbyid(acl.grantor), acl.privilege_type,
+                       acl.is_grantable
+                FROM pg_attribute a
+                JOIN pg_class c ON c.oid=a.attrelid
+                JOIN pg_namespace n ON n.oid=c.relnamespace
+                CROSS JOIN LATERAL aclexplode(a.attacl) AS acl
+                WHERE a.attnum > 0 AND NOT a.attisdropped
+                  AND a.attacl IS NOT NULL
+                  AND n.nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY n.nspname,c.relname,a.attnum,acl.grantee,acl.privilege_type
+                """
+            ).all()
+            routine_acls = conn.exec_driver_sql(
+                """
+                SELECT n.nspname, p.proname,
+                       pg_get_function_identity_arguments(p.oid),
+                       CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                            ELSE pg_get_userbyid(acl.grantee) END,
+                       pg_get_userbyid(acl.grantor), acl.privilege_type,
+                       acl.is_grantable
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.oid=p.pronamespace
+                CROSS JOIN LATERAL aclexplode(p.proacl) AS acl
+                WHERE p.proacl IS NOT NULL
+                  AND n.nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY n.nspname,p.proname,acl.grantee,acl.privilege_type
+                """
+            ).all()
+            type_acls = conn.exec_driver_sql(
+                """
+                SELECT n.nspname, t.typname,
+                       CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                            ELSE pg_get_userbyid(acl.grantee) END,
+                       pg_get_userbyid(acl.grantor), acl.privilege_type,
+                       acl.is_grantable
+                FROM pg_type t
+                JOIN pg_namespace n ON n.oid=t.typnamespace
+                CROSS JOIN LATERAL aclexplode(t.typacl) AS acl
+                WHERE t.typacl IS NOT NULL
+                  AND n.nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY n.nspname,t.typname,acl.grantee,acl.privilege_type
+                """
+            ).all()
+            role_attributes = conn.exec_driver_sql(
+                """
+                SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolcanlogin,
+                       rolreplication, rolbypassrls, rolconnlimit, rolvaliduntil
+                FROM pg_roles
+                ORDER BY rolname
+                """
+            ).all()
             default_acls = conn.exec_driver_sql(
                 """
                 SELECT pg_get_userbyid(d.defaclrole), n.nspname, d.defaclobjtype,
@@ -335,7 +409,12 @@ def _capture_catalog(database: str) -> dict:
                 "routines": [list(row) for row in routines],
                 "triggers": [list(row) for row in triggers],
                 "rls_policies": [list(row) for row in policies],
-                "table_grants": [list(row) for row in grants],
+                "table_grants_information_schema": [list(row) for row in grants],
+                "relation_acls_expanded": [list(row) for row in relation_acls],
+                "column_acls_expanded": [list(row) for row in column_acls],
+                "routine_acls_expanded": [list(row) for row in routine_acls],
+                "type_acls_expanded": [list(row) for row in type_acls],
+                "role_attributes": [list(row) for row in role_attributes],
                 "default_acls": [list(row) for row in default_acls],
                 "role_memberships": [list(row) for row in memberships],
                 "database_acl": [list(row) for row in database_acl],
@@ -480,7 +559,7 @@ def test_migrate_and_capture_three_independent_postgres_catalogs(tmp_path: Path)
             "This is a characterization artifact, not a least-privilege acceptance test.",
             "No application rows are inserted or exported.",
             "Object owners, table grants, database/schema ACLs, default ACLs, and role memberships are captured but not interpreted or asserted.",
-            "This pass does not inventory column, sequence, routine, or type ACLs, role attributes, or cluster-wide settings.",
+            "Explicit relation, column, routine, and type ACL entries (including PUBLIC grantees) and role attributes are captured, but are not interpreted or asserted; implicit ownership rights and cluster-wide settings still require separate review.",
             "Trigger and routine definitions/security settings are captured but not evaluated; raw SQL append-only denial is not tested.",
             "No backup/restore parity is asserted by this test.",
         ],
