@@ -1195,3 +1195,46 @@ The safe sequence is:
 5. Only after that content is available on a durable main-based branch should superseded stack PRs be closed in dependency order. Do not merge all 50 PRs individually and do not close them merely to reduce the open count.
 
 No PRs were closed, merged, rebased or retargeted during this inventory. No runtime code, PostgreSQL objects, migrations, credentials, deployment settings or patient data were touched. The PR inventory is a point-in-time repository view; it does not constitute production-readiness evidence.
+
+
+## Section 41 — Domain-operation trace extension: retention and clinical / pharmacy / procurement / RCM
+
+**Evidence added:** source review on the AUD-004 documentation branch of:
+- `backend/domains/privacy/retention_service.py`
+- `backend/domains/clinical/services.py` (LIS delta-check helper)
+- `backend/domains/diagnostics/router.py` (result submission caller)
+- `backend/domains/pharmacy/router.py` (prescription dispensing)
+- `backend/domains/procurement/router.py`, `backend/domains/procurement/services.py`, and procurement models
+- `backend/domains/billing/rcm_services.py` and `backend/domains/billing/services.py`
+
+### Findings added
+
+| Workflow | Source-grounded operations | Privilege implication / status |
+|---|---|---|
+| Retention legal holds | SELECT active legal holds and held patient IDs | Tenant-bound retention identity requires SELECT on legal-hold relations |
+| Privacy decision audit retention | SELECT candidate count; DELETE eligible ALLOW rows; excludes retention/unlock proof rows | DELETE is real and must be isolated from ordinary API; audit execution proof is separately INSERTed |
+| Patient retention | SELECT patients plus encounter/admission/invoice clocks and six reviewed dependency references; UPDATE anonymized fields or DELETE eligible patient rows | Privileged tenant operation; current dependency-query exception handling is fail-open and hard-delete dependency coverage is unproven |
+| LIS delta-check | SELECT config and latest prior task/order; caller updates task result/review state | Helper itself read-only; caller writes must be mapped separately |
+| Prescription dispensing | SELECT/lock prescription, items, invoice, inventory batch and medication; possible invoice INSERT; UPDATE stock, dispensed quantity, invoice totals and prescription status; INSERT invoice lines | Clinical pharmacy runtime needs targeted read/write privileges; BCMA administration remains untraced |
+| Procurement 3-way match / AP | SELECT PO/GRN/invoice relations; UPDATE invoice status/link; INSERT expense | Separate mutable workflow state from append-only payment ledgers |
+| Vendor purchase return | SELECT/lock GRN/items/batches and prior return totals; INSERT immutable return header/items and expense; UPDATE batch stock | Return ledger should be SELECT/INSERT only; batch stock is mutable |
+| Patient indent issue/return | SELECT/lock indent/items/batches/allocation history; UPDATE stock/issued quantities/status/invoice; INSERT invoice lines, issue allocations and return events | Immutable allocation/return evidence needs INSERT only; exact return tail and FK/trigger behavior still need proof |
+| RCM clinical charge | SELECT encounter/service/insurance/tariff and idempotency event; INSERT invoice/line/charge event; UPDATE invoice totals/tax | Transitive runtime writes extend beyond billing route's direct ORM statements |
+| Diagnostic billing reversal | SELECT/lock draft invoices and lines; DELETE matching draft invoice lines; recalculate invoice totals | Clinical caller inherits billing DELETE and UPDATE needs |
+
+### Readiness blockers / caveats
+
+- Retention hard-delete dependency queries swallow exceptions; a missing/failed reference query can allow deletion without that dependency being checked. This must be changed to fail closed and proven against catalog-derived FK coverage before production execution.
+- Retention dry-run candidate/affected count does not apply the non-dry-run reference filtering and can overstate deletable patients.
+- Unknown retention category returns a no-op status rather than rejecting unsupported policy categories; behavior requires an explicit fail-closed policy decision.
+- Retention policy executor writes a permanent run ledger and privacy audit entry on non-dry-run execution. Retention therefore requires a separate privileged tenant-bound workload, not the normal clinical runtime.
+- Delta evaluator is read-only; the caller's task update and any critical-alert/evidence side effects need full caller tracing.
+- Pharmacy dispensing uses row locks and mutable stock/prescription/invoice rows; BCMA and controlled-substance pathways are not certified by this trace.
+- Procurement append-only evidence relations must not inherit broad table UPDATE/DELETE. Trigger/catalog proof remains outstanding.
+- RCM/payment/deposit/refund/TPA/bank settlement flows remain incomplete; no complete billing grant profile can be approved.
+
+### Updated next gate
+
+Complete remaining pharmacy BCMA and controlled-substance return/administration paths, procurement supplier payment and bank reconciliation plus patient-indent return, billing payment/deposit/refund/RCM and all remaining worker handlers. Then run SQL capture on disposable migrated PostgreSQL databases and independent-login positive/negative privilege tests. No production grants until that evidence and independent DBA/security review are complete.
+
+No runtime/SQL/migration/Compose/credential/secret/database/production change. No destructive retention execution or patient-data access. PostgreSQL database-per-tenant remains invariant.
