@@ -500,3 +500,98 @@ Do not mechanically split services until route and dependency inventories identi
 This milestone does not authorize schema-per-tenant, microservices, Kubernetes, service mesh, a new database platform, a tenant-per-container fleet, a change to patient/branch data ownership, or a production credential/ACL rollout. It does not establish HIPAA, DPDP, GDPR or other compliance certification.
 
 **Disposition:** this is the minimum target topology and a phased decision framework. Pattern A versus Pattern B remains an explicit architecture decision; no runtime implementation or production change is authorized by this document.
+
+
+## 18. Pattern A versus Pattern B decision analysis (2026-11-13)
+
+### 18.1 Repository facts that constrain the decision
+
+The decision is based on checked-in code and Compose configuration, not an assumed customer forecast:
+
+- The product supports multiple active tenant records in the control plane and routes cloud requests by tenant subdomain. It also has an explicit on-prem deployment mode. The repository does not provide a reliable forecast of active cloud tenants, tenant growth, or per-tenant workload concurrency.
+- The current API is a shared multi-tenant process. `TenantEngineRegistry` caches engines by caller-supplied database name (LRU limit 64), while `build_db_url(db_name)` changes only the database component of the same configured `DATABASE_URL`. It does not select a tenant-specific login or prove authorization.
+- The request path resolves a tenant record from the control plane and then obtains an engine by `ctx.db_name`; this is useful routing context but does not constrain the shared PostgreSQL credential.
+- CP fleet/support, migration, queue, HL7 and federation paths also access tenant engines. A change limited to the HTTP request dependency would leave alternate tenant access paths.
+- Production Compose supplies the same `.env.production` to API, worker, HL7 listener, onboarding portal and db-init. Separate containers therefore do not currently imply separate database identities.
+- No credential broker, tenant-aware PostgreSQL connection proxy, per-tenant secret delivery integration, or enforceable workload-to-tenant capability protocol was identified in the inspected paths.
+- The source does not establish production tenant count, hosting provider, managed-versus-self-hosted PostgreSQL split, operational staffing, secret manager, pooler use, or actual deployed topology. Those are open deployment inputs, not facts to invent.
+
+### 18.2 Comparative decision matrix
+
+| Dimension | Pattern A — tenant-bound execution instances | Pattern B — constrained connection broker |
+|---|---|---|
+| Cross-tenant blast radius | Strongest straightforward boundary: process identity and secret access can be limited to one tenant DB. A compromised tenant process does not automatically expose other tenant credentials. | Potentially small if the broker authenticates callers and enforces immutable tenant and operation scope on every checkout. Broker compromise or policy bypass can expose many/all tenants. |
+| Fit with current code | Requires replacing shared tenant engine access with tenant-bound runtime instances and routing; CP/fleet/queue/HL7/federation call sites must be delegated or isolated too. | Requires a substantial connection acquisition refactor. Existing arbitrary `get_engine(db_name)` cannot simply be wrapped in a broker call while the caller retains fleet credentials. |
+| Initial engineering complexity | Moderate-to-high deployment and routing work; comparatively simple security model and easier negative proof. | High: protocol, broker authentication, capability lifecycle, connection ownership, pool partitioning, failure semantics and independent security review. |
+| Operating cost | More process/service instances, secret bindings, health checks and deployment objects as tenant count grows. Per-tenant DB connections still exist either way. | Fewer app processes, but a highly available broker/proxy and its monitoring, scaling, backup, patching and on-call become critical shared infrastructure. |
+| Scaling | Horizontal scale within each tenant boundary; noisy-neighbour controls can be applied per tenant. Deployment object count grows with tenant count. | App tier scales more uniformly; broker throughput, connection limits and pool cardinality become shared bottlenecks. Requires strict per-tenant fairness and limits. |
+| Tenant onboarding/offboarding | Explicitly provision and bind a new execution identity/instance; revoke by disabling routing, revoking secret and draining that tenant's pools. | Register tenant policy and credential in broker; prove policy propagation, cache eviction, active connection termination and revocation under race conditions. |
+| Rotation/revocation | Secret rotation and pool drain are tenant-local and comparatively observable. | Broker must revoke capabilities and terminate already-issued/backend pooled sessions within a bounded interval; credential rotation alone is insufficient. |
+| Connection pooling | Pools are naturally partitioned by tenant process/identity. More pools and idle connections must be budgeted. | Pool keys must include immutable tenant identity, DB, role and privilege class; never multiplex one backend session across tenant identities without verified reset and isolation. |
+| Availability | A tenant instance failure can be isolated to that tenant; deployment fleet control-plane overhead increases. | Broker is on the critical path for tenant DB access; it needs HA, safe degraded behavior and careful failure-domain design. |
+| Observability/audit | Tenant process identity gives direct attribution; central correlation still required. | Broker can centralize decisions, but must log caller identity, immutable tenant, operation, grant decision, connection/session identity and revocation events without logging secrets or PHI. |
+| Disaster recovery | Tenant execution can be recreated from declarative tenant binding and secret references; broker is not a new recovery dependency. | Broker policy, signing keys, tenant credential metadata and backend connectivity become additional recovery-critical assets. |
+| Testability | Independent PostgreSQL logins and process identities give a direct, understandable positive/negative test oracle. | Requires adversarial protocol tests, forged/replayed capability tests, concurrent checkout/revocation tests, pool contamination tests and independent broker-policy verification. |
+| On-prem deployment | Natural fit for a hospital-dedicated deployment where the deployment already has a single tenant trust domain. | Usually unjustified unless the on-prem deployment itself has multiple independently isolated tenant DBs. |
+| Small initial cloud cohort | Higher operational footprint, but easiest boundary to reason about and verify before clinical data is onboarded. | Disproportionate complexity unless there is a concrete scale requirement and an independently operated broker/proxy. |
+| Large multi-tenant SaaS | Can become operationally expensive; automate deployment and secret binding before tenant count grows. | Can be viable if the broker is purpose-built, independently reviewed, highly available and proven to enforce tenant binding end-to-end. |
+
+### 18.3 Broker design distinction — mandatory
+
+“Broker” must mean a **connection broker/proxy that retains backend credentials and enforces the database binding**, not a password vending endpoint.
+
+A broker that returns a tenant password/DSN to the shared API is not sufficient: after issuance, the API can retain, copy, log, reuse or present that credential to another database unless PostgreSQL grants independently prevent it. A process that can retrieve every tenant secret remains a fleet-wide credential oracle.
+
+A viable Pattern B must, at minimum:
+
+1. Authenticate each caller using a workload identity unavailable to ordinary end users.
+2. Accept a signed capability whose tenant immutable ID, database identity, role/privilege class, operation scope, expiry and audience are server-issued; caller-provided tenant/database strings are not authority.
+3. Validate that capability against current CP lifecycle state and revocation generation on every new checkout, with a documented maximum stale-policy interval.
+4. Retain backend credentials inside the broker/proxy boundary; never return passwords, reusable DSNs or raw secret material to the application.
+5. Enforce the tenant DB and PostgreSQL role at connection establishment, and partition backend pools by immutable tenant ID, DB, role and privilege class.
+6. Prevent session-state leakage across checkouts (role, search_path, temp objects, prepared statements, GUCs, advisory locks, transactions and failed reset); discard a backend session if reset cannot be proven.
+7. Terminate or quarantine already-open sessions on tenant disablement, credential revocation and policy-generation change within a measured bounded interval.
+8. Apply per-tenant connection, concurrency, rate and queue limits; fail closed if CP policy or broker authentication is unavailable.
+9. Emit tamper-resistant audit records for allow/deny, checkout, release, reset failure, expiry, revocation and backend identity.
+10. Be independently deployed and administered from CP/API workloads; broker administrators and secret readers are privileged roles subject to separate controls.
+11. Be tested with concurrent adversarial tenant A/B sessions, replayed and expired capabilities, stale policy, forged DB names, pool reuse, broker outage, partial revocation and credential rotation.
+
+A generic SQLAlchemy engine factory, Redis cache, API helper, or service that hands out passwords does not satisfy this definition.
+
+### 18.4 Provisional architecture recommendation
+
+**Select Pattern A as the initial security baseline for the first cloud production cohort and for tenant-specific/high-risk execution. Do not build Pattern B in the current remediation phase.** This is a security-first, reversible choice, not a claim that Pattern A is cheapest at every scale.
+
+Reasons:
+- The current application already has a fleet-wide database credential and many call sites that can choose a tenant DB. Pattern A provides a direct path to proving that a compromised tenant execution identity cannot authenticate to another tenant DB.
+- No broker exists, and the repository contains no evidence of the infrastructure, team ownership or operating maturity needed to make a broker a safer choice today.
+- A password-vending broker would only move the credential leak point; a true connection proxy is a new critical security component with significant design and test burden.
+- The code supports on-prem deployment mode, for which a tenant-dedicated deployment is the natural default.
+- Pattern A can be implemented incrementally without changing PostgreSQL database-per-tenant or decomposing the modular monolith into domain microservices.
+
+This recommendation does **not** authorize a permanent container-per-tenant fleet or imply that the current shared API can be relabeled as Pattern A. The first implementation must define a tenant-bound execution unit, its routing contract, immutable tenant binding, secret reference, pool lifecycle and health/recovery behavior. The CP web tier must remain CP-only. Queue, HL7, federation, support, migration, provisioning and backup operations must be separately assigned to tenant-bound or privileged execution boundaries.
+
+### 18.5 Reconsideration trigger and required evidence
+
+Reopen Pattern B only when a measured operating case demonstrates that Pattern A's deployment/operations cost or connection footprint is unacceptable. Before changing the decision, collect:
+
+- Current and forecast active cloud tenant counts (12/24/36 months), onboarding/offboarding rate, peak concurrent tenant workloads and per-tenant connection demand.
+- Actual cloud/on-prem split, hosting profiles, PostgreSQL service topology, pooler availability, network latency and secret-management capabilities.
+- Per-tenant process/container cost, idle resource use, deployment/upgrade toil, incident isolation and on-call burden from a representative pilot.
+- Connection count and pool utilization under peak load, including background jobs, integrations and migrations.
+- A broker threat model, ownership/on-call plan, HA design, recovery plan, policy consistency model and independent security review.
+- A working prototype that passes the Section 9 independent PostgreSQL access matrix plus the broker-specific adversarial tests in Section 18.3.
+
+The architecture decision must compare measured total cost and failure/blast-radius outcomes, not container count alone. Until those measurements exist, retain Pattern A as the default and do not introduce a broker as a cost-saving assumption.
+
+### 18.6 Implementation sequence under this decision
+
+1. Keep CP web isolated and CP-only; move fleet clinical reads and support actions to explicitly authorized delegated operations.
+2. Define a tenant-bound execution identity and process contract for cloud tenant API and tenant workers. A tenant instance receives only that tenant's DB credential; no shared process receives the fleet secret set.
+3. Route cloud tenant traffic to the bound execution unit using trusted server-side mapping. Host/subdomain, JWT tenant slug, queue payload and database name remain selectors, not database authorization.
+4. Keep on-prem installs tenant-dedicated by deployment boundary, with the same PostgreSQL role/ACL and verification contract.
+5. Split HL7 ingress from tenant-bound processing; isolate source-owned federation reads; use dedicated short-lived migration/provisioning identities; isolate backup/restore and monitoring.
+6. Prove tenant A/B and CP denials with independent PostgreSQL logins and actual Compose/process secret inspection before any clinical production onboarding.
+7. Measure operating cost and revisit Pattern B only at the evidence gate above.
+
+**Decision status:** Pattern A is the recommended initial target; final implementation approval remains with architecture, DBA, security and operations owners. This decision does not authorize runtime, SQL, migration, Compose, secret, database, patient-data or production changes. PostgreSQL database-per-tenant remains invariant.
