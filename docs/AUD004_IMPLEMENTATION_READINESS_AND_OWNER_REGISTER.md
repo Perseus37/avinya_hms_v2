@@ -853,3 +853,36 @@ The current design has two independent barriers to a database-free email worker:
 A safe separation requires a queue/dispatch module whose import closure is database-free, an email worker with only mail-provider and queue credentials, and an explicit failure contract for Redis outage (durable retry/outbox, or a deliberately synchronous fallback in a separately approved process). Do not silently drop auth/security notifications or claim they are delivered because an enqueue call returned a task ID. The current fallback returns the task ID even when the synchronous handler catches a delivery error; this does not constitute durable queue acceptance or successful delivery.
 
 Before changing this behavior, define whether the auth endpoint guarantees only best-effort notification, durable dispatch acceptance, or confirmed delivery; then add tests for Redis unavailable, mail provider unavailable, duplicate retry, and post-commit notification recovery. No email delivery, queue semantics, API response, runtime code, DB, credential or deployment configuration was changed in this inspection.
+
+
+
+### 11.10 Additional task registry and caller-surface sweep — 2026-11-13
+
+A further read-only pass expanded beyond the previously documented privacy and identity routes. The recursive source tree at the inspected PR #70 head contains 248 Python files under `backend/`. This pass additionally inspected the control-plane service layer, application startup, selected operational scripts, identity password helpers, integrations service, and the complete queue/worker registration surfaces. It did not fetch and inspect every one of the 248 files; this remains a bounded audit, not a complete repository-wide call-site proof.
+
+| Source file | Fetched blob | Exact code evidence | Finding |
+|---|---|---|---|
+| `backend/core/queue.py` | `aad0c663e52e7a73d7261658f5ecc1889b7e36b7` | Lines 302, 325 and 409 register `email.send`, `privacy.retention.execute` and `privacy.retention.scheduled_daily_sweep`. | These are the three statically visible handler registrations in the queue module. The two retention handlers have different capabilities: tenant execution and fleet-wide scheduling. |
+| `backend/worker.py` | `b0fb87568caab841c6557082f885ca39bbb78ca0` | Lines 17–25 import the queue module's worker/dispatch API; lines 84–90 schedule the fleet sweep and dequeue tasks; lines 97–112 dispatch the registered handler in the worker process. | The production worker imports the same DB-capable queue module used by API enqueue callers. The periodic scheduler runs in this same worker process. |
+| `backend/control_plane/app.py`, `backend/control_plane/services/*.py`, `backend/scripts/*.py`, `backend/domains/identity/passwords.py`, `backend/domains/integrations/service.py` | Read at PR #70 head `20b8a5e48518c81820a7e28494fd73aeda33b46f` | A targeted literal scan for `enqueue_task`, `enqueue_email`, `sync_fallback`, `registry.register`, registered task names and direct queue imports returned no matches in these additional files. | No additional direct caller or static registration was identified in this subset. This is not proof that dynamically imported or indirect call paths do not exist elsewhere. |
+| `docker-compose.prod.yml` | `bfce52948c508e137875a0be2af09ae11178e78f` | API, HL7 listener, worker and onboarding portal service definitions load `.env.production`; worker command starts `python -m backend.worker`. | Deployment definitions confirm a common environment-file source across these services. They do not establish effective runtime credentials, secret-provider authorization, PostgreSQL grants or network policy. |
+
+#### 11.10.1 Consolidated known queue map
+
+The source evidence currently establishes these known paths:
+
+1. Identity notification callers invoke `enqueue_email` → `enqueue_task("email.send", sync_fallback=True)`. Redis failure may execute the mail handler in the API caller.
+2. Privacy retention API invokes `enqueue_task("privacy.retention.execute")` without overriding the default `sync_fallback=True`. Redis failure may execute tenant retention work in the API caller.
+3. Worker periodic scheduling invokes `enqueue_task("privacy.retention.scheduled_daily_sweep", sync_fallback=False)`; the sweep handler subsequently enqueues per-tenant execution without overriding the default fallback.
+4. The worker dequeues and executes registered handlers in the worker process, but its import closure still includes the shared queue module and its database-capable imports.
+
+The first two caller classes and the scheduler/child-task path are confirmed, not necessarily exhaustive. GitHub code search did not provide usable indexed results in the earlier pass, and this additional scan was not a full fetch of all backend Python files. Therefore, no global fallback change, task split, or claim of complete caller inventory is justified yet.
+
+#### 11.10.2 Next evidence required
+
+- Complete a reproducible local repository scan (all tracked Python files, including tests and scripts) for direct enqueue calls, wrapper aliases, dynamic registry registration, task-name strings and imports; record commit SHA and exact command/output.
+- Trace each confirmed caller through exception handling, transaction/commit boundary, retry/idempotency and user-visible API response.
+- Build import-closure tests proving the proposed email process cannot import or initialize control-plane or tenant database capabilities.
+- Only after the caller contract and complete inventory are reviewed, propose a narrow runtime change with tests. Do not globally disable synchronous fallback as a shortcut.
+
+No runtime code, queue policy, worker, Compose file, environment, secret, credential, database, migration, or patient data was changed. PostgreSQL **database-per-tenant** remains unchanged. PR #70 remains the existing consolidated report; no new PR was created.
