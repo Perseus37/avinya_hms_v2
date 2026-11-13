@@ -1393,3 +1393,13 @@ This is a test-report accuracy correction only. It does not add a least-privileg
 The PR #71 report now computes column-name deltas for each of the three independently migrated databases. It identifies metadata columns missing from the live catalog and catalog columns missing from the relevant ORM metadata, complementing table-level deltas. This is a report-only comparison; it does not assert parity, compare type/constraint/index semantics, or approve any difference.
 
 The workflow has not yet been run on this new head. AUD-004 remains blocked pending real CI execution, artifact review, and the separate privilege/immutability/restore proofs.
+
+
+
+### Section 49 — Expanded PostgreSQL ACL and role-attribute capture added
+
+PR #71's disposable migration/catalog characterization test now expands explicit PostgreSQL ACL entries from the catalogs for relations (including sequences and views), columns, routines and types. The expanded records preserve PUBLIC grantees, grantors, privilege types and grant-option flags. The report also captures role attributes, including superuser, role/database creation, login, replication, BYPASSRLS, connection limit and validity timestamp. These additions complement the existing database/schema ACL, default-ACL and membership snapshots.
+
+**Boundary:** this is capture, not acceptance. The harness does not yet interpret effective privileges, calculate inherited/ownership rights, assert least privilege, or test connection/object access under each production workload identity. The migration/catalog workflow has not been executed on this new head, so SQL compatibility and artifact contents remain unverified. AUD-004 remains blocked.
+
+No production/runtime/SQL/migration/Compose/credential/secret/database/role change. The additions are test-only catalog queries and report fields. PostgreSQL database-per-tenant remains invariant.
