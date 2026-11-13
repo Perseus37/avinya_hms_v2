@@ -374,3 +374,12 @@ A further targeted source pass inspected the FHIR, ABDM, integrations and encoun
 `backend/control_plane/api/routers/fleet_ops.py` does import and query `GlobalPatientPointer` for fleet counts and the operator MPI lookup endpoint. The inspected usage is read-only; the endpoint writes a separate `ControlPlaneAuditLog` entry. It is an index reader/auditor, not an additional pointer mutation path.
 
 This narrows the known writer set to the already documented federation sync function and the direct patient-deactivation deletion path. It does not complete the all-file inventory: most unrelated backend Python files and every raw-SQL occurrence have not been exhaustively scanned, and GitHub code-search returned no indexed results for the pointer symbols. Treat the inventory as targeted/partial until a repository-wide text scan or equivalent CI-backed scan is run.
+### 12.8 Tenant migration history and durable transfer-log distinction (2026-11-13)
+
+A targeted pass over the tenant Alembic migrations named for patient, privacy, identity, federation, FHIR and ABDM found no additional writes to the control-plane `global_patient_pointers` table and no pointer-generation/tombstone implementation. The federation-related tenant migrations do affect a separate audit table:
+
+- `backend/alembic/versions/a7c4e9d2b615_federation_audit_node_attribution.py` adds authenticated requesting-node attribution to tenant-local `federation_transfer_logs`.
+- `backend/alembic/versions/f9b7c3d1e205_immutable_federation_transfer_logs.py` changes the tenant-local transfer-log patient FK from `ON DELETE CASCADE` to `ON DELETE RESTRICT` and installs a PostgreSQL trigger preventing update/delete of transfer-log rows.
+- This immutable tenant-local transfer history is distinct from the control-plane discovery receipt. It provides a useful precedent for preserving audit evidence, but does not solve pointer revocation history, operation idempotency, receipt lifecycle, or cross-database recovery.
+
+The reviewed tenant migrations were a targeted name-filtered set, not every migration or every SQL statement in the repository. The writer inventory remains partial.
