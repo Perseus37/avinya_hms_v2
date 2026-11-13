@@ -138,7 +138,10 @@ jobs:
             echo "::error::Refusing to reuse existing aud004-proof-only network"
             exit 1
           fi
-          existing_containers="$(docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml ps -a --quiet)"
+          # Inspect Compose labels directly: the Compose file has required secret
+          # variable interpolation, but secrets are intentionally created only
+          # after this preflight succeeds.
+          existing_containers="$(docker ps -a --filter label=com.docker.compose.project=aud004-proof --format '{{.ID}}')"
           if [ -n "$existing_containers" ]; then
             echo "::error::Refusing to reuse an existing aud004-proof Compose project"
             exit 1
@@ -155,6 +158,10 @@ jobs:
 
           directory = Path(tempfile.mkdtemp(prefix="aud004-secrets-"))
           os.chmod(directory, 0o700)
+          # Publish the path immediately so the always-run cleanup can remove
+          # this directory even if later secret generation fails.
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"AUD004_SECRETS_DIR={directory}\\n")
           values = {
               "AUD004_SETUP_PASSWORD": secrets.token_urlsafe(32),
               "AUD004_TENANT_A_PASSWORD": secrets.token_urlsafe(32),
