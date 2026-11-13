@@ -117,24 +117,21 @@ The latest inspected PR #19 head still has these explicit follow-ups:
 
 The PR discussion links a proposed durable idempotency and recovery design in PR #23. That proposal is design evidence only; it does not mean the runtime fix exists. Do not treat PR #19's successful workflow as proof that these follow-ups are implemented, tested or independently accepted.
 
-## 8. PR #23 design review and revised proposal — still unapproved
+## 8. PR #23 design review and repository implementation dependency audit — still unapproved
 
-PR #23's design document was expanded at head `6771826ac629849b846bc45b42589a556d27bffe` to make the database and cross-database transaction contract normative, in addition to the earlier recovery invariants. It now specifies:
+PR #23's design document was expanded at head `99719aeb5f8c24efc018f9886ca223ec03351355` to include a read-only, repository-grounded implementation dependency map. It records the actual separation between `ControlBase` and tenant `Base`, separate control-plane and tenant Alembic histories, the staged migration runner, current patient/pointer/receipt models, and the existing source transfer audit.
 
-- versioned, unambiguous, domain-separated canonical import identity with test vectors and no demographic fields;
-- receipt consumption into a durable operation, expiry semantics and revalidation on retries without replaying an expired bearer token;
-- mandatory monotonic fencing generations, lease renewal/takeover and stale-worker rejection;
-- two durable uniqueness barriers: a control-plane operation key and a destination correlation/provenance marker committed atomically with the patient/allergy clone;
-- logical control-plane and tenant-database constraints, transactional claim/compare-and-swap behavior, and an explicit receipt-consumption link;
-- a six-step cross-database saga (claim, source authorization/audit, destination clone, control-plane acknowledgement, pointer publication, completion) with recovery evidence at each commit boundary;
-- separate pointer outcomes for publication, policy suppression and transient retry, avoiding false discoverability/completion claims;
-- machine-readable API states, HTTP mappings, polling authorization and retry guidance;
-- PostgreSQL independent-session and separate-worker concurrency, crash-window, stale-fencing and process-termination tests;
-- forward-only migration, rollout, quarantine and evidence-preserving recovery requirements.
+The audit identified concrete prerequisites that must be resolved before runtime implementation:
 
-The design explicitly warns that a control-plane lease alone cannot fence writes in a separate destination database; the implementation must make destination-side generation validation atomic with clone commit. It also prohibits demographic uniqueness constraints as a substitute for federation operation identity.
+- `GlobalPatientPointer` has no explicit monotonic generation/version; timestamp alone is not a fencing generation.
+- `TenantRegistry` has an integer primary key, unique branch code and unique database name, but no dedicated immutable UUID. The canonical tenant identity must be formally selected or added.
+- Current discovery receipt migration `6c9f2a1d8b40` has a source-pointer foreign key with `ON DELETE CASCADE`; durable operation/audit evidence must not be erased by pointer deletion or receipt expiry.
+- No tenant-local federation import correlation/provenance model currently exists in the inspected PR #19 branch.
+- Existing `migrate_remaining_fleet` selects active CLOUD tenants; it does not include ON_PREM tenant databases. A separate controlled ON_PREM migration and verification path is required before enabling the feature there.
 
-The revised document remains **PROPOSED — NOT APPROVED FOR IMPLEMENTATION OR RELEASE**. PR #23 remains draft and stacked on PR #19, not `main`; no submitted independent GitHub review is recorded. This design refinement does not remediate PR #19, authorize migrations, or close the data-integrity findings. PR #19 remains open and unmerged; AUD-004 remains a separate release blocker.
+The design now orders the work as identity prerequisites, control-plane persistence, tenant-local persistence, destination fencing proof, saga/API orchestration, PostgreSQL failure-injection evidence, and gated CLOUD plus ON_PREM rollout. It explicitly states that repository source inspection is not proof of live migration heads or production database state.
+
+The revised document remains **PROPOSED — NOT APPROVED FOR IMPLEMENTATION OR RELEASE**. PR #23 remains draft and stacked on PR #19, not `main`; no submitted independent GitHub review is recorded. No runtime changes, migration execution or production database queries occurred. PostgreSQL **database-per-tenant** remains the architecture; no schema-per-tenant conversion is proposed. PR #19 remains open and unmerged; AUD-004 remains a separate release blocker.
 ## 9. PR #19 implementation trace against PR #23 recovery criteria
 
 Read-only static review of PR #19 head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`, performed after the PR #23 design review. This is source inspection only; no tests were executed as part of this review.
