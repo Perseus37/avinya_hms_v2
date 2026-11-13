@@ -2009,3 +2009,41 @@ HTTP 202 here means the request was accepted for an in-process background callba
 **Assessment:** The generic ingress is an unauthenticated and unbounded request-to-background-task endpoint. Its current callback is a logging placeholder, so no unauthorized business-state mutation was observed in source; the demonstrated present concern is resource/log abuse and false durability implied by HTTP 202. It must remain disabled or be replaced with a provider-authenticated, size-bounded, durable inbox before any real webhook processing is attached.
 
 **Boundary:** source review only. No runtime code, webhook endpoint, queue, database, credential, tenant, billing, federation or production state changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+## 70. Traefik dynamic-routing provider references an unmapped tenant field
+
+**Sources reviewed on main:**
+- `backend/control_plane/api/routers/network.py`
+- `backend/control_plane/models.py` (`TenantRegistry`)
+- All five control-plane Alembic migration files under `backend/control_plane/alembic/versions/`
+
+Static source and migration-history review only. The endpoint was not invoked and no proxy, tenant, database or production state was changed.
+
+### 70.1 The route builds its query using an attribute absent from the ORM model
+
+The hidden `GET /api/fleet/traefik-config` provider endpoint constructs a SQLAlchemy query with:
+
+`TenantRegistry.custom_domain.is_not(None)`
+
+It then reads `t.custom_domain` to build each Traefik host rule. The inspected `TenantRegistry` declarative model does not declare a `custom_domain` mapped column or property. The complete set of five control-plane Alembic revisions also contains no `custom_domain` declaration or addition.
+
+As written, evaluating `TenantRegistry.custom_domain` raises an attribute-resolution error while constructing the query, before SQL is sent to PostgreSQL. Therefore the endpoint cannot return its intended dynamic tenant routing configuration in this repository state. This is a deterministic source-level availability defect, not a claim that an active Traefik deployment is currently failing.
+
+### 70.2 The route's intended domain contract is also incomplete
+
+The provisioning request model inspected in `provisioning.py` accepts a subdomain slug and brand asset URLs, but does not define or validate a tenant custom-domain field. The tenant registry model likewise has no persisted custom-domain field. There is consequently no evidenced control-plane write path establishing ownership, verification or lifecycle state for a custom domain consumed by this endpoint.
+
+Adding a column alone would not establish a safe custom-domain feature. A future implementation needs a verified domain lifecycle and a strict hostname parser/allowlist before values are interpolated into Traefik rule syntax. It should reject control characters, whitespace, delimiters and unsupported wildcard forms; require proof of domain control; and define deactivation/removal propagation.
+
+### 70.3 Required remediation and acceptance evidence
+
+1. Decide whether custom tenant domains are supported. If not, remove or disable the unused provider endpoint and its proxy integration references.
+2. If supported, add an explicit domain model/column and migration through the approved database-per-tenant/control-plane migration process, with uniqueness and lifecycle state appropriate to the platform.
+3. Implement a verified domain-claim workflow (for example, DNS challenge) and persist verification status, owner tenant, verification timestamp and revocation state.
+4. Parse and canonicalize hostnames with a strict hostname/IDNA validator; never interpolate unvalidated input into Traefik rule syntax.
+5. Add tests proving the endpoint works against a migrated disposable control-plane database, omits unverified/inactive domains, rejects malformed or rule-injection strings, and removes routing after domain revocation.
+6. Add an integration check that the actual Traefik provider can consume the returned document and that invalid provider output fails closed without publishing unintended routes.
+
+**Assessment:** The current endpoint is unusable because it references an ORM attribute absent from the mapped model, and the inspected control-plane migration history does not supply that field. The feature's domain ownership/verification lifecycle is also not represented in the inspected provisioning contract. Treat custom-domain routing as unavailable until the model, migration, verified-ownership workflow and proxy integration are implemented and tested.
+
+**Boundary:** static source/migration review only. No runtime, route, proxy, tenant, database, migration, DNS, credential or production state changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
