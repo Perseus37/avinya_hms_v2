@@ -1,0 +1,332 @@
+"""Migrate three disposable PostgreSQL databases and capture independent catalogs.
+
+This is an AUD-004 characterization proof, not a grant generator or production
+migration runner. It requires an isolated PostgreSQL 17 CI service and synthetic
+credentials supplied by the workflow.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import psycopg2
+from sqlalchemy import create_engine, inspect
+
+ROOT = Path(__file__).resolve().parents[2]
+DATABASES = {
+    "control_plane": "aud004_catalog_control_plane",
+    "tenant_a": "aud004_catalog_tenant_a",
+    "tenant_b": "aud004_catalog_tenant_b",
+}
+
+
+def _database_url(database: str) -> str:
+    from urllib.parse import quote_plus
+
+    user = quote_plus(os.environ["AUD004_PGUSER"])
+    password = quote_plus(os.environ["AUD004_PGPASSWORD"])
+    host = os.environ["AUD004_PGHOST"]
+    port = os.environ["AUD004_PGPORT"]
+    return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{database}"
+
+
+def _base_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    # Values below satisfy application Settings construction during Alembic
+    # model imports. They are disposable CI values and are not used to seed data.
+    env.update(
+        {
+            "ENVIRONMENT": "testing",
+            "DEVELOPMENT_AUTO_CREATE_SCHEMA": "false",
+            "PLATFORM_NAME": "AUD004 disposable proof",
+            "BASE_DOMAIN": "invalid.test",
+            "DEFAULT_TENANT_SLUG": "aud004",
+            "DEFAULT_HOSPITAL_NAME": "AUD004 Synthetic Hospital",
+            "DEFAULT_BRANCH_CODE": "AUD004",
+            "VERSION": "aud004-ci",
+            "API_PORT": "8000",
+            "API_SERVICE_HOST": "127.0.0.1",
+            "CONTROL_PLANE_PORT": "8080",
+            "GUNICORN_WORKERS": "1",
+            "TENANT_DATABASE_PREFIX": "aud004_",
+            "APP_TIMEZONE": "UTC",
+            "POSTGRES_USER": os.environ["AUD004_PGUSER"],
+            "POSTGRES_PASSWORD": os.environ["AUD004_PGPASSWORD"],
+            "POSTGRES_DB": "postgres",
+            "POSTGRES_HOST": os.environ["AUD004_PGHOST"],
+            "POSTGRES_PORT": os.environ["AUD004_PGPORT"],
+            "CONTROL_PLANE_DB_NAME": DATABASES["control_plane"],
+            "REDIS_HOST": "127.0.0.1",
+            "REDIS_PORT": "6379",
+            "REDIS_DB": "0",
+            "REDIS_PASSWORD": "aud004-not-used",
+            "SECRET_KEY": "aud004-synthetic-secret-key-at-least-32",
+            "MASTER_ONBOARDING_KEY": "aud004-synthetic-master-key",
+            "ALGORITHM": "HS256",
+            "ACCESS_TOKEN_EXPIRE_MINUTES": "30",
+            "CORS_ORIGINS": "http://localhost",
+            "SEED_ADMIN_EMAIL": "aud004@example.invalid",
+            "SEED_ADMIN_PASSWORD": "aud004-not-used",
+            "ENVELOPE_ENCRYPTION_SALT": "aud004-synthetic-envelope-salt",
+            "BACKUP_ENCRYPTION_SALT": "aud004-synthetic-backup-salt",
+            "MAIL_PROVIDER": "smtp",
+            "SMTP_PORT": "25",
+            "SMTP_FROM": "aud004@example.invalid",
+            "MAX_PAGE_SIZE": "50",
+            "MIGRATION_PREVIEW_ROWS": "5",
+            "MIGRATION_PREVIEW_ERROR_LIMIT": "10",
+            "MIGRATION_MAX_UPLOAD_BYTES": "1048576",
+            "MAX_ATTACHMENT_UPLOAD_BYTES": "1048576",
+            "MIGRATION_MAX_EXPRESSION_DEPTH": "10",
+            "MIGRATION_MAX_INPUTS": "10",
+            "BACKUP_INTERVAL_SECONDS": "3600",
+            "BACKUP_OUTPUT_DIR": "/tmp/aud004-backups",
+            "VAULT_POLL_INTERVAL_SECONDS": "60",
+            "PRIVACY_ALLOW_AUDIT_ONLY": "false",
+            "PRIVACY_ALLOW_RETENTION_DRY_RUN": "false",
+            "PRIVACY_ALLOW_RETENTION_EXECUTE": "false",
+        }
+    )
+    return env
+
+
+def _create_empty_databases() -> None:
+    conn = psycopg2.connect(
+        host=os.environ["AUD004_PGHOST"],
+        port=int(os.environ["AUD004_PGPORT"]),
+        dbname="postgres",
+        user=os.environ["AUD004_PGUSER"],
+        password=os.environ["AUD004_PGPASSWORD"],
+        connect_timeout=5,
+        application_name="aud004-migrated-catalog-proof",
+    )
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            for database in DATABASES.values():
+                cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database,))
+                if cur.fetchone():
+                    raise RuntimeError(
+                        f"Refusing to reuse pre-existing disposable database {database}"
+                    )
+                cur.execute(f'CREATE DATABASE "{database}"')
+    finally:
+        conn.close()
+
+
+def _run_alembic(config_path: str, database: str) -> None:
+    env = _base_environment()
+    env["DATABASE_URL"] = _database_url(database)
+    command = [
+        sys.executable,
+        "-m",
+        "alembic",
+        "-c",
+        str(ROOT / config_path),
+        "upgrade",
+        "heads",
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=900,
+        check=False,
+    )
+    if completed.returncode:
+        raise AssertionError(
+            f"Alembic migration failed for {database} ({config_path}):\n"
+            f"{completed.stdout[-16000:]}"
+        )
+
+
+def _capture_catalog(database: str) -> dict:
+    engine = create_engine(_database_url(database), pool_pre_ping=True)
+    try:
+        inspector = inspect(engine)
+        schemas = [
+            schema
+            for schema in inspector.get_schema_names()
+            if schema not in {"information_schema", "pg_catalog"}
+        ]
+        tables = sorted(
+            f"{schema}.{table}"
+            for schema in schemas
+            for table in inspector.get_table_names(schema=schema)
+        )
+        views = sorted(
+            f"{schema}.{view}"
+            for schema in schemas
+            for view in inspector.get_view_names(schema=schema)
+        )
+        materialized_views = sorted(
+            f"{schema}.{view}"
+            for schema in schemas
+            for view in inspector.get_materialized_view_names(schema=schema)
+        )
+        with engine.connect() as conn:
+            rows = conn.exec_driver_sql(
+                """
+                SELECT
+                  (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
+                   WHERE t.typtype='e' AND n.nspname NOT IN ('pg_catalog','information_schema')) AS enum_count,
+                  (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                   WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema')) AS sequence_count,
+                  (SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+                   JOIN pg_namespace n ON n.oid=c.relnamespace
+                   WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog','information_schema')) AS trigger_count,
+                  (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+                   WHERE n.nspname NOT IN ('pg_catalog','information_schema')) AS function_count,
+                  (SELECT count(*) FROM pg_extension) AS extension_count,
+                  (SELECT count(*) FROM pg_largeobject_metadata) AS large_object_count,
+                  (SELECT count(*) FROM pg_policies) AS rls_policy_count,
+                  (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                   WHERE c.relkind IN ('r','p','v','m','S','f')
+                   AND n.nspname NOT IN ('pg_catalog','information_schema')) AS relation_count
+                """
+            ).mappings().one()
+            versions = conn.exec_driver_sql(
+                "SELECT version_num FROM alembic_version ORDER BY version_num"
+            ).scalars().all()
+            owners = conn.exec_driver_sql(
+                """
+                SELECT n.nspname, c.relname, pg_get_userbyid(c.relowner)
+                FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+                  AND c.relkind IN ('r','p','v','m','S','f')
+                ORDER BY n.nspname,c.relname
+                """
+            ).all()
+            return {
+                "database": database,
+                "schemas": sorted(schemas),
+                "tables": tables,
+                "views": views,
+                "materialized_views": materialized_views,
+                "migration_versions": versions,
+                "catalog_counts": dict(rows),
+                "object_owners": [list(row) for row in owners],
+            }
+    finally:
+        engine.dispose()
+
+
+def _metadata_manifest() -> dict:
+    # Import exactly the same model modules as the tenant Alembic env.
+    from backend.core.database import Base
+    import backend.domains.abdm.models  # noqa: F401
+    import backend.domains.audit.models  # noqa: F401
+    import backend.domains.billing.models  # noqa: F401
+    import backend.domains.bloodbank.models  # noqa: F401
+    import backend.domains.clinical.models  # noqa: F401
+    import backend.domains.diagnostics.models  # noqa: F401
+    import backend.domains.encounters.models  # noqa: F401
+    import backend.domains.facility.models  # noqa: F401
+    import backend.domains.federation.models  # noqa: F401
+    import backend.domains.finance.models  # noqa: F401
+    import backend.domains.identity.models  # noqa: F401
+    import backend.domains.insurance.models  # noqa: F401
+    import backend.domains.integrations.models  # noqa: F401
+    import backend.domains.patients.models  # noqa: F401
+    import backend.domains.pharmacy.models  # noqa: F401
+    import backend.domains.policies.models  # noqa: F401
+    import backend.domains.privacy.models  # noqa: F401
+    import backend.domains.procurement.models  # noqa: F401
+    import backend.domains.quality.models  # noqa: F401
+    import backend.domains.reports.models  # noqa: F401
+    import backend.domains.service_ops.models  # noqa: F401
+    import backend.domains.surgery.models  # noqa: F401
+    import backend.domains.workforce.models  # noqa: F401
+    from backend.control_plane.models import ControlBase
+
+    def describe(metadata) -> dict:
+        result = {}
+        for table in sorted(metadata.tables.values(), key=lambda item: (item.schema or "public", item.name)):
+            key = f"{table.schema or 'public'}.{table.name}"
+            result[key] = {
+                "columns": sorted(column.name for column in table.columns),
+                "primary_key": sorted(column.name for column in table.primary_key.columns),
+                "foreign_keys": sorted(
+                    f"{fk.parent.name}->{fk.target_fullname}" for fk in table.foreign_keys
+                ),
+                "unique_constraints": sorted(
+                    tuple(sorted(column.name for column in constraint.columns))
+                    for constraint in table.constraints
+                    if constraint.__class__.__name__ == "UniqueConstraint"
+                ),
+                "indexes": sorted(
+                    (index.name or "", tuple(column.name for column in index.columns), bool(index.unique))
+                    for index in table.indexes
+                ),
+            }
+        return result
+
+    return {
+        "tenant": describe(Base.metadata),
+        "control_plane": describe(ControlBase.metadata),
+    }
+
+
+def test_migrate_and_capture_three_independent_postgres_catalogs(tmp_path: Path) -> None:
+    """Run real migration graphs only against three newly-created CI databases."""
+    _create_empty_databases()
+    _run_alembic("backend/control_plane/alembic.ini", DATABASES["control_plane"])
+    _run_alembic("backend/alembic.ini", DATABASES["tenant_a"])
+    _run_alembic("backend/alembic.ini", DATABASES["tenant_b"])
+
+    metadata = _metadata_manifest()
+    catalogs = {
+        name: _capture_catalog(database)
+        for name, database in DATABASES.items()
+    }
+
+    # Both tenant databases must independently reach the same migration state.
+    assert catalogs["tenant_a"]["migration_versions"] == catalogs["tenant_b"]["migration_versions"]
+    assert catalogs["control_plane"]["migration_versions"], "CP Alembic version row missing"
+    assert catalogs["tenant_a"]["migration_versions"], "Tenant A Alembic version row missing"
+    assert catalogs["tenant_b"]["migration_versions"], "Tenant B Alembic version row missing"
+
+    report = {
+        "proof": "AUD-004 disposable PostgreSQL migration/catalog characterization",
+        "postgresql_target": "PostgreSQL 17 CI service",
+        "databases": catalogs,
+        "metadata_counts": {
+            name: len(tables) for name, tables in metadata.items()
+        },
+        "metadata": metadata,
+        "table_deltas": {
+            "control_plane_missing_from_catalog": sorted(
+                set(metadata["control_plane"]) - set(catalogs["control_plane"]["tables"])
+            ),
+            "tenant_a_missing_from_catalog": sorted(
+                set(metadata["tenant"]) - set(catalogs["tenant_a"]["tables"])
+            ),
+            "tenant_b_missing_from_catalog": sorted(
+                set(metadata["tenant"]) - set(catalogs["tenant_b"]["tables"])
+            ),
+            "control_plane_migration_only": sorted(
+                set(catalogs["control_plane"]["tables"]) - set(metadata["control_plane"])
+            ),
+            "tenant_migration_only": sorted(
+                set(catalogs["tenant_a"]["tables"]) - set(metadata["tenant"])
+            ),
+        },
+        "limitations": [
+            "This is a characterization artifact, not a least-privilege acceptance test.",
+            "No application rows are inserted or exported.",
+            "Owner inventory is captured; ACL/default-ACL and membership inventory is a subsequent proof step.",
+            "Trigger/function counts are captured; definitions and raw SQL immutability tests remain subsequent proof steps.",
+            "No backup/restore parity is asserted by this test.",
+        ],
+    }
+    output = Path(os.environ.get("AUD004_CATALOG_REPORT", tmp_path / "aud004-catalog-report.json"))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2, sort_keys=True, default=list) + "\n", encoding="utf-8")
+    print(f"AUD004 catalog report written: {output}")
+    print(json.dumps(report["table_deltas"], indent=2))
