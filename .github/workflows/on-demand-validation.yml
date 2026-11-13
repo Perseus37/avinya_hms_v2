@@ -161,7 +161,7 @@ jobs:
           # Publish the path immediately so the always-run cleanup can remove
           # this directory even if later secret generation fails.
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              env_file.write(f"AUD004_SECRETS_DIR={directory}\\n")
+              env_file.write(f"AUD004_SECRETS_DIR={directory}\n")
           values = {
               "AUD004_SETUP_PASSWORD": secrets.token_urlsafe(32),
               "AUD004_TENANT_A_PASSWORD": secrets.token_urlsafe(32),
@@ -181,7 +181,6 @@ jobs:
               path.write_text(value, encoding="utf-8")
               os.chmod(path, 0o600)
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              env_file.write(f"AUD004_SECRETS_DIR={directory}\n")
               for name, value in values.items():
                   env_file.write(f"{name}={value}\n")
           PY
