@@ -1479,3 +1479,16 @@ The scripts do **not** yet prove a least-privilege or ownership-preserving recov
 
 **Boundary:** this is a source-code review, not a backup execution or restore drill. No production backup, restore, role, credential, ACL, database, or tenant topology was changed. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
 
+
+
+### Section 56 — PostgreSQL migration/catalog workflow rerun reached trigger assertions; assertion ordering corrected
+
+The reconciliation workflow was manually dispatched against PR #71 head `0810745182423ffae5c28a2d22c8cf639dbb2a2a` (run `43441291510`). The earlier `queue` shadowing problem did not recur: the real control-plane migration and both independent tenant migration graphs completed on PostgreSQL 17. The workload-isolation proof and production role-bootstrap function proof jobs completed successfully. The reconciliation regression job was still in progress when inspected.
+
+The catalog test then failed at the first append-only trigger assertion for `federation_transfer_logs`. PostgreSQL's `pg_get_triggerdef` rendered the valid event ordering as `BEFORE DELETE OR UPDATE`, while the test expected the equivalent `BEFORE UPDATE OR DELETE` string. The catalog showed the expected trigger was present; the failure was a brittle assertion on PostgreSQL's textual event ordering. Because pytest stopped at this assertion, later trigger checks, raw SQL mutation checks, catalog report generation, and artifact upload were not completed. The upload step ran but warned that no report file existed.
+
+PR #71 corrects this in commit `3b3dd76580cb6e6ec0bf9b1ff6e820425e07ab30`: the assertion checks that the definition contains BEFORE, UPDATE and DELETE independent of display order, while retaining the independent PostgreSQL `tgtype` bitmask assertion for ROW + BEFORE + DELETE + UPDATE. This is a test-harness-only change.
+
+**Validation status:** the correction has not yet been run. A new manual reconciliation dispatch on the latest PR #71 head is required. The successful migration steps are now directly observed on PostgreSQL 17; full catalog characterization and artifact review remain pending. AUD-004 remains blocked.
+
+No production/runtime/SQL/migration/Compose/credential/secret/database/role/ACL/topology change. Only a disposable catalog test assertion changed. PostgreSQL database-per-tenant remains invariant.
