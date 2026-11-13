@@ -135,14 +135,6 @@ jobs:
       - name: Check out selected branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.13"
-
-      - name: Install isolated proof dependencies
-        run: python -m pip install --disable-pip-version-check pytest psycopg2-binary
-
       - name: Refuse pre-existing proof resources
         id: preflight
         env:
@@ -166,13 +158,12 @@ jobs:
       - name: Start isolated PostgreSQL 17 fixture
         env:
           AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
-        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait
+        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml up -d --wait postgres
 
-      - name: Run PostgreSQL ACL proof tests
+      - name: Run PostgreSQL ACL proof tests inside the isolated network
         env:
-          AUD004_PGHOST: 127.0.0.1
-          AUD004_PGPORT: "55439"
-        run: python -m pytest -q deployments/aud004-proof/test_acl.py
+          AUD004_SETUP_PASSWORD: aud004-${{ github.run_id }}-${{ github.run_attempt }}-throwaway
+        run: docker compose -p aud004-proof -f deployments/aud004-proof/compose.yaml run --build --rm --no-deps proof
 
       - name: Tear down only the disposable proof project
         if: always() && steps.preflight.outputs.safe_to_cleanup == 'true'
