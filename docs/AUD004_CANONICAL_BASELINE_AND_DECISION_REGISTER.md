@@ -457,3 +457,21 @@ The contract deliberately avoids a default container-per-tenant fleet and record
 Section 17 phases the work: design freeze; CP isolation; tenant execution isolation; ingress and privileged operations; backup/restore and monitoring; production readiness gate. It specifies independent PostgreSQL-session acceptance tests, queue/HL7 tampering tests, revocation tests, exporter restrictions and a verified restore drill.
 
 Open decision: Pattern A versus Pattern B remains unresolved pending tenant-count, deployment-operations, threat-model and blast-radius analysis. No implementation, Compose, runtime, SQL, migration, secret, database, storage, patient-data or production change was made. No schema-per-tenant or microservices redesign is proposed.
+
+
+## 33. Pattern A versus Pattern B tenant-execution decision (2026-11-13)
+
+The least-privilege contract Section 18 now records a repository-grounded comparison of tenant-bound execution instances (Pattern A) and a constrained connection broker (Pattern B).
+
+**Recommendation: Pattern A is the initial security baseline for the first cloud production cohort, on-prem tenant-dedicated deployments, and high-risk execution. Do not introduce Pattern B in the current remediation phase.** This is provisional pending architecture, DBA, security and operations approval; it is not implementation authorization.
+
+Evidence behind the recommendation:
+- The current shared API resolves tenant context and calls `TenantEngineRegistry.get_engine(db_name)`; `build_db_url` changes only the database name and retains the shared configured PostgreSQL login. The registry is an LRU engine cache (64 entries), not an authorization boundary.
+- Production Compose gives the same `.env.production` to API, worker, HL7 listener, onboarding portal and db-init. Separate containers are therefore not separate DB identities today.
+- Multiple non-request paths (queue, HL7, CP fleet/support/migration and federation) can reach tenant engines; isolating only the HTTP request path would leave cross-tenant access paths.
+- No enforceable connection broker/proxy, workload-to-tenant capability protocol, per-tenant secret delivery, tenant-count forecast, hosting mix, or measured operating-cost baseline was established by the inspected repository.
+- A password-vending service is not an acceptable Pattern B: the shared application could retain and reuse the returned credential. Pattern B must retain backend credentials inside an independently authenticated connection proxy, bind every checkout to immutable tenant and operation scope, partition/reset pools safely, and enforce revocation of active sessions.
+
+Pattern A does not mean a permanent container-per-branch fleet by assumption. The implementation must define tenant-bound process/secret/pool/routing contracts and quantify the deployment footprint. Keep the modular monolith and PostgreSQL **database-per-tenant** architecture. Reopen Pattern B only after measured active/forecast tenant counts, peak concurrency/connection demand, per-tenant process cost, operational toil, hosting profiles, broker ownership/HA/DR plan and independent adversarial PostgreSQL proof are available.
+
+Section 18 includes the comparative matrix, broker acceptance requirements, provisional decision, reconsideration evidence and implementation sequence. No runtime, SQL, migration, Compose, credential, secret, database, storage, patient-data or production change was made. PR #70 remains draft/open/unmerged.
