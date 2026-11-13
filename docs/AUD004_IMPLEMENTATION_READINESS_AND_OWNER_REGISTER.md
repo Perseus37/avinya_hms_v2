@@ -1273,3 +1273,46 @@ No runtime/SQL/migration/Compose/credential/secret/database/production change. N
 Finish source tracing for the remaining bank reconciliation candidate/aggregation and governance report paths, remaining billing RCM/insurance settlement workflows, pharmacy return/adjustment routes and all queue handlers. Then capture SQL on disposable migrated PostgreSQL databases and execute positive/negative tests with independent workload logins. Retain the current database-per-tenant architecture and do not produce production grants until DBA/security review.
 
 No runtime/SQL/migration/Compose/credential/secret/database/production change. No patient or financial data access or mutation. PostgreSQL database-per-tenant remains invariant.
+
+### Section 43 — Reconciliation, insurance settlement, pharmacy adjustment and worker execution evidence
+
+**Evidence batch:** source-level trace of bank reconciliation candidates/matching, monthly governance snapshots, insurance claim settlement, direct pharmacy batch adjustment/void, and all registered core queue handlers. This is not live database permission certification.
+
+**Reviewed source:** `backend/domains/procurement/bank_reconciliation.py`, `backend/domains/procurement/investigations.py`, `backend/domains/insurance/router.py`, `backend/domains/billing/rcm_services.py`, `backend/domains/pharmacy/router.py`, `backend/core/queue.py`.
+
+#### Findings and operation map
+
+| Workflow | Read set (source-grounded) | Write set (source-grounded) | Readiness implication |
+|---|---|---|---|
+| Bank candidate view | Statement lines, batches, supplier payments/allocations, payment requests and match aggregates | None | Live derived candidate list; not bank-feed authenticity proof or a durable reconciliation result |
+| Bank match | Locked statement line and supplier payment; prior match rows and aggregate matched amounts | INSERT supplier-payment bank match | Preserve append-only match ledger; prove row-lock/unique constraints under concurrent independent sessions |
+| Governance report | Investigation/event history, SLA deadlines, quality state and current backlog | INSERT canonical JSON snapshot + SHA-256 digest | Hash is not signature; trigger/ACL immutability and digest verification remain separate gates |
+| Insurance claim submission | Invoice/lines, patient policy/plan, preauth and tariffs | INSERT insurance claim | Application-level duplicate check needs DB uniqueness/concurrency proof |
+| Insurance settlement | Locked claim and invoice; approved payable and remaining invoice balance | INSERT insurance PaymentReceipt; UPDATE invoice paid/status and claim settlement fields | Claim is marked SETTLED even when accepted amount is below insurer payable; partial settlement semantics and retry/idempotency require finance decision and PostgreSQL proof |
+| Pharmacy stock adjustment | Locked InventoryBatch | UPDATE stock quantity | No separate stock-adjustment ledger INSERT observed in this route |
+| Pharmacy batch void | Locked InventoryBatch | UPDATE stock quantity to zero | Reason/actor/before-after event not established as a dedicated immutable subledger in this route |
+| Retention execution worker | CP active tenant lookup; tenant approved policy and actor lookup | Delegates to retention service; category-specific writes are detailed in Section 26 | Shared engine registry/credential does not isolate DB authority by tenant |
+| Daily retention sweep | CP active tenant registry; per-tenant approved retention revision | Enqueues tenant-scoped jobs | One scheduler process opens tenant sessions across fleet; CP scheduler/tenant worker separation remains required |
+| Email worker | Payload only + configured mailer | External mail delivery; no tenant DB write in handler | Delivery provider, retry idempotency and durable outbox evidence require separate validation |
+
+#### Specific issues to carry into remediation
+
+1. **Bank candidate and matching proof:** candidate categories are computed live from statement/payment/request/match records. Matching locks the statement line then supplier payment and inserts an immutable match row after amount checks. Validate uniqueness, overmatch prevention and race behavior with two independent PostgreSQL sessions. Statement import's preflight duplicate checks need matching DB constraints.
+2. **Governance snapshot trust:** canonical JSON + SHA-256 gives deterministic content digest, not signer identity or trusted timestamp. Confirm append-only trigger, owner, ACL and raw SQL UPDATE/DELETE denial for `procurement_reconciliation_governance_reports`.
+3. **Insurance settlement semantics:** a single settlement request changes claim status to SETTLED regardless of whether settled amount equals full insurer payable. Decide whether partial settlement must be represented explicitly, how residual payable is tracked, and how insurer remittance corrections/reversals are compensated. Add an idempotency key and concurrency/failure-injection tests before considering this workflow financially production-ready.
+4. **Deposit/claim calculation basis:** claim insurer payable is calculated from invoice net amount before advance deposits, while claim claimed amount uses outstanding invoice balance. FIN-001 comment explains the deliberate gross basis, but the finance owner must approve and test interactions with deposits, copay, disallowed items, preauth caps and partial receipts.
+5. **Inventory adjustment evidence:** direct adjustment and void routes mutate batch stock without a dedicated immutable stock movement record in those handlers. Inventory subledger coverage, reason capture, authorization, reconciliation and compensating entries are P0 evidence requirements for production pharmacy inventory.
+6. **Queue execution authority:** only three handlers are registered in the inspected queue module. Retention worker resolves tenant through CP but uses the common tenant engine registry; daily sweep opens a tenant session per active tenant. `sync_fallback=True` may execute a handler synchronously when Redis enqueue fails. Privileged/destructive handlers must not inherit ordinary API/scheduler credentials or synchronous fallback.
+7. **Queue durability:** task state is Redis hash/list/zset state with TTL and retry/dead-letter behavior, not a durable relational job ledger. Prove delivery/ack/replay behavior and failure windows; no claim of exactly-once execution is supported.
+
+#### Required owners and acceptance evidence
+
+- **Finance owner:** approve claim gross-vs-outstanding basis, partial settlement lifecycle, remittance reversal/adjustment and receipt compensation rules; provide reconciled examples covering deposits, copay, preauth and insurer cap.
+- **Pharmacy owner:** define stock adjustment/void reason codes, authorization, immutable movement ledger and correction semantics; reconcile batch-level opening + receipts - dispenses + returns +/- adjustments = closing stock.
+- **Security/DBA:** map these operations to per-workload DB identities under database-per-tenant; prove no cross-tenant/CP access and raw SQL denial for append-only evidence.
+- **Platform owner:** split CP sweep scheduler, tenant-bound worker and isolated retention executor; remove synchronous fallback for privileged jobs; prove queue durability/retry/idempotency and least-privilege credentials.
+- **QA:** add independent-session PostgreSQL tests for duplicate statement import/match, overmatch races, duplicate claim submission, simultaneous settlement, partial settlement, timeout-after-commit retry, governance snapshot tamper attempts, stock adjustment/void audit, and worker tenant-boundary/fallback behavior.
+
+**Gate:** source trace is more complete, but AUD-004 is still blocked on deterministic ORM-vs-catalog inventory, SQL/trigger proof, independent PostgreSQL workload-role tests, backup/restore proof, and production identity/network/secret validation. No final grant SQL is approved.
+
+No runtime/SQL/migration/Compose/credential/secret/database/production change. No patient or financial data access or mutation. PostgreSQL database-per-tenant remains invariant.
