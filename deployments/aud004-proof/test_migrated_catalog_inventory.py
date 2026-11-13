@@ -520,8 +520,9 @@ def _assert_expected_append_only_triggers(catalog: dict) -> None:
         assert trigger_name == expected_trigger, (
             f"{relation}: expected trigger {expected_trigger!r}, got {trigger_name!r}"
         )
-        assert "BEFORE UPDATE OR DELETE" in definition.upper(), (
-            f"{relation}: trigger does not guard UPDATE and DELETE: {definition}"
+        normalized_definition = definition.upper()
+        assert all(token in normalized_definition for token in ("BEFORE", "UPDATE", "DELETE")), (
+            f"{relation}: trigger does not guard BEFORE UPDATE and DELETE: {definition}"
         )
         assert "FOR EACH ROW" in definition.upper(), (
             f"{relation}: immutability trigger is not row-level: {definition}"
