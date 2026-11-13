@@ -2240,3 +2240,38 @@ The safety snapshot is explicitly described in the source as mandatory and fail-
 **Assessment:** Deterministic functional defect in the privileged restore workflow. The endpoint's mandatory pre-restore safety snapshot imports a symbol absent from the checked-in backup service, so the background task aborts before the actual restore call. This prevents the UI-triggered restore path from completing as implemented. It is not evidence that scheduled backup creation or the standalone restore script is broken.
 
 **Boundary:** static source review only. No restore, backup, snapshot, database, file, credential, migration, or production state was exercised or changed. AUD-004 remains blocked.
+
+## 76. Restore-drill runner can certify a failed restore and unconditionally drops a caller-selected drill database
+
+**Sources reviewed on main:**
+- `backend/scripts/restore_drill.py` (`run_restore_drill`, `verify_backup_checksum`, cleanup)
+
+Static source review only. The DR drill was not executed; no PostgreSQL database, backup, tenant, credential or production state was accessed or changed.
+
+### 76.1 The drill's success predicate ignores the pg_restore exit status
+
+The runner invokes `pg_restore` with `check=False` and captures its return code. For a non-zero result it may log an error, but it does not stop the drill or preserve the result as a required success condition. The final `drill_passed` predicate includes only:
+- checksum sidecar verification;
+- presence of the six names in `CRITICAL_HMS_TABLES`;
+- RTO within the configured threshold.
+
+It does not include `proc.returncode == 0`. The subsequent integrity loop counts rows where possible, but the final predicate does not require those counts to be readable, non-negative, non-empty, or consistent with a source manifest. Therefore, a partially restored database that happens to contain all six critical table names can be reported as `PASSED` even though `pg_restore` reported errors. The report also has no explicit restore-command success field. This makes the output unsuitable as a reliable restore certification signal.
+
+### 76.2 A caller-selected drill database is dropped before use
+
+When `drill_db_name` is supplied, the only validation is the identifier pattern `^drill_[a-zA-Z0-9_]+$`. The runner then executes `DROP DATABASE IF EXISTS "<name>" WITH (FORCE)` before creating the database. The cleanup path executes the same unconditional drop unless `keep_drill_db` is true.
+
+There is no existence refusal, unique per-run ownership marker, or proof that an existing database was created by this invocation. Consequently, a caller can supply the name of an unrelated existing database that happens to use the accepted `drill_` prefix, and the runner will drop it before starting the drill. The default generated name uses only tenant slug and a UTC timestamp with one-second precision, so concurrent or repeated invocations within the same second can also collide and drop one another's database.
+
+### 76.3 Required remediation and acceptance evidence
+
+1. Treat every non-zero `pg_restore` exit status as a hard drill failure. Do not proceed to a PASSED state; preserve stderr safely and record the exact exit status in the report.
+2. Make the final success predicate require successful restore execution, checksum verification, critical schema checks, meaningful data/integrity checks and RTO compliance. Distinguish warnings from errors according to documented `pg_restore` exit semantics rather than substring matching stderr.
+3. Add a restore manifest or independent source-side expectations for critical table/row checks; table-name presence alone is not proof of a complete or usable restore. Mark unavailable/failed checks as failures, not silently as skipped.
+4. Never drop a pre-existing database merely because its name matches a prefix. Generate a collision-resistant per-run name, query for existence and fail closed if it already exists. If explicit names remain supported, require the database to be absent before creation.
+5. Track whether this invocation successfully created the database and only drop that database during cleanup. Do not run cleanup DROP against a name whose ownership by the current drill has not been established.
+6. Add disposable PostgreSQL tests for pg_restore exit codes 1 and 2, partial restore with all critical table names present, failed count queries, pre-existing explicit drill database, concurrent name collision, and cleanup after both successful and failed runs. Assert unrelated databases are never dropped and no failed restore can produce `PASSED`.
+
+**Assessment:** High-priority disaster-recovery integrity and destructive-target-selection defect. The current runner can overstate restore success because it ignores the restore command's exit status, and it can delete an existing database selected by a caller or collided with by another run. Both defects undermine the safety and evidentiary value of DR drills. This is a static code-path finding; no live restore or database deletion was attempted.
+
+**Boundary:** static source review only. No restore drill, database, backup, tenant, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
