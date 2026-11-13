@@ -1459,3 +1459,23 @@ PR #71 now changes only the disposable harness's Alembic subprocess invocation: 
 **Validation status:** the correction is committed but has not yet been executed by CI. The next reconciliation dispatch must confirm that control-plane migration starts, then tenant A and tenant B migrations complete, and the catalog artifact is uploaded and reviewed. Do not infer PostgreSQL migration compatibility from the earlier passing jobs. AUD-004 remains blocked.
 
 No production/runtime/SQL/migration/Compose/credential/secret/database/role change. Only the disposable test harness subprocess startup changed. PostgreSQL database-per-tenant remains invariant.
+
+
+
+### Section 55 — Backup/restore script boundary and ownership/ACL parity gap
+
+A source review of `deployments/backup-postgres.sh` and `deployments/restore-postgres.sh` confirms several useful operational safeguards: backup requires a protected external GPG passphrase file, enforces a mounted non-root backup destination, serializes runs with `flock`, encrypts each database dump, verifies decryptability and `pg_restore --list`, emits checksums, optionally archives attachments, and can copy encrypted artifacts to a remote destination. The backup enumerates the configured control-plane database plus databases matching the tenant database prefix. Restore requires a new `restore_...` target name, refuses an existing target, verifies a supplied checksum manifest when present, checks the encrypted dump listing, and retains a failed isolated target for diagnosis rather than routing traffic to it.
+
+The scripts do **not** yet prove a least-privilege or ownership-preserving recovery path:
+
+1. Backup invokes `pg_dump` and `pg_dumpall --globals-only` using the Compose database's `POSTGRES_USER` and password. This is the configured database administrator identity, not a separately demonstrated per-database backup identity with bounded read rights.
+2. Per-database dumps explicitly use `--no-owner --no-acl`. The separate globals export uses `--no-role-passwords`. These choices avoid embedding ownership/ACL restoration and role password hashes in the per-database dump; the artifact therefore cannot by itself establish that original object owners, grants, default privileges, memberships, and login authentication material can be reconstructed.
+3. Restore creates the target database owned by `POSTGRES_USER` and runs `pg_restore --no-owner --no-acl` as that same configured identity. It does not restore the globals artifact, normalize intended workload owners, or reapply and verify per-database ACL/default-privilege policy.
+4. The restore script accepts one encrypted dump file, not a backup-set manifest. It validates the checksum file if one happens to be present in the same directory, but does not require a manifest or verify that the dump belongs to the expected control-plane/tenant database set.
+5. The script verifies archive readability and successful `pg_restore` execution, but does not run post-restore catalog parity, migration revision, role-effective-privilege, application smoke, or cross-tenant isolation checks. A successful restore command is not an accepted recovery drill.
+6. The backup script's optional remote copy uses `rsync`; no remote retention, immutable/WORM storage, independent restore credential, or remote restore verification is established by these scripts.
+
+**Required next proof:** use only disposable PostgreSQL databases and synthetic data to exercise a full backup-set restore, including the globals/role plan as a separately reviewed operation. Compare pre/post database inventory, Alembic revisions, owners, explicit and effective ACLs, memberships, default ACLs, sequences, functions/triggers, extensions, RLS state/policies, and representative synthetic records. Demonstrate that ordinary tenant runtime identities cannot read backup artifacts, restore, create databases, or assume migration/owner roles. Keep cluster-global export/import and database restore as separate privileged steps with explicit approval gates.
+
+**Boundary:** this is a source-code review, not a backup execution or restore drill. No production backup, restore, role, credential, ACL, database, or tenant topology was changed. PostgreSQL database-per-tenant remains invariant. AUD-004 remains blocked.
+
