@@ -203,6 +203,91 @@ def _capture_catalog(database: str) -> dict:
                 ORDER BY n.nspname,c.relname
                 """
             ).all()
+            columns = conn.exec_driver_sql(
+                """
+                SELECT table_schema, table_name, ordinal_position, column_name,
+                       data_type, udt_name, is_nullable, column_default
+                FROM information_schema.columns
+                WHERE table_schema NOT IN ('pg_catalog','information_schema')
+                ORDER BY table_schema,table_name,ordinal_position
+                """
+            ).all()
+            constraints = conn.exec_driver_sql(
+                """
+                SELECT n.nspname, t.relname, c.conname, c.contype,
+                       pg_get_constraintdef(c.oid, true)
+                FROM pg_constraint c
+                JOIN pg_class t ON t.oid=c.conrelid
+                JOIN pg_namespace n ON n.oid=t.relnamespace
+                WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY n.nspname,t.relname,c.conname
+                """
+            ).all()
+            indexes = conn.exec_driver_sql(
+                """
+                SELECT schemaname, tablename, indexname, indexdef
+                FROM pg_indexes
+                WHERE schemaname NOT IN ('pg_catalog','information_schema')
+                ORDER BY schemaname,tablename,indexname
+                """
+            ).all()
+            enums = conn.exec_driver_sql(
+                """
+                SELECT n.nspname, t.typname, e.enumsortorder, e.enumlabel
+                FROM pg_type t JOIN pg_enum e ON e.enumtypid=t.oid
+                JOIN pg_namespace n ON n.oid=t.typnamespace
+                WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY n.nspname,t.typname,e.enumsortorder
+                """
+            ).all()
+            routines = conn.exec_driver_sql(
+                """
+                SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid),
+                       p.prosecdef, p.proconfig, pg_get_userbyid(p.proowner),
+                       pg_get_functiondef(p.oid)
+                FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+                WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY n.nspname,p.proname
+                """
+            ).all()
+            triggers = conn.exec_driver_sql(
+                """
+                SELECT n.nspname, t.relname, tr.tgname, pg_get_triggerdef(tr.oid, true),
+                       p.proname, p.prosecdef, p.proconfig, pg_get_userbyid(p.proowner)
+                FROM pg_trigger tr
+                JOIN pg_class t ON t.oid=tr.tgrelid
+                JOIN pg_namespace n ON n.oid=t.relnamespace
+                JOIN pg_proc p ON p.oid=tr.tgfoid
+                WHERE NOT tr.tgisinternal
+                  AND n.nspname NOT IN ('pg_catalog','information_schema')
+                ORDER BY n.nspname,t.relname,tr.tgname
+                """
+            ).all()
+            policies = conn.exec_driver_sql(
+                """
+                SELECT schemaname, tablename, policyname, permissive, roles,
+                       cmd, qual, with_check
+                FROM pg_policies
+                ORDER BY schemaname,tablename,policyname
+                """
+            ).all()
+            grants = conn.exec_driver_sql(
+                """
+                SELECT table_schema, table_name, grantee, privilege_type, is_grantable
+                FROM information_schema.role_table_grants
+                WHERE table_schema NOT IN ('pg_catalog','information_schema')
+                ORDER BY table_schema,table_name,grantee,privilege_type
+                """
+            ).all()
+            default_acls = conn.exec_driver_sql(
+                """
+                SELECT pg_get_userbyid(d.defaclrole), n.nspname, d.defaclobjtype,
+                       d.defaclacl::text
+                FROM pg_default_acl d
+                LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace
+                ORDER BY 1,2,3
+                """
+            ).all()
             return {
                 "database": database,
                 "schemas": sorted(schemas),
@@ -212,6 +297,15 @@ def _capture_catalog(database: str) -> dict:
                 "migration_versions": versions,
                 "catalog_counts": dict(rows),
                 "object_owners": [list(row) for row in owners],
+                "columns": [list(row) for row in columns],
+                "constraints": [list(row) for row in constraints],
+                "indexes": [list(row) for row in indexes],
+                "enum_labels": [list(row) for row in enums],
+                "routines": [list(row) for row in routines],
+                "triggers": [list(row) for row in triggers],
+                "rls_policies": [list(row) for row in policies],
+                "table_grants": [list(row) for row in grants],
+                "default_acls": [list(row) for row in default_acls],
             }
     finally:
         engine.dispose()
