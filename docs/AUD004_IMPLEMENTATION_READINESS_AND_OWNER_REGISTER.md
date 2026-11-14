@@ -5356,3 +5356,32 @@ No actual recalled batch was reactivated, dispensed, or associated with patient 
 **Assessment:** High-priority medication inventory safety-control gap. Static source establishes that void state is not persisted separately from stock quantity and that return/list/dispense paths do not enforce a disposition state. The sequence is feasible for an unexpired batch; no deployed recall failure, re-dispense, or patient impact was established.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 188. Positive inventory adjustments can make expired batches appear as available stock
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `receive_inventory_batch()`, `adjust_inventory_stock()`, `list_inventory_batches()`, and `dispense_medication()`; `backend/domains/pharmacy/models.py`, `InventoryBatch`.
+
+### 188.1 Receipt validates expiry, but later positive adjustments and stock listing do not
+
+The initial receipt endpoint rejects a batch whose `expiry_date` is not in the future. That control is not repeated in `adjust_inventory_stock()`: the endpoint accepts any nonzero adjustment, locks the batch, checks only that the resulting quantity is nonnegative, and commits the new quantity. It does not reject a positive adjustment when the batch has expired.
+
+The inventory listing treats every batch with `stock_quantity > 0` as available unless the caller requests depleted stock. It does not filter expired batches or label them separately. By contrast, the dispensing endpoint explicitly rejects a batch whose expiry is at or before the current time.
+
+Concrete sequence: a batch is legitimately received before expiry; time passes beyond its expiry; an operator performs a positive stock correction against that batch. The adjustment succeeds and the positive-quantity batch appears in the ordinary inventory list and export, even though dispensing later rejects it. This creates a discrepancy between the stock presented as available and stock actually eligible for dispensing, and can distort on-hand inventory/valuation and replenishment decisions.
+
+This is narrower than Section 182's missing adjustment movement/reason ledger and distinct from Section 187's ability to reactivate a voided batch: here expiry itself is a known, persisted disqualifier, and the positive adjustment/listing path fails to consistently apply it. Initial receipt validation is present, so the finding is specifically about subsequent adjustments and availability projections.
+
+No expired batch was adjusted or dispensed in a deployed tenant; the dispensing guard prevents the described batch from passing that route.
+
+### 188.2 Required remediation and acceptance evidence
+
+1. Define whether positive corrections to expired stock are prohibited or must be recorded in a separate non-saleable/disposition balance; never merge them into ordinary sellable quantity.
+2. Apply a shared batch-eligibility predicate to adjustment, inventory list/export, FEFO selection, and dispensing. Show expired stock explicitly as expired/non-saleable rather than presenting it as available.
+3. Preserve the original expiry date and require an authorized, attributable correction workflow for any exceptional expiry-date change; do not use quantity adjustment as a substitute for stock disposition.
+4. Add PostgreSQL tests for positive and negative adjustments before/after expiry, listing and CSV export of expired positive balances, and dispense rejection. Assert expired stock cannot enter the sellable balance through a correction.
+5. Include concurrent expiry-boundary tests using a controlled clock so list, adjustment, and dispense apply consistent time semantics.
+
+**Assessment:** Medium-priority inventory accuracy and stock-governance defect. Static source proves that positive adjustments do not check expiry and that the ordinary inventory listing filters by positive quantity only, while dispensing separately blocks expired batches. It does not establish an actual dispensing of expired medication or patient impact.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
