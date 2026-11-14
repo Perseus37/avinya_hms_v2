@@ -2531,3 +2531,37 @@ This finding concerns session availability and sequencing. It does not claim tha
 **Assessment:** High-priority availability and restore-sequencing gap in the privileged tenant restore endpoint. The handler disconnects all current sessions before the mandatory rollback snapshot is attempted; a safety-snapshot failure therefore does not leave the tenant's existing sessions untouched. Actual user-visible impact depends on connection-pool/client reconnect behavior and was not measured.
 
 **Boundary:** static source review only. No restore endpoint, tenant session, backup, database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 85. Tenant restore stages plaintext database dumps in the shared backup volume without explicit private-file or crash-cleanup guarantees
+
+**Sources reviewed on the audit branch:**
+- `backend/scripts/restore_tenant.py` (`restore_encrypted_backup`)
+- `docker-compose.prod.yml` (backup-volume mounts for API, worker and onboarding services)
+
+Static source/configuration review only. No backup was opened or decrypted, no restore was run, and no volume, database, credential or production state was accessed or changed.
+
+### 85.1 Decrypted database content is written beside encrypted backups on the shared application volume
+
+`restore_encrypted_backup()` reads the complete encrypted artifact into memory, decrypts it into `decrypted_bytes`, and writes those plaintext bytes to:
+
+`enc_path.with_suffix(".restoring.dump")`
+
+The helper does not create this file with an explicitly restrictive mode, does not use a private per-operation temporary directory, and does not place the plaintext staging file under a dedicated ephemeral filesystem. File permissions therefore depend on the Python process umask and volume ownership rather than an explicit least-privilege guarantee.
+
+The production Compose configuration mounts the same named `hms_backups` volume at `/app/backups` in the API, worker and onboarding-portal services. The control-plane restore workflow calls this helper using a path under `backups`. As a result, the plaintext staging artifact is created in storage shared with multiple application services, rather than in a restore-only private location.
+
+The helper unlinks the staging file in a `finally` block after the restore function exits normally through Python exception handling. That cleanup is not guaranteed for abrupt process/container termination (for example, SIGKILL or host failure); in such a case the plaintext dump can remain in the persistent named volume. The deterministic `.restoring.dump` name also means concurrent attempts using the same encrypted source path can overwrite or remove one another's staging file. The restore endpoint and helper shown do not establish a per-tenant/per-artifact lock or unique staging path.
+
+### 85.2 Required remediation and acceptance evidence
+
+1. Decrypt into a unique, per-operation temporary file in a dedicated ephemeral location that is not mounted into unrelated application services. Use restrictive permissions at creation time (for example, mode `0600`) rather than relying on the process umask.
+2. Ensure the staging directory is private to the restore process and has explicit ownership, mount and lifecycle controls. Do not expose plaintext restore artifacts through the shared encrypted-backup volume.
+3. Add startup/reconciliation cleanup for abandoned restore staging artifacts, with safe age/ownership/operation checks; do not delete an artifact belonging to an active restore.
+4. Use unique operation-scoped paths and a durable per-tenant restore lock/lease so simultaneous restores cannot share, overwrite or unlink each other's staging files or run concurrent `pg_restore` operations against the same tenant database.
+5. Add tests for file mode and directory isolation, concurrent restore attempts, normal cleanup, injected exceptions, abrupt-process termination/restart residue, and cleanup of only abandoned operation-owned files.
+6. Stream decryption to the protected staging target and feed `pg_restore` from that file; avoid retaining the entire encrypted and decrypted dump in Python memory. Keep this separate from Section 82, which concerns the restore-drill runner's unbounded memory path.
+
+**Assessment:** High-priority confidentiality and restore-concurrency gap in the tenant restore helper. The source writes decrypted database contents into a shared persistent backup volume without explicitly restrictive file creation or crash-residue recovery. Whether another service process can read a particular file depends on runtime UID/GID, umask and filesystem permissions; those live attributes were not inspected. A hard process termination can bypass the `finally` cleanup, and concurrent restore operations have no operation-specific staging isolation in the reviewed path.
+
+**Boundary:** static source/configuration review only. No encrypted artifact, plaintext dump, restore, volume, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
