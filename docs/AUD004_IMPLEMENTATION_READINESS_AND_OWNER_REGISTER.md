@@ -3202,3 +3202,36 @@ This is not an unauthenticated endpoint: control-plane authentication and vendor
 **Assessment:** High-priority privileged audit-data access-control and minimization gap. The endpoint's route signature and response construction establish missing role enforcement and full-detail serialization. Exploitability by a lower-privilege named operator remains conditional on possession of the shared vendor setup key; no unauthorized access or disclosure is claimed.
 
 **Boundary:** static source review only. No audit records, operator accounts, vendor keys, requests, databases, patient data or production resources were accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 107. Fleet and tenant inventory read endpoints expose operational and commercial metadata without a named-operator role gate
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/control_plane/api/routers/fleet_ops.py` (`get_fleet_global_overview`, `list_registered_tenants`, `get_tenant_operational_telemetry`, `list_tenant_backup_snapshots`); `backend/control_plane/services/auth.py` (`verify_control_plane_secret`, `_verify_vendor_key`, `require_operator_role`).
+
+### 107.1 Shared vendor-key validation is not a substitute for endpoint-specific read authorization
+
+The following read routes depend on `verify_control_plane_secret` and call `_verify_vendor_key`, but do not declare `require_operator_role`:
+
+- `GET /api/fleet/overview` — aggregates active-tenant patient counts, bed and occupancy counts, collected revenue, license ARR, global patient-pointer count and encrypted snapshot count.
+- `GET /api/tenants` — returns tenant identity and configuration fields including hospital/branch/group identifiers, subdomain and database names, administrator email, deployment and pricing details, quotas, provisioning configuration, module count, operational/federation state, federation key prefix and global-pointer count.
+- `GET /api/tenants/{slug}/telemetry` — opens the selected tenant database and returns user/patient/active-encounter/bed/invoice counts, gross and collected revenue, tenant/database identifiers and the latest encrypted backup filename.
+- `GET /api/tenants/{slug}/backups` — returns encrypted backup filenames, file sizes and filesystem modification timestamps.
+
+The shared `_verify_vendor_key` helper allows a superadmin session to bypass the vendor key; otherwise it checks possession of the shared `MASTER_ONBOARDING_KEY`. It does not inspect the named operator's role. The routes therefore lack an independent role gate and do not distinguish viewer, support, billing or ops permissions at the endpoint boundary. A lower-privilege named operator who also obtains the shared vendor key can pass these checks and read the returned data. This is a conditional authorization-boundary weakness, not proof that any lower-privilege operator possesses the key or that any read occurred.
+
+The returned values are not raw patient records, but the combined inventory and telemetry are operationally sensitive: tenant administrators and database names, provisioning and commercial configuration, aggregate clinical workload, revenue, federation metadata and backup inventory. The backup-list route exposes metadata only; this review does not establish that it returns or downloads backup contents. The fleet overview also aggregates metrics by opening active tenant databases, so the read path crosses the control-plane-to-tenant database boundary.
+
+This finding is separate from Section 105's mutation routes and Section 106's audit-log reader. It does not claim unauthenticated access: control-plane authentication and vendor-key checks remain present. The legacy static control-plane credential compatibility path is a separate policy issue; the concrete concern here is missing route-level role enforcement for named operator sessions.
+
+### 107.2 Required remediation and acceptance evidence
+
+1. Define and enforce a read-permission matrix for fleet overview, tenant inventory, tenant telemetry and backup inventory. Apply `require_operator_role` or narrower purpose-specific permissions to each route.
+2. Minimize each response by role and operational purpose. Avoid returning administrator email, database names, provisioning secrets/configuration, federation metadata or backup filenames to roles that do not need them.
+3. Separate commercial/billing fields from operational telemetry, and define whether aggregate patient and encounter counts are available to support/viewer roles.
+4. Add negative tests proving viewer and other disallowed named roles are denied even when the vendor key is supplied; add positive tests for the intended roles and superadmin.
+5. Add synthetic response-projection tests for tenant inventory, telemetry and backup metadata. Verify no raw patient rows, credentials, backup contents or unapproved configuration fields are returned.
+6. Audit sensitive fleet/tenant inventory reads with authenticated actor, role, target tenant, requested projection and result count, without copying sensitive response values into the audit event.
+
+**Assessment:** High-priority control-plane read-authorization and metadata-minimization gap. Static source establishes that these routes omit a named-operator role dependency and return the listed aggregate/configuration/backup metadata after shared-key validation. Exploitability by a lower-privilege named operator remains conditional on possession of the shared vendor setup key; no unauthorized read, patient-record disclosure or backup-content access is claimed.
+
+**Boundary:** static source review only. No endpoint was called; no operator account, vendor key, tenant database, backup artifact, patient data, migration or production resource was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
