@@ -3808,3 +3808,29 @@ This is a retention execution observability and outcome-integrity issue. The sou
 **Assessment:** High-priority retention execution reliability and auditability gap. Static source establishes a path where the API reports QUEUED after a synchronous handler failure has been caught and suppressed, with no Redis job record available for status lookup. No claim is made that a live retention run failed or that any patient records were affected.
 
 **Boundary:** static source review only. No Redis queue was contacted, no retention task was enqueued or executed, no patient or tenant data was accessed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 130. Asynchronous retention execution can attribute the run to a substitute or arbitrary user
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/core/queue.py` (blob `aad0c663e52e7a73d7261658f5ecc1889b7e36b7`, `handle_retention_execute` and `handle_scheduled_retention_sweep`); `backend/domains/privacy/retention_service.py` (blob `18b45ac9ccff4e187368b690ccc3f84705a55807`, run-ledger and decision-audit creation); `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`, async execution enqueue).
+
+### 130.1 Worker substitutes the authenticated requester or invents a human executor attribution
+
+The interactive retention endpoint enqueues the authenticated actor's `actor_user_id`. In `handle_retention_execute()`, the worker looks up that ID only if the user remains ACTIVE. If the user is no longer active, or if the actor is the policy configurator, the worker selects the first active user other than the configurator. For a scheduled sweep, no actor ID is supplied; the worker likewise selects the first active user, with a final fallback to the first user in the tenant.
+
+The selected `actor` is passed to `execute_retention_policy_revision()`. That service writes both `PrivacyRetentionRunLedger.executed_by_user_id` and the `PrivacyDecisionAudit.actor_user_id` from the selected user's ID. Thus, when the queued requester becomes inactive before execution, the durable records can name a different user who did not request or authorize that run. Scheduled automation can also be recorded as if an arbitrary active user personally executed it. The fallback is not represented as a system/service principal or separately identified automation initiator.
+
+The worker does retain a destructive-run separation check against the configurator, but that does not repair the attribution problem: a substitute user is still recorded as the executor without evidence that the user approved or performed the queued action. This finding concerns execution identity and audit provenance, not a demonstrated bypass of the worker's destructive-execution configuration guard.
+
+### 130.2 Required remediation and acceptance evidence
+
+1. Preserve the enqueue-time initiating actor as immutable job metadata, including actor ID, tenant, authorization context, request/correlation ID and enqueue timestamp.
+2. At execution, fail closed if a human-initiated job's actor is no longer active or no longer authorized; do not silently substitute another user.
+3. Model scheduled/system execution with a dedicated non-human service principal and explicit trigger identity. Do not attribute automated runs to the first tenant user.
+4. Store distinct fields for initiator, approving authority, executing workload/service principal and (where applicable) human operator; define which identity populates each audit field.
+5. Revalidate policy approval, actor authorization and separation-of-duties at execution time without changing the original initiator identity.
+6. Add synthetic tests for an active requester, requester deactivated after enqueue, configurator mismatch, no actor on scheduled sweep, no active users, and retries. Assert ledger and decision-audit identities remain truthful and no substitute human is silently attributed.
+
+**Assessment:** High-priority privacy-retention audit provenance and accountability gap. Static source establishes that worker fallback can record a substitute or arbitrary human user as the executor. It does not establish that a queued run has actually taken this path or that a retention action was performed by an unauthorized person.
+
+**Boundary:** exact-head static source review only. No queue was contacted, no retention job or policy was executed, no user/account or tenant database was queried at runtime, no patient data was accessed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
