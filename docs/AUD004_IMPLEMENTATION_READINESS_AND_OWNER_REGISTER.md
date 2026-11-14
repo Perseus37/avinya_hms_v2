@@ -3860,3 +3860,31 @@ This finding is about queue delivery/recovery. It does not establish that a work
 **Assessment:** High-priority background retention delivery and recovery gap. Static source establishes destructive queue tasks are removed from pending before processing and that the shown queue module provides no visibility lease or stale-processing recovery. The database-commit/queue-completion crash window remains an acceptance-test requirement; it is not asserted as an observed runtime event.
 
 **Boundary:** exact-head static source review only. No Redis instance, worker, retention job, policy, tenant database or patient record was accessed or executed. No destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 132. Retention execution has no durable idempotency fence for retries or uncertain completion
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/core/queue.py` (blob `aad0c663e52e7a73d7261658f5ecc1889b7e36b7`, enqueue/dequeue and retention handler); `backend/domains/privacy/retention_service.py` (blob `18b45ac9ccff4e187368b690ccc3f84705a55807`, `execute_retention_policy_revision()`); `backend/domains/privacy/models.py` (blob `74a4d4f61ccbb1dfda129ab93c5b19ce154c7bad`, `PrivacyRetentionRunLedger`).
+
+### 132.1 The queue task identity is not bound to a unique tenant execution record
+
+`enqueue_task()` generates a UUID task ID and stores it in Redis task metadata. The retention handler receives the decoded payload and extracts tenant, policy revision, category codes, dry-run flag, approval reference and optional actor ID; it does not receive or forward the queue task ID as an execution/idempotency key. `execute_retention_policy_revision()` likewise accepts no job ID or idempotency key.
+
+For a non-dry-run, the service performs the selected category actions and then inserts a `PrivacyRetentionRunLedger` row and a `PrivacyDecisionAudit` row before committing the tenant transaction. The ledger model has an ordinary primary key but no unique execution-key column or uniqueness constraint over a logical run identity. The service does not query for an existing matching run or return a previously committed result. The audit row is also appended for each invocation.
+
+Accordingly, the durable tenant database does not fence a repeated invocation of the same logical queued request. If execution commits its tenant transaction but the worker subsequently reports failure (or otherwise cannot record queue completion) and the task is retried, the same policy revision/categories/approval reference can be executed again and produce another run-ledger and audit record. The repeated invocation may also re-evaluate and act on records changed by the first invocation; whether that produces additional destructive effects depends on the category/action and remaining eligible records. This is a source-level retry/idempotency gap, not evidence that a retry or duplicate retention run occurred.
+
+This is distinct from Section 131: Section 131 concerns a dequeued task being stranded after worker interruption; this section concerns duplicate logical execution when a retry is attempted after an uncertain or already-committed outcome. It is also distinct from Section 129's false QUEUED response on synchronous fallback.
+
+### 132.2 Required remediation and acceptance evidence
+
+1. Generate and persist a stable execution/idempotency key at request/enqueue time, scoped to the tenant and logical retention request; carry it unchanged through queue metadata, handler, service, run ledger and audit correlation.
+2. Add a non-null unique constraint for the execution key on `PrivacyRetentionRunLedger` (with an explicit migration and backfill policy), and make the service atomically claim/check that key before applying category mutations.
+3. On duplicate delivery, return the original committed run result/status rather than reapplying actions or appending a second success ledger/audit pair. Define behavior for an in-progress claim and stale claim recovery.
+4. Keep distinct keys for genuinely separate authorized runs, even when they target the same policy revision and categories; do not use a coarse uniqueness constraint that blocks legitimate later executions.
+5. Add synthetic transaction/fault-injection tests for: duplicate delivery before execution, concurrent delivery to two workers, commit followed by simulated queue-completion failure, retry after commit, rollback before commit, and two separately authorized executions. Assert one logical request has at most one committed execution ledger and one corresponding execution audit, while separate authorized requests remain possible.
+6. Tie the durable execution record to tenant identity, policy revision, normalized category set, approval reference, initiating actor/service principal and final outcome; preserve the original execution result for status recovery.
+
+**Assessment:** High-priority destructive-retention reliability and audit-integrity gap. Static source establishes that the queue task UUID is not propagated into the retention service/ledger and that the ledger has no unique idempotency field or matching-run guard. It supports a duplicate-execution scenario if a committed handler attempt is retried, but does not establish that the worker actually retried after commit or that any patient record was changed more than once.
+
+**Boundary:** exact-head static source review only. No Redis instance, worker, retention job, policy, tenant database or patient record was accessed or executed. No destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
