@@ -2596,3 +2596,31 @@ This finding is about privileged backup/restore task execution durability. It is
 **Assessment:** High-priority backup/restore operational durability gap. The endpoints can acknowledge work that is held only in the serving process, without a durable task state or automatic recovery mechanism in the reviewed implementation. No claim is made that a production task has been lost; actual exposure depends on process lifecycle and whether an external supervisor/operator provides recovery outside the reviewed code.
 
 **Boundary:** static source review only. No endpoint, task, backup, tenant database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 87. Tenant backup creation buffers the full plaintext dump and encrypted artifact in process memory
+
+**Source reviewed:** `backend/scripts/backup_service.py` (`_dump_and_encrypt`).
+
+Static source review only. No backup command was run, no database was queried, and no backup artifact, credential or production resource was accessed or changed.
+
+### 87.1 Backup memory consumption grows with the complete tenant database
+
+The tenant backup helper invokes `pg_dump` using `subprocess.run(..., capture_output=True, check=True)`. This captures the complete custom-format dump in `proc.stdout` as a Python bytes object. The helper then calls Fernet `encrypt(proc.stdout)`, creating a second complete in-memory encrypted bytes object before writing it to the pending file.
+
+During encryption/publication, the process therefore retains at least the complete plaintext dump and complete ciphertext, in addition to Python/runtime and cryptographic working memory. Peak memory scales with tenant dump size rather than a configured streaming buffer. A sufficiently large tenant backup can exhaust the worker/container memory or be OOM-killed, preventing backup completion and potentially affecting other workloads sharing the same process/container resource limits. No actual size threshold or memory limit was measured in this static review.
+
+This is the backup-creation counterpart to Section 82's separate restore-drill buffering issue. The host-level `deployments/backup-postgres.sh` uses a pipeline from `pg_dump` through GPG to a file, illustrating a streaming approach in a different backup path; it does not make the Python tenant backup helper streaming.
+
+### 87.2 Required remediation and acceptance evidence
+
+1. Replace `capture_output=True` with a streaming pipeline or bounded temporary-file flow so `pg_dump` output is not retained as one complete Python bytes object.
+2. Use a streaming authenticated-encryption format or chunked envelope design with explicit versioning, nonce/metadata handling, and verified end-of-stream authentication; do not assume Fernet's whole-message API can be made streaming by merely iterating over its input.
+3. Publish the encrypted artifact only after the dump process exits successfully, encryption finalization/authentication succeeds, and the completed artifact is verified. Preserve atomic publication and clean up operation-owned partial files on every failure path.
+4. Bound subprocess diagnostics and avoid retaining potentially unbounded stdout/stderr alongside dump data.
+5. Add synthetic large-database tests that measure peak resident memory against a defined bound, inject pg_dump failure and encryption/write failure, and prove no incomplete artifact is exposed as a completed backup.
+6. Document the supported maximum tenant backup size and required worker memory until a bounded streaming implementation is deployed.
+
+**Assessment:** High-priority backup availability and scalability gap. The current Python tenant backup path holds the complete dump and encrypted output in memory, so its resource use grows with tenant database size and can prevent backup completion under constrained worker memory. Actual failure thresholds depend on tenant size and runtime limits and were not measured.
+
+**Boundary:** static source review only. No backup, database, credential, migration, tenant record or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
