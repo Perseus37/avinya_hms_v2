@@ -3452,3 +3452,27 @@ The reviewed ABDM router has no gateway-specific dependency, and the reviewed ap
 
 **Boundary:** static source and test review only. No runtime, database, consent record, patient data, production credential, external gateway, or tenant configuration was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 116. ABDM M3 export does not fence concurrent consent revocation
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/abdm/services.py` (`generate_abdm_fhir_health_data`); `backend/domains/abdm/router.py` (`fetch_health_records_under_consent`, `notify_consent_grant`); `backend/domains/abdm/models.py` (`ABDMConsentArtefact`).
+
+### 116.1 Consent is checked once, before bundle construction
+
+The M3 service loads the consent artefact and checks that its current status is `GRANTED` and its expiry has not passed. It then loads the patient and clinical records, constructs the FHIR bundle, and returns the result. The artefact row is not selected with a locking read, no export/revocation coordination marker is created, and the service does not re-read or revalidate consent status immediately before returning the bundle.
+
+The M2 notification service can update an existing artefact's status to `REVOKED` and commit that change. Under the normal PostgreSQL READ COMMITTED transaction behavior, if that revocation commits after the M3 service has loaded the artefact but before the bundle is returned, the in-memory ORM object used by the export remains at the previously observed `GRANTED` state. The already-running export can therefore complete based on a grant that has since been revoked. This is a concurrency window, not a claim that every revocation is ignored: exports that begin after the committed revocation are denied by the initial status check.
+
+The current test covers a successful grant/export flow but does not exercise a concurrent revocation during bundle construction. Because Section 115 separately establishes that the notification path does not authenticate the Consent Manager, this finding is about the additional lifecycle guarantee required even after notification authenticity is corrected.
+
+### 116.2 Required remediation and acceptance evidence
+
+1. Define the required withdrawal semantics for in-flight health-information exports: whether revocation must prevent any response not yet delivered, cancel queued work, and/or record a transfer already irrevocably dispatched.
+2. Coordinate export and revocation using a durable consent version/state transition and an appropriate database concurrency mechanism (for example, row locking or an export lease/fencing token). Ensure the mechanism covers the complete authorization-to-delivery boundary rather than only the initial lookup.
+3. Revalidate the current consent version and status immediately before the response is released; if revocation wins the race, discard the generated bundle and return a denial. If delivery cannot be recalled after release, record that boundary explicitly.
+4. Add deterministic concurrency tests that pause bundle construction, commit revocation, resume export, and assert the approved withdrawal behavior. Also test the inverse ordering, expiry during export, duplicate revocation, and repeated export attempts.
+5. Record an auditable outcome for both export and revocation, including consent version, ordering, recipient identity, resource scope, and whether a response was released.
+
+**Assessment:** High-priority consent-withdrawal enforcement gap. Static source and PostgreSQL transaction semantics establish a race window in which an export that passed its initial status check can continue after a revocation commits. No concurrent export or revocation was executed, no patient data was read, and no FHIR bundle was generated.
+
+**Boundary:** static source and test review only. No runtime, database, consent record, patient data, production credential, external gateway, or tenant configuration was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
