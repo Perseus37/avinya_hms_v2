@@ -4463,3 +4463,28 @@ The receiver therefore cannot reliably correlate the negative acknowledgment wit
 **Assessment:** Medium-to-high priority HL7 reliability and message-correlation gap. The source establishes the uncorrelated ACK path; it does not establish a real analyzer retry, duplicate clinical mutation, or production incident.
 
 **Boundary:** exact-head static source review only. No HL7 endpoint or analyzer was used, no database failure was induced, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 155. Multi-analyte HL7 delta checks compare the first numeric value instead of the configured analyte
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/service.py`, multi-OBX result formatting and delta-check invocation; `backend/domains/clinical/services.py`, `evaluate_lab_delta_check()`; `backend/domains/diagnostics/models.py`, `LabDeltaCheckConfig`.
+
+### 155.1 Configured parameter identity is not used during delta evaluation
+
+The `LabDeltaCheckConfig` model stores one configuration per diagnostic service and includes a required `parameter_name` field. However, `evaluate_lab_delta_check()` retrieves the configuration by `service_id` and never reads `config.parameter_name`. It parses the first numeric substring from the incoming value string and the first numeric substring from the previous task's `result_value`, then compares those two numbers against the service-level thresholds.
+
+The HL7 processor can aggregate multiple OBX observations into one diagnostic task. For multiple observations it serializes each observation as a separate line in `task.result_value`, while selecting the first numeric observation as `primary_numeric_str` for delta evaluation. The prior-result lookup likewise parses only the first numeric substring from the stored aggregate. Neither side is matched to the configured `parameter_name` or to a stable OBX analyte identifier.
+
+For a multi-analyte panel, the first numeric observation is not necessarily the configured analyte. If analyzer observation order changes, or if the configured analyte is not the first numeric OBX, the evaluator can compare different analytes or apply a threshold to the wrong measurement. The resulting delta flag and review note can therefore be misleading. This is distinct from Sections 152–154: it concerns analyte identity in the clinical calculation, not concurrent task mutation, ACK correlation, or replay handling.
+
+### 155.2 Required remediation and acceptance evidence
+
+1. Resolve the configured `parameter_name` to an explicit analyzer observation identifier (for example, a validated OBX-3 code/profile mapping); do not rely on observation position or the first numeric substring.
+2. Persist analyte-level numeric values and units in a structured representation with stable parameter identity, rather than recovering a number from a free-form aggregate result string.
+3. Define behavior when the configured analyte is absent, duplicated, non-numeric, or has incompatible units; fail closed or mark the delta check as not evaluated rather than silently selecting another analyte.
+4. Ensure prior-result lookup selects the same analyte identity and compatible units within the configured lookback window.
+5. Add synthetic tests with multi-OBX panels, reordered OBX segments, multiple numeric analytes, missing configured analyte, and changed units. Assert that only the configured analyte is compared and that the prior/current analyte identities match.
+
+**Assessment:** High-priority laboratory result interpretation and delta-check correctness gap. The source establishes that the configured parameter name is unused and that multi-OBX values are reduced to first-number extraction; it does not establish a wrong delta alert or patient impact in production.
+
+**Boundary:** exact-head static source review only. No HL7 endpoint or analyzer was used, no delta-check execution was performed against patient data, no tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
