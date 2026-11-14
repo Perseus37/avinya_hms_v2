@@ -5715,3 +5715,33 @@ This is a deterministic source-level matching defect. It does not establish that
 **Assessment:** High-priority medication-administration safety-control gap. The current matcher can accept a partial match for a multi-component prescribed dose. No actual partial-dose administration or patient harm was established.
 
 **Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 200. BCMA dose parser accepts unrecognized units because its declared unit allowlist is never enforced
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/services.py`, `VALID_DOSE_UNITS`, `_extract_dose_tokens()`, `UNIT_NORMALIZATION`, and `_is_dose_match()`.
+
+### 200.1 Arbitrary alphabetic units are parsed and treated as valid comparable units
+
+The service declares a `VALID_DOSE_UNITS` vocabulary containing recognized mass, volume, activity, and dosage-form units. However, `_extract_dose_tokens()` does not consult this allowlist. Its regular expression accepts any alphabetic unit (and optional slash-separated alphabetic suffix), and it appends that unit to the parsed token list unless it happens to be in `NON_DOSE_WORDS`.
+
+The comparison path also does not reject unknown units. When a unit is absent from `UNIT_NORMALIZATION`, `_is_dose_match()` uses the raw unit string as its normalized unit. Equal numeric values with the same unrecognized unit therefore compare as a successful match.
+
+For example, if an order's dosage instruction is malformed or contains an unsupported unit such as `5 foo`, an administered-dose entry of `5 foo` is accepted by the token matcher. The declared allowlist does not prevent this. Because the BCMA evaluator treats a successful comparison as a Right Dose match, the parser can certify equivalence without establishing that the unit has a defined clinical meaning or conversion rule.
+
+This is distinct from Section 199: Section 199 concerns incomplete matching across multiple recognized dose components; this finding concerns the absence of unit-vocabulary enforcement even for a single token. It is also not a claim that a malformed order or unsupported unit was used in a deployed tenant.
+
+No unsupported-unit administration or patient harm was established.
+
+### 200.2 Required remediation and acceptance evidence
+
+1. Enforce a versioned, controlled unit vocabulary during both prescription/order validation and BCMA dose parsing; reject unknown, ambiguous, or unsupported units rather than treating them as self-normalizing.
+2. Define explicit conversion rules only for clinically equivalent units and dimensions. Do not equate mass, volume, concentration, activity, or dosage-form counts without product-specific semantics.
+3. Keep concentration units distinct from administered quantities; require the dose calculation to identify the product concentration and the actual volume/count administered where relevant.
+4. Fail closed on unparseable or unsupported legacy dosage instructions and provide a governed correction workflow; do not silently reinterpret them.
+5. Add PostgreSQL-backed tests for every allowed unit, unknown alphabetic units, malformed slash units, dimensionally incompatible pairs, supported conversions, concentration-versus-volume cases, and legacy invalid prescriptions. Assert rejected inputs cannot create ADMINISTERED eMAR rows.
+
+**Assessment:** High-priority medication-administration safety-control gap because a declared allowlist is not enforced and arbitrary units can satisfy the Right Dose comparison. No actual unsupported-unit administration or patient harm was established.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
