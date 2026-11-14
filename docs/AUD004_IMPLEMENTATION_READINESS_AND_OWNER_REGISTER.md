@@ -3573,3 +3573,27 @@ As implemented, a user with `privacy:write` can create a request against any exi
 
 **Boundary:** static source and test review only. No request was submitted, no patient record was read, and no runtime or tenant database was accessed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 121. DPDP dossier export records fulfilment before the export response is completed
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py`, `export_patient_dpdp_dossier`.
+
+### 121.1 Fulfilment and ALLOW audit commit precede final bundle processing and response
+
+For requests in `SUBMITTED`, `IN_REVIEW`, or `IN_PROGRESS`, the handler changes the request to `FULFILLED`, sets `fulfilled_at`, and records `handled_by_user_id` before loading and assembling the dossier contents. After constructing the bundle, it inserts a `PrivacyDecisionAudit` with result `ALLOW` and a reason stating that the dossier was exported, then commits the database transaction. Only after that commit does it serialize the bundle to compute its integrity SHA-256 and return the response.
+
+The durable status and ALLOW audit therefore represent fulfilment/export before the handler has completed its final integrity-hash processing or returned the response. If post-commit hashing/response serialization fails, or the connection is lost before the client receives the response, the request remains marked fulfilled and the audit says exported although successful delivery is not established. The current record does not distinguish dossier generation, response handoff, and recipient receipt.
+
+This is separate from Section 118's insufficient request-verification gate and Section 119's unrestricted state transitions: it concerns the accuracy of the fulfilment event and its audit semantics after an export is initiated.
+
+### 121.2 Required remediation and acceptance evidence
+
+1. Define whether FULFILLED means generated, handed to the authenticated requester, or acknowledged as received; use separate lifecycle events/states where these are materially different.
+2. Build and integrity-hash the complete bundle before committing a fulfilled state or an audit event that asserts completed export.
+3. Persist a durable export-attempt record with request ID, actor, bundle hash, generation outcome, response/handoff outcome, and timestamps; do not infer recipient receipt from a server-side return statement.
+4. Ensure failures before response handoff leave the request pending/retryable or record a distinct failed-attempt state without falsely asserting fulfilment.
+5. Add synthetic fault-injection tests for bundle construction, hashing, response serialization, and interrupted delivery, verifying request status and audit outcome for each case.
+
+**Assessment:** High-priority privacy workflow accuracy and evidentiary-integrity gap. Static source establishes the order of mutation, commit, hash, and return; it does not establish that a delivery failure has occurred in production.
+
+**Boundary:** static source review only. No dossier was generated, no patient data was read, no export endpoint was invoked, and no runtime or tenant database was accessed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
