@@ -4404,3 +4404,32 @@ Two concurrent analyzer messages can therefore both read the same task as pendin
 **Assessment:** High-priority clinical result concurrency and integrity gap. The source establishes that task selection is not explicitly locked or conditionally claimed; it does not establish a concurrent collision or overwritten production result.
 
 **Boundary:** exact-head static source review only. No HL7 endpoint was called, no concurrent database transaction was executed, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 153. Direct HL7 task identifiers bypass pending-state matching and permit ordinary results to overwrite already-entered results
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/service.py`, OBR/OBX task resolution and result-state guard/update.
+
+### 153.1 Identifier-based matching bypasses the eligible-state filter
+
+The service-code and equipment-mapping fallback paths select only tasks in `PENDING`, `SAMPLE_COLLECTED`, or `IN_PROGRESS`. However, the higher-priority explicit identifier paths do not apply that filter:
+
+- OBR-2/OBR-3 task IDs are accepted from `tasks_by_id` regardless of task status.
+- OBX-3 task IDs are likewise accepted from `tasks_by_id` regardless of task status.
+
+After matching, the common guard rejects only `VERIFIED` and `CANCELLED`. It does not reject `RESULT_ENTERED`. The result update path then writes the incoming value and sets the task to `RESULT_ENTERED` for ordinary non-preliminary, non-unobtainable observations. The code recognizes amendment indicators (`C`, `A`, `CORRECTED`, `AMENDED`) for history handling, but does not require an amendment indicator before replacing a previously entered result.
+
+Consequently, an inbound message that explicitly names a task already in `RESULT_ENTERED` can replace its current result using an ordinary observation status (including the default status `F`). The prior value is appended to a note only when it differs; that is not a state-transition guard and does not prevent replacement. This bypasses the pending-only behavior used by the fallback matchers and weakens the expected distinction between a first result and a corrected/amended result.
+
+### 153.2 Required remediation and acceptance evidence
+
+1. Apply one explicit task-eligibility policy after all matching paths, not only to service-code fallback matching.
+2. Reject ordinary final observations for `RESULT_ENTERED` tasks unless the configured analyzer profile explicitly supports replacement semantics.
+3. Require and validate the appropriate correction/amendment workflow for replacing an existing result; preserve prior result, source message identity, actor/device, and correction reason as structured immutable history.
+4. Define separately whether late valid results may recover `SAMPLE_REJECTED` tasks, and require correlation to the rejected specimen/recollection lifecycle rather than allowing implicit recovery by any identifier match.
+5. Add synthetic tests for explicit OBR and OBX task IDs targeting PENDING, RESULT_ENTERED, SAMPLE_REJECTED, VERIFIED, and CANCELLED tasks, covering ordinary, preliminary, corrected, and unobtainable OBX statuses.
+
+**Assessment:** High-priority clinical result integrity and lifecycle enforcement gap. The reviewed source establishes the bypass and overwrite path; it does not establish that an analyzer has exercised it or that a production result was overwritten.
+
+**Boundary:** exact-head static source review only. No HL7 endpoint or analyzer was used, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
