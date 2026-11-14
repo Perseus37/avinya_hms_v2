@@ -3625,3 +3625,30 @@ This is an application-level auditability finding for the three named read paths
 **Assessment:** High-priority privacy auditability gap. Static source review establishes that the named request and summary read handlers have permission checks but no application-level durable actor-attributed read event. The dossier-export path does create its own actor-attributed decision event and is not included in this finding. No endpoint was invoked and no patient or tenant data was accessed.
 
 **Boundary:** static source review only. No runtime, database, audit record, patient record, production credential, or infrastructure log store was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 123. Consent policy lifecycle exposes no production ENFORCE activation path
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py` (`create_privacy_policy_draft`, `approve_privacy_policy_draft`, `activate_privacy_policy_audit_only`, `deactivate_privacy_policy`); `backend/domains/privacy/models.py` (`PrivacyPolicyRevision`); `backend/domains/privacy/runtime.py`; `backend/domains/privacy/decision_engine.py`; `backend/domains/privacy/policy_schema.py`.
+
+### 123.1 The exposed lifecycle can approve and audit, but cannot activate enforcement
+
+The policy model and decision engine support three modes: `OFF`, `AUDIT_ONLY`, and `ENFORCE`. The runtime evaluator reads the active consent revision's `enforcement_mode` and passes it to `evaluate_data_use`; the decision engine returns an actual deny only in `ENFORCE`, while `AUDIT_ONLY` always allows and records whether the decision would have denied.
+
+The reviewed privacy router exposes policy draft creation, second-person approval, one activation endpoint named `activate-audit-only`, and deactivation. That activation endpoint sets the revision to `AUDIT_ONLY`; it explicitly rejects activation when `settings.is_production()` is true. The reviewed router contains no endpoint or lifecycle operation that sets a consent revision to `ENFORCE`. Approval only changes the revision status and approval metadata; it does not activate enforcement. Deactivation sets the active revision to `OFF`.
+
+The policy schema includes `validate_for_enforcement()` to reject enforcement when registered data-use points remain unmapped, but the reviewed approval and activation handlers call only `validate_policy_document()`; no enforcement activation handler invokes the coverage gate.
+
+Consequently, through the reviewed application API, a tenant can create and approve a consent policy and can use audit-only mode in non-production, but cannot transition that policy into actual consent-denial enforcement. This is not a claim that a database operator could not manually alter the row, nor that every data-use path is unprotected by other controls. It is a missing supported application lifecycle path for the consent engine's enforcement mode.
+
+### 123.2 Required remediation and acceptance evidence
+
+1. Define an explicit, separately authorized ENFORCE activation workflow, including second-person approval, a recorded activation reference, and actor/time provenance.
+2. Require `validate_for_enforcement()` and a current complete data-use-point coverage check before activation; reject incomplete mappings rather than silently leaving points unmapped.
+3. Define safe rollout from OFF/AUDIT_ONLY to ENFORCE, including staged verification, rollback/deactivation controls, and clear behavior for invalid active policy documents.
+4. Add synthetic tests proving a complete approved policy can be activated as ENFORCE, missing coverage is rejected, the correct actor and approval evidence are recorded, and a denied consent decision is actually denied at representative protected data-use points.
+5. Add production configuration tests that distinguish audit-only restrictions from the explicitly supported enforcement workflow.
+
+**Assessment:** High-priority privacy enforcement readiness gap. Static source establishes that the application lifecycle has no reviewed API path to set `ENFORCE`, despite runtime support for that mode; the only activation API sets `AUDIT_ONLY` and rejects production. This leaves consent enforcement unavailable through the supported policy-management workflow.
+
+**Boundary:** static source review only. No policy was activated, no database row was modified, no consent decision was executed, and no patient data was accessed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
