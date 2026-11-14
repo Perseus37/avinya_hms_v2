@@ -6641,3 +6641,33 @@ This is distinct from Sections 227 and 228: Section 227 concerns missing histori
 **Assessment:** High-priority ADT concurrency and facility-capacity integrity gap. Concurrent transfers of the same admission can leave a stale destination bed marked occupied after the admission has moved elsewhere. No actual occupancy corruption or operational impact was observed.
 
 **Boundary:** exact-head static route/model/control-flow review only. No patient data, tenant database, admission, bed, transfer log, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 234. Concurrent appointment reschedules can bypass the doctor-slot serialization used by booking
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/opd_router.py`, `book_appointment()`, `reschedule_appointment()`, `book_appointment_from_waitlist()`, and `check_schedule_overlap()`; `backend/domains/encounters/models.py`, `Appointment` indexes and constraints.
+
+### 234.1 Rescheduling checks availability without acquiring the shared doctor lock
+
+The normal booking handler locks the relevant `DoctorProfile` row with `FOR UPDATE` before checking doctor leave and calling `check_schedule_overlap()`. Booking from the waitlist uses the same doctor-profile row lock before its overlap check.
+
+The reschedule handler does not acquire that lock. It loads the appointment with `db.get()`, reads the doctor profile without a lock, checks leave and calls `check_schedule_overlap()`, then updates the appointment time and commits. The helper performs an ordinary query for SCHEDULED and ARRIVED appointments in a time window; it does not lock the matching appointment rows. The Appointment model has ordinary doctor/time indexes but no database exclusion constraint or other uniqueness boundary for overlapping time ranges.
+
+Consequently, two reschedule requests for different appointments assigned to the same doctor can both pass their overlap checks before either commits, then move both appointments into overlapping slots. A reschedule can also race with a normal booking: the booking path's doctor-profile lock does not serialize a reschedule that never requests that lock. The waitlist-booking path has the same asymmetry with rescheduling.
+
+This finding concerns the write-side lock protocol for appointment slot allocation. It is distinct from Sections 231–233, which concern encounter/admission/bed lifecycle integrity, and from any patient-data export authorization finding.
+
+No overlapping live appointments or concurrent scheduling race was observed.
+
+### 234.2 Required remediation and acceptance evidence
+
+1. Make every scheduling write path use one consistent doctor-slot serialization protocol. At minimum, rescheduling must lock the doctor profile before reading the current appointment schedule and retain the lock through its overlap check and commit; preserve the same lock order across normal booking and waitlist booking.
+2. Re-read and validate the appointment's doctor/status after acquiring the shared lock so concurrent cancellation, status transition, or doctor reassignment cannot leave the check based on stale state.
+3. Where supported by the deployed PostgreSQL design, add a database-level exclusion constraint for overlapping active appointment time ranges, using a well-defined duration/range representation and the intended blocking statuses. If the invariant cannot be expressed safely in the database, document the serialized scheduling service as the authoritative write boundary and test it under independent sessions.
+4. Define interval semantics explicitly (including adjacent appointments and each appointment's own planned duration); ensure the conflict predicate accounts for the existing appointment's duration, not only the candidate's duration.
+5. Add PostgreSQL-backed two-session tests for reschedule-versus-reschedule, reschedule-versus-normal-booking, and reschedule-versus-waitlist-booking. Synchronize both sessions after the initial availability read and assert that at most one conflicting write commits. Include adjacent non-overlapping slots and differing appointment durations.
+
+**Assessment:** High-priority OPD scheduling integrity gap. Concurrent reschedule writes can create overlapping appointments for one doctor because the reschedule path does not participate in the doctor-row lock used by booking paths. No actual scheduling conflict or operational impact was observed.
+
+**Boundary:** exact-head static route/model/control-flow review only. No patient data, tenant database, appointment, doctor schedule, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
