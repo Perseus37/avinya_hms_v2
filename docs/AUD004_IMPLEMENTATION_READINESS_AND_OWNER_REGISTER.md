@@ -5964,3 +5964,28 @@ As a result, a caller with the route permission can request the CSV representati
 **Assessment:** High priority privacy-control bypass because the CSV path exposes patient MRNs/names and invoice financial information without invoking the privacy gate used by the JSON response. The source-level branch ordering is established. No unauthorized export, patient disclosure, or deployed policy denial was observed.
 
 **Boundary:** exact-head static source review only. No patient data, tenant database, or live export was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 209. Unused advance-deposit refunds can be recorded under a tender different from the original collection
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/router.py`, `refund_unused_patient_deposit()` and `collect_patient_advance_deposit()`; `backend/domains/billing/schemas.py`, `DepositRefundRequest`; `backend/domains/billing/models.py`, `PatientDeposit`, `RefundVoucher`, and `PaymentMethodEnum`.
+
+### 209.1 Refund tender is caller-selected and is not reconciled to the original deposit tender
+
+Deposit collection persists the original `payment_method` and optional `transaction_reference` on `PatientDeposit`. The refund request independently accepts a caller-supplied `refund_method`, defaulting to `BANK_TRANSFER`, and an optional transaction reference. The refund handler checks that the deposit is active, has a positive remaining balance, and that the requested refund does not exceed that balance. It then decrements the deposit balance and creates a `RefundVoucher` using the request's refund method and reference.
+
+The reviewed path does not compare the refund method with the deposit's original payment method, require an explicit exception reason when they differ, or require a disbursement transaction reference before recording the voucher. The enum includes CASH, CREDIT_CARD, UPI, BANK_TRANSFER, INSURANCE, and ADVANCE_ADJUSTMENT, while the request schema accepts the enum without narrowing it to valid outbound refund tenders. Thus a deposit collected by UPI can, for example, be represented by a voucher marked CASH or ADVANCE_ADJUSTMENT; the handler's balance checks do not prevent that tender mismatch.
+
+This finding concerns the unused advance-deposit refund path. It is distinct from Section 185's pharmacy-return path, which creates an already-approved cash voucher and ignores mixed invoice tenders. It does not establish that a refund was actually disbursed through the wrong channel: a voucher is an accounting record, not evidence of payment execution.
+
+### 209.2 Required remediation and acceptance evidence
+
+1. Define an explicit refund-tender policy for each collection method, including whether alternate-tender refunds are permitted and which roles may authorize exceptions.
+2. Exclude non-outbound methods such as INSURANCE and ADVANCE_ADJUSTMENT from refund tender choices unless a documented accounting workflow specifically supports them.
+3. When alternate tender is permitted, require a structured exception reason and appropriate independent approval; preserve both original and refund tender in the immutable financial trail.
+4. Require and validate an execution reference for non-cash refunds, and distinguish voucher authorization from confirmed disbursement/reconciliation.
+5. Add PostgreSQL-backed tests for same-tender refunds, permitted and prohibited alternate tenders, invalid enum choices, missing execution references, partial refunds, and repeated refunds. Verify that balance, voucher, and reconciliation state remain consistent.
+
+**Assessment:** Medium priority financial-control and reconciliation gap, pending an approved hospital refund-tender policy. The source-level independence of the refund method from the original collection method is established. No wrong-tender voucher, actual misdirected refund, or financial loss was observed.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, or live financial transaction was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
