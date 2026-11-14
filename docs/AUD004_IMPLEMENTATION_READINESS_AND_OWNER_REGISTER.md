@@ -6698,3 +6698,30 @@ No invalid encounter attachment or misallocated charge was observed.
 **Assessment:** High-priority clinical and billing integrity gap. The route treats patient identity equality as sufficient encounter eligibility even though the model represents encounter type and lifecycle explicitly and the transition triggers encounter-scoped billing.
 
 **Boundary:** exact-head static route/model/service review only. No patient data, tenant database, encounter, invoice, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 236. OPD appointment CSV export returns patient identifiers before the configured privacy-use decision
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/opd_router.py`, `list_appointments()`, its CSV `row_generator()` and paginated response path; `backend/core/export.py`, `stream_csv_response()` and `chunked_query_fetcher()`; `backend/domains/privacy/runtime.py`, `evaluate_tenant_patient_data_uses()`.
+
+### 236.1 CSV branch exits before patient-data-use evaluation
+
+The appointment-list route declares the privacy data-use point `opd.appointments.search`. For the ordinary paginated JSON response, it first loads the requested appointment page, then calls `evaluate_tenant_patient_data_uses()` with the page's patient IDs and the actor ID, and returns HTTP 403 if any decision is denied.
+
+The CSV branch is evaluated earlier. When `format=csv`, it constructs a generator that fetches appointments in chunks with patient and doctor relationships, and yields appointment ID, token number, patient MRN, patient name, doctor name, appointment time, duration, status, and reason for visit. It then immediately returns `stream_csv_response()`. This return occurs before the paginated-path privacy decision call. The streaming query is not passed through an equivalent per-patient or bulk privacy-use decision in the reviewed route.
+
+As a result, an actor with the route's `opd:read` permission can request the CSV representation and receive patient identifiers and appointment details without the privacy-use gate that applies to the JSON representation. The CSV path can also stream records beyond the single JSON page because it uses chunked iteration over the filtered query. This is an authorization-policy bypass in the export representation; it is not evidence of cross-tenant database access.
+
+No patient record was requested, exported, or accessed during this source review, and no actual unauthorized disclosure was observed.
+
+### 236.2 Required remediation and acceptance evidence
+
+1. Apply the same `opd.appointments.search` data-use policy to every export row before any patient-linked fields are emitted. For large exports, use a bounded, streaming-compatible authorization strategy that cannot emit a row before its decision is known; fail closed on missing, errored, or denied decisions.
+2. Keep the actor identity and data-use purpose explicit in the export path, and ensure the decision/audit evidence covers the complete exported patient set or each bounded chunk. Do not treat route permission `opd:read` as a substitute for the configured patient-data-use decision.
+3. Ensure an authorization failure aborts the stream without returning patient identifiers in headers, partial chunks, or error diagnostics. Define and test the behavior if a later chunk contains a denied patient after earlier chunks were accepted; preferably pre-authorize a stable export cohort or use a policy design that safely supports incremental release.
+4. Add tests proving that a denied patient blocks JSON and CSV consistently; that an allowed export includes only authorized patients; that a mixed allowed/denied cohort cannot leak the denied row; that large chunked exports apply the gate to every chunk; and that policy evaluation failure is fail-closed before protected fields are emitted.
+5. Review other streaming/export branches for the same early-return pattern, but record each distinct route and data-use point separately rather than assuming this finding proves a repository-wide export bypass.
+
+**Assessment:** High-priority patient privacy and export-authorization gap. The CSV response path bypasses the explicit privacy-use decision enforced by the same endpoint's JSON path and includes MRN and patient name. No actual disclosure or operational impact was observed.
+
+**Boundary:** exact-head static route/export-helper/privacy-runtime review only. No patient data, tenant database, appointment, export stream, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
