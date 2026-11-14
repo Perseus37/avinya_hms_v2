@@ -2656,3 +2656,33 @@ The host-level backup script uses a different publication model: it creates a st
 **Assessment:** High-priority backup publication and recovery-evidence integrity gap. The Python helper exposes the encrypted artifact before its checksum sidecar is safely published, so interruption can leave an incomplete backup set that consumers may count while the restore-drill checksum gate rejects it. No evidence was gathered that this interruption has occurred in a deployed environment.
 
 **Boundary:** static source review only. No backup, checksum, decryption, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 89. Manual restore endpoint does not bind the selected snapshot filename to the requested tenant
+
+**Sources reviewed:**
+- `backend/control_plane/api/routers/fleet_ops.py` (`list_tenant_backup_snapshots`, `restore_tenant_from_snapshot`)
+- `backend/scripts/restore_tenant.py` (`restore_encrypted_backup`)
+
+Static source review only. No restore was requested or executed; no backup artifact, tenant key, database or production resource was accessed.
+
+### 89.1 Listing is tenant-filtered, but restore selection is only directory-scoped
+
+The backup listing endpoint constructs its results using the requested tenant's database-name prefix (`{tenant.db_name}_*.dump.enc`). The restore endpoint does not apply that same predicate. It reduces the caller-supplied `filename` to `Path(filename).name`, joins it to the shared relative `backups` directory, and checks only whether that path exists.
+
+The endpoint then supplies the selected tenant's stored backup encryption key to `restore_encrypted_backup()` and targets that tenant's database. It does not verify that the selected filename belongs to the tenant, nor does the artifact carry a checked tenant/database identity binding in this path.
+
+Fernet authentication should reject an artifact encrypted with a different tenant key, so this review does not claim that a cross-tenant artifact can normally be decrypted or that patient data was exposed. However, tenant ownership is not enforced at the selection boundary; behavior depends on cryptographic key separation remaining correct and the failure is deferred to the asynchronous restore task. The endpoint also terminates target-database sessions before that task runs, so an invalid selection can still trigger the session-disruption path before artifact authentication fails. The pre-restore safety-snapshot helper issue in Section 75 is a separate earlier failure in the current task path and is not treated as a substitute for correct snapshot authorization.
+
+### 89.2 Required remediation and acceptance evidence
+
+1. Resolve a snapshot through a server-side tenant-scoped inventory/manifest, not an arbitrary filename in a shared directory.
+2. Enforce the expected tenant/database identity at restore time; filename prefix checking is a minimum defense, not a substitute for a signed or authenticated manifest binding tenant ID, database identity, artifact digest and backup operation ID.
+3. Verify manifest, checksum and Fernet authentication before terminating target-database sessions or scheduling destructive restore work.
+4. Reject path traversal, symlink escapes and non-regular files; resolve and validate paths against a configured backup root.
+5. Add negative tests: tenant A cannot select tenant B's snapshot; mismatched manifest identity is rejected; missing/corrupt sidecar is rejected; invalid artifact causes no session termination and no restore task registration.
+6. Record the selected artifact identity and verification outcome in a durable restore operation record before acknowledging work.
+
+**Assessment:** Medium, conditional cross-tenant restore-selection and avoidable service-disruption risk. Current Fernet key authentication is a useful later barrier, but it does not replace tenant-bound artifact selection and preflight validation.
+
+**Boundary:** static source review only. No restore, backup, decryption, database, tenant key, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
