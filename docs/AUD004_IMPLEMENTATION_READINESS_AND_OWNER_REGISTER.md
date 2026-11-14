@@ -5938,3 +5938,29 @@ This is distinct from Section 187, which concerns returns reactivating voided ba
 **Assessment:** High priority if returned medication is required to undergo expiry and quality disposition before reuse; otherwise Medium pending pharmacy policy. The source-level stock restoration and unfiltered positive-inventory projection are established. No expired return, subsequent dispense, financial misstatement, or patient harm in a deployed tenant was established.
 
 **Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 208. Invoice CSV export bypasses the privacy-policy gate applied to the same invoice search
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/router.py`, `list_invoices()`; `backend/domains/privacy/runtime.py`, `evaluate_tenant_patient_data_uses()`.
+
+### 208.1 The CSV response exits before the patient-data-use decision is evaluated
+
+The invoice list endpoint declares the privacy data-use point `billing.invoices.search`. For its ordinary paginated JSON response, it evaluates the tenant patient-data-use policy against the patient IDs in the selected invoice page and returns 403 if any decision is denied.
+
+The same endpoint has an earlier CSV-export branch. When `format=csv` is requested, it streams invoice number, patient MRN, patient name, invoice status, gross/discount/net amounts, amount paid, balance, and creation time. That branch returns the streaming response before execution reaches the `evaluate_tenant_patient_data_uses()` call used by the JSON path. The endpoint still requires `billing:read`, but the reviewed CSV branch does not enforce the additional patient-data-use decision.
+
+As a result, a caller with the route permission can request the CSV representation of invoices even where the corresponding `billing.invoices.search` privacy decision would deny the patient disclosure in the JSON representation. This is a representation-specific policy bypass, not merely a missing audit annotation: the CSV contains direct patient identifiers and financial details. The finding is limited to this invoice-list export path; it does not establish that every billing export or every privacy-gated endpoint has the same defect.
+
+### 208.2 Required remediation and acceptance evidence
+
+1. Apply the same patient-data-use decision to every invoice selected for CSV export before emitting any patient-identifiable row; do not let a streaming branch return before policy evaluation.
+2. For large exports, define a safe policy-evaluation strategy that preserves bounded memory and prevents partial disclosure if a later page contains a denied patient. Options include pre-authorizing the complete selected patient set, or producing a non-disclosing staged export only after authorization completes.
+3. Keep JSON and CSV authorization semantics aligned for the same filters, actor, and selected records.
+4. Add PostgreSQL-backed API tests where the same actor/filter combination is denied for JSON and CSV, plus allowed cases, mixed allowed/denied patient sets, and streaming failure behavior. Assert that a denied export emits no patient rows or partial file.
+5. Review other endpoints that combine privacy data-use annotations with early-return export branches for the same control-flow pattern.
+
+**Assessment:** High priority privacy-control bypass because the CSV path exposes patient MRNs/names and invoice financial information without invoking the privacy gate used by the JSON response. The source-level branch ordering is established. No unauthorized export, patient disclosure, or deployed policy denial was observed.
+
+**Boundary:** exact-head static source review only. No patient data, tenant database, or live export was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
