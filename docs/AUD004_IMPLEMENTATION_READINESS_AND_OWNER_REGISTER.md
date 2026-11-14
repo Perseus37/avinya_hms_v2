@@ -6161,3 +6161,31 @@ No partial surgery invoice or failed production request was observed. The risk f
 
 **Boundary:** exact-head static source review only. No patient data, tenant database, or live surgery/billing record was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 217. Configured laboratory delta-check alerts do not prevent result verification, and evaluation failures are silently ignored
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/diagnostics/router.py`, `submit_task_result()`; `backend/domains/clinical/services.py`, `evaluate_lab_delta_check()`.
+
+### 217.1 A DELTA_EXCEEDED result can still transition to VERIFIED
+
+When a laboratory result is entered, `submit_task_result()` calls `evaluate_lab_delta_check()` and stores the returned flag and comparison metadata. When the evaluator returns `DELTA_EXCEEDED`, the handler appends the detail to result notes, including the evaluator's explicit statement that pathologist review is required before release.
+
+The same endpoint's subsequent `VERIFIED` transition checks the verifier permission, whether a result exists, and separation of duties. It does not inspect `task.delta_check_flag`, require a documented pathologist review/override, or otherwise block verification while the flag is `DELTA_EXCEEDED`. Thus the source permits a result explicitly flagged for pathologist review to be verified through the ordinary workflow without satisfying that review requirement. The delta flag is persisted as metadata, but it is not enforced as a release control.
+
+There is a second fail-open path in the same evaluation step: the call is wrapped in a broad `except Exception: pass`. If evaluation fails because of a query, configuration, or unexpected parsing error, result entry still proceeds without a failure state, alert, or audit explanation. This makes an unavailable check indistinguishable from a result for which no blocking delta concern was found.
+
+This finding is distinct from Section 155, which concerns selecting the wrong analyte from a multi-OBX HL7 result. Section 155 addresses evaluation input correctness; this section addresses enforcement of the resulting safety decision and failure handling in the manual laboratory result workflow.
+
+No actual missed clinical event, inappropriate result release, or patient harm was observed. The bypass is established by the result-entry and verification branches and the evaluator's own review-required alert text.
+
+### 217.2 Required remediation and acceptance evidence
+
+1. Define the operational meaning of each configured delta-check severity and which values require a hard hold, pathologist review, repeat specimen, or documented override.
+2. Prevent transition to `VERIFIED` while a blocking delta flag is unresolved. Require an authorized pathologist review/override with attributable user, timestamp, reason, and preserved original flag/result.
+3. Replace the broad silent exception with an explicit evaluation outcome such as `CHECK_FAILED`; apply a policy-approved fail-closed or controlled exception path and alert the responsible laboratory role. Do not silently treat evaluator failure as normal.
+4. Keep evaluation, result update, and any review/hold state consistent under a transaction boundary; prevent concurrent verification from bypassing a newly raised hold.
+5. Add PostgreSQL-backed API/service tests for DELTA_EXCEEDED verification rejection, authorized override, normal/no-prior-value cases, evaluator exceptions, malformed values, and concurrent result-entry/verification. Assert that no blocking result reaches VERIFIED without the required review evidence.
+
+**Assessment:** High-priority laboratory clinical-safety control gap. The ordinary verification path does not enforce the evaluator's stated review requirement, and evaluation exceptions are swallowed. No actual inappropriate release or patient harm was observed.
+
+**Boundary:** exact-head static source review only. No patient data, tenant database, laboratory result, or live clinical workflow was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
