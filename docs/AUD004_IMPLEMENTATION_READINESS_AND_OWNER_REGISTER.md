@@ -4272,3 +4272,28 @@ This is distinct from the general task-matching behavior and the status lifecycl
 **Assessment:** High-priority clinical result-assignment integrity gap. The mapped-code branch can silently route a result to the oldest eligible repeat task instead of rejecting ambiguity. No live misassignment or patient harm is established.
 
 **Boundary:** exact-head static source review only. No HL7 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 148. HL7 ingestion does not validate the message type or declared HL7 version before applying ORU processing
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/service.py` (blob `68fcd948f6460b2c05f9343bd563dee769704a3d`), `parse_hl7_message()` and `process_hl7_oru_r01_in_session()`; `backend/domains/integrations/router.py` (blob `ceba912675b3525197055a0ffea944fe604d179b`), `ingest_hl7_oru_r01_message()`.
+
+### 148.1 The route name is not backed by message-type/profile validation
+
+The parser splits segments on line endings and fields on the literal pipe character. The processing function checks that an MSH segment exists and has enough fields to read MSH-10, then extracts the control ID. It does not inspect or validate MSH-9 (message type/trigger event) or MSH-12 (HL7 version), nor does it validate the declared encoding characters and field separator against the message framing.
+
+The function proceeds to locate PID, OBR and OBX segments and can update diagnostic tasks when those segments are present. As a result, the endpoint's `/hl7/oru-r01` route and docstring do not themselves ensure that the submitted message is actually an ORU^R01 message using a supported version/profile. A structurally different or unsupported HL7 message containing compatible-looking segments can enter the same result-processing path.
+
+This finding is distinct from Section 145's OBX-11 lifecycle handling and Section 146's size limits. It concerns the message-level protocol contract and type/version gate before clinical data mutation. The reviewed code establishes the missing checks; it does not establish that a non-ORU message has been accepted in production.
+
+### 148.2 Required remediation and acceptance evidence
+
+1. Validate MSH-9 against the explicitly supported message type and trigger event (including the negotiated structure, such as ORU^R01); reject all other types before patient lookup or task mutation.
+2. Validate MSH-12 against a documented supported HL7 version/profile and reject unsupported versions rather than parsing them using implicit assumptions.
+3. Parse the MSH field separator and encoding characters according to HL7 framing rules, or explicitly constrain and validate the accepted delimiter profile.
+4. Validate required segment cardinality/order and the profile-specific PID/OBR/OBX fields before applying results.
+5. Add synthetic tests for valid ORU^R01, wrong message type, wrong trigger event, unsupported version, malformed MSH, alternate delimiters, and messages containing PID/OBR/OBX but declaring another message type. Assert rejected inputs produce no task/order mutation or success audit.
+
+**Assessment:** High-priority protocol-validation and clinical data integrity gap. The ORU processing path is selected by URL, not by verified HL7 message type/version. No production acceptance or clinical impact is established.
+
+**Boundary:** exact-head static source review only. No HL7 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
