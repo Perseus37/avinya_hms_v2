@@ -3402,3 +3402,26 @@ The separate MLLP listener follows a different path: it extracts the branch code
 **Assessment:** High-priority clinical-data integrity and integration-authentication gap. Static source establishes the HTTP endpoint's accepted bearer-token alternative and the downstream result/task mutation path. No HL7 message was submitted, patient record inspected, result changed, equipment secret accessed, or production integration exercised.
 
 **Boundary:** static source review only. This finding concerns the HTTP ORU endpoint; it does not claim the MLLP listener's shared-secret check is bypassed. No runtime, database, credential, patient-data, or production changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 114. ABDM health-information export does not enforce the consented HIU or information-type scope
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/abdm/router.py` (`fetch_health_records_under_consent`); `backend/domains/abdm/schemas.py` (`HealthDataTransferRequest`); `backend/domains/abdm/services.py` (`generate_abdm_fhir_health_data`); `backend/domains/abdm/models.py` (`ABDMConsentArtefact`).
+
+### 114.1 Caller-selected export types bypass the stored consent scope
+
+The M3 route accepts an ordinary tenant user with any of `privacy:read`, `clinical:read`, or `integrations:read`. It passes the caller-supplied `consent_id` and `hi_types` directly to `generate_abdm_fhir_health_data`. The service checks that the artefact exists, has status `GRANTED`, and has not expired, then uses the request's `hi_types` to decide whether to include Prescription and DiagnosticReport data. It does not compare the requested types with `artefact.hi_types`, and it does not authenticate the requester as the artefact's recorded `hiu_id` or otherwise bind the request to an authorized HIU identity.
+
+Consequently, an authenticated tenant user who can call the M3 route can use a known granted consent ID and choose the exported resource categories independently of the consent's stored type scope. The response is returned directly to that user as a FHIR bundle; the route does not establish that the recorded HIU is the recipient. The Patient resource is also inserted unconditionally, irrespective of the requested `hi_types`. The source therefore establishes a consent-scope and recipient-binding failure; it does not establish that a particular external HIU received data.
+
+### 114.2 Required remediation and acceptance evidence
+
+1. Authenticate the requesting HIU/gateway using the configured ABDM trust mechanism and bind the authenticated requester to `artefact.hiu_id`; human tenant permissions must not stand in for recipient identity.
+2. Compute the export set as a strict subset of the consent artefact's verified `hi_types`; reject any requested category outside the grant. Define and test the permitted baseline Patient/demographic projection explicitly.
+3. Verify consent artefact integrity, HIP/HIU identifiers, patient binding, status, expiry, date range, and revocation state at the time of each transfer.
+4. Add synthetic negative tests for wrong HIU, ordinary-user access without a HIU identity, requested type outside grant, empty/narrow grants, revoked/expired consent, and Patient-resource projection; add positive tests for a correctly authenticated HIU requesting only granted categories.
+5. Record an auditable transfer receipt with verified recipient identity, consent version/digest, exact resource categories and date range, and response delivery outcome.
+
+**Assessment:** High-priority health-information privacy and consent-enforcement gap. Static source establishes that M3 export selection is caller-controlled and does not enforce the stored HIU identity or stored information-type list. No FHIR export request was executed, no patient record was read, and no data was transferred to an external recipient.
+
+**Boundary:** static source review only. No ABDM gateway, consent manager, patient data, tenant database, external recipient, or production credential was accessed. No runtime or database changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
