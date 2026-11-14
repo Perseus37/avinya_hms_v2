@@ -3066,3 +3066,57 @@ This finding is about the failure boundary in the explicit revocation workflow. 
 **Assessment:** Medium-priority federation credential lifecycle and revocation consistency gap. Static source establishes the order of independent commits and that inbound authentication relies on the control-plane active node. The continued-authentication outcome is conditional on a control-plane failure after the tenant commit; no production occurrence or unauthorized access is established.
 
 **Boundary:** static source review only. No key was created, rotated, revoked or tested; no federation request, database, patient data, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 102. Federation key rotation can report success while tenant-local credential synchronization is absent or failed
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/control_plane/api/routers/fleet_ops.py` (`rotate_tenant_cryptographic_keys`); `backend/domains/federation/models.py` (`FederatedClient`).
+
+### 102.1 Control-plane rotation is committed independently of the tenant-local mirror
+
+When `rotate_federation_key` is enabled, the route generates a new raw key and hash, updates or creates the control-plane `FederatedNode`, and places the raw key in the response object. For CLOUD tenants it then attempts to load the tenant database and update the `FederatedClient` row whose branch code matches the tenant's own branch code.
+
+That tenant-local synchronization is not a required success condition. If no matching `FederatedClient` row exists, the route does nothing and continues. If engine/session/query/update/commit raises, the broad exception handler logs a warning and continues. The route then writes the rotation audit event, commits the control-plane transaction and returns the new raw federation key. Thus the endpoint can return its normal success response with the control-plane hash changed while the tenant-local credential row is absent or still contains the previous key hash/prefix.
+
+For non-CLOUD deployment modes, the reviewed code skips tenant-local synchronization altogether while still rotating and returning the control-plane key. This is an explicit code-path difference; the intended credential distribution mechanism for those deployment modes is not established by this route.
+
+### 102.2 Impact and limits
+
+The source proves a split credential-state outcome is possible and that the API does not expose a partial/failed synchronization status. It does not establish that the tenant-local row is used by the inbound authenticator: `get_federated_node` authenticates against the control-plane node. Nor does this review establish an actual failed synchronization or a patient-data access consequence. The concern is credential lifecycle consistency and misleading success reporting across the two database records.
+
+### 102.3 Required remediation and acceptance evidence
+
+1. Make credential rotation a durable operation with explicit pending, centrally-rotated, tenant-synchronized and completed states. Do not return an undifferentiated success when a required mirror update failed or was skipped.
+2. Define the authoritative owner of the federation credential and the role of `FederatedClient`. If it is only a legacy/admin mirror, remove it from rotation semantics or report that explicitly; if it is required, make its synchronization mandatory and recoverable.
+3. For deployment modes where the control plane cannot reach the tenant database, provide a tenant-initiated authenticated delivery/acknowledgment flow rather than silently skipping synchronization.
+4. Add tests for missing local row, tenant database unavailable, commit failure, process interruption, non-CLOUD deployment, retry and reconciliation. Assert that response/audit state accurately reflects the outcome.
+
+**Assessment:** Medium-priority credential lifecycle consistency and operational reporting gap. Static source establishes that the control-plane commit and success response do not depend on successful tenant-local synchronization. No production failure or unauthorized access is established.
+
+**Boundary:** static source review only. No key was generated, rotated or tested; no federation request, database, patient data, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 103. Federation key rotation reactivates a previously revoked node whenever its tenant remains active
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/federation/router.py` (`revoke_federated_branch_key`); `backend/control_plane/api/routers/fleet_ops.py` (`rotate_tenant_cryptographic_keys`); `backend/core/dependencies.py` (`get_federated_node`).
+
+### 103.1 Revocation state and tenant suspension state are conflated during rotation
+
+The tenant-scoped revoke route sets the matching control-plane `FederatedNode.is_active = False` but does not change `TenantRegistry.is_active`. This permits a revoked federation credential/node to remain associated with an otherwise active tenant.
+
+The control-plane key-rotation route, when it finds an existing node, replaces its key prefix/hash and unconditionally sets `fed_node.is_active = tenant.is_active`. Therefore, for a tenant whose registry remains active after a federation-key revocation, a later rotation request changes the revoked node back to active as part of rotating its key. The new key is returned to the operator. Since `get_federated_node` accepts active nodes with a matching hash, the newly rotated credential becomes valid for inbound federation authentication.
+
+### 103.2 Impact and limits
+
+This is a direct state-transition consequence of the reviewed route sequence, not a speculative database failure. A key revocation does not persist as an independent lifecycle state: rotation derives node activation from tenant activation and can silently undo the revocation. This may be intended as an operator re-enrollment action, but the endpoint does not require an explicit reactivation flag or distinguish a revoked federation relationship from a tenant suspension. No actual rotation after revocation was performed, and no production reactivation or patient disclosure is claimed.
+
+### 103.3 Required remediation and acceptance evidence
+
+1. Separate tenant operational status from federation credential/relationship status. Key rotation must preserve a revoked/disabled federation state unless an explicit, separately authorized reactivation operation is requested.
+2. Require an explicit reason and permission for federation reactivation; audit rotation and reactivation as distinct actions.
+3. Add state-transition tests for active tenant + active node, active tenant + revoked node, suspended tenant + active node, and suspended tenant + revoked node. Verify that rotation alone never changes the relationship state unexpectedly.
+4. Assert that a revoked node remains rejected by `get_federated_node` after ordinary key rotation; separately test the approved explicit reactivation path if the product requires one.
+
+**Assessment:** High-priority federation revocation-state integrity gap. Static source establishes that ordinary key rotation reactivates a revoked node when the tenant itself remains active. Practical impact requires an authorized operator to invoke rotation after revocation; no production event or patient disclosure is established.
+
+**Boundary:** static source review only. No key was generated, rotated or tested; no federation request, database, patient data, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
