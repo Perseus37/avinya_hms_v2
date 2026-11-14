@@ -4322,3 +4322,29 @@ This is distinct from Section 147's ambiguous repeat-task mapping: Section 149 c
 **Assessment:** High-priority integration integrity and replay-control gap. MSH-10 is currently an audit/ACK field, not a replay defense. No replay event or patient impact is established.
 
 **Boundary:** exact-head static source review only. No HL7 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 150. Duplicate active analyzer-code mappings are accepted and resolved by unspecified row order
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/models.py`, `EquipmentTestMapping`; `backend/domains/integrations/router.py`, `create_equipment_test_mapping()`; `backend/domains/integrations/service.py`, mapping dictionary construction in `process_hl7_oru_r01_in_session()`.
+
+### 150.1 Mapping creation permits duplicate active codes for one analyzer
+
+The `EquipmentTestMapping` model has separate indexes on `equipment_id`, `analyzer_test_code`, and `service_id`, but no composite uniqueness constraint on equipment plus normalized analyzer code. The mapping-create endpoint checks that the equipment exists, then inserts the supplied mapping; it does not check for an existing active mapping with the same equipment and analyzer code, nor does it normalize and enforce case-insensitive uniqueness.
+
+During ingestion, active mappings for the supplied equipment are loaded without an explicit ordering. They are copied into a dictionary keyed by `analyzer_test_code.upper()`. If duplicate rows normalize to the same key, each assignment overwrites the previous service ID. The selected mapping therefore depends on the row order returned by the database, which the query does not define.
+
+The mapped service ID is then used to select the first eligible patient task for that service. A duplicate mapping can consequently direct an analyzer result to a different service/task than the operator intended, without an ambiguity rejection. This is distinct from Section 147: that section covers multiple pending tasks for one mapped service; this section covers multiple active mapping rows for the same equipment/code resolving to different services.
+
+### 150.2 Required remediation and acceptance evidence
+
+1. Normalize analyzer codes consistently (including case and whitespace) at write and read boundaries.
+2. Reject a second active mapping for the same equipment and normalized analyzer code; enforce the invariant in PostgreSQL with a suitable database constraint or unique index, including the intended active/inactive semantics.
+3. Before enabling the constraint, detect and resolve existing duplicate mappings through an auditable administrative workflow; do not silently choose one.
+4. Make ingestion fail closed if duplicate active mappings are encountered, even if historical or externally introduced data bypasses the write path.
+5. Add synthetic tests for duplicate case variants, concurrent mapping creation, inactive historical rows, conflicting service IDs, and deterministic rejection before any clinical task mutation.
+
+**Assessment:** High-priority analyzer configuration and clinical result-routing integrity gap. The source establishes that conflicting duplicate mappings can be accepted and that ingestion overwrites collisions without deterministic ordering; it does not establish that a production analyzer has such duplicate configuration or that a result has been misrouted.
+
+**Boundary:** exact-head static source review only. No mapping endpoint was called, no tenant database or patient data was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
