@@ -5777,3 +5777,33 @@ No unverified opening balance, diversion, or patient impact was established in a
 **Assessment:** High-priority controlled-substance accountability and diversion-detection control gap. The API can establish a positive vault balance without the dual-witness receipt evidence and corresponding movement record. No actual diversion, unexplained physical stock, or patient harm was established.
 
 **Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 202. Controlled-substance vault dispensing permits a balance reduction without secondary witness authentication
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `dispense_controlled_substance_from_vault()`; `backend/domains/pharmacy/schemas.py`, `ControlledSubstanceDispenseRequest`; `backend/domains/pharmacy/services.py`, `process_controlled_substance_movement()` and `_verify_witness_credentials()`; `backend/domains/pharmacy/models.py`, `ControlledSubstanceMovementLog`.
+
+### 202.1 Dispense witness fields are optional and the service verifies them only when supplied
+
+The controlled-substance dispense request declares both `witness_user_id` and `witness_password` as optional fields. The route forwards those values to `process_controlled_substance_movement()`.
+
+In the `DISPENSE` branch, the service checks the available vault balance and validates the supplied destination references. It calls `_verify_witness_credentials()` only inside `if witness_user_id:`. When the caller omits the witness ID, the branch proceeds without credential verification, leaves `witness_verified=False`, subtracts the requested quantity from the vault balance, and creates a `DISPENSE` movement record. The route's caller needs only `pharmacy:write` or `nursing:write`.
+
+This differs from the same service's `RECEIPT`, `RETURN_TO_VAULT`, and `WASTAGE_DESTROYED` branches, which explicitly require a witness ID and password before changing the balance. The movement ledger records that the dispense was unwitnessed, but does not prevent it.
+
+Accordingly, any caller admitted by the dispense endpoint can reduce controlled-substance vault stock without independent witness authentication by omitting the optional witness fields. Whether every controlled-substance dispense must be dual-witnessed should be set by the applicable statutory and institutional schedule-specific policy; the implementation currently has no enforceable policy distinction or explicit exception workflow in this path.
+
+This is distinct from Section 201, which concerns positive opening balances created without a witnessed receipt, and Section 178, which concerns mismatched vault/medication/encounter/prescription relationships. No unwitnessed dispense, diversion, or patient impact in a deployed tenant was established.
+
+### 202.2 Required remediation and acceptance evidence
+
+1. Define dispense witness requirements by controlled-substance schedule, transaction type, destination (patient/ward/floor stock), and applicable jurisdictional policy.
+2. Where dual witnessing is required, make witness identity and credential verification mandatory in both the request contract and domain service; reject missing, inactive, unqualified, self-witnessing, or invalid-credential cases before changing the balance.
+3. If a governed exception is permitted, require a distinct permission, controlled reason code, supporting evidence, and attributable approval; do not make omission of witness fields an implicit bypass.
+4. Preserve witness identity, verification result, applicable policy/exception, and transaction provenance in the immutable movement record.
+5. Add PostgreSQL-backed tests for each policy branch, including missing witness, invalid password, inactive witness, self-witness attempt, authorized exception, and proof that rejected requests leave both balance and movement ledger unchanged.
+
+**Assessment:** High priority if the applicable controlled-drug policy requires dual-witness dispensing; otherwise Medium pending schedule-specific legal and clinical governance. The source-level bypass is established: a dispense can commit with `witness_verified=False` and no witness identity.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
