@@ -3235,3 +3235,31 @@ This finding is separate from Section 105's mutation routes and Section 106's au
 **Assessment:** High-priority control-plane read-authorization and metadata-minimization gap. Static source establishes that these routes omit a named-operator role dependency and return the listed aggregate/configuration/backup metadata after shared-key validation. Exploitability by a lower-privilege named operator remains conditional on possession of the shared vendor setup key; no unauthorized read, patient-record disclosure or backup-content access is claimed.
 
 **Boundary:** static source review only. No endpoint was called; no operator account, vendor key, tenant database, backup artifact, patient data, migration or production resource was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+## 108. Stripe subscription webhook references billing fields absent from the control-plane tenant model and migrations
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/control_plane/api/routers/saas_billing.py` (`stripe_subscription_webhook`); `backend/control_plane/models.py` (`TenantRegistry`); `backend/control_plane/alembic/versions/95769c3ab4b3_baseline.py` and all subsequent control-plane migration revisions; `tests/test_21_control_plane_migrations.py`.
+
+### 108.1 Webhook lookup uses an unmapped customer identifier
+
+The Stripe webhook verifies the configured Stripe signature and then handles `invoice.payment_succeeded`, `invoice.payment_failed` and `customer.subscription.deleted`. For each recognized event it evaluates a query using `TenantRegistry.stripe_customer_id`.
+
+The reviewed `TenantRegistry` mapped class does not declare `stripe_customer_id`. The control-plane baseline migration creates `tenant_registry` without that column, and the subsequent control-plane migration revisions reviewed add no such column. Consequently, once Stripe is configured and a correctly signed recognized event reaches this query, Python attribute resolution raises `AttributeError` before SQL executes. The webhook does not catch that error in its signature-validation block, so the recognized event is not successfully applied and the handler returns a server error rather than the success response.
+
+### 108.2 Renewal expiry is assigned to a non-persistent attribute
+
+On the payment-succeeded path, the route also assigns `tenant.license_valid_till` from the first invoice line's period end. The reviewed `TenantRegistry` model and control-plane migration history likewise contain no mapped `license_valid_till` field. Even if the customer lookup were repaired independently, assigning an ordinary Python attribute to the ORM instance does not persist that value as a database column. The route therefore has no durable license-expiry record through this field.
+
+The repository test inventory reviewed includes control-plane migration characterization and tenant billing tests, but no Stripe webhook lifecycle test that would catch this model/migration mismatch. No Stripe event was sent and no production billing state was inspected.
+
+### 108.3 Required remediation and acceptance evidence
+
+1. Define the authoritative Stripe customer-to-tenant mapping and add a mapped, uniquely constrained customer identifier with an explicit control-plane migration and backfill/registration lifecycle.
+2. Decide whether license expiry is a first-class mapped column or a derived value from a durable subscription/invoice ledger; do not assign it as an unmapped transient attribute.
+3. Add signed synthetic webhook tests for payment success, payment failure, subscription deletion, unknown customer, malformed/missing invoice period data and repeated delivery. Assert both HTTP outcome and persisted tenant billing/entitlement state.
+4. Add a migration-to-model parity assertion for the new billing fields and verify uniqueness and customer-to-tenant ownership constraints.
+5. Make webhook event processing idempotent and auditable before enabling automatic tenant activation/suspension; preserve event identity and processing outcome without storing unnecessary payment payload data.
+
+**Assessment:** Medium-priority SaaS billing lifecycle correctness gap. Static source and model/migration comparison establish that the recognized webhook paths reference a missing mapped customer field and that the renewal expiry assignment is not persisted. The failure is conditional on Stripe being configured and a recognized signed event being delivered. No production webhook failure, tenant suspension, renewal loss or billing-state corruption is claimed.
+
+**Boundary:** static source and migration review only. No Stripe credentials, webhook, customer, payment, tenant database, patient data, migration execution or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
