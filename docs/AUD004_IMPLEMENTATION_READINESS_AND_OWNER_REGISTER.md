@@ -5164,3 +5164,27 @@ No actual blocked dispense or patient impact was established.
 **Assessment:** Medium-priority pharmacy workflow and exception-governance defect. The source proves the documented override cannot be supplied through the declared API contract; it does not prove an actual dispense was delayed or a patient was harmed.
 
 **Boundary:** exact-head static source/schema/router review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 181. Inventory batch update contract accepts expiry and price changes but silently persists only the batch number
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `update_inventory_batch()`; `backend/domains/pharmacy/schemas.py`, `InventoryBatchUpdate`.
+
+### 181.1 Two declared update fields are ignored by the endpoint
+
+The `InventoryBatchUpdate` Pydantic request model declares three optional fields: `batch_number`, `expiry_date`, and `unit_price_paise`. The `PUT /inventory/batches/{batch_id}` handler loads the batch and assigns only `payload.batch_number`. It never reads or validates/applies the supplied expiry date or unit price. The request model uses the ordinary `BaseModel` configuration and does not forbid extra/unused fields; both declared fields therefore pass request parsing but have no effect on the stored row. The endpoint then commits and returns the unchanged expiry and price as though the update succeeded.
+
+A client can submit a valid request to correct a batch expiry date or acquisition/unit price, receive a successful response, and still retain the old persisted values. This can leave FEFO selection, expiry warnings, stock valuation, and return-credit calculations operating on stale batch metadata. The route also does not define whether those fields should be mutable after stock movement; that policy needs to be explicit rather than silently implied by the request schema.
+
+No actual stale batch metadata or incorrect valuation was established.
+
+### 181.2 Required remediation and acceptance evidence
+
+1. Decide and document whether expiry date and unit price are mutable after receipt, and under what approval/evidence rules; if they are not mutable, remove them from this update schema and expose a deliberate correction workflow.
+2. If updates are allowed, apply every declared field explicitly, validate timezone/expiry and non-negative price rules, and require a reason/actor audit record for changes that affect lot identity, expiry, or valuation.
+3. Reject unsupported fields and avoid returning success for a request whose supplied fields were ignored; consider PATCH semantics for partial updates.
+4. Add API tests for batch-number-only, expiry-only, price-only, combined updates, invalid values, and prohibited post-movement changes; assert both response and persisted database values.
+
+**Assessment:** Medium-priority inventory data-integrity and operational contract defect. The source proves two declared request fields are silently ignored; it does not prove an actual batch record, expiry decision, stock valuation, or patient outcome was affected.
+
+**Boundary:** exact-head static source/schema review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
