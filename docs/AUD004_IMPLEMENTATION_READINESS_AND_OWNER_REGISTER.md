@@ -6275,3 +6275,28 @@ No affected order or premature completion was observed in a live tenant. The def
 
 **Boundary:** exact-head static source/model review and control-flow analysis only. No patient data, tenant database, diagnostic order, or result was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 221. HL7 result ingestion can modify eligible-looking tasks after their parent diagnostic order is cancelled
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/service.py`, `process_hl7_oru_r01_in_session()`; `backend/domains/diagnostics/router.py`, `cancel_diagnostic_order()`; `backend/domains/diagnostics/models.py`, `DiagnosticOrder` and `DiagnosticTask`.
+
+### 221.1 Parent order lifecycle is not part of HL7 task eligibility
+
+HL7 ingestion loads patient tasks and builds `tasks_by_id` without filtering out tasks whose parent `DiagnosticOrder.status` is CANCELLED. It can explicitly select a task by an identifier in OBR-2/OBR-3 or OBX-3. The later mutation guard rejects only task statuses VERIFIED and CANCELLED; it does not check the parent order's status and does not restrict explicit-ID matches to the same pending task states used by service-code matching.
+
+The dedicated diagnostic cancellation endpoint sets the order to CANCELLED, but changes only tasks in PENDING, SAMPLE_COLLECTED, or IN_PROGRESS to CANCELLED. Tasks already in RESULT_ENTERED or SAMPLE_REJECTED remain in those states. Consequently, a cancelled order can retain a RESULT_ENTERED or SAMPLE_REJECTED task that passes the HL7 mutation guard. A subsequent analyzer message that identifies that task by its explicit task ID can replace its result or advance it back to RESULT_ENTERED, despite the parent order remaining cancelled.
+
+This is distinct from Section 219 (the general API can bypass cancellation side effects) and Section 220 (order completion cardinality). Even when the dedicated cancellation endpoint is used, the HL7 integration path independently fails to enforce the parent order's terminal state.
+
+No post-cancellation analyzer message or changed clinical result was observed. The exposure is established by the cancellation task-state set, the unfiltered task-ID index, and the HL7 mutation guard.
+
+### 221.2 Required remediation and acceptance evidence
+
+1. Reject HL7 updates whenever the task's parent order is CANCELLED, regardless of task status or identifier matching method.
+2. Define one explicit task eligibility policy for analyzer updates; explicit task IDs must not bypass it. Treat terminal/rejected states according to a governed amendment or recollection workflow.
+3. Ensure cancellation leaves no task state that can be silently resumed by an external analyzer message; any permitted post-cancellation correction must use a separately authorized, attributable amendment workflow.
+4. Add PostgreSQL-backed integration tests for cancelled orders containing RESULT_ENTERED and SAMPLE_REJECTED tasks, with explicit OBR-2/OBR-3 and OBX-3 task identifiers. Assert no task/result mutation and a negative HL7 acknowledgement; also test active-order updates and the approved amended-result workflow.
+
+**Assessment:** High-priority clinical result integrity defect. Analyzer messages can alter task results after the parent order has been cancelled. No actual post-cancellation modification or patient harm was observed.
+
+**Boundary:** exact-head static source/model and control-flow review only. No patient data, tenant database, diagnostic order, analyzer message, or result was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
