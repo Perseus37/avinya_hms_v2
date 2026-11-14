@@ -4222,3 +4222,26 @@ This is distinct from Sections 113, 143 and 144: it concerns clinical result lif
 **Assessment:** High-priority clinical data integrity gap. Deletion and wrong-result statuses can be interpreted as ordinary reportable results, creating a risk that a withdrawn or explicitly wrong observation remains represented as current. No live clinical impact is established.
 
 **Boundary:** exact-head static source review only. No HL7 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 146. HL7 ingestion request accepts an unbounded raw-message string at the application contract
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/schemas.py`, `HL7MessageIngestRequest`; `backend/domains/integrations/router.py`, `ingest_hl7_oru_r01_message()`; `backend/domains/integrations/service.py`, parsing and integration-log persistence.
+
+### 146.1 No application-level message-size bound is declared
+
+The request model declares `raw_message: str` without a Pydantic `max_length` constraint or a dedicated bounded type. The ingestion route accepts that value and passes it to parsing without an explicit byte/character limit. The parser creates normalized line strings and split-field lists, then the successful path persists the redacted full message in `HL7IntegrationLog.raw_payload`. Thus a very large request can consume memory during request parsing and segmentation and then consume tenant database storage when accepted.
+
+No maximum segment count, OBX count, field length, or total message size is enforced in the reviewed application path. This is a source-level absence of an application contract limit; it does **not** establish that the reverse proxy, API gateway, hosting platform, or database has no independent limits. No resource exhaustion or oversized message was observed.
+
+### 146.2 Required remediation and acceptance evidence
+
+1. Define a documented maximum HL7 message size in bytes, aligned with the supported analyzer/profile, and reject oversized requests before parsing or persistence.
+2. Add bounded limits for segment count, OBX count, field length and total parsed observations; validate encoding and reject malformed framing/segments.
+3. Enforce compatible limits at the ingress proxy/API gateway and application layer so upstream buffering cannot defeat the application guard.
+4. Avoid retaining arbitrarily large raw payloads; apply retention, encryption and access controls to any exceptional diagnostic archive.
+5. Add synthetic boundary tests for maximum accepted size, one byte over limit, excessive segments/OBX rows, long fields, malformed encoding and rejection without database mutation.
+
+**Assessment:** Availability and storage-exhaustion exposure in the integration input contract. Severity depends on external ingress limits, sender trust and rate controls, which were not established in this review.
+
+**Boundary:** exact-head static source review only. No HL7 endpoint was called, no oversized request was sent, no tenant database or patient data was accessed, and no runtime or migration changes were made. External proxy/gateway limits were not verified. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
