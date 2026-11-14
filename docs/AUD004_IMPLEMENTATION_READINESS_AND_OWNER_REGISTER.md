@@ -4378,3 +4378,29 @@ This finding is distinct from Sections 131–136, which concern privacy-retentio
 **Assessment:** High-priority clinical workflow reliability gap. The source establishes pre-commit publication and swallowed delivery failures; it does not establish a real lost alert, false alert, or patient impact in production.
 
 **Boundary:** exact-head static source review only. No Redis channel was published to, no HL7 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 152. Concurrent HL7 messages can select and overwrite the same pending diagnostic task without row-level serialization
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/service.py`, `process_hl7_oru_r01_in_session()`, patient task selection, observation matching, eligibility guard, and result update.
+
+### 152.1 Task matching and mutation are not protected against concurrent ingestion
+
+The processor loads the patient's diagnostic tasks using a SELECT ordered by creation time and ID. The query does not use `FOR UPDATE` or another explicit row-locking strategy. It then builds the in-memory task and service-code maps, selects an eligible task whose status is pending/sample-collected/in-progress, and later writes the result and changes task status to `RESULT_ENTERED`.
+
+The eligibility check is performed against the task objects loaded earlier in the transaction. There is no conditional update requiring the task still to be eligible at write time, no optimistic version column check, and no serialization fence around the selection-and-claim operation.
+
+Two concurrent analyzer messages can therefore both read the same task as pending, both match it, and both proceed to write different observations. Depending on transaction timing and isolation, one commit can overwrite the other's result or one transaction can fail with a database conflict; the reviewed code does not detect and reconcile the competing clinical observations as a controlled conflict. This can occur even when the messages have distinct control IDs, so it is not merely the duplicate-message replay issue in Section 149.
+
+### 152.2 Required remediation and acceptance evidence
+
+1. Lock candidate diagnostic task rows during matching (with a documented lock order) or use an atomic conditional claim/update that succeeds only while the task remains eligible.
+2. Revalidate task status and order/patient linkage at mutation time; do not rely solely on stale ORM objects loaded before matching.
+3. Define the intended concurrency policy for multiple analytes/messages targeting one task: serialize, aggregate under an explicit message/order identity, or reject conflicting concurrent submissions.
+4. Persist a durable result-version/source-message association so conflicting submissions can be audited and reconciled rather than silently overwriting a current result.
+5. Add PostgreSQL concurrency tests with two independent sessions and distinct messages targeting the same task. Assert deterministic serialization/rejection and preservation of both audit provenance and the authoritative result.
+
+**Assessment:** High-priority clinical result concurrency and integrity gap. The source establishes that task selection is not explicitly locked or conditionally claimed; it does not establish a concurrent collision or overwritten production result.
+
+**Boundary:** exact-head static source review only. No HL7 endpoint was called, no concurrent database transaction was executed, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
