@@ -3939,3 +3939,28 @@ This is material because `PrivacyPolicyRevision.is_active` is an explicit persis
 **Assessment:** High-priority retention authorization/lifecycle consistency gap for scheduled and queued execution. Static source establishes that scheduler, worker and service rely on APPROVED status but omit the persisted active-state check. It supports execution of an approved-but-inactive revision, including one deactivated after enqueue; it does not establish an actual scheduled run or data mutation.
 
 **Boundary:** exact-head static source review only. No scheduler, queue worker, policy, tenant database or patient record was accessed or executed. No retention job or destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 135. Scheduled retention sweep reports success after swallowing tenant-level failures
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/core/queue.py` (blob `aad0c663e52e7a73d7261658f5ecc1889b7e36b7`, `handle_scheduled_retention_sweep()`).
+
+### 135.1 Per-tenant failures are logged but omitted from the sweep result
+
+The scheduled retention sweep iterates active `TenantRegistry` entries. For each tenant, it opens the tenant database session, locates an approved retention revision, validates its policy document, and enqueues the retention execution. The per-tenant processing block catches every `Exception`, emits a warning log, and continues to the next tenant.
+
+After the loop, the handler unconditionally returns `{"status": "SUCCESS", "enqueued_tenants": executed_tenants, "dry_run": safe_dry_run}`. It does not collect failed tenant identifiers, failure reasons, or a failure count, and it does not return a partial-success/failure status. If a tenant's policy lookup, validation, session work, or enqueue operation raises inside the guarded block, that tenant is skipped while the overall sweep still reports SUCCESS. A caller relying on the handler's status cannot distinguish a complete sweep from one that skipped tenants.
+
+The `executed_tenants` name also represents tenants whose enqueue call returned, not proof that their retention worker subsequently completed. This finding is limited to the scheduler's aggregate reporting contract; it does not assert that any tenant failed or that any retention execution was lost in practice. Queue fallback behavior is tracked separately and is not relied upon for this finding.
+
+### 135.2 Required remediation and acceptance evidence
+
+1. Return explicit per-tenant outcomes, such as `ENQUEUED`, `NO_APPROVED_POLICY`, and `FAILED`, with a bounded/sanitized error code and correlation ID; do not expose sensitive exception details.
+2. Return an aggregate status that distinguishes `SUCCESS`, `PARTIAL_FAILURE`, and `FAILURE`, together with attempted, enqueued, skipped and failed counts.
+3. Persist a durable sweep-run record and per-tenant outcome so monitoring can detect incomplete sweeps even if the scheduler process exits after returning.
+4. Add synthetic tests with multiple tenants where one tenant's policy lookup, document validation, and enqueue each fail in turn; assert remaining tenants are still processed and the aggregate result reports the failure.
+5. Alert on partial or total failure and define retry/reconciliation behavior for failed tenants without creating duplicate logical executions.
+
+**Assessment:** High-priority scheduled-retention observability and operational reliability gap. Static source establishes that tenant-level exceptions are caught and suppressed from the returned aggregate status. It does not establish an actual tenant failure, missed execution, or destructive data operation.
+
+**Boundary:** exact-head static source review only. No scheduler, queue worker, policy, tenant database or patient record was accessed or executed. No retention job or destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
