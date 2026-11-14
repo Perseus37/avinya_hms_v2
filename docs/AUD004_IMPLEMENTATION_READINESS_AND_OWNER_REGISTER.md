@@ -6135,3 +6135,29 @@ No actual premature or cancelled-case charge was observed. The defect is establi
 
 **Boundary:** exact-head static source/model review only. No patient data, tenant database, or live surgery/billing record was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 216. Surgery charge posting can commit the OT fee alone and make the failed procedure-fee step non-retryable
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/rcm_services.py`, `post_surgery_completion_charges()` and `post_clinical_charge()`.
+
+### 216.1 Each component charge commits independently before the workflow is complete
+
+The surgery charge workflow posts the OT facility fee by calling `post_clinical_charge()`, then calls the same helper to resolve and post the procedure fee. The helper creates the invoice line and charge-capture event and calls `session.commit()` before returning. Therefore, the first OT charge is durably committed before the procedure-fee operation begins.
+
+The procedure-fee step can still fail after that commit—for example, while resolving the procedure service tariff or while inserting/committing the second charge. There is no enclosing transaction spanning both component charges and no compensating action in `post_surgery_completion_charges()`. The result can be an invoice and charge ledger containing the OT fee but no procedure fee, even though the workflow as a whole returns an error.
+
+A straightforward retry does not recover the missing second component: the OT source reference `SURGERY-OT-{surgery.id}` is checked first by `post_clinical_charge()`, which responds with HTTP 409 when it already exists. The retry therefore stops at the already-committed OT event before reaching the procedure-fee step. This is distinct from Section 215: Section 215 concerns whether a surgery is eligible for billing at all; this finding concerns atomicity and recovery when an otherwise eligible multi-component charge operation fails partway through.
+
+No partial surgery invoice or failed production request was observed. The risk follows from the helper's explicit commit and duplicate-reference behavior and the caller's sequential two-step flow.
+
+### 216.2 Required remediation and acceptance evidence
+
+1. Make the two component charges one atomic unit of work: remove hidden commits from the lower-level charge helper and let the surgery workflow own the transaction boundary, or use an equivalent durable orchestration design with explicit step state and compensation.
+2. Preserve idempotency per component without making a completed first step prevent safe completion of a missing second step. An identical retry should resume/return the existing component and continue any missing component; changed payloads must be rejected.
+3. Lock and revalidate the surgery and relevant invoice state while both components are resolved and persisted; ensure concurrent requests cannot interleave partial or duplicate billing.
+4. Add PostgreSQL-backed failure-injection tests that fail procedure tariff resolution, second line insertion, and second commit after the OT step. Assert either complete rollback or a documented resumable state, and prove retry completes exactly once.
+5. Verify that the invoice totals, line items, charge events, and workflow response agree after success, failure, retry, and concurrent invocation.
+
+**Assessment:** High priority billing-integrity and recovery defect. The independent commit and retry-blocking path are established by source review. No actual incomplete surgery bill, duplicate charge, or financial loss was observed.
+
+**Boundary:** exact-head static source review only. No patient data, tenant database, or live surgery/billing record was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
