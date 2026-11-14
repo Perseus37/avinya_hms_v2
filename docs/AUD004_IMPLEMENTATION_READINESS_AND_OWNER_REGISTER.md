@@ -4723,3 +4723,28 @@ This is a control gap in the reviewed evaluation path; the source review does no
 **Assessment:** High-priority clinical governance and scoring-integrity control gap. The source proves caller-controlled selection and differing score bands; it does not establish an inappropriate selection in production or patient harm.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 165. NEWS2 temperature unit is inferred from a numeric threshold, creating an ambiguous and discontinuous input contract
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/services.py`, `calculate_news2_score()`; `backend/domains/clinical/router.py`, `NEWS2EvaluationRequest` and encounter-vital hydration.
+
+### 165.1 A single numeric value is interpreted as Celsius or Fahrenheit based on whether it exceeds 45
+
+The request exposes one optional numeric field, `temperature_f`, without a separate unit discriminator. The calculator uses `temperature_f > 45.0` to decide that the input is Fahrenheit; values at or below 45.0 are treated as Celsius. The validation branches then apply different bounds: 60–120 for the inferred Fahrenheit branch and 15–50 for the inferred Celsius branch. Scoring repeats the same inference when converting to Celsius.
+
+This produces a discontinuity at 45.0. For example, 45.0 is accepted as 45.0°C, while 45.1 enters the Fahrenheit branch and is rejected as below 60°F. A Celsius measurement within the calculator's stated 15–50°C range cannot be represented for values above 45.0. Conversely, a Fahrenheit measurement at or below 45.0 is treated as Celsius rather than Fahrenheit. The field name `temperature_f` does not resolve the ambiguity because the implementation explicitly accepts both units through the heuristic.
+
+The issue is not a claim that these extreme values are common; it is that the API contract does not identify the unit and the same physical input can be interpreted differently or rejected solely due to the numeric threshold.
+
+### 165.2 Required remediation and acceptance evidence
+
+1. Make temperature unit explicit in the request and vital-record contract (e.g. a validated `temperature_unit` enum with `C` or `F`).
+2. Normalize exactly once at the API/service boundary to a canonical unit; remove numeric-threshold unit inference.
+3. Validate the raw value against the explicit unit's documented range and retain the original value/unit for provenance.
+4. Ensure hydrated EncounterVital values have a documented unit contract and cannot silently inherit a different interpretation from manually supplied values.
+5. Add synthetic tests around 45.0/45.1, Fahrenheit values below and above 60, conversion equivalence for the same physical temperature, range rejection, and persisted normalized/original provenance.
+
+**Assessment:** High-priority measurement-contract and scoring-integrity defect. The source proves the threshold-based unit inference and discontinuous validation; it does not establish a mis-entered temperature or patient harm in production.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
