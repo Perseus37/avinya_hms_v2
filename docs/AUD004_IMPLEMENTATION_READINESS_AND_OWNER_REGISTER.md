@@ -5913,3 +5913,28 @@ This is distinct from Section 180: that finding concerns the missing API contrac
 **Assessment:** Medium priority reliability defect in the pharmacy dispensing path. The source-level cardinality mismatch is established. No deployed 500 response, blocked patient dispense, inventory mutation, or patient harm was established.
 
 **Boundary:** exact-head static source review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 207. Pharmacy returns can restore expired stock and expose it as positive inventory
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `return_dispensed_medication()`, `list_inventory_batches()`, and `dispense_medication()`; `backend/domains/pharmacy/schemas.py`, `PharmacyReturnItem`; `backend/domains/pharmacy/models.py`, `InventoryBatch`.
+
+### 207.1 Return processing restores quantity without checking batch expiry
+
+The pharmacy return request identifies an inventory batch and a prescription item. The handler verifies that the batch exists and its medication matches the prescription item, then adds the returned quantity directly to `batch.stock_quantity`. It does not check whether the batch has expired, whether the returned package is physically saleable, or whether inspection/quarantine release has occurred.
+
+The inventory list and CSV export filter depleted stock only when `include_depleted` is false. They do not filter expired batches or distinguish expired/non-saleable stock from available stock. Consequently, a return against an expired but otherwise matching batch can increase its positive stock balance and make that quantity appear in the ordinary inventory list and export. The ordinary dispense handler separately rejects an expired batch, so this finding establishes misleading positive inventory availability and valuation/reporting exposure, not that the expired stock can pass the reviewed dispense expiry check.
+
+This is distinct from Section 187, which concerns returns reactivating voided batches, and Section 188, which concerns positive manual adjustments to expired batches. Section 207 identifies the return workflow as another independent stock-restoration path that lacks expiry and release-state validation.
+
+### 207.2 Required remediation and acceptance evidence
+
+1. Do not return stock directly to saleable inventory solely because the batch ID and medication match. Apply expiry, recall, quarantine, packaging-integrity, storage-condition, and inspection/release policy.
+2. Route returned medication into a non-saleable/quarantine disposition by default unless a documented, authorized inspection process establishes that it can be returned to available stock.
+3. Use a shared batch-eligibility predicate for returns, inventory list/export, FEFO selection, and dispensing; explicitly label expired and quarantined quantities rather than presenting them as available.
+4. Preserve return disposition, source batch, inspection evidence, actor, and any release decision in an append-only movement record.
+5. Add PostgreSQL-backed tests for returns to unexpired eligible, expired, recalled, quarantined, and released batches. Assert that rejected or quarantined returns cannot increase saleable stock and that list/export classifications match dispense eligibility.
+
+**Assessment:** High priority if returned medication is required to undergo expiry and quality disposition before reuse; otherwise Medium pending pharmacy policy. The source-level stock restoration and unfiltered positive-inventory projection are established. No expired return, subsequent dispense, financial misstatement, or patient harm in a deployed tenant was established.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
