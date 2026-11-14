@@ -5989,3 +5989,28 @@ This finding concerns the unused advance-deposit refund path. It is distinct fro
 **Assessment:** Medium priority financial-control and reconciliation gap, pending an approved hospital refund-tender policy. The source-level independence of the refund method from the original collection method is established. No wrong-tender voucher, actual misdirected refund, or financial loss was observed.
 
 **Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, or live financial transaction was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 210. Payment idempotency returns an existing receipt without checking whether the retry payload matches
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/router.py`, `record_payment()`; `backend/domains/billing/schemas.py`, `PaymentReceiptCreate`; `backend/domains/billing/models.py`, `PaymentReceipt`.
+
+### 210.1 A reused transaction reference silently aliases a different payment request
+
+The payment endpoint accepts an optional `Idempotency-Key` header and also accepts `transaction_reference` in the request body. It chooses `payload.transaction_reference or idempotency_key` as the effective reference. When that reference already exists for the invoice, the handler immediately returns the existing `PaymentReceipt`.
+
+The duplicate check does not compare the incoming amount, payment method, or other request attributes with the stored receipt. Consequently, a client retry that accidentally reuses a key/reference with a different amount or tender receives a successful-looking response containing the earlier receipt, while the new request is neither applied nor rejected as a key conflict. The unique constraint on `(invoice_id, transaction_reference)` prevents duplicate stored references, but it does not provide request-fingerprint validation. The header is optional, so requests without either reference have no idempotency protection.
+
+This is distinct from duplicate receipt insertion: the row lock and uniqueness constraint address concurrent insertion for a given invoice/reference. The issue is semantic reuse of a reference for a non-identical request and the ambiguous success response.
+
+### 210.2 Required remediation and acceptance evidence
+
+1. Persist a canonical request fingerprint with each idempotency key, covering at minimum invoice ID, amount, payment method, and normalized external transaction reference.
+2. If a key is replayed with an identical request, return the original receipt; if the fingerprint differs, return a deterministic conflict response and do not mutate invoice/payment state.
+3. Define whether idempotency is mandatory for gateway-originated payments and how external transaction references differ from client-generated idempotency keys.
+4. Add PostgreSQL-backed tests for identical retry, changed amount, changed tender, changed invoice, concurrent identical requests, missing key, and unique-constraint conflict handling.
+5. Ensure client integrations treat a fingerprint conflict as an error requiring reconciliation, not as confirmation that the new payment was accepted.
+
+**Assessment:** Medium priority payment-integrity and integration-reliability defect. The source-level mismatch behavior is established. No real duplicate payment, lost payment, incorrect receipt, or financial loss was observed.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, payment gateway, or live financial transaction was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
