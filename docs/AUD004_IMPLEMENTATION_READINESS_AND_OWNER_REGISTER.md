@@ -5188,3 +5188,29 @@ No actual stale batch metadata or incorrect valuation was established.
 **Assessment:** Medium-priority inventory data-integrity and operational contract defect. The source proves two declared request fields are silently ignored; it does not prove an actual batch record, expiry decision, stock valuation, or patient outcome was affected.
 
 **Boundary:** exact-head static source/schema review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 182. Manual inventory adjustments and batch voids overwrite stock balance without a movement record or reason
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `adjust_inventory_stock()` and `void_inventory_batch()`; `backend/domains/pharmacy/models.py`, `InventoryBatch`; `backend/core/audit.py`, `AuditMixin` actor stamping.
+
+### 182.1 Stock-changing correction endpoints persist only the new balance
+
+The stock-adjustment request contains only `quantity_adjustment`; it has no reason, source document, adjustment category, witness, or evidence reference. The handler locks the selected `InventoryBatch`, checks that the adjustment is nonzero and does not produce a negative balance, then increments `stock_quantity` and commits. The batch-void endpoint similarly locks the batch, sets `stock_quantity = 0`, and commits; it accepts no recall/void reason, affected quantity, disposal/transfer outcome, or reference identifier.
+
+The reviewed pharmacy model defines `InventoryBatch` as the current stock balance and contains no corresponding general inventory-adjustment/stock-movement entity. The shared `AuditMixin` supplies `created_at`, `updated_at`, `created_by_id`, and `updated_by_id`; its session hook can stamp the actor, but it does not preserve the prior balance, signed quantity delta, reason, source document, or disposition. Thus the adjustment/void endpoints leave only the resulting batch balance plus generic row-update metadata, not a reconstructable stock movement history. The void response calls the zeroing action recall-traceable, but the route does not persist a recall reference or disposition record.
+
+This weakens reconciliation of physical counts, breakage/expiry/write-offs, recall quarantine, and controlled stock corrections: a reviewer cannot determine from these records why the balance changed or what happened to the removed units. This finding concerns manual adjustment and void operations, not the separate structured dispensing/return provenance gaps already recorded in Sections 179–180.
+
+No actual unexplained stock movement, recall failure, or inventory discrepancy was established.
+
+### 182.2 Required remediation and acceptance evidence
+
+1. Introduce an append-only inventory movement record for receipt, adjustment, void/write-off, transfer, dispense, and return, with batch, signed quantity, balance-before/after, actor, timestamp, movement type, reason, and source/reference identifiers as applicable.
+2. Require a controlled reason and supporting reference for manual adjustments; require explicit recall/expiry/disposal/transfer disposition for voids, and do not describe a batch as recall-traceable unless the recall case and disposition are linked.
+3. Write the movement record and batch balance change in one database transaction under the existing batch lock; prohibit ordinary update/delete of posted movement evidence at the database boundary.
+4. Add PostgreSQL tests for positive/negative corrections, concurrent corrections, void with reason/reference, atomic rollback, actor attribution, and reconstruction of the current balance from the movement ledger.
+
+**Assessment:** High-priority pharmacy inventory reconciliation and recall-traceability gap. The source proves the correction routes update the batch balance without a dedicated movement record or reason; it does not prove an actual stock discrepancy, recall failure, or patient harm.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
