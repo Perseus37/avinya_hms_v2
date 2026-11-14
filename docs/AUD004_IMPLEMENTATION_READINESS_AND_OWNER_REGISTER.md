@@ -3679,29 +3679,25 @@ The same patient clock-selection code also maps `contract_end` to `Patient.updat
 **Boundary:** static source review only. No retention job was run, no patient record was queried or changed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
 
-## 125. Patient hard-delete dependency checks suppress lookup failures
+## 125. Prior patient hard-delete dependency-failure finding is superseded by current PR #19 source
 
-**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/retention_service.py` (`execute_retention_category`, patient `action == "delete"` branch); dependency references to encounters, invoices, allergies, diagnostic orders, insurance policies, and patient consent records.
+**Source re-verification:** PR #19 head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/retention_service.py` (blob `18b45ac9ccff4e187368b690ccc3f84705a55807`).
 
-### 125.1 A failed dependency lookup is converted into an empty result
+### 125.1 Current reviewed source no longer suppresses dependency-query failures
 
-Before hard-deleting inactive patient candidates, the executor checks six dependent record sources: `PatientEncounter`, `Invoice`, `PatientAllergy`, `DiagnosticOrder`, `PatientInsurancePolicy`, and `PatientConsentRecord`. Each lookup is wrapped in an unrestricted `except Exception: pass`.
+A fresh fetch of the exact PR #19 head shows the patient hard-delete branch now performs seven dependent-table lookups directly, without the previously reported `try/except Exception: pass` wrappers: encounters, invoices, allergies, diagnostic orders, insurance policies, patient consent records, and federation transfer logs. Each query must complete before `deletable_ids` is computed. A query exception therefore propagates out of this function instead of being converted into an empty reference set.
 
-The code then computes `deletable_ids` from the set of IDs returned by successful lookups. It does not retain a failed-check state, abort the category, or distinguish “no dependent rows” from “dependency check could not be completed.” At the application-logic level, a failed lookup therefore contributes no protected patient IDs to the deletion decision.
+The earlier Section 125 claim that the current source suppresses lookup failures is not supported by this exact-head re-verification and is withdrawn. This is a source-level correction only; it does not establish that PR #19 has been merged, deployed, or independently tested under injected database failures.
 
-This is a fail-open safety design for a destructive operation: the code has no explicit invariant that all six dependency checks must complete successfully before any patient is considered deletable. Whether a particular database/driver error also aborts the surrounding transaction and prevents the subsequent DELETE is database- and error-dependent; this static review does not claim every lookup failure will result in a committed deletion. The established defect is that the application suppresses the failure and does not enforce a fail-closed decision.
+### 125.2 Remaining verification
 
-### 125.2 Required remediation and acceptance evidence
+1. Add synthetic fault-injection coverage for each of the seven lookups and prove the transaction/run fails without issuing a patient DELETE.
+2. Verify rollback and ledger/audit behavior when a lookup fails after earlier lookups succeeded.
+3. Retain Section 126 as a separate finding: the dry-run path still skips these dependency lookups and reports the unfiltered candidate count as affected.
 
-1. Remove the broad exception suppression. Any dependency-query error must abort the category/run and propagate a clear failure.
-2. Track completion of every required dependency check and permit deletion only when all checks have completed successfully.
-3. Prefer a single explicit, reviewable dependency predicate or a validated dependency registry so additions to the clinical/billing model do not silently escape the deletion guard.
-4. Add synthetic tests injecting a failure independently into each of the six dependency lookups; assert that no patient DELETE is issued, no run is recorded as successful, and the transaction is rolled back.
-5. Add positive tests proving a patient with any dependent record is retained and a patient with no dependencies is eligible only after all checks succeed.
+**Assessment:** The previously recorded fail-open lookup-suppression defect is not a current finding at the reviewed PR #19 head. Runtime proof of failure/rollback behavior remains outstanding.
 
-**Assessment:** High-priority destructive-retention safety gap. The reviewed executor silently suppresses all exceptions from each dependency check and has no application-level fail-closed guard. This is not evidence that a patient was deleted, nor proof that every database error permits the later DELETE to commit.
-
-**Boundary:** static source review only. No retention job was run, no patient record was queried or changed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+**Boundary:** exact-head static source review only. No retention job, patient record, tenant database, or destructive action was accessed or executed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
 
 ## 126. Patient hard-delete dry-run overstates eligible and affected records
@@ -3727,3 +3723,33 @@ This is a misleading safety preview for an irreversible operation. It can overst
 **Assessment:** High-priority retention preview correctness gap. Static source establishes that the dry-run path bypasses all six patient dependency checks and reports the unfiltered candidate count as affected. No assertion is made that a dry-run itself changes data or that a real deletion has occurred.
 
 **Boundary:** static source review only. No retention job was run, no patient record was queried or changed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 127. Approved retention policies can execute unsupported categories as successful no-ops
+
+**Source reviewed:** PR #19 head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/policy_schema.py` (blob `8a9d25c580ea11e0593fa3860b6b5d78de8389b0`); `backend/domains/privacy/retention_service.py` (blob `18b45ac9ccff4e187368b690ccc3f84705a55807`); `backend/domains/privacy/retention_preview.py` (blob `3a7640d0677ce0775d3b1811d0f24e512f67e98f`); `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`).
+
+### 127.1 Policy approval and execution do not require an implemented category handler
+
+`RetentionCategoryRule.code` accepts any lowercase identifier matching its pattern; the retention policy schema does not constrain it to categories with an execution implementation. Draft creation and second-person approval call `validate_policy_document("RETENTION", ...)`, which validates the document shape and unique codes but does not validate handler availability.
+
+The preview module advertises eight standard categories: `patients`, `inactive-patients`, `privacy-decision-audits`, `synthetic-attachments`, `encounters`, `clinical-notes`, `orders`, and `billing-invoices`. However, `execute_retention_category()` has concrete execution branches only for canonical `patients` and `privacy-decision-audits`. Other category values reach the generic return with zero candidates, zero affected records, and status `NOOP_UNKNOWN_CATEGORY`.
+
+The execution service does not treat that result as an error. `execute_retention_policy_revision()` appends it to the category results, adds its zero count to totals, and proceeds to write the retention run ledger and an ALLOW `privacy.retention.execute` audit event for a non-dry-run. The router's approved-policy and requested-category checks establish only that the requested code appears in the policy document; they do not establish that an executor exists.
+
+Therefore a policy containing a supported-looking standard category such as `encounters`, `clinical-notes`, `orders`, or `billing-invoices` can be approved and later produce a run response that includes `NOOP_UNKNOWN_CATEGORY`, while the overall run still records execution. The policy can appear to have been processed even though no records in that category were evaluated or acted upon. The same issue applies to arbitrary custom category codes accepted by the policy schema unless a handler is explicitly added.
+
+This is distinct from the preview registry: `preview_retention_counts()` rejects categories absent from its registry, but the execution endpoint does not require a successful preview or registry membership before dispatching the execution service. The preview registry is currently an independent counts-only adapter, not the execution-handler registry.
+
+### 127.2 Required remediation and acceptance evidence
+
+1. Define one authoritative retention-category registry that binds each approved category to its canonical code, aliases, preview adapter, legal-hold semantics, and executable handler.
+2. Reject policy draft creation and approval when any category has no supported executor, unless the policy explicitly marks it as deferred/non-executable and prevents it from being selected for execution.
+3. Before execution, validate every requested category against the executable registry; never treat `NOOP_UNKNOWN_CATEGORY` as a successful category result.
+4. Make the run outcome explicitly partial/failed when any selected category is unsupported; do not write a success-shaped execution audit or ledger entry for a run that silently skipped requested categories.
+5. Add synthetic tests for each advertised standard category and custom category behavior. For unsupported categories, assert rejection before execution and no success ledger/audit. For supported categories, assert candidate selection, legal-hold exclusion, and the intended action.
+6. Keep counts-only preview semantics separate from mutation semantics, but require both adapters to agree on category identity and supported status.
+
+**Assessment:** High-priority retention governance and legal-compliance readiness gap. Static source establishes that the policy lifecycle can approve categories without handlers and that execution converts unsupported categories into zero-count no-ops while continuing to record the run. This does not establish that a real retention policy has been approved or that any records were incorrectly retained or deleted.
+
+**Boundary:** static source review only. No retention policy was created/approved, no retention job was invoked, no patient or tenant data was accessed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
