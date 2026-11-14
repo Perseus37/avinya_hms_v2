@@ -3263,3 +3263,33 @@ The repository test inventory reviewed includes control-plane migration characte
 **Assessment:** Medium-priority SaaS billing lifecycle correctness gap. Static source and model/migration comparison establish that the recognized webhook paths reference a missing mapped customer field and that the renewal expiry assignment is not persisted. The failure is conditional on Stripe being configured and a recognized signed event being delivered. No production webhook failure, tenant suspension, renewal loss or billing-state corruption is claimed.
 
 **Boundary:** static source and migration review only. No Stripe credentials, webhook, customer, payment, tenant database, patient data, migration execution or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+## 109. Failed invoice ETL rows copy patient MRNs into control-plane audit details
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/control_plane/api/routers/migration.py` (`_execute_bulk_migration_background`, `_write_migration_audit`); `backend/control_plane/models.py` (`ControlPlaneAuditLog`); `backend/control_plane/api/routers/fleet_ops.py` (`GET /api/fleet/audit-logs`).
+
+### 109.1 A failed invoice-to-patient lookup embeds the source MRN in an audit event
+
+The visual ETL worker resolves an imported invoice's `patient_mrn` against the destination tenant's `Patient.mrn`. When no matching patient exists, it raises an exception whose message includes the supplied MRN:
+
+`Foreign Key Error: Patient MRN '<source value>' does not exist.`
+
+The row-level exception handler catches the error and appends its text to the in-memory `errors` sample (up to 20 entries). After processing, the worker serializes that sample into the control-plane audit event's `details` field via `_write_migration_audit("ETL_VISUAL_MIGRATION_COMPLETED", ...)`. The helper persists the details without removing or hashing the MRN. The failure path also serializes the sampled errors if the overall worker fails.
+
+This is a direct path from a patient identifier in an uploaded invoice CSV into a control-plane audit record. It does not require a successful invoice insert or a patient record read. The finding is about the data written to the audit ledger, not about the correctness of the invoice foreign-key check.
+
+### 109.2 Existing audit-log read exposure increases the impact
+
+Section 106 separately records that `GET /api/fleet/audit-logs` returns full audit `details` and lacks a named-operator role dependency, subject to the shared vendor-key condition documented there. Section 109 is distinct: it identifies a concrete writer that places a patient identifier into that broadly serialized field. No audit-log request or patient data was accessed to establish this static data flow.
+
+### 109.3 Required remediation and acceptance evidence
+
+1. Do not include source row values, patient identifiers, or raw exception messages in control-plane audit details. Record bounded error categories, row numbers and counts only.
+2. Keep detailed row diagnostics in a tenant-scoped, access-controlled migration result store with explicit retention and redaction rules; avoid copying patient identifiers into the control-plane ledger.
+3. Add synthetic tests using an unmatched invoice MRN and assert that the control-plane audit record contains neither the MRN nor raw exception text.
+4. Add tests for both completed-with-row-errors and worker-failure audit paths.
+5. Redact existing migration audit details according to an approved retention/remediation process before broadening audit-log reader permissions.
+
+**Assessment:** Medium-priority patient-identifier minimization and audit-data handling gap. Static source establishes the exact MRN-to-audit-details path for unmatched invoice rows. The reader-side impact is conditional on the authorization weakness in Section 106; no actual audit-log disclosure, unauthorized access or patient harm is claimed.
+
+**Boundary:** static source review only. No CSV was uploaded, ETL job executed, audit event queried, patient record accessed, tenant database changed, or production resource touched. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
