@@ -5214,3 +5214,27 @@ No actual unexplained stock movement, recall failure, or inventory discrepancy w
 **Assessment:** High-priority pharmacy inventory reconciliation and recall-traceability gap. The source proves the correction routes update the batch balance without a dedicated movement record or reason; it does not prove an actual stock discrepancy, recall failure, or patient harm.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 183. Prescription status update bypasses cancellation and dispensing-state invariants
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `update_prescription()`, `cancel_prescription()`, and `dispense_medication()`; `backend/domains/pharmacy/schemas.py`, `PrescriptionUpdate`.
+
+### 183.1 Generic update accepts terminal status transitions without checking item quantities
+
+The `PrescriptionUpdate` request model exposes `status: Optional[PrescriptionStatusEnum]`, including `ACTIVE`, `PARTIAL`, `DISPENSED`, and `CANCELLED`. The generic `PUT /prescriptions/{prescription_id}` handler rejects modification only when the prescription's *current* status is already `DISPENSED` or `CANCELLED`. Otherwise, it assigns any supplied status directly. It does not inspect the prescription items' `dispensed_quantity` values or enforce a legal state transition.
+
+This bypasses the dedicated cancellation route's explicit invariant: `DELETE /prescriptions/{id}` rejects cancellation unless the current status is `ACTIVE` and every item has zero dispensed quantity. Through the generic update route, a caller with `pharmacy:write` can set a partially dispensed prescription to `CANCELLED`, or mark an entirely undispensed prescription `DISPENSED`. The dispense endpoint subsequently rejects prescriptions already marked `CANCELLED` or `DISPENSED`, so an arbitrary status update can also block further legitimate dispensing without the underlying item quantities supporting that state. A partially dispensed prescription can be hidden from normal ACTIVE/PARTIAL workflows while still retaining nonzero dispensed quantities.
+
+No actual status corruption or interrupted dispensing was established.
+
+### 183.2 Required remediation and acceptance evidence
+
+1. Remove status mutation from the general prescription-edit schema/route; expose explicit transition commands with server-side transition rules.
+2. Derive `PARTIAL` and `DISPENSED` from item quantities in the same transaction as dispense/return operations; do not accept these states as caller assertions.
+3. Permit cancellation only through the guarded cancellation workflow, with a documented reversal/void process for any prescription that has started dispensing; preserve the dispensed quantities and financial/stock effects.
+4. Add PostgreSQL API tests for attempted CANCELLED with partial quantities, DISPENSED with zero/partial quantities, legal ACTIVE-to-CANCELLED, dispense after forged terminal state, and concurrent status/dispense transitions; assert no stock, invoice, or prescription-item mutation on rejected transitions.
+
+**Assessment:** High-priority prescription lifecycle and dispensing-integrity defect. The source proves the generic update route permits terminal status assignment without validating item state and bypasses the dedicated cancellation guard; it does not prove a real prescription was incorrectly transitioned or care was affected.
+
+**Boundary:** exact-head static source/schema review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
