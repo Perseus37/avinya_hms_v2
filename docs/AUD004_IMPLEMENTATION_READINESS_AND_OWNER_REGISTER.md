@@ -3352,3 +3352,28 @@ The route documentation describes waiting-room TV displays, which may justify a 
 
 **Boundary:** static source review only. No WebSocket was opened, Redis queried, patient data accessed, tenant database changed, or production resource touched. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+
+## 112. NHCX adjudication callback accepts user-authorized, unauthenticated gateway assertions
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/abdm/router.py` (`receive_nhcx_claim_adjudication_callback`); `backend/domains/abdm/schemas.py` (`NHCXAdjudicationCallbackRequest`); `backend/domains/abdm/services.py` (`process_nhcx_adjudication_callback`); `backend/domains/abdm/models.py` (`NHCXClaimExchangeLog`).
+
+### 112.1 A normal tenant user can submit a purported payer adjudication
+
+The route is documented as receiving an adjudication callback from the NHCX Gateway, but its only authentication dependency is `RequirePermission("billing:write", "insurance:write", "integrations:write")`. It does not verify a gateway/payer signature, shared callback secret, mTLS identity, or other machine-to-machine credential. The request schema accepts caller-supplied `transaction_id`, `adjudication_status`, `settled_amount_paise`, `settlement_utr`, rejection reason, and optional adjudication bundle.
+
+The service looks up the transaction ID and associated claim, then trusts the supplied status and amount. For `APPROVED` or `SETTLED`, it sets the claim status to `SETTLED`, copies the supplied amount into `claim.settled_amount_paise`, and copies the supplied UTR. For `REJECTED`, it changes the claim status to `REJECTED`. The reviewed path does not verify that the request originated from NHCX/the payer, that the exchange log is a submitted claim eligible for adjudication, or that the settled amount is consistent with the claim and payer response.
+
+Therefore, a tenant user who legitimately holds any of the route's accepted write permissions can call this purported gateway callback and cause a known tenant transaction's claim to be marked settled or rejected using caller-chosen adjudication values. This is a trust-boundary failure between a remote financial adjudicator and an ordinary tenant application user, not an unauthenticated internet endpoint.
+
+### 112.2 Required remediation and acceptance evidence
+
+1. Separate the gateway callback from user-operated claim workflows. Authenticate callbacks using the configured NHCX gateway/payer trust mechanism (for example, verified signed requests or mutually authenticated transport); do not treat a tenant user's billing permission as proof of remote payer identity.
+2. Verify callback transaction identity, expected exchange type, tenant binding, claim linkage, allowed state transition, and payer response integrity before mutating claim state.
+3. Validate settlement amount against the claim's submitted/approved amount and defined partial-settlement rules; reject invalid statuses and impossible transitions.
+4. Make callback processing idempotent using the gateway event/transaction identity, and preserve a tamper-evident record of verified sender identity, signature-verification result, event identity, and state transition.
+5. Add synthetic negative tests showing that a tenant user with each currently accepted permission cannot forge a callback; add positive tests for valid signed callbacks, wrong tenant/transaction, wrong exchange type, replay, invalid status, over-settlement, partial settlement, and rejected claims.
+
+**Assessment:** High-priority financial-integrity and integration-authentication gap. Static source establishes that the callback route accepts ordinary tenant-user authorization and the service directly applies caller-supplied adjudication status/amount to the linked claim. No callback was submitted, claim was modified, gateway credential was accessed, or real financial transaction inspected.
+
+**Boundary:** static source review only. No NHCX request, payer callback, claim record, patient data, tenant database, production credential, or external integration was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
