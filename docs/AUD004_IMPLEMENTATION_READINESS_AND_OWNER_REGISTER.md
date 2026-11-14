@@ -6014,3 +6014,28 @@ This is distinct from duplicate receipt insertion: the row lock and uniqueness c
 **Assessment:** Medium priority payment-integrity and integration-reliability defect. The source-level mismatch behavior is established. No real duplicate payment, lost payment, incorrect receipt, or financial loss was observed.
 
 **Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, payment gateway, or live financial transaction was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 211. Reversing an advance-adjustment receipt after the source deposit was refunded restores a balance but leaves the deposit terminal
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/router.py`, `apply_advance_deposit_to_invoice()`, `refund_unused_patient_deposit()`, and `reverse_payment()`; `backend/domains/billing/models.py`, `PatientDeposit` and `PaymentReceipt`.
+
+### 211.1 Refund and payment-reversal paths do not reconcile the same deposit lifecycle
+
+Applying a deposit to an invoice locks the deposit, decrements `remaining_balance_paise`, and creates an `ADVANCE_ADJUSTMENT` payment receipt whose `transaction_reference` stores the deposit number. When the unused balance is refunded, the refund handler decrements the remaining balance and sets the deposit status to `REFUNDED` when it reaches zero.
+
+The payment-reversal handler later looks up the deposit by that reference and unconditionally adds the receipt amount back to `remaining_balance_paise`. It changes the status back to `ACTIVE` only when the prior status is `EXHAUSTED`; it does not handle `REFUNDED`.
+
+A concrete sequence follows directly from the handlers: collect a 100-unit deposit; apply 60 to an invoice; refund the remaining 40, setting the deposit to `REFUNDED`; then reverse the 60-unit invoice adjustment. The reversal credits 60 back to the deposit but leaves its status `REFUNDED`. The invoice payment is reversed, but the restored 60 is not available to the normal apply/refund routes because both require an `ACTIVE` deposit. The deposit can therefore carry a positive balance while remaining terminal and unusable.
+
+### 211.2 Required remediation and acceptance evidence
+
+1. Define coordinated state transitions for refunding a deposit while any advance-adjustment receipts remain reversible.
+2. Either block/hold deposit refund until linked adjustments are no longer reversible, or make a later reversal create an explicit compensating deposit-credit state with a supported recovery workflow.
+3. Keep the deposit balance, status, refund vouchers, and linked adjustment receipts consistent in one transaction; do not silently restore value into a terminal state.
+4. Add PostgreSQL-backed lifecycle tests for apply-then-refund-then-reverse, partial refund followed by reversal, exhausted-deposit reversal, and concurrent refund/reversal attempts.
+5. Prefer append-only compensating financial events over deleting the original receipt, with an auditable link between original and reversal.
+
+**Assessment:** High financial-integrity risk if deposit refunds and payment reversals can occur in this order. The inconsistent state transition is established from the handlers; no actual affected deposit, lost patient credit, or financial loss was observed.
+
+**Boundary:** exact-head static source/model review only. No patient data, tenant database, refund, or payment transaction was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
