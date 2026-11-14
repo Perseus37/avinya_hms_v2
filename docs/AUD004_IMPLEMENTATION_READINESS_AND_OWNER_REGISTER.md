@@ -5480,3 +5480,34 @@ No deployed quantity discrepancy, incorrect invoice, or patient impact was estab
 **Assessment:** High-priority medication quantity and reconciliation integrity defect. Exact source establishes that pharmacy dispense, BCMA administration, and pharmacy return all mutate the same `dispensed_quantity` despite representing different events. The counter is also used to calculate pharmacy stock-supply remainder and return limits. No deployed discrepancy, incorrect billing, or patient harm was established.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 192. Concurrent BCMA requests can both pass duplicate-administration checks and create duplicate eMAR records
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/services.py`, `execute_bcma_administration()`; `backend/domains/pharmacy/models.py`, `MedicationAdministrationLog`.
+
+### 192.1 Duplicate prevention is a check-then-insert sequence without a database uniqueness fence
+
+Before creating an eMAR record, `execute_bcma_administration()` queries `MedicationAdministrationLog` for an existing ADMINISTERED row for the prescription item. When the request includes `scheduled_time`, it matches that exact scheduled timestamp. When it is omitted, it searches for an administration within the preceding 15 minutes.
+
+If a matching row is found, the service returns HTTP 409. If no row is found, it proceeds to create and flush a new eMAR record, creates the BCMA audit row, and commits. The query does not lock a stable parent row or reserve a unique administration key before the insert.
+
+The reviewed `MedicationAdministrationLog` model has ordinary indexes on encounter, prescription item, and administered time. It has no unique constraint on prescription item plus scheduled time, nor another database-backed idempotency key for a dose event. The nullable scheduled-time field also means the 15-minute fallback cannot be represented by a simple exact-timestamp uniqueness constraint.
+
+Concrete interleaving: two bedside requests for the same prescription item and scheduled dose arrive concurrently. Transaction A checks for an existing row and finds none. Transaction B performs the same check before A commits and also finds none. Both then insert ADMINISTERED eMAR records and commit. The same race exists for requests without scheduled_time using the 15-minute lookback query. Each request can return a successful verification response even though the same intended administration event has been recorded twice.
+
+This is distinct from Section 170's concurrent SOAP sign-off race and Section 171's post-signature SOAP edit race. It is also narrower than Sections 190–191: this section concerns duplicate eMAR event creation through a check-then-insert race, not prescription status eligibility or the shared quantity counter.
+
+No concurrent duplicate administration was observed in a deployed tenant; this is a source-established race condition, not evidence that a duplicate dose was actually administered.
+
+### 192.2 Required remediation and acceptance evidence
+
+1. Define a stable administration-event identity. For scheduled doses, use a canonical prescription-item plus schedule-instance identifier; do not rely only on caller-formatted timestamps. For unscheduled/PRN administrations, define a clinically appropriate event/idempotency key and policy rather than treating a rolling 15-minute query as a concurrency guarantee.
+2. Enforce the identity in PostgreSQL with an appropriate unique constraint/index or a durable idempotency record. Handle nullable/PRN cases explicitly.
+3. Serialize competing requests on the prescription item or schedule-instance row, and perform the duplicate check plus event reservation/insert in one transaction. A losing request must receive a deterministic conflict response.
+4. Ensure the eMAR record, BCMA audit record, and quantity-ledger update commit atomically under the same concurrency fence.
+5. Add two-session PostgreSQL integration tests that synchronize concurrent requests for the same scheduled dose and for the no-schedule fallback. Assert exactly one ADMINISTERED eMAR record and one successful administration result; the competing request must be rejected without a second quantity increment.
+
+**Assessment:** High-priority medication administration integrity risk. Static source proves the duplicate check and eMAR insert are separate operations, and the model has no matching uniqueness constraint. Concurrent requests can therefore both pass the check. No actual duplicate administration or patient harm was established.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
