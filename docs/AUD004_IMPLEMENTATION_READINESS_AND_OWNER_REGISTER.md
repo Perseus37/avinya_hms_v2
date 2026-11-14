@@ -4191,3 +4191,34 @@ This is distinct from Section 113's finding that a normal user bearer token is a
 **Assessment:** High-priority integration authorization and device-lifecycle gap. Tenant authentication is not tied to the physical analyzer, and the persisted active flag is not enforced on ingestion. This could allow a tenant-authenticated sender to continue using an inactive analyzer's mapping identity. No misuse or patient-result corruption is established.
 
 **Boundary:** exact-head static source review only. No HL7 endpoint was called, no equipment records, integration logs or patient data were accessed, no tenant database was queried, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 145. HL7 OBX result statuses for deletion and wrong-patient correction are applied as ordinary results
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/service.py` (blob `68fcd948f6460b2c05f9343bd563dee769704a3d`), `process_hl7_oru_r01_in_session()`.
+
+### 145.1 Status handling does not implement HL7 deletion or wrong-result semantics
+
+The service reads OBX-11 into `obs_status`, but its special handling recognizes only:
+- `C`, `A`, `CORRECTED`, `AMENDED` as amendment indicators;
+- `X`, `CANNOT_OBTAIN`, `REJECTED` as unobtainable/rejected;
+- `P`, `PRELIMINARY` as preliminary.
+
+All other statuses fall through to the ordinary result path. That path writes the OBX-5 value into the diagnostic task and marks the task `RESULT_ENTERED` (unless preliminary or unobtainable). There is no status validation or explicit rejection of unsupported values in the reviewed processing function; an absent OBX-11 is defaulted to `F`.
+
+HL7 Table 0085 assigns materially different semantics to `D` (delete the OBX record) and `W` (post the original as wrong, for example, because it was transmitted for the wrong patient). Neither is treated specially here. A `D` message can therefore be stored as a new ordinary result instead of deleting/withdrawing the prior observation; a `W` message can be stored as an ordinary result instead of marking the prior result wrong and preventing it from remaining current. Other recognized statuses such as `I`, `N`, `O`, `R`, `S`, and `U` also lack explicit state mapping and may be treated as ordinary results.
+
+This is distinct from Sections 113, 143 and 144: it concerns clinical result lifecycle semantics after a message has passed authentication, not who can submit it, who can read the integration log, or which analyzer identity is accepted. The source establishes the implementation gap, not that a real deletion/wrong-result message has been received or that a patient chart currently contains an incorrect result.
+
+### 145.2 Required remediation and acceptance evidence
+
+1. Validate OBX-11 against the negotiated HL7 version/profile; reject unknown or unsupported values rather than silently defaulting them to final.
+2. Implement explicit semantics for each supported status, especially `D` and `W`, with safe matching to the exact prior observation identity (patient, order, observation identifier/sub-ID and relevant message context).
+3. Preserve an immutable audit trail of withdrawn, deleted, corrected and wrong results; do not physically erase clinical history.
+4. Ensure a `W` message cannot leave the wrong-patient result as current or trigger normal order completion; route it to a controlled correction/reconciliation workflow.
+5. Define behavior for `U` (finalize previously transmitted preliminary result without replacing its value) and the other supported statuses; do not treat status-only messages as empty new results.
+6. Add synthetic tests for `D`, `W`, `C`, `P`, `U`, missing status, invalid status, multiple OBX observations, and repeated delivery. Assert both current-result state and retained audit history.
+
+**Assessment:** High-priority clinical data integrity gap. Deletion and wrong-result statuses can be interpreted as ordinary reportable results, creating a risk that a withdrawn or explicitly wrong observation remains represented as current. No live clinical impact is established.
+
+**Boundary:** exact-head static source review only. No HL7 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
