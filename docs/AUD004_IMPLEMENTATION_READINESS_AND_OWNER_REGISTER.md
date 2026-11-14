@@ -3834,3 +3834,29 @@ The worker does retain a destructive-run separation check against the configurat
 **Assessment:** High-priority privacy-retention audit provenance and accountability gap. Static source establishes that worker fallback can record a substitute or arbitrary human user as the executor. It does not establish that a queued run has actually taken this path or that a retention action was performed by an unauthorized person.
 
 **Boundary:** exact-head static source review only. No queue was contacted, no retention job or policy was executed, no user/account or tenant database was queried at runtime, no patient data was accessed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 131. Retention queue dequeue has no visibility lease or crash-recovery path
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/core/queue.py` (blob `aad0c663e52e7a73d7261658f5ecc1889b7e36b7`), specifically `dequeue_task()`, `mark_task_failed()`, `mark_task_completed()`, and `enqueue_task()`; retention execution is registered as `privacy.retention.execute`.
+
+### 131.1 A worker interruption can strand or lose a dequeued retention job
+
+The queue consumer helper obtains a task ID with Redis `BLPOP`, which removes it from the pending list. It then separately reads the task hash and sets its status to `PROCESSING`. There is no atomic move into a processing/visibility-timeout list, no lease expiry or heartbeat, and no startup/reaper path in this queue module that requeues stale `PROCESSING` tasks. The retry helper is invoked only when execution code explicitly calls `mark_task_failed()`; it is not coupled to the dequeue operation or worker liveness.
+
+Therefore, an interruption after `BLPOP` can leave the task absent from the pending queue. Depending on the exact interruption point, the task hash can remain QUEUED or PROCESSING, but there is no demonstrated automatic recovery from either state. The ordinary task hash is initially given a 24-hour TTL; successful completion shortens it to one hour. A retention request can consequently remain unprocessed or become unqueryable without being retried, despite having been accepted by the API.
+
+This finding is about queue delivery/recovery. It does not establish that a worker crash occurred, that a retention database transaction was partially committed, or that any patient data was changed.
+
+### 131.2 Required remediation and acceptance evidence
+
+1. Use an atomic reliable-queue pattern (for example, pending-to-processing list move) with a visibility lease, heartbeat and bounded recovery of expired processing claims.
+2. Persist attempt count, lease owner, lease expiry, last heartbeat, enqueue time and terminal outcome; do not rely on a short-lived Redis hash as the only job record.
+3. Ensure the recovery mechanism safely requeues interrupted work and does not allow concurrent workers to execute the same job.
+4. Add a stable execution/idempotency key and a tenant-database execution ledger with a uniqueness constraint so a retry after an uncertain worker outcome cannot duplicate the logical retention run.
+5. Add synthetic fault-injection tests for interruption immediately after dequeue, after marking PROCESSING, during handler execution, after tenant DB commit but before queue completion, and during retry scheduling. Assert every accepted job reaches a queryable terminal state or a recoverable queued state, and that one logical destructive execution produces at most one ledger record.
+6. Verify dead-letter handling and operator-visible recovery do not silently discard or replay a completed destructive action.
+
+**Assessment:** High-priority background retention delivery and recovery gap. Static source establishes destructive queue tasks are removed from pending before processing and that the shown queue module provides no visibility lease or stale-processing recovery. The database-commit/queue-completion crash window remains an acceptance-test requirement; it is not asserted as an observed runtime event.
+
+**Boundary:** exact-head static source review only. No Redis instance, worker, retention job, policy, tenant database or patient record was accessed or executed. No destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
