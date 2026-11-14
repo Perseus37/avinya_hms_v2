@@ -2975,3 +2975,34 @@ The demonstrated defect is retained searchable index metadata and unnecessary cr
 **Assessment:** Medium-priority privacy-minimization and lifecycle consistency gap. Discovery/import source revalidation materially limits the demonstrated disclosure impact; this is not evidence of an authorization bypass or patient-data exposure. Static source establishes the inconsistent API behavior, not that it has occurred in production.
 
 **Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 99. Privileged global MPI lookup returns pointers belonging to suspended tenants
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/control_plane/api/routers/fleet_ops.py` (`toggle_tenant_circuit_breaker`, `lookup_global_mpi_pointers`); `backend/control_plane/models.py` (`TenantRegistry`, `GlobalPatientPointer`); `backend/domains/federation/router.py` (discovery active-tenant filtering).
+
+Static source review only. No MPI lookup was executed, no patient record was read, and no database, credential, migration or production resource was accessed or changed.
+
+### 99.1 Tenant suspension disables the node but does not remove or scope its indexed pointers
+
+The control-plane tenant status route updates `TenantRegistry.is_active` and the corresponding `FederatedNode.is_active`, then commits. It does not delete, deactivate or otherwise mark that branch's `GlobalPatientPointer` rows. This may be intentional retention for later reactivation; however, the pointer model has no tenant-active snapshot or discoverability state.
+
+The federation discovery route explicitly joins the pointer candidate set to active `TenantRegistry` rows before opening source tenant databases. Suspended tenants therefore do not proceed as active discovery sources through that path. This is an important mitigating control and means the finding is not a claim that suspended-tenant patients are still returned by ordinary federation discovery.
+
+The separate privileged `GET /api/mpi/lookup` route builds its result directly from `GlobalPatientPointer` and filters by phone hash, ABHA number or MRN. It does not join or filter `TenantRegistry.is_active`. Consequently, support/superadmin operators with access to this audited cross-tenant lookup can still retrieve pointer metadata for a suspended tenant: branch code, subdomain slug, source MRN, ABHA number, phone-hash prefix and the critical-allergy flag. The endpoint records a control-plane audit event, but audit logging does not scope the returned records to active tenants.
+
+### 99.2 Scope and impact
+
+This is a privileged operational MPI disclosure-scope inconsistency, not an unauthenticated exposure or a federation-node authorization bypass. The route requires the control-plane secret, vendor-key verification and support/superadmin role, and it logs the lookup. The demonstrated gap is that tenant suspension is enforced by ordinary federation discovery but not by this separate operator-facing index lookup. No evidence establishes that a suspended tenant's pointers were actually queried or that patient data was exposed in production.
+
+### 99.3 Required remediation and acceptance evidence
+
+1. Decide and document whether tenant suspension should hide MPI pointers from operator lookup or whether an explicitly justified break-glass workflow is required. Do not leave the behavior implicit.
+2. By default, join `GlobalPatientPointer.branch_code` to `TenantRegistry` and restrict results to active tenants. If inactive-tenant lookup is operationally necessary, require a separate permission and explicit justification, return a clear inactive status, and audit that exceptional scope.
+3. Add tests proving suspended tenant pointers are excluded from ordinary operator lookup and active tenant pointers remain searchable. Add a separately authorized test only if inactive-tenant lookup is an approved requirement.
+4. Add observability for pointer counts associated with inactive tenants and a bounded review/retention process; do not automatically destroy pointers if reactivation semantics require retention.
+5. Keep federation discovery's active-tenant filter as an independent defense and test it alongside the operator lookup.
+
+**Assessment:** Medium-priority privileged data-minimization and control-plane scope gap. The ordinary federation discovery path already excludes inactive tenant registries, and the operator endpoint is authenticated, role-gated and audited. The concern is the unfiltered privileged lookup of retained identifiers for suspended tenants, not proof of unauthorized access or disclosure.
+
+**Boundary:** static source review only. No MPI lookup, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
