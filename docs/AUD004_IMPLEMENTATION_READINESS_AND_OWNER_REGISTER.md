@@ -5629,3 +5629,32 @@ No inactive medication administration was observed in a deployed tenant; no pati
 **Assessment:** High priority if urgent medication withdrawals are intended to block administration; otherwise Medium pending formulary governance policy. The code-level omission is established, but the required behavior depends on medication lifecycle policy.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 197. BCMA permits unrelated administration routes for formulations without an inferred or prescribed route
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/services.py`, `_extract_route()` and `evaluate_bcma_five_rights()`; `backend/domains/pharmacy/models.py`, `MedicationMaster.form` and `PrescriptionItem.dosage_instruction`.
+
+### 197.1 The fallback route branch rejects selected high-risk routes but does not validate the formulation's route
+
+BCMA first attempts to extract a route from the prescribed dosage instruction. If none is found, it infers ORAL for a limited set of oral forms (TABLET, CAPSULE, SYRUP, TAB, CAP). It separately classifies INJECTION, INFUSION, and INJ as injectable.
+
+When the prescribed route remains absent and the medication is not classified as oral or injectable, the fallback branch rejects only INTRATHECAL, EPIDURAL, INTRAARTERIAL, and INTRADERMAL. Other extracted routes are accepted without checking compatibility with the medication form.
+
+For example, an OINTMENT or DROPS medication with a prescription instruction that does not contain a recognizable route is neither oral nor injectable. If the caller supplies `route="IV"`, route extraction returns IV and the unclassified-form branch does not reject it. The route check can therefore report a match and allow the administration flow to continue, despite no prescribed IV route or form-to-route compatibility rule.
+
+This is not a claim that all ointments or drops must always use one route; product-specific and dosage-form-specific administration rules must be governed by the formulary. The defect is that the fallback accepts ordinary routes without a positive compatibility check. Explicitly prescribed routes are compared, and the known oral/injectable branches have additional checks; this finding concerns the remaining unclassified-form fallback.
+
+No mismatched-route administration was observed in a deployed tenant; no patient harm is established.
+
+### 197.2 Required remediation and acceptance evidence
+
+1. Define a controlled, product/form-specific route vocabulary and compatibility mapping. Do not infer that an unclassified formulation permits any route other than a short denylist.
+2. Require an explicit prescribed route when no safe, unambiguous form-to-route inference exists; fail closed when route intent is absent or ambiguous.
+3. Validate the administered route against the prescription and the medication's authoritative route constraints in the BCMA transaction.
+4. Preserve the selected route, source of route authority (prescription versus approved inference), and any authorized exception in the eMAR/audit record.
+5. Add PostgreSQL tests for every supported dosage form, including OINTMENT, DROPS, PATCH, SUPPOSITORY, and other non-oral/non-injectable forms; verify that unrelated routes such as IV are rejected unless explicitly authorized by the product-specific route policy. Include missing-route and unknown-form cases.
+
+**Assessment:** High-priority medication-administration safety-control gap. The source contains a permissive fallback for unclassified formulations that can accept routes without a positive compatibility rule. No actual wrong-route administration or patient harm was established.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
