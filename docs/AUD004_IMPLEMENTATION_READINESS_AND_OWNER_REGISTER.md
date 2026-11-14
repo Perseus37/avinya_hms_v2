@@ -3377,3 +3377,28 @@ Therefore, a tenant user who legitimately holds any of the route's accepted writ
 
 **Boundary:** static source review only. No NHCX request, payer callback, claim record, patient data, tenant database, production credential, or external integration was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+
+
+## 113. HL7 ORU ingestion accepts an ordinary user bearer token as analyzer authentication
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/router.py` (`require_hl7_auth`, `ingest_hl7_oru_r01_message`); `backend/domains/integrations/service.py` (`process_hl7_oru_r01_in_session`); `backend/domains/integrations/listener.py` (separate MLLP listener authentication and tenant routing).
+
+### 113.1 User session authorization is an alternate path to the device secret
+
+The HTTP ORU^R01 ingestion endpoint is documented for analyzer/interface-engine messages. Its `require_hl7_auth` dependency first accepts a tenant-specific `X-HL7-Secret`, but it also accepts an ordinary bearer token when `get_current_user` succeeds and `user_has_permission(db, user, "lab:write", "mdm:write")` succeeds. The request therefore does not establish that the submitted message came from a registered analyzer or trusted interface engine.
+
+The endpoint passes the submitted raw HL7 message and equipment ID directly to `process_hl7_oru_r01_in_session`. The service parses the patient identifier from the message, resolves the patient by MRN in the request's tenant database, matches diagnostic orders/tasks, and updates result values and task statuses before committing. A user with the accepted write permission can therefore submit a fabricated ORU message through the HTTP route and cause laboratory result/task state changes without possessing the equipment's tenant-specific shared secret.
+
+The separate MLLP listener follows a different path: it extracts the branch code and supplied secret from the HL7 message, checks the active tenant registry entry and shared secret, then selects that tenant's database. That stronger listener check does not protect the HTTP endpoint's bearer-token alternative.
+
+### 113.2 Required remediation and acceptance evidence
+
+1. Separate human-operated result entry from machine-originated HL7 ingestion. Require the configured tenant-bound equipment/interface credential for the machine endpoint; do not treat a clinician or laboratory user's bearer permission as device identity.
+2. If manual result entry is required, expose a distinct workflow with explicit actor attribution, clinical authorization, validation, and audit semantics rather than accepting arbitrary raw analyzer messages.
+3. Bind equipment identity to the authenticated machine credential and validate that the equipment is registered, active, and authorized for the tenant and message type.
+4. Add synthetic negative tests proving that a bearer token with `lab:write` or `mdm:write` alone cannot invoke the machine-ingestion endpoint; add positive tests for valid tenant equipment credentials, wrong-tenant secrets, inactive equipment, unknown MRNs, duplicate/replayed message-control IDs, and malformed/amended result messages.
+5. Preserve the MLLP listener's independent tenant/secret validation and verify both HTTP and MLLP paths have equivalent tenant/equipment authorization and replay controls.
+
+**Assessment:** High-priority clinical-data integrity and integration-authentication gap. Static source establishes the HTTP endpoint's accepted bearer-token alternative and the downstream result/task mutation path. No HL7 message was submitted, patient record inspected, result changed, equipment secret accessed, or production integration exercised.
+
+**Boundary:** static source review only. This finding concerns the HTTP ORU endpoint; it does not claim the MLLP listener's shared-secret check is bypassed. No runtime, database, credential, patient-data, or production changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
