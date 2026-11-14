@@ -4958,3 +4958,35 @@ This is a deterministic invalid-template-to-failed-application path from the rev
 **Assessment:** Medium-priority CPOE template validation and failure-handling defect. It is not a bypass of the destination prescription quantity constraint; that database constraint prevents invalid prescription persistence. The gap is that invalid templates are accepted and fail later during clinical order-set application.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 174. CPOE templates accept medication and diagnostic items without their required catalog references
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `OrderSetItemInput`, `create_cpoe_order_set()`, and `apply_cpoe_order_set_to_encounter()`; `backend/domains/clinical/models.py`, `OrderSetItem`.
+
+### 174.1 Incomplete typed line items can be persisted and silently omitted
+
+The input contract makes both `medication_id` and `service_id` optional and has no cross-field validation tying either reference to `item_type`. The model likewise permits both references to be NULL.
+
+The application route partitions persisted template items using these filters:
+
+- Medication lines are included only when `item_type == MEDICATION` and `medication_id` is truthy.
+- Diagnostic and radiology lines are included only when the item type is one of those types and `service_id` is truthy.
+
+There is no validation that every persisted item of a supported type enters one of those execution lists. Thus, a `MEDICATION` item without `medication_id`, or a `DIAGNOSTIC_LAB`/`RADIOLOGY` item without `service_id`, can be accepted and committed in an active order-set template but is silently excluded when the template is applied. The endpoint can still return success, with lower medication/investigation counts than the template visually contains.
+
+This is distinct from the already recorded handling of valid-but-unsupported nursing and dietary item types: Section 157 concerns supported-but-unimplemented categories; this finding concerns malformed records for categories the application claims to execute.
+
+No malformed template or production omission is established.
+
+### 174.2 Required remediation and acceptance evidence
+
+1. Add discriminated validation: MEDICATION requires exactly a valid `medication_id`; DIAGNOSTIC_LAB and RADIOLOGY require exactly a valid `service_id`.
+2. Reject contradictory references (both IDs supplied, or an ID supplied for the wrong item type) unless a documented domain rule explicitly permits them.
+3. Add matching database constraints so non-API writes cannot create malformed typed rows.
+4. Before applying any legacy template, validate every line and fail closed with a controlled 409/422 identifying invalid item IDs; do not report successful partial execution.
+5. Add tests for missing, wrong-type, and contradictory references and assert that invalid application creates no prescription, diagnostic order, or task.
+
+**Assessment:** Medium-priority CPOE template integrity and silent-omission defect. Database foreign keys protect non-null references from pointing to nonexistent catalog rows, but do not enforce the required relationship between `item_type` and the nullable reference columns.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
