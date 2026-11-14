@@ -3323,3 +3323,32 @@ Section 93 records the separate source-side federation policy behavior when priv
 **Assessment:** High-priority privacy-default issue. Static source establishes that the visual ETL worker assigns `True` when the mapping does not supply `allow_network_sharing`. No actual CSV import, patient record, consent record, federation request or disclosure was observed.
 
 **Boundary:** static source review only. No CSV was uploaded, ETL job executed, patient data accessed, tenant database changed, or production resource touched. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+## 111. Waiting-room WebSocket stream permits unauthenticated cross-tenant subscriptions
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/realtime/router.py` (`websocket_event_stream`, `_validate_tenant_slug`, `_authenticate_ws`); `backend/core/database.py` (`extract_subdomain_slug`); `backend/core/event_bus.py` (`publish_tenant_event`); `backend/domains/encounters/opd_router.py` (appointment status transition to `IN_CONSULTATION`).
+
+### 111.1 Query-selected tenant stream skips authentication
+
+The WebSocket endpoint accepts `waiting_room` as a supported stream. It derives the tenant from the request host, but when the derived tenant is the default tenant it permits the `tenant_slug` query parameter to select the effective tenant instead. The selected slug is checked for an active registry entry, except that `_validate_tenant_slug` returns `True` for the default slug without consulting the control-plane registry.
+
+After tenant selection, the endpoint explicitly skips `_authenticate_ws` whenever the stream is `waiting_room`. It then accepts the WebSocket without a bearer subprotocol and subscribes to `tenant:{effective_slug}:waiting_room`. Consequently, a caller connecting through the default/base host can supply another active tenant's slug and subscribe to that tenant's waiting-room channel without a tenant user session, JWT, or stream permission. A request through a non-default tenant host remains pinned to the host-derived tenant; the cross-tenant selector is available through the default-host fallback.
+
+### 111.2 Published event contains appointment and clinician operational data
+
+The OPD appointment status handler publishes `TOKEN_CALLED_IN_CONSULTATION` to the tenant's `waiting_room` stream when an appointment enters consultation. The event payload includes appointment ID, token number, doctor ID, doctor name, and department ID. It does not include patient name or MRN in the inspected publisher, so this finding does not claim direct disclosure of those identifiers. Nevertheless, the endpoint exposes live tenant appointment activity and stable appointment/clinician identifiers to unauthenticated subscribers, across tenant boundaries when the default-host query override is used.
+
+The route documentation describes waiting-room TV displays, which may justify a deliberately public display channel. It does not establish a tenant-approved public disclosure policy, a display-device credential, or a minimal-purpose authorization boundary for the selected tenant.
+
+### 111.3 Required remediation and acceptance evidence
+
+1. Do not let an unauthenticated query parameter choose a tenant stream. Resolve the tenant from a trusted host or require a short-lived, tenant-bound display credential issued by an authorized tenant administrator.
+2. Separate public display events from operational WebSocket streams. Define and enforce an explicit allowlisted projection for any intentionally public waiting-room output; avoid exposing internal appointment/doctor identifiers unless required.
+3. Bind display credentials to one tenant and one stream, support revocation/expiry, and reject cross-tenant, suspended-tenant, malformed, and missing-credential requests.
+4. Add synthetic WebSocket tests proving that no credential cannot subscribe to another tenant through the default host; a valid display credential can subscribe only to its bound tenant and approved projection; and suspended tenants are rejected, including the default tenant.
+5. Add a publisher contract test that asserts the exact public waiting-room event fields and rejects patient identifiers or other fields outside the approved projection.
+
+**Assessment:** Medium-priority tenant-isolation and operational-privacy exposure. Static source establishes an unauthenticated cross-tenant subscription path and the event fields published to that channel. No live WebSocket connection, Redis event, tenant slug enumeration, patient record, or production disclosure was attempted or observed.
+
+**Boundary:** static source review only. No WebSocket was opened, Redis queried, patient data accessed, tenant database changed, or production resource touched. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
