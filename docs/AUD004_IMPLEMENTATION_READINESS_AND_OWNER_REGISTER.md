@@ -3425,3 +3425,30 @@ Consequently, an authenticated tenant user who can call the M3 route can use a k
 **Assessment:** High-priority health-information privacy and consent-enforcement gap. Static source establishes that M3 export selection is caller-controlled and does not enforce the stored HIU identity or stored information-type list. No FHIR export request was executed, no patient record was read, and no data was transferred to an external recipient.
 
 **Boundary:** static source review only. No ABDM gateway, consent manager, patient data, tenant database, external recipient, or production credential was accessed. No runtime or database changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+## 115. ABDM M2 consent notifications accept unverified caller assertions as grant/revocation state
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/abdm/router.py` (`notify_consent_grant`); `backend/domains/abdm/schemas.py` (`ConsentArtefactNotifyRequest`); `backend/domains/abdm/services.py` (`record_consent_artefact`); `backend/domains/abdm/models.py` (`ABDMConsentArtefact`); `tests/test_51_abdm_and_nhcx_gateways.py` (`test_abdm_m2_consent_and_m3_fhir_health_data_transfer`); `backend/core/dependencies.py` (`RequirePermission`, `get_current_user`).
+
+### 115.1 Tenant-user authorization is treated as consent-manager notification authenticity
+
+The M2 `/api/abdm/m2/consent/on-notify` route is protected by `RequirePermission("privacy:write", "integrations:write", "admin:write")`. That dependency authenticates a tenant user through the tenant JWT/session and checks whether the user holds any one of those permissions; it does not establish an ABDM Consent Manager or gateway identity. The route passes the submitted payload directly to `record_consent_artefact`.
+
+The request schema makes `signature` optional. The reviewed service does not verify a signature, certificate, issuer, audience, or callback origin. It simply persists the supplied signature string. For an existing `consent_id`, it overwrites status, permitted information types, date range, expiry, and signature from the new request; for a new ID, it creates the artefact using the caller-supplied patient, HIU, HIP, manager, status, and scope. No append-only consent-transition history or replay check is present in this path.
+
+The existing integration test posts a `GRANTED` notification using `superuser_headers`, supplies the literal dummy signature `SHA256withRSA:DUMMY_DIGITAL_SIGNATURE`, and expects HTTP 201. This confirms that the test's ordinary tenant-user path does not require a cryptographically valid notification. The route is not unauthenticated: the finding is that ordinary authenticated tenant users with any accepted write permission can assert consent-manager events without proof that the ABDM sender issued them. A caller able to submit an existing consent ID can also replace its state and scope, including grant/revocation state.
+
+The reviewed ABDM router has no gateway-specific dependency, and the reviewed application middleware contains only request-correlation handling; no separate ABDM notification signature-verification layer was identified in the inspected route/dependency path.
+
+### 115.2 Required remediation and acceptance evidence
+
+1. Separate the external Consent Manager callback from human tenant workflows. Authenticate the callback using the configured ABDM trust mechanism and a dedicated gateway identity; tenant-user permissions must not authenticate a remote consent event.
+2. Verify the signed notification against trusted Consent Manager keys/certificates and validate issuer, audience, HIP/HIU, patient/consent binding, timestamp, expiry, and payload integrity before changing consent state.
+3. Enforce replay protection and idempotency using the authenticated event/transaction identity. Reject stale, duplicate, malformed, or incorrectly scoped notifications.
+4. Model grant, revoke, and expiry as validated state transitions with an append-only/tamper-evident event history. Do not permit an arbitrary update to rewrite the identity, patient, recipient, scope, or provenance of an existing consent artefact.
+5. Add synthetic negative tests for missing, dummy, invalid, wrong-issuer, wrong-audience, altered, expired, and replayed signatures/events; prove ordinary tenant users cannot invoke the gateway callback as the Consent Manager. Add positive tests for verified grant and revocation events, valid state transitions, and immutable event provenance.
+
+**Assessment:** High-priority consent authenticity, integrity, and health-information privacy gap. Static source establishes that the M2 notification route accepts tenant-user permission as its only route-level authentication, the signature is optional and not verified in the service, and the supplied payload can create or overwrite consent state. The existing test accepts a dummy signature. No notification was submitted, consent record changed, patient data accessed, or ABDM gateway contacted.
+
+**Boundary:** static source and test review only. No runtime, database, consent record, patient data, production credential, external gateway, or tenant configuration was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
