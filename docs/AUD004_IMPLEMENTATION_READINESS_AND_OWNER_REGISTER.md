@@ -6310,21 +6310,23 @@ No post-cancellation analyzer message or changed clinical result was observed. T
 
 A policy that has been created and marked active but whose coverage starts in the future can therefore influence a charge before its effective start date. If its plan contains an automatically applied tariff for the service, the resolver returns that negotiated amount instead of the standard service catalog rate. The resolver is called by diagnostic-order auto-billing and completed-surgery procedure billing, so the missing start-date check affects both paths.
 
-This is a distinct temporal eligibility defect: policy activation and end-date validity are checked, but the explicit start of contractual coverage is ignored. The source establishes the premature tariff-selection path, not that any future-dated policy or incorrect invoice exists in a tenant.
+This is a distinct temporal eligibility defect: policy activation and end-date validity are checked, but the explicit start of contractual coverage is ignored. The resolver is called by diagnostic-order auto-billing and completed-surgery procedure billing, so the missing start-date check affects both paths. The same missing lower-bound check exists in `submit_cashless_preauth()`: it requires an active encounter and active patient policy, rejects only when `valid_till` is before the current UTC time, and does not require `valid_from` to have begun. A future-start policy can therefore be used to create a cashless pre-authorization before coverage begins, independently of the premature tariff selection.
 
-No policy, tariff, invoice, patient record, or billing transaction was accessed or changed.
+The source establishes these paths, not that a future-dated policy has actually produced a tariff or pre-authorization in a tenant.
+
+No policy, pre-authorization, tariff, invoice, patient record, or billing transaction was accessed or changed.
 
 ### 222.2 Required remediation and acceptance evidence
 
 1. Require the policy's effective interval to contain the billing decision time: `valid_from <= now < valid_till`, using timezone-aware normalization and a documented inclusive/exclusive boundary.
-2. Centralize policy eligibility in one tested helper used by every automatic tariff consumer; do not duplicate date checks in individual billing callers.
+2. Centralize policy eligibility in one tested helper used by automatic tariff consumers and cashless pre-authorization creation; do not duplicate date checks in individual billing callers or pre-auth routes.
 3. Define behavior for overlapping active policies and multiple eligible plans, including whether an explicit payer selection is required rather than choosing by descending policy ID.
-4. Add PostgreSQL-backed tests for future-start, currently valid, expired, inactive, and boundary-equality policies across diagnostic and surgery billing. Assert future and expired policies use the standard rate (or the separately approved no-coverage behavior), while an eligible policy uses its covered tariff.
+4. Add PostgreSQL-backed tests for future-start, currently valid, expired, inactive, and boundary-equality policies across diagnostic billing, surgery billing, and cashless pre-authorization creation. Assert future-start and expired policies cannot supply negotiated tariffs or create pre-auths, while eligible policies follow the approved tariff/pre-auth rules.
 5. Preserve the policy/tariff decision inputs and effective timestamp in billing provenance so later review can explain why a rate was selected.
 
-**Assessment:** Medium-priority financial and contract-eligibility integrity defect. A future-dated policy can cause a negotiated insurance tariff to be applied before coverage begins. No incorrect charge, claim, or financial loss was observed.
+**Assessment:** Medium-priority financial and contract-eligibility integrity defect. A future-dated policy can cause a negotiated insurance tariff to be applied and a cashless pre-authorization to be created before coverage begins. No incorrect charge, claim, pre-authorization, or financial loss was observed.
 
-**Boundary:** exact-head static source/model and call-site review only. No patient data, tenant database, insurance policy, tariff, invoice, or live billing transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+**Boundary:** exact-head static source/model and call-site review only. No patient data, tenant database, insurance policy, pre-authorization, tariff, invoice, or live billing transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
 ## 223. Insurance claim submission accepts a pre-authorization from a different encounter
 
