@@ -3989,3 +3989,28 @@ This is distinct from Section 131's worker crash/recovery behavior and Section 1
 **Assessment:** Medium-priority cross-tenant job-metadata confidentiality and object-authorization gap. Static source establishes a global queue-key lookup with no tenant ownership check in the route/helper. The cross-tenant disclosure scenario requires the caller to know a valid other-tenant job ID; no such ID disclosure or unauthorized status read was observed.
 
 **Boundary:** exact-head static source review only. No Redis instance, job status, worker, tenant database, policy or patient record was accessed. No task was executed or modified. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 137. Consent-policy activation deactivates active revisions across all policy types
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`, `activate_privacy_policy_audit_only()`, lines 282–340); `backend/domains/privacy/models.py` (blob `74a4d4f61ccbb1dfda129ab93c5b19ce154c7bad`, `PrivacyPolicyRevision` policy-type and active-state fields).
+
+### 137.1 The activation endpoint's deactivation query is not scoped to consent policies
+
+The endpoint is specifically `POST /policies/{revision_id}/activate-audit-only`. It validates that the target revision has `policy_type == "CONSENT"` and `status == "APPROVED"`. It then selects every `PrivacyPolicyRevision` whose `is_active` flag is true, using `with_for_update()`, but the query does not constrain `policy_type`. The loop sets every selected revision to inactive and changes its enforcement mode to `OFF`, clearing its mode-approval metadata. Only after that does the handler activate the requested consent revision in `AUDIT_ONLY` mode and commit.
+
+Because the model supports distinct policy types, the broad query includes any active retention revision (and any other active policy type represented by the model), not merely a prior consent revision. Thus, activating a consent policy can silently deactivate an unrelated active retention policy in the same tenant database. The endpoint's deployment guards and second-person check do not narrow the query's scope.
+
+This is a source-level unintended cross-policy lifecycle side effect. No policy was activated or deactivated during this review, and no production impact is claimed.
+
+### 137.2 Required remediation and acceptance evidence
+
+1. Scope the deactivation query to the same `policy_type` as the target revision, unless a documented global mutual-exclusion rule is explicitly intended and approved.
+2. If policy types are intentionally mutually exclusive, encode that invariant explicitly in the model/service contract and make the endpoint name, audit reason and operator confirmation accurately describe the global effect.
+3. Add PostgreSQL-backed tests with an active approved CONSENT revision and an active approved RETENTION revision; activating a new consent revision must preserve retention activation unless the approved product rule explicitly says otherwise.
+4. Test two concurrent activations of different policy types and verify the locking/serialization rule cannot produce an unintended inactive state or overwrite the wrong revision's mode metadata.
+5. Ensure the decision audit records every revision changed by a global operation, or records only the correctly scoped target and prior same-type revision when activation is type-local.
+
+**Assessment:** High-priority privacy-policy lifecycle integrity gap. Static source establishes that the consent activation handler deactivates all active revision types because its selection predicate omits `policy_type`. It supports unintended retention-policy deactivation as a direct consequence if such an active revision exists; it does not establish that this operation has occurred in a deployed tenant.
+
+**Boundary:** exact-head static source review only. No policy was activated/deactivated, no tenant database or patient data was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
