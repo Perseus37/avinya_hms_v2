@@ -5385,3 +5385,33 @@ No expired batch was adjusted or dispensed in a deployed tenant; the dispensing 
 **Assessment:** Medium-priority inventory accuracy and stock-governance defect. Static source proves that positive adjustments do not check expiry and that the ordinary inventory listing filters by positive quantity only, while dispensing separately blocks expired batches. It does not establish an actual dispensing of expired medication or patient impact.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 189. Deactivated formulary medication can still be dispensed from an existing prescription
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `update_medication()`, `deactivate_medication()`, `write_prescription()`, and `dispense_medication()`; `backend/domains/pharmacy/models.py`, `MedicationMaster` and `PrescriptionItem`.
+
+### 189.1 Medication activation is checked at prescribing but not at dispensing
+
+The medication update endpoint accepts `is_active` and persists it. The dedicated medication DELETE endpoint also sets `MedicationMaster.is_active = False`. Prescription creation loads the requested medication masters and explicitly rejects an inactive medication before creating prescription items.
+
+The later dispensing path locks the prescription and its selected prescription items, verifies the requested quantities, checks the inventory batch belongs to the prescription item's medication, validates expiry and stock, and then loads the `MedicationMaster`. At that point it rejects only a missing medication record; it does not inspect `med.is_active`. The `MedicationMaster` model has a persisted `is_active` flag, while `PrescriptionItem` retains only the medication foreign key and does not snapshot an activation/authorization decision.
+
+Concrete sequence: a prescription is created while a medication is active; an authorized formulary operator subsequently deactivates that medication; a pharmacy user then submits the existing active prescription for dispensing. If deactivation is intended to suspend fulfilment, the dispense route does not enforce that decision and can decrement batch stock, increment dispensed quantity, and add the pharmacy invoice line. The source does not define whether deactivation is intended only to prevent new prescriptions or also to stop fulfilment of existing prescriptions, so this is recorded as an unresolved policy-enforcement gap rather than asserting that every previously authorized prescription must be blocked.
+
+This is distinct from Section 158's CPOE order-set application path, which does not revalidate medication activation while converting a template into a prescription. This section concerns the subsequent direct dispensing of an already-persisted prescription.
+
+No actual inactive medication was dispensed in a deployed tenant, and no patient impact was established.
+
+### 189.2 Required remediation and acceptance evidence
+
+1. Define and document the meaning of medication deactivation: stop new prescribing only, stop all future dispensing, or require a controlled exception for already-authorized prescriptions. Distinguish routine formulary retirement from urgent safety withdrawal/recall if those have different clinical implications.
+2. Enforce the selected policy in the dispensing transaction using a fresh/locked medication state check before any stock, prescription quantity, or invoice mutation. For an approved exception, require an authorized actor, reason, and immutable audit evidence.
+3. If existing prescriptions may remain dispensable after routine retirement, persist the relevant formulary decision/version or explicit fulfilment authorization so the behavior is deliberate and reviewable; do not silently treat every inactive state identically.
+4. Ensure urgent withdrawal/recall states cannot be bypassed by an old prescription or ordinary dispensing permission. Coordinate this with the durable batch disposition controls in Section 187.
+5. Add PostgreSQL tests for active-at-prescribe then deactivated-before-dispense, medication deactivated before prescription creation, deactivation racing with dispensing, and any explicitly authorized exception. Assert that a rejected dispense changes neither batch stock, prescription quantities/status, nor invoice rows.
+
+**Assessment:** Medium-priority formulary and medication-safety policy gap pending an explicit deactivation policy. Static source establishes that the create-prescription path rejects inactive medication but the direct dispense path does not recheck the activation flag. The clinical and operational effect depends on the intended semantics of deactivation; no deployed dispensing or patient harm was established.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
