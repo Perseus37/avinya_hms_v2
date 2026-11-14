@@ -4872,3 +4872,30 @@ This is a concurrency capability established by the route/model structure; no co
 **Assessment:** High-priority clinical record integrity and signature-attribution race. The source proves the check-then-write sequence lacks atomic concurrency control; it does not establish an actual production race or patient/legal impact.
 
 **Boundary:** exact-head static source review only. No clinical endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 171. Concurrent SOAP note edit can commit after sign-off and mutate signed content
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `update_soap_clinical_note()` and `sign_off_clinical_note()`; `backend/domains/clinical/models.py`, `ClinicalNote`.
+
+### 171.1 The unsigned check does not fence a concurrent content update
+
+The update route loads a note, checks `is_signed`, and rejects only when the value observed by that request is already true. It then applies supplied SOAP fields and commits. The sign-off route independently loads the note, checks the same flag, and writes the signature fields. Neither route uses a row lock, conditional update predicate, or optimistic version check.
+
+A concrete interleaving is possible: transaction A loads an unsigned note and passes the edit guard; transaction B signs and commits the note; transaction A then commits its already-authorized SOAP-field changes. The edit transaction updates the note content without rechecking the committed signed state. The resulting row can remain `is_signed=True` while its signed SOAP content has been changed after sign-off. The edit route can return success.
+
+This is distinct from Section 170: Section 170 concerns competing sign-off requests overwriting signer attribution; this section concerns an edit transaction passing its pre-signature check and committing content after another transaction signs.
+
+No concurrent production edit/sign-off or actual post-signature mutation is established.
+
+### 171.2 Required remediation and acceptance evidence
+
+1. Serialize edits and sign-off on the same note row using a consistent row-locking protocol, or use a versioned/conditional write that fails if the note was signed or changed after the editor read it.
+2. Make the edit write itself conditional on `is_signed = false`; do not rely solely on an earlier in-memory check.
+3. Ensure a losing edit returns 409 and leaves all SOAP fields, signature fields, and audit attribution unchanged.
+4. Add a two-session PostgreSQL test: transaction A reads and stages an edit; transaction B signs and commits; A attempts to commit. Assert the edit is rejected or serialized before sign-off, and no content can change after the signature.
+5. Add the reverse-order test (edit commits before sign-off) to confirm the signed content is exactly the final committed pre-signature content.
+
+**Assessment:** High-priority medico-legal record integrity race. Source establishes a check-then-write gap across the edit and sign-off routes; it does not establish an actual production incident or legal/patient impact.
+
+**Boundary:** exact-head static source review only. No clinical endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
