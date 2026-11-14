@@ -6326,3 +6326,29 @@ No policy, tariff, invoice, patient record, or billing transaction was accessed 
 
 **Boundary:** exact-head static source/model and call-site review only. No patient data, tenant database, insurance policy, tariff, invoice, or live billing transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 223. Insurance claim submission accepts a pre-authorization from a different encounter
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/insurance/router.py`, `submit_insurance_claim()` and `submit_cashless_preauth()`; `backend/domains/insurance/models.py`, `InsurancePreAuth.encounter_id`, `InsurancePreAuth.policy_id`, and `InsuranceClaim`; `backend/domains/billing/models.py`, `Invoice.encounter_id`.
+
+### 223.1 Claim validation binds the pre-auth to the policy but not to the invoice encounter
+
+Pre-authorization creation records both an encounter ID and a policy ID, and validates that the policy belongs to the encounter's patient. Claim submission loads the invoice and validates that the selected policy is active and belongs to the invoice's patient. When a pre-authorization is supplied, however, it checks only that the pre-auth exists, references the same policy, and is APPROVED. It does not compare `preauth.encounter_id` with `invoice.encounter_id`.
+
+For a patient with multiple encounters under the same insurance policy, an approved pre-authorization from encounter A can therefore be attached to a claim for an invoice belonging to encounter B. The claim then uses the unrelated pre-authorization's approved amount as the coverage cap. This breaks the encounter-level provenance of the approval and can cause the wrong authorization limit to be applied to a claim.
+
+The source establishes the missing relationship check. It does not establish that a mismatched pre-authorization has actually been used or that a claim was underpaid/overpaid. The check should also define behavior for invoices whose encounter ID is null; they must not silently accept an encounter-bound pre-authorization.
+
+This is distinct from Section 213's advance-deposit allocation mismatch: this finding concerns reusing an encounter-bound payer authorization as the cap for another encounter's insurance claim.
+
+### 223.2 Required remediation and acceptance evidence
+
+1. When an invoice has an encounter ID, require the linked pre-authorization's encounter ID to match it, in addition to requiring the same policy and patient.
+2. Define and reject or explicitly govern pre-authorization use for patient-level invoices without an encounter ID; do not infer a match from patient identity alone.
+3. Revalidate that the pre-authorization is APPROVED and belongs to the policy at the claim transaction boundary; lock the relevant invoice, policy, and pre-authorization rows consistently to prevent concurrent status changes.
+4. Add PostgreSQL-backed tests for same-encounter acceptance, different-encounter rejection under the same policy, different-policy rejection, null-encounter invoice behavior, and concurrent pre-auth status changes.
+5. Preserve the pre-authorization/encounter relationship in claim provenance and reconciliation outputs.
+
+**Assessment:** Medium financial authorization and encounter-accounting integrity defect. A claim can consume an approved limit issued for a different encounter of the same patient. No mismatched claim or financial loss was observed.
+
+**Boundary:** exact-head static source/model and control-flow review only. No patient data, tenant database, pre-authorization, invoice, claim, or live financial transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
