@@ -6220,3 +6220,31 @@ No malformed configuration or affected patient result was observed. The accepted
 
 **Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, laboratory result, or live configuration was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 219. Diagnostic order update API can set terminal status directly, bypassing task lifecycle and cancellation billing reversal
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/diagnostics/router.py`, `update_diagnostic_order()` and `cancel_diagnostic_order()`; `backend/domains/diagnostics/schemas.py`, `DiagnosticOrderUpdate`; `backend/domains/billing/services.py`, `reverse_cancelled_diagnostic_order_billing()`.
+
+### 219.1 Direct status assignment bypasses the guarded lifecycle operations
+
+The `PUT /api/diagnostics/orders/{order_id}` handler accepts an optional `status` from the full `OrderStatusEnum` and assigns it directly to the order. Its only lifecycle guard checks whether the order is already COMPLETED or CANCELLED. For any other current state, a caller with `diagnostics:write` can set the order directly to either terminal state.
+
+This bypasses the dedicated cancellation handler. `DELETE /api/diagnostics/orders/{order_id}` marks pending, sample-collected, and in-progress tasks CANCELLED and calls `reverse_cancelled_diagnostic_order_billing()` before committing. The direct PUT path does none of those operations: it can mark an order CANCELLED while its tasks remain pending/in progress and while auto-billed diagnostic line items remain on a draft invoice.
+
+The same PUT path can set an order to COMPLETED without requiring its tasks to reach VERIFIED. The normal result-submission workflow derives order completion from task states after verification; direct assignment therefore allows an order-level completed status that is unsupported by its underlying task lifecycle.
+
+This is distinct from Sections 183 and 195, which concern prescription and encounter lifecycle bypasses, and Section 217, which concerns delta-check review enforcement. This finding is specifically the diagnostic order aggregate's public status-update route bypassing its own task and billing side effects.
+
+No actual order was changed and no stale invoice or inconsistent task set was observed. The bypass follows directly from the accepted enum, direct assignment, and the additional work performed only by the dedicated cancellation endpoint.
+
+### 219.2 Required remediation and acceptance evidence
+
+1. Remove `status` from the general diagnostic order update contract; permit only explicitly safe metadata changes such as clinical notes.
+2. Route cancellation through one lifecycle service that atomically updates eligible task states, applies the defined billing reversal/credit policy, and records an attributable cancellation event.
+3. Derive COMPLETED only from the required verified task set; do not accept caller-supplied terminal completion status.
+4. Define and enforce allowed order-state transitions in one domain service, with row locking or equivalent concurrency control so concurrent task updates and cancellation cannot produce contradictory aggregate state.
+5. Add PostgreSQL-backed API tests proving direct PUT cannot set COMPLETED or CANCELLED; dedicated cancellation updates the correct task states and billing lines; completed/cancelled orders remain immutable; and concurrent verification/cancellation preserves consistent order, task, and invoice state.
+
+**Assessment:** High-priority clinical workflow and billing-integrity defect. A caller with ordinary diagnostic write permission can bypass terminal-state invariants and cancellation side effects. No actual inconsistent order, stale invoice, or patient harm was observed.
+
+**Boundary:** exact-head static source/schema/service review only. No patient data, tenant database, diagnostic order, or invoice was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
