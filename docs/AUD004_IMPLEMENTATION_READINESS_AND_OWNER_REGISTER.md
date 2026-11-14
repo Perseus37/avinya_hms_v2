@@ -5511,3 +5511,33 @@ No concurrent duplicate administration was observed in a deployed tenant; this i
 **Assessment:** High-priority medication administration integrity risk. Static source proves the duplicate check and eMAR insert are separate operations, and the model has no matching uniqueness constraint. Concurrent requests can therefore both pass the check. No actual duplicate administration or patient harm was established.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 193. BCMA API cannot record held, refused, or missed medication doses and always creates ADMINISTERED
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/models.py`, `eMARStatusEnum` and `MedicationAdministrationLog`; `backend/domains/pharmacy/schemas.py`, `BCMAVerificationRequest`; `backend/domains/pharmacy/router.py`, `bcma_verify_and_administer()`; `backend/domains/pharmacy/services.py`, `execute_bcma_administration()`.
+
+### 193.1 Supported clinical outcomes are not represented by the BCMA request or execution path
+
+The eMAR model defines four statuses: `ADMINISTERED`, `HELD`, `REFUSED`, and `MISSED`. The `MedicationAdministrationLog` docstring likewise describes individual doses administered, held, or refused.
+
+However, `BCMAVerificationRequest` has no outcome/status field or structured reason field for a non-administration event. The only reviewed bedside endpoint is `POST /bcma/verify-and-administer`; it calls `execute_bcma_administration()`. After barcode/right checks, warning handling, allergy check, and duplicate check pass, that service unconditionally constructs the eMAR row with `status=eMARStatusEnum.ADMINISTERED`. It then increments `PrescriptionItem.dispensed_quantity` when below requested quantity and commits the eMAR and BCMA audit records.
+
+There is therefore no supported outcome in this API path for a nurse to record that a scheduled dose was held, refused by the patient, or missed. A caller cannot select one of the other enum values through the request contract. The successful path records administration, not an unsuccessful or intentionally withheld attempt.
+
+This is distinct from Section 192's concurrent duplicate eMAR insertion race and Sections 190–191's prescription lifecycle/quantity accounting. It concerns the absence of a non-administration event workflow and the semantic correctness of the clinical record.
+
+No actual held/refused/missed dose was misrecorded in a deployed tenant; this is a contract and source-path gap, not evidence of a clinical incident.
+
+### 193.2 Required remediation and acceptance evidence
+
+1. Add an explicit, constrained eMAR outcome workflow for ADMINISTERED, HELD, REFUSED, and MISSED. Do not let a generic status field turn an ordinary verification request into an administration.
+2. Require structured reason codes and appropriate notes for HELD, REFUSED, and MISSED; distinguish patient refusal, clinical hold, unavailable medication, and workflow/system failure where clinically appropriate.
+3. For non-administered outcomes, persist the event and responsible actor/time but do not increment administered quantity or mark the dose as administered. Define whether a held dose can later be re-attempted and how the scheduled dose identity is preserved.
+4. Keep medication barcode/right verification and allergy checks for actual administration. Define which checks apply to documenting non-administration, without forcing a false successful administration.
+5. Ensure audit/eMAR event persistence is atomic and idempotent with the schedule-instance identity introduced in Section 192.
+6. Add PostgreSQL integration tests proving each non-administration outcome persists its correct status, required reason, actor and time, does not increment administered quantity, and cannot be mistaken for an ADMINISTERED event in clinical history or reports.
+
+**Assessment:** High-priority medication-administration documentation integrity gap. The enum supports non-administration statuses, but the reviewed BCMA request and execution path always write ADMINISTERED and provide no way to select or document the other outcomes. No actual misdocumentation or patient harm was established.
+
+**Boundary:** exact-head static source/model/API-contract review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
