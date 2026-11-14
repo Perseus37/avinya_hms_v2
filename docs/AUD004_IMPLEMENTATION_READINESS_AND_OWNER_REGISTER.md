@@ -3888,3 +3888,29 @@ This is distinct from Section 131: Section 131 concerns a dequeued task being st
 **Assessment:** High-priority destructive-retention reliability and audit-integrity gap. Static source establishes that the queue task UUID is not propagated into the retention service/ledger and that the ledger has no unique idempotency field or matching-run guard. It supports a duplicate-execution scenario if a committed handler attempt is retried, but does not establish that the worker actually retried after commit or that any patient record was changed more than once.
 
 **Boundary:** exact-head static source review only. No Redis instance, worker, retention job, policy, tenant database or patient record was accessed or executed. No destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 133. Retention execution can miss a legal hold committed during execution
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/retention_service.py` (blob `18b45ac9ccff4e187368b690ccc3f84705a55807`, `get_active_legal_holds()` and `execute_retention_category()`); `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`, legal-hold create/release and retention execution routes); `backend/core/database.py` (blob `043f4ccbdad4d2bfe4c89af0b46988ce60610b01`, tenant session configuration).
+
+### 133.1 Hold state is read once, without a concurrency fence before mutation
+
+Each call to `execute_retention_category()` loads active legal holds through `get_active_legal_holds()`, computes category-wide and patient-specific hold sets, and then performs candidate selection and mutation using those in-memory results. The patient anonymisation loop and the privacy-decision-audit DELETE do not re-query or lock the relevant hold rows immediately before mutation. The hard-delete patient branch also relies on the initially computed patient hold set; foreign-key dependencies may independently prevent some deletes, but they do not protect updates such as anonymisation.
+
+The legal-hold creation route independently validates the patient (when patient-scoped), inserts a `PrivacyLegalHold`, and commits. It does not acquire a lock or shared serialization primitive that coordinates with a retention execution already in progress. The release route locks the individual hold row, but retention does not lock those rows when reading active holds. The tenant session configuration does not set a stronger transaction isolation level; PostgreSQL's normal READ COMMITTED behavior therefore does not make the earlier hold query a transaction-wide snapshot.
+
+A concrete race is possible: retention reads the active-hold set; a second authorized request creates and commits a patient-scoped hold; the first retention transaction then anonymises that patient using its stale in-memory hold set and commits. A similar window exists for a category-wide hold and category-level audit deletion, because the hold row has no foreign-key relationship to the audit rows being deleted. The source establishes the missing coordination and stale-read window, not that this interleaving has occurred in a deployed environment.
+
+### 133.2 Required remediation and acceptance evidence
+
+1. Define a serialization protocol shared by hold creation/release and retention execution. A hold must not be acknowledged as effective while an in-flight retention transaction can still mutate its protected scope without observing it.
+2. Use a tenant-scoped lock or equivalent concurrency-control mechanism acquired by both legal-hold mutations and retention execution, with a documented lock order and bounded timeout; alternatively use a serializable/claim protocol with explicit retry handling.
+3. Revalidate applicable active holds at the mutation boundary, not only once before candidate selection. Ensure patient-scoped and category-wide scopes use the same canonical category semantics in both preview and mutation paths.
+4. For destructive operations, define whether a hold created concurrently wins or whether the hold request must wait until the in-flight retention operation completes; expose that behavior to the caller and audit it.
+5. Add deterministic PostgreSQL concurrency tests using transaction barriers: create a patient hold after retention's initial hold read but before anonymisation; create a category hold before audit deletion; release a hold concurrently; and verify the chosen serialization outcome. Assert no protected record is mutated after the hold is accepted as effective.
+6. Keep the existing same-session atomicity guarantee: category mutations, run ledger and execution audit should still commit or roll back together.
+
+**Assessment:** High-priority legal-hold enforcement and retention concurrency gap. Static source establishes that retention uses an earlier in-memory hold set while legal-hold creation commits independently, with no shared lock or mutation-boundary revalidation. It supports a race in which a newly committed hold can be missed by an in-flight anonymisation or category-wide audit-retention operation. It does not establish that a real hold was bypassed or that any patient/audit record was changed.
+
+**Boundary:** exact-head static source review only. No legal hold was created or released, no retention policy/job was run, no tenant database or patient record was accessed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
