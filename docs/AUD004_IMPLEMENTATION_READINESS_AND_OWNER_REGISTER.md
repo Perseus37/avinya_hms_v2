@@ -5078,3 +5078,35 @@ No actual bedside administration or patient impact was established.
 **Assessment:** High-priority medication-administration safety and audit-integrity gap. The source proves the time reference is caller-controlled and not bound to a persisted prescription schedule; it does not prove a real administration was mistimed or harm occurred.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 178. Controlled-substance movement does not bind the selected vault drug to the linked prescription and encounter
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/services.py`, `process_controlled_substance_movement()`; `backend/domains/pharmacy/models.py`, `ControlledSubstanceVault` and `ControlledSubstanceMovementLog`; `backend/domains/pharmacy/router.py`, controlled-substance dispense and return endpoints.
+
+### 178.1 Existence checks do not establish clinical or medication identity consistency
+
+The controlled-substance service locks the selected vault and reads its balance. For a `DISPENSE` movement, it checks that a supplied `encounter_id` resolves to an encounter and that a supplied `prescription_item_id` resolves to a prescription item. It does not verify any of the following:
+
+- The prescription item belongs to the supplied encounter.
+- The prescription item's prescription belongs to the patient/encounter represented by the movement.
+- The prescription item's `medication_id` equals the selected vault's `medication_id`.
+- The vault medication is still marked as a controlled substance.
+
+The `RETURN_TO_VAULT` path repeats the existence-only checks. The movement model stores `vault_id`, `encounter_id`, and `prescription_item_id` as independent foreign keys; there is no composite ownership or medication-consistency constraint. The return-cap calculation also prefers `prescription_item_id` when both clinical identifiers are supplied, without first proving that they refer to the same clinical order.
+
+A caller with the relevant pharmacy/nursing write permission can therefore create a ledger movement that decrements one controlled-drug vault while attributing the movement to an unrelated prescription item, or attach an encounter and prescription item from different encounters. The movement transaction can commit because each referenced row exists independently. This undermines the controlled-substance ledger's clinical traceability and can make later dispense/return reconciliation operate on mismatched identifiers.
+
+No mismatched movement or production ledger corruption was established; this is a source-level validation gap.
+
+### 178.2 Required remediation and acceptance evidence
+
+1. Resolve the prescription item through its parent prescription and derive the authoritative encounter from that relationship; if the request also supplies an encounter ID, require an exact match.
+2. Require the prescription item's medication to match the selected vault's medication for dispense and return movements; reject inactive/non-controlled medication/vault combinations according to an explicit lifecycle policy.
+3. Enforce the relationship at the database boundary where feasible, using composite keys/constraints or a normalized movement reference that cannot represent contradictory encounter, prescription, and vault medication identities.
+4. Define whether a movement may be linked to an encounter only, prescription only, or both; when both are present, require consistency. Keep ward-floor-stock movements explicitly distinct from patient/prescription-linked movements.
+5. Add PostgreSQL tests for mismatched encounter/prescription, mismatched vault/prescription medication, valid same-encounter/same-medication movement, return attempts against mismatched references, and proof that rejected requests leave both vault balance and movement ledger unchanged.
+
+**Assessment:** High-priority controlled-substance traceability and reconciliation integrity gap. The source proves independent existence checks and missing cross-reference validation; it does not prove a real-world misdispense, ledger alteration, or patient harm.
+
+**Boundary:** exact-head static source/model/router review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
