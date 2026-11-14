@@ -6725,3 +6725,30 @@ No patient record was requested, exported, or accessed during this source review
 **Assessment:** High-priority patient privacy and export-authorization gap. The CSV response path bypasses the explicit privacy-use decision enforced by the same endpoint's JSON path and includes MRN and patient name. No actual disclosure or operational impact was observed.
 
 **Boundary:** exact-head static route/export-helper/privacy-runtime review only. No patient data, tenant database, appointment, export stream, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 237. OPD doctor-leave validation checks appointment start time but not appointment interval overlap
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/opd_router.py`, `check_doctor_on_leave()`, `book_appointment()`, `reschedule_appointment()`, and `book_appointment_from_waitlist()`; `backend/domains/encounters/models.py`, `DoctorLeave` and `Appointment`.
+
+### 237.1 A leave interval is compared only with the appointment start instant
+
+`check_doctor_on_leave()` normalizes the proposed appointment timestamp and returns a leave row only when the appointment start instant satisfies `leave.start_time <= appointment_time <= leave.end_time`. It does not accept appointment duration or calculate the appointment's end instant, and it does not test interval intersection.
+
+The normal booking, rescheduling, and waitlist-booking paths all call this helper with the appointment start time. In the normal and waitlist booking paths, the doctor consultation duration is available from the doctor profile, and the appointment stores that duration as `planned_duration_minutes`; rescheduling also derives and stores a duration. However, that duration is not supplied to the leave check.
+
+Consequently, an appointment that starts before a scheduled leave begins but continues into the leave interval can pass the blackout check. For example, a 30-minute appointment starting at 09:45 is not rejected by a leave beginning at 10:00, because only 09:45 is tested. The same gap applies to rescheduling and waitlist conversion. This is distinct from Section 234's concurrent slot-overlap race: this finding is a deterministic interval-boundary validation defect even with a single request.
+
+No appointment/leave collision was queried or observed in a live tenant.
+
+### 237.2 Required remediation and acceptance evidence
+
+1. Define appointment intervals consistently, including timezone normalization, duration fallback, and whether intervals are half-open `[start, end)` so an appointment ending exactly when leave begins is treated as adjacent rather than overlapping.
+2. Change the leave validator to receive both appointment start and planned duration (or an explicit end instant) and reject when the appointment interval intersects any active leave interval: `appointment_start < leave_end AND appointment_end > leave_start` under the chosen interval semantics.
+3. Apply the same interval predicate to normal booking, rescheduling, and waitlist booking; ensure each path uses the duration that will actually be persisted on the appointment.
+4. Add tests for an appointment fully inside leave, starting before and ending during leave, starting during and ending after leave, spanning the entire leave, ending exactly at leave start, starting exactly at leave end, adjacent non-overlapping appointments, timezone-aware/naive inputs, and differing consultation durations.
+5. Add a shared service-level test to ensure future scheduling write paths cannot call a start-time-only leave check.
+
+**Assessment:** High-priority OPD availability and scheduling-integrity gap. The blackout check can accept a consultation whose scheduled duration overlaps a doctor's active leave even though the appointment start itself is outside the leave interval. No actual conflict or operational impact was observed.
+
+**Boundary:** exact-head static route/helper/model review only. No patient data, tenant database, doctor leave, appointment, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
