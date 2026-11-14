@@ -4567,3 +4567,28 @@ This creates a stale-template control gap: catalog deactivation is not an effect
 **Assessment:** High-priority catalog-lifecycle enforcement gap in clinical order execution. This is distinct from Section 157: Section 157 concerns item types/required references that the application never instantiates; Section 158 concerns valid linked resources that have since been deactivated.
 
 **Boundary:** exact-head static source review only. No catalog or order-set endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 159. NEWS2 endpoint converts unrecorded consciousness into an observed normal Alert state
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `NEWS2EvaluationRequest` and `evaluate_encounter_news2()`; `backend/domains/clinical/services.py`, `calculate_news2_score()`.
+
+### 159.1 Missing consciousness is defaulted to Alert before completeness and scoring
+
+The request model makes `consciousness` optional. In the endpoint, the submitted value is converted with `payload.consciousness or "ALERT"` before calling the NEWS2 calculator. The calculator then treats Alert as a measured normal state: it assigns zero consciousness points and includes consciousness in its core-parameter completeness check because the value is no longer `None`.
+
+Consequently, when a caller omits consciousness but supplies the other five core observations, the evaluator reports a complete parameter set and scores consciousness as normal Alert. It cannot distinguish “Alert was assessed” from “consciousness was not documented.” A patient with unassessed confusion or reduced responsiveness could therefore receive a lower score and a falsely complete-data result compared with an explicitly recorded abnormal ACVPU state.
+
+The source establishes the defaulting and scoring behavior; it does not establish a real NEWS2 record, missed deterioration, or patient harm.
+
+### 159.2 Required remediation and acceptance evidence
+
+1. Preserve missing consciousness as missing; do not translate absence into a normal clinical observation.
+2. Require an explicit ACVPU assessment for a complete NEWS2 set, or expose an explicit incomplete/unknown state that cannot be represented as Alert.
+3. Ensure missing consciousness is reported in `missing_parameters` and the recommendation remains explicitly incomplete.
+4. Add synthetic endpoint and calculator tests contrasting omitted consciousness, explicit Alert, Confusion, Voice, Pain, and Unresponsive.
+5. Verify risk classification and RRT behavior for the same vital set with consciousness omitted versus explicitly abnormal; retain attributable provenance for each observation.
+
+**Assessment:** High-priority early-warning score data-quality and under-triage risk. The finding is the conflation of missing assessment with normal Alert, not a claim that the NEWS2 algorithm itself was clinically validated or that a real patient was under-scored.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
