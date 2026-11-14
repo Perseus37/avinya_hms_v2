@@ -4141,3 +4141,28 @@ This is distinct from the DPDP data-rights request lifecycle finding in Section 
 **Assessment:** High-priority breach-response governance gap. The API permits arbitrary enum-valid status changes and does not record attributable change history or evidence for key reporting milestones. This does not establish a real breach, missed notification, or regulatory non-compliance event.
 
 **Boundary:** exact-head static source review only. No breach endpoint was called, no incident records or patient data were accessed, no tenant database was queried, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 143. HL7 integration-log reader exposes patient-identifiable laboratory payloads under equipment-master read permission
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/router.py` (blob `ceba912675b3525197055a0ffea944fe604d179b`), `view_integration_logs()`; `backend/domains/integrations/models.py` (blob `32d40b58d6dec8056729533c30f193f413cba096`), `HL7IntegrationLog`; `backend/domains/integrations/service.py` (blob `68fcd948f6460b2c05f9343bd563dee769704a3d`), `redact_hl7_security()` and successful ORU log persistence.
+
+### 143.1 Raw clinical content is retained and returned by the troubleshooting endpoint
+
+The `GET /api/equipment/logs` route requires only `mdm:read`, selects recent `HL7IntegrationLog` ORM rows, and returns those rows directly without a response projection or field-level redaction. The model includes a non-null `raw_payload` text field. The successful ORU processing path persists the incoming message in that field after calling `redact_hl7_security()`.
+
+That helper redacts only MSH-8, described in its docstring as the security token. It leaves the other HL7 segments and fields intact. In an ORU^R01 message those segments can include patient identifiers/demographics (for example PID fields) and clinical observations/results (OBX fields). Because the log route serializes the full ORM object, a user granted equipment-master read permission can retrieve those stored patient-identifiable clinical payloads without a separate patient-data or privacy-log permission check.
+
+This is distinct from Section 113, which concerns authentication accepted by the inbound ORU endpoint. Section 143 concerns the outbound read path and excessive disclosure from stored integration logs. The source establishes the capability and data shape, not that a particular user has the permission or has accessed any log. No integration logs or patient data were read.
+
+### 143.2 Required remediation and acceptance evidence
+
+1. Replace raw-message logging with a minimum-necessary structured record: message control ID, equipment, processing status, timestamps and non-sensitive diagnostics; do not retain full PID/OBX content in ordinary troubleshooting logs.
+2. If raw payload retention is operationally necessary, place it in a separately protected, encrypted, access-audited store with explicit purpose, retention, expiry and tightly scoped roles.
+3. Make the ordinary log endpoint return an explicit response schema that excludes `raw_payload` and any other patient-identifying content; require a dedicated audited permission for exceptional access.
+4. Add synthetic ORU tests containing fake PID and OBX values proving that ordinary `mdm:read` responses never return identifiers, demographics or results, while any exceptional raw-message access is denied by default and audit-attributed.
+5. Define log retention/deletion and ensure exports, error paths and operational tooling follow the same minimization policy.
+
+**Assessment:** High-priority privacy/data-minimization exposure. A role intended for equipment-master read can retrieve full stored HL7 payloads, including patient and result fields, through the troubleshooting endpoint. Actual access, permission assignment and deployed exposure have not been established.
+
+**Boundary:** exact-head static source review only. No endpoint was called, no integration logs or patient data were accessed, no tenant database was queried, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
