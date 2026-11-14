@@ -2303,3 +2303,43 @@ The production Compose file reviewed mounts the shared `hms_backups` volume into
 **Assessment:** High-priority backup-retention assurance gap if this mode is relied on for WORM or ransomware-resistant recovery. The checked-in implementation provides filesystem permission hardening, not an independently enforced immutable backup boundary; interrupted copies can also be mistaken for completed destinations. External infrastructure could add controls, but none are established by the reviewed repository configuration.
 
 **Boundary:** static source/configuration review only. No vault mode, backup, storage volume, database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+## 78. Off-host backup configuration is ignored by the S3 client and delivery failures are counted as successful tenant backups
+
+**Sources reviewed on main:**
+- `backend/core/config.py` (off-host S3 settings)
+- `backend/scripts/backup_service.py` (`deliver_backup_offhost`, `run_backup_cycle`)
+- `.env.production.example` (documented off-host configuration)
+
+Static source/configuration review only. No S3 bucket, remote destination, backup, credential or production state was accessed or changed.
+
+### 78.1 Declared S3 endpoint, region and credentials are not passed to boto3
+
+The application settings and production environment example define:
+- `BACKUP_OFFHOST_S3_ENDPOINT_URL`
+- `BACKUP_OFFHOST_S3_REGION`
+- `BACKUP_OFFHOST_S3_ACCESS_KEY`
+- `BACKUP_OFFHOST_S3_SECRET_KEY`
+
+However, `deliver_backup_offhost()` constructs its client with only `boto3.client("s3", config=Config(...))`. It does not pass any of the four configured values as `endpoint_url`, `region_name`, `aws_access_key_id` or `aws_secret_access_key`. Therefore the documented custom S3-compatible endpoint, region and explicit credentials do not control the client; boto3 falls back to its ambient default endpoint/region/credential chain. Deployments relying on those settings can fail to upload or can target a different account/endpoint than operators intended.
+
+### 78.2 A failed or absent off-host delivery is not propagated to backup-cycle status
+
+When off-host delivery is enabled but neither remote directory nor S3 bucket is configured, `deliver_backup_offhost()` returns `{"delivered": false, "reason": "OFFHOST_DISABLED"}` only for the disabled flag; with the flag enabled and no destination it returns the initial `{"delivered": false}`. The caller ignores the returned dictionary and increments the successful tenant `count` unconditionally after the call.
+
+The same unconditional count occurs when delivery returns `delivered: false` after an S3 upload failure. The function catches the exception and returns a failure dictionary rather than raising it, so the per-tenant exception handler does not catch the failure. Thus the backup cycle's count can report a tenant as backed up even though the configured off-host copy did not complete. No per-tenant delivery result is emitted as a durable status or metric by this path.
+
+This is distinct from local encrypted snapshot creation: a local backup may exist and be valid while off-host replication has failed. The defect is the inaccurate replication outcome and lack of enforcement when off-host delivery is configured.
+
+### 78.3 Required remediation and acceptance evidence
+
+1. Pass configured endpoint, region and explicit credentials to the S3 client, or remove unsupported settings and document the one supported credential/endpoint mechanism. Never log secret values.
+2. Validate configuration at startup: if off-host is enabled, require at least one complete destination configuration and reject partial S3 credential/endpoint settings.
+3. Treat delivery result as a separate state from local backup creation. Persist/emit per-tenant local-backup and off-host-delivery outcomes; do not increment a replicated-success count unless `delivered` is true.
+4. Ensure any configured mandatory off-host destination failure fails the cycle or produces an explicit degraded result and actionable alert. Define semantics when both remote directory and S3 are configured.
+5. Verify both uploaded artifact and uploaded checksum/manifest at destination; use object versioning/retention controls where required and verify the destination account/bucket identity.
+6. Add tests for custom endpoint and region propagation, explicit credential propagation, no destination while enabled, boto3 upload exceptions, mixed remote-success/S3-failure, and the backup-cycle result/metrics. Assert local backup success is not conflated with off-host replication success.
+
+**Assessment:** High-priority recovery-point and operational-reporting gap for deployments that rely on off-host replication. The checked-in settings advertise endpoint/region/static credentials that the client ignores, and the caller counts false delivery results as successful tenant backups. Whether a particular deployment still succeeds through ambient AWS credentials/default endpoints depends on external environment configuration and was not tested.
+
+**Boundary:** static source/configuration review only. No off-host destination, S3, backup, database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
