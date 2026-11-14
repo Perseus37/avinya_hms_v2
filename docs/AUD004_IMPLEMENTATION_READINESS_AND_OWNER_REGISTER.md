@@ -4990,3 +4990,33 @@ No malformed template or production omission is established.
 **Assessment:** Medium-priority CPOE template integrity and silent-omission defect. Database foreign keys protect non-null references from pointing to nonexistent catalog rows, but do not enforce the required relationship between `item_type` and the nullable reference columns.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 175. CPOE order-set priority is accepted and stored in templates but discarded during application
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `OrderSetItemInput`, `ApplyOrderSetPayload`, and `apply_cpoe_order_set_to_encounter()`; `backend/domains/clinical/models.py`, `OrderSetItem`; `backend/domains/pharmacy/models.py`, `PrescriptionItem`; `backend/domains/diagnostics/models.py`, `DiagnosticTask`.
+
+### 175.1 STAT and URGENT priority do not reach the created clinical orders
+
+The order-set template contract accepts an `OrderSetPriorityEnum` (`ROUTINE`, `URGENT`, `STAT`) for each item, and `OrderSetItem` persists that priority. The application request also accepts an optional top-level `priority`.
+
+However, `apply_cpoe_order_set_to_encounter()` does not read either the payload-level priority or each item's priority when creating downstream records:
+
+- Medication items become `PrescriptionItem` rows with medication, dosage, requested quantity, and dispensed quantity only. The reviewed `PrescriptionItem` model has no priority field.
+- Lab/radiology items become `DiagnosticTask` rows with order, service, and `PENDING` status only. The reviewed `DiagnosticTask` model has no priority field.
+
+The endpoint returns counts and identifiers, but no effective priority or warning that the source priority was discarded. A template configured with STAT/URGENT lines can therefore be applied as ordinary active prescriptions and pending diagnostic tasks without carrying the urgency designation into these records. The request-level `priority` is likewise accepted but unused.
+
+No actual STAT/URGENT order was downgraded in production; this is a source-level data-flow gap.
+
+### 175.2 Required remediation and acceptance evidence
+
+1. Define the authoritative priority semantics separately for medication orders and diagnostic tasks; do not assume one field or default is clinically appropriate for both.
+2. Add persisted downstream priority fields (or an explicit, durable mapping to an existing priority/urgency workflow) and include them in response/read models and operational queues.
+3. Define precedence between request-level priority and per-item priority, including whether request priority may raise but never silently lower an item priority.
+4. If downstream priority support is not implemented, reject non-ROUTINE template priorities and remove or clearly deprecate the unused request-level field until supported.
+5. Add end-to-end tests for ROUTINE, URGENT, and STAT medication and diagnostic lines; assert the effective priority remains visible after application and retrieval.
+
+**Assessment:** High-priority clinical workflow integrity gap because accepted STAT/URGENT metadata is not represented in the generated medication and diagnostic records. The source proves the priority fields are not propagated; it does not prove a real-world delay or patient harm.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
