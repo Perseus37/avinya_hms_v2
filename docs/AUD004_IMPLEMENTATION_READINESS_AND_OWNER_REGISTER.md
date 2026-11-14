@@ -6752,3 +6752,29 @@ No appointment/leave collision was queried or observed in a live tenant.
 **Assessment:** High-priority OPD availability and scheduling-integrity gap. The blackout check can accept a consultation whose scheduled duration overlaps a doctor's active leave even though the appointment start itself is outside the leave interval. No actual conflict or operational impact was observed.
 
 **Boundary:** exact-head static route/helper/model review only. No patient data, tenant database, doctor leave, appointment, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 238. Registering a doctor-leave blackout does not reconcile existing appointments
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/opd_router.py`, `register_doctor_leave_blackout()` and the appointment booking/listing paths; `backend/domains/encounters/models.py`, `DoctorLeave` and `Appointment`.
+
+### 238.1 Leave registration accepts a blackout over already-booked appointments
+
+The `DoctorLeave` model describes active leave rows as blocks on OPD appointment scheduling and stores a doctor plus start/end instants. The `register_doctor_leave_blackout()` route validates only that the end is after the start, constructs an active leave row, and commits it. It does not query scheduled/arrived appointments for the same doctor whose planned intervals intersect the new leave, does not reject a conflicting leave, and does not transition or otherwise flag affected appointments.
+
+The booking, rescheduling, and waitlist-booking paths consult active leave rows when creating or moving appointments. That protects future scheduling requests, but it does not revisit appointments already committed before the leave was registered. Thus an administrator can add an active blackout over existing appointments while those appointments remain in their ordinary scheduled/arrived states and continue to appear as booked. This is distinct from Section 237: Section 237 concerns a new appointment whose duration crosses an existing leave boundary; this section concerns adding a leave after appointments already exist.
+
+No live appointment or leave record was queried, and no actual missed consultation was observed.
+
+### 238.2 Required remediation and acceptance evidence
+
+1. Define the intended policy when a newly registered leave overlaps existing appointments: reject the leave until appointments are handled, or accept it only through an explicit conflict-resolution workflow.
+2. If accepting the leave, identify all scheduled/arrived appointments whose persisted planned intervals intersect the leave interval and require an explicit, auditable disposition (for example, reschedule, cancel with reason, or authorized exception). Do not silently leave them appearing as unaffected bookings.
+3. Serialize leave registration against appointment scheduling for the same doctor using a shared doctor-level lock or equivalent invariant. Re-read conflicting appointments after acquiring the lock so a concurrent booking cannot slip between the conflict check and leave commit.
+4. Define interval boundary and timezone semantics consistently with Section 237; use each appointment's persisted `planned_duration_minutes` when evaluating conflicts.
+5. Add PostgreSQL tests for leave over one/multiple scheduled appointments, arrived appointments, no-conflict intervals, exact adjacency, concurrent leave registration versus booking, and rollback/failure during conflict resolution. Verify both appointment state and audit history.
+
+**Assessment:** High-priority operational scheduling-integrity gap. A newly recorded active leave blackout can coexist with previously booked appointments inside the blackout without any conflict warning or resolution requirement. No actual patient impact was observed.
+
+**Boundary:** exact-head static route/model review only. No patient data, tenant database, appointment, doctor leave, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
