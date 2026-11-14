@@ -3652,3 +3652,28 @@ Consequently, through the reviewed application API, a tenant can create and appr
 **Assessment:** High-priority privacy enforcement readiness gap. Static source establishes that the application lifecycle has no reviewed API path to set `ENFORCE`, despite runtime support for that mode; the only activation API sets `AUDIT_ONLY` and rejects production. This leaves consent enforcement unavailable through the supported policy-management workflow.
 
 **Boundary:** static source review only. No policy was activated, no database row was modified, no consent decision was executed, and no patient data was accessed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 124. Patient retention's date-of-death clock silently falls back to last-updated time
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/policy_schema.py` (`RetentionCategoryRule.clock_start`); `backend/domains/privacy/retention_service.py` (`execute_retention_category`, patient category clock selection); `backend/domains/patients/models.py` (`Patient`).
+
+### 124.1 The configured legal-retention clock is not the clock used at runtime
+
+The retention policy schema explicitly accepts `date_of_death` as a valid `clock_start` value. In the patient retention executor, that branch checks `hasattr(Patient, "date_of_death")`. The reviewed `Patient` ORM model has no `date_of_death` attribute, so the condition is false and the executor silently substitutes `Patient.updated_at < cutoff`.
+
+This means a policy configured to retain records for a period measured from date of death is actually evaluated against the patient's last-update timestamp. The executor does not reject the unsupported clock, report a configuration error, or mark the category as skipped. Since the patient handler only considers inactive patients, an eligible inactive patient may be anonymized or deleted based on an unrelated update timestamp rather than the configured death-date event.
+
+The same patient clock-selection code also maps `contract_end` to `Patient.updated_at`, rather than a contract-end field; this is recorded as a related unsupported-clock concern, not as a separate finding.
+
+### 124.2 Required remediation and acceptance evidence
+
+1. Make the runtime retention clock registry explicit and validate every configured clock against an actual source field or query before policy approval/execution.
+2. Add a persisted, timezone/date-correct death-date source if date-of-death retention is supported; otherwise remove `date_of_death` from accepted policy values until implemented.
+3. Do not silently substitute `updated_at` for unsupported clocks. Fail closed with a clear validation error and no destructive work.
+4. Resolve `contract_end` similarly: provide a real contract-end source or reject the clock.
+5. Add synthetic tests with deliberately different death, update, and contract-end dates proving candidate selection follows the configured clock; assert unsupported clocks cannot reach anonymization or deletion.
+
+**Assessment:** High-priority retention correctness and data-preservation gap. Static source establishes a supported policy value that is not represented on the patient model and is silently evaluated using a different timestamp. The risk is premature or delayed anonymization/deletion relative to the approved retention rule; no claim is made that any record has actually been processed incorrectly.
+
+**Boundary:** static source review only. No retention job was run, no patient record was queried or changed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
