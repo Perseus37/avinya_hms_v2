@@ -4014,3 +4014,29 @@ This is a source-level unintended cross-policy lifecycle side effect. No policy 
 **Assessment:** High-priority privacy-policy lifecycle integrity gap. Static source establishes that the consent activation handler deactivates all active revision types because its selection predicate omits `policy_type`. It supports unintended retention-policy deactivation as a direct consequence if such an active revision exists; it does not establish that this operation has occurred in a deployed tenant.
 
 **Boundary:** exact-head static source review only. No policy was activated/deactivated, no tenant database or patient data was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 138. Concurrent consent submissions can create duplicate current grants
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`, `record_patient_consent()`, lines 801–918); `backend/domains/privacy/models.py` (blob `74a4d4f61ccbb1dfda129ab93c5b19ce154c7bad`, `PatientConsentRecord`, lines 26–56).
+
+### 138.1 The current-grant check and insert are not concurrency-safe
+
+For a consent GRANTED submission, `record_patient_consent()` queries the latest record for the patient, consent type, purpose, scope type and scope key (and, when present, the active policy revision). If that latest record is a non-expired GRANTED record, the route rejects the new grant with HTTP 409. Otherwise it constructs a new `PatientConsentRecord` and commits it.
+
+The read/check and subsequent insert are separate SQL operations in the request transaction. The route does not lock a stable patient/scope row, use a serializable transaction with retry handling, or otherwise serialize competing submissions. The `PatientConsentRecord` model has no uniqueness constraint or partial unique index enforcing one current grant for the matching consent identity. Under PostgreSQL READ COMMITTED, two concurrent requests can both read no current grant (or the same older non-grant/expired record), both pass the duplicate check, and both commit a new GRANTED row.
+
+The same check-then-insert structure also merits concurrency coverage for withdrawal: concurrent withdrawals can both observe the same current grant and append separate WITHDRAWN records. The directly established risk is duplicate current grants from concurrent GRANTED requests; no concurrent submissions or duplicate records were observed during this static review.
+
+### 138.2 Required remediation and acceptance evidence
+
+1. Define the canonical consent identity for uniqueness, including patient, consent type, purpose, scope type/key and policy revision semantics. Define how nullable `scope_key` participates.
+2. Serialize consent mutations for that identity using a stable lock target (for example, a patient/consent-scope advisory lock or a dedicated identity row) and re-read the latest decision after acquiring the lock.
+3. Alternatively or additionally, enforce the chosen invariant with a PostgreSQL constraint/index where the data model can express it safely; do not rely on an application-only pre-insert check.
+4. Apply the same serialization protocol to GRANTED, DECLINED and WITHDRAWN transitions so concurrent transitions have a deterministic order and cannot both claim to be the latest effective decision.
+5. Add deterministic PostgreSQL concurrency tests with two transactions submitting the same grant, two withdrawals, and a grant racing a withdrawal. Assert one valid ordered outcome and no duplicate current grant; test separate scopes and policy revisions remain independent.
+6. Preserve append-only consent history and actor/evidence attribution while enforcing the concurrency invariant.
+
+**Assessment:** High-priority consent-state integrity gap. Static source establishes a check-then-insert path without row/advisory locking or a database uniqueness fence for the matching consent identity. It supports duplicate current grants under concurrent submissions; it does not establish that such a race has occurred or that downstream access was granted because of duplicate rows.
+
+**Boundary:** exact-head static source review only. No consent was created, withdrawn or modified; no patient record or tenant database was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
