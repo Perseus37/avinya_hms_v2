@@ -2686,3 +2686,33 @@ Fernet authentication should reject an artifact encrypted with a different tenan
 **Assessment:** Medium, conditional cross-tenant restore-selection and avoidable service-disruption risk. Current Fernet key authentication is a useful later barrier, but it does not replace tenant-bound artifact selection and preflight validation.
 
 **Boundary:** static source review only. No restore, backup, decryption, database, tenant key, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 90. Restore failure can leave the live tenant database partially replaced
+
+**Source reviewed:** `backend/scripts/restore_tenant.py` (`restore_encrypted_backup`).
+
+Static source review only. No restore command was run, no tenant database or backup artifact was accessed, and no credential or production resource was used.
+
+### 90.1 The restore applies destructive changes directly to the target database without an atomic boundary
+
+The restore helper decrypts the selected dump and invokes `pg_restore` with `--clean` and `--if-exists` against the existing `target_db_name`. The command does not use `--single-transaction`, does not restore into a fresh isolated database for validation, and does not perform a controlled database swap after validation.
+
+The subprocess is checked only after `pg_restore` exits. A non-zero exit code is then converted into a `RuntimeError`, but that error check does not undo SQL statements that were already applied. In the absence of `--exit-on-error`, `pg_restore` can continue processing remaining archive items after an individual restore error; without a transaction boundary, successful earlier and later operations may remain committed even though the helper ultimately reports failure.
+
+Because `--clean` removes existing objects before recreating them, a failed restore can leave the live tenant database in a mixed or incomplete state. The code's later exception is an outcome signal, not a rollback. The pre-restore safety-snapshot attempt in the control-plane task is not an automatic rollback mechanism; in the reviewed path that helper import is separately unresolved as recorded in Section 75.
+
+This is distinct from Section 76's restore-drill database-selection/drop behavior, Section 84's session-termination ordering, and Section 75's missing safety-snapshot helper. This finding concerns the mutation boundary inside the regular tenant restore helper.
+
+### 90.2 Required remediation and acceptance evidence
+
+1. Prefer restoring into a newly created, uniquely named, isolated database using the tenant's validated backup identity; run schema, migration-version, critical-table, row-count and application-level integrity checks before any promotion.
+2. Promote only through a controlled, recoverable cutover that preserves the original database until the replacement is verified. Record the old/new database identities and operation ID, and provide a documented rollback path.
+3. If an isolated restore-and-swap design is not feasible, explicitly evaluate `pg_restore --single-transaction` and `--exit-on-error` for the supported archive/size profile. Document operational limits rather than assuming either flag alone provides a complete recovery design.
+4. Never report restore success based only on process completion; persist per-stage outcomes and require post-restore validation before the tenant is returned to service.
+5. Add disposable PostgreSQL integration tests that inject an object-restore failure after destructive cleanup and prove the original tenant database remains available and unchanged, or that the system retains a verified rollback target and exposes a recoverable maintenance state.
+6. Test process termination during restore, validation failure, cutover failure and rollback failure. Ensure each state is explicit and that no partially restored database is silently promoted as healthy.
+
+**Assessment:** High-priority tenant data availability and restore-integrity risk. The current helper can modify the live tenant database before discovering and reporting a restore error; no atomic rollback or isolated promotion boundary is present in the inspected command. No evidence was gathered that a production restore has failed or left a tenant database partial.
+
+**Boundary:** static source review only. No restore, backup, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
