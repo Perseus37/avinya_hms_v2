@@ -6436,3 +6436,33 @@ No arbitrary-date census request, duplicate charge, future-dated charge, histori
 **Assessment:** High-priority billing-period and revenue-integrity control gap. The endpoint can create room charges for arbitrary dates against the current admission cohort, bypassing the intended temporal meaning of a midnight census. No actual misdated charge was observed.
 
 **Boundary:** exact-head static schema/route/service review only. No patient data, tenant database, census request, admission, invoice, charge event, or live financial transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 227. Bed-transfer audit rows never capture the historical bed rate
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/adt_router.py`, `admit_patient()` and `transfer_patient_bed()`; `backend/domains/encounters/models.py`, `BedTransferLog.unit_price_paise`.
+
+### 227.1 The historical-rate field is present but every ADT write leaves it at zero
+
+`BedTransferLog.unit_price_paise` is a non-null integer with a Python-side default of `0`. Its model comment says it is intended to lock the historical bed rate at the time of transfer. However, both ADT construction sites create `BedTransferLog` without supplying `unit_price_paise`:
+
+- Initial admission creates the first bed log with admission/from/to/reason/requester only.
+- A later bed transfer creates the transfer log with from/to bed, requester, and reason only.
+
+No rate is read from the relevant bed and assigned to the log at either write site. Consequently, the ORM default persists zero for these rows unless another unobserved writer explicitly supplies the value. The reviewed ADT paths do not provide the historical price that Section 225's model description suggests is available. The census runner also does not consume the log, so the combination is twofold: the billing path ignores the intended history, and the reviewed ADT writers do not populate it in the first place.
+
+This is distinct from Section 225's census calculation defect. Section 225 describes the missing occupancy-interval pricing behavior; this finding establishes that the purported transfer-time rate evidence is not actually captured by the admission/transfer write paths. Section 225 should therefore not be read as evidence that valid historical rates are already present in these logs.
+
+No live transfer log, zero-priced historical record, invoice, or financial loss was observed.
+
+### 227.2 Required remediation and acceptance evidence
+
+1. Define the authoritative rate source and effective-time rule for initial admission and every subsequent transfer, including insurance room caps and negotiated tariffs where applicable.
+2. Populate `unit_price_paise` in the same transaction that creates each transfer log; do not rely on a zero default for a financially meaningful historical snapshot.
+3. Make the field immutable after creation through the approved database-level audit/integrity control, with corrections represented by separately attributable adjustment records.
+4. Add PostgreSQL-backed tests asserting initial-admission and subsequent-transfer logs capture the expected rate, including tariff/cap cases, and that later bed-master price changes do not rewrite historical values.
+5. Reconcile the captured transfer-rate evidence with the census occupancy-interval calculation and the policy established for Section 225.
+
+**Assessment:** High-priority evidence-integrity gap for room-rate history. The schema advertises a transfer-time rate snapshot, but the reviewed ADT write paths leave the field to its zero default. This undermines any downstream attempt to reconstruct historical room pricing from the transfer ledger.
+
+**Boundary:** exact-head static route/model/write-site review only. No patient data, tenant database, admission, bed, transfer log, invoice, or live financial transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
