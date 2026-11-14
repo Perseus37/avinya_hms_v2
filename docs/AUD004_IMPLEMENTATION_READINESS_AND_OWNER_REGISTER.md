@@ -3677,3 +3677,28 @@ The same patient clock-selection code also maps `contract_end` to `Patient.updat
 **Assessment:** High-priority retention correctness and data-preservation gap. Static source establishes a supported policy value that is not represented on the patient model and is silently evaluated using a different timestamp. The risk is premature or delayed anonymization/deletion relative to the approved retention rule; no claim is made that any record has actually been processed incorrectly.
 
 **Boundary:** static source review only. No retention job was run, no patient record was queried or changed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 125. Patient hard-delete dependency checks suppress lookup failures
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/retention_service.py` (`execute_retention_category`, patient `action == "delete"` branch); dependency references to encounters, invoices, allergies, diagnostic orders, insurance policies, and patient consent records.
+
+### 125.1 A failed dependency lookup is converted into an empty result
+
+Before hard-deleting inactive patient candidates, the executor checks six dependent record sources: `PatientEncounter`, `Invoice`, `PatientAllergy`, `DiagnosticOrder`, `PatientInsurancePolicy`, and `PatientConsentRecord`. Each lookup is wrapped in an unrestricted `except Exception: pass`.
+
+The code then computes `deletable_ids` from the set of IDs returned by successful lookups. It does not retain a failed-check state, abort the category, or distinguish “no dependent rows” from “dependency check could not be completed.” At the application-logic level, a failed lookup therefore contributes no protected patient IDs to the deletion decision.
+
+This is a fail-open safety design for a destructive operation: the code has no explicit invariant that all six dependency checks must complete successfully before any patient is considered deletable. Whether a particular database/driver error also aborts the surrounding transaction and prevents the subsequent DELETE is database- and error-dependent; this static review does not claim every lookup failure will result in a committed deletion. The established defect is that the application suppresses the failure and does not enforce a fail-closed decision.
+
+### 125.2 Required remediation and acceptance evidence
+
+1. Remove the broad exception suppression. Any dependency-query error must abort the category/run and propagate a clear failure.
+2. Track completion of every required dependency check and permit deletion only when all checks have completed successfully.
+3. Prefer a single explicit, reviewable dependency predicate or a validated dependency registry so additions to the clinical/billing model do not silently escape the deletion guard.
+4. Add synthetic tests injecting a failure independently into each of the six dependency lookups; assert that no patient DELETE is issued, no run is recorded as successful, and the transaction is rolled back.
+5. Add positive tests proving a patient with any dependent record is retained and a patient with no dependencies is eligible only after all checks succeed.
+
+**Assessment:** High-priority destructive-retention safety gap. The reviewed executor silently suppresses all exceptions from each dependency check and has no application-level fail-closed guard. This is not evidence that a patient was deleted, nor proof that every database error permits the later DELETE to commit.
+
+**Boundary:** static source review only. No retention job was run, no patient record was queried or changed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
