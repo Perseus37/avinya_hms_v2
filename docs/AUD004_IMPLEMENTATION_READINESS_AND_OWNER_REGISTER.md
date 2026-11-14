@@ -2752,3 +2752,35 @@ This is separate from Section 76's ignored `pg_restore` exit status, Sections 81
 
 **Boundary:** static source review only. No restore, backup, database, credential, migration, tenant record or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+
+
+## 92. Discovery request purpose is not enforced by the source privacy decision
+
+**Source reviewed:** `backend/domains/federation/router.py` (`discover_and_aggregate_patient_across_branches`, source-side `_fetch_branch_data` closure); `backend/domains/privacy/runtime.py` (`evaluate_tenant_data_use` and `evaluate_tenant_data_use_for_patients`).
+
+Static source review only. No discovery request was sent, no patient record was read, and no database, credential, migration or production resource was accessed or changed.
+
+### 92.1 Caller-declared purpose is recorded but does not constrain source disclosure
+
+The discovery endpoint accepts a caller-supplied `purpose` string (3–255 characters). It explicitly rejects a small set of emergency-purpose labels, but otherwise does not validate the value against a supported-purpose registry or bind it to a source-approved capability.
+
+Inside each source tenant, the disclosure decision calls `evaluate_tenant_data_use` with the fixed data-use point `federation.patient.discover`. That evaluator resolves the purpose code from the active source tenant's privacy policy using the data-use point; it does not receive the endpoint's caller-supplied `purpose` value. The source `FederationTransferLog` stores the caller-supplied string as `purpose`, so the audit record can say (for example) one purpose while the actual authorization decision was made under the policy mapping for `federation.patient.discover`.
+
+The caller-supplied purpose is also used to decide whether to mint a continuity-of-care import receipt. That check occurs after the discovery response has already been assembled; it does not prevent demographic disclosure for a non-continuity label. Therefore a request labelled with a different non-emergency purpose can still receive the same source-authorized discovery demographics, while merely not receiving an import receipt.
+
+This finding does **not** establish that source consent or source sharing policy is bypassed: the source still checks its active tenant privacy policy, sharing mode, patient sharing opt-out and demographic-sharing setting. The gap is that the request's declared purpose is not part of that source-side authorization decision, so purpose limitation and the meaning of the stored purpose audit field are not reliably enforced.
+
+This is distinct from Section 73's owner-tenant active-state invariant, Section 74's PostgreSQL role boundary, and the explicitly documented missing human actor assertion / remote emergency authorization limitation in PR #19. It concerns the mismatch between the caller-declared purpose and the purpose actually evaluated and recorded for ordinary discovery.
+
+### 92.2 Required remediation and acceptance evidence
+
+1. Define a closed, versioned set of federation purposes and reject unknown or unsupported values before any source database session is opened.
+2. Bind each permitted purpose to an explicit source-side data-use point, consent purpose, permitted data categories and operation scope. Do not use one generic discovery data-use point for semantically different purposes.
+3. Pass the validated purpose/scope into the source privacy evaluator and require the source policy/consent decision to authorize that exact purpose before reading or returning patient demographics or allergies.
+4. Record both the validated purpose code and the source policy/consent decision identifier in the source transfer audit. Ensure the audit cannot record a caller label that differs from the purpose actually authorized.
+5. Add tests proving that an unsupported purpose is rejected before source access; a valid but unauthorized purpose returns no patient data; a permitted purpose returns only its allowed data categories; and audit records match the evaluated purpose. Include continuity-of-care and at least one non-continuity purpose.
+6. Keep remote emergency federation disabled until the separately required node-bound scope and verifiable human-actor assertion protocol is implemented and independently reviewed.
+
+**Assessment:** High-priority privacy-purpose enforcement and audit-integrity gap for federated discovery. Static code establishes that the request purpose is not passed into the source privacy evaluator; it does not establish that any patient data has been disclosed under an improper purpose in production.
+
+**Boundary:** static source review only. No federation request, patient record, backup, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
