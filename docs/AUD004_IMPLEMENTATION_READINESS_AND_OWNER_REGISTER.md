@@ -3550,3 +3550,26 @@ There is also a workflow-model inconsistency: `DataRightsStatusUpdate.status` do
 
 **Boundary:** static source and test review only. No data-rights request was created or changed, no patient data or tenant database was accessed, and no runtime workflow was executed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 120. DPDP data-rights request intake lacks requester identity and authority provenance
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py`, `DataRightsRequestCreate` and `create_data_rights_request`; `backend/domains/privacy/models.py`, `PatientDataRightsRequest`; `tests/test_61_streaming_export_and_registers.py`.
+
+### 120.1 Request submission records a patient target, not who exercised the right
+
+The intake endpoint accepts `patient_id`, `request_type`, arbitrary `details`, and an SLA value. It checks only that the referenced patient row exists, then creates a `SUBMITTED` request. The authenticated actor is injected into the handler as `actor`, but is not used when constructing or saving the request.
+
+The reviewed `PatientDataRightsRequest` model stores patient, request type, status, free-form details, SLA, response/rejection fields, the later handler identity, fulfilment timestamp, and creation timestamp. It has no requester/representative identity, relationship or authority type, authority evidence reference, request-channel/receipt evidence, or submission actor field. The response model likewise exposes no such provenance. The existing test creates a request using a superuser bearer token and a narrative `details.reason`; it does not assert requester identity or representative authority.
+
+As implemented, a user with `privacy:write` can create a request against any existing patient ID and label it ACCESS, CORRECTION, ERASURE, GRIEVANCE, NOMINATION, or PORTABILITY without the intake record establishing that the patient or an authorized representative actually made the request. This is a provenance/authority verification gap, not a claim that the route is unauthenticated or that every staff-assisted intake is invalid. A separate generic audit trail, if present, may identify the authenticated API actor, but it would not by itself establish the data principal's identity or a representative's authority; the request entity itself does not preserve that relationship.
+
+### 120.2 Required remediation and acceptance evidence
+
+1. Define supported intake channels (patient self-service, verified in-person, authorized representative, statutory/authorized referral) and the identity/authority evidence required for each.
+2. Persist immutable requester identity and capacity (data principal or representative), representative relationship/authority evidence reference, intake channel, received-at time, and the authenticated staff actor where staff-assisted.
+3. Separate the authenticated operator from the person exercising the right; do not treat a staff bearer token or free-form details as proof of patient authorization.
+4. Add synthetic tests for patient self-request, authorized and unauthorized representatives, staff-assisted intake, missing/invalid evidence, and attempts to file against another patient's identifier without authority.
+
+**Assessment:** High-priority privacy request authenticity and evidentiary-provenance gap. The intake handler and persisted request model establish the missing fields and the unused actor parameter; the current test covers only successful staff-authenticated creation.
+
+**Boundary:** static source and test review only. No request was submitted, no patient record was read, and no runtime or tenant database was accessed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
