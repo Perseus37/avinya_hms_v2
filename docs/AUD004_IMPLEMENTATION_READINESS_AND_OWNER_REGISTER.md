@@ -3120,3 +3120,27 @@ This is a direct state-transition consequence of the reviewed route sequence, no
 **Assessment:** High-priority federation revocation-state integrity gap. Static source establishes that ordinary key rotation reactivates a revoked node when the tenant itself remains active. Practical impact requires an authorized operator to invoke rotation after revocation; no production event or patient disclosure is established.
 
 **Boundary:** static source review only. No key was generated, rotated or tested; no federation request, database, patient data, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 104. Control-plane key-rotation audit event omits the authenticated operator identity
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/control_plane/api/routers/fleet_ops.py` (`rotate_tenant_cryptographic_keys`); `backend/control_plane/models.py` (`ControlPlaneAuditLog.actor`).
+
+### 104.1 Rotation audit record uses the model's generic actor default
+
+The key-rotation endpoint is gated by `verify_control_plane_secret` and `require_operator_role("ops", "superadmin")`. After updating key material, it adds a `ControlPlaneAuditLog` with action `ROTATE_KEYS`, target slug and boolean details describing which key categories were rotated. It does not supply the `actor` field.
+
+The `ControlPlaneAuditLog.actor` mapped column has the non-null default `VENDOR_CONSOLE`. Therefore this route's ORM-created audit record identifies the generic console source rather than the authenticated named operator. The log records the target and operation categories but cannot, from this row, attribute the rotation to a particular operator account.
+
+This finding is limited to the key-rotation audit event's actor attribution. The endpoint's role gate still restricts invocation to an authorized ops/superadmin operator (or the legacy static credential path where enabled); the missing actor field does not itself bypass authorization. The audit row does not include the raw new keys, and no claim is made that secrets are stored in this audit log.
+
+### 104.2 Required remediation and acceptance evidence
+
+1. Populate `ControlPlaneAuditLog.actor` from the authenticated operator identity for named operator sessions, using a stable operator ID plus a separately retained display/email snapshot where appropriate.
+2. For legacy static-credential use, record an explicit non-human credential identity and authentication mode rather than silently using the same generic console actor.
+3. Add tests for ops and superadmin sessions proving the persisted actor matches the authenticated principal; test legacy mode separately and ensure secrets never enter audit details.
+4. Apply the same actor-attribution contract consistently to other privileged control-plane operations, without retroactively claiming that every existing audit row is attributable.
+
+**Assessment:** Medium-priority privileged-operation audit attribution gap. Static source establishes that the rotation route omits actor and the model default is a generic `VENDOR_CONSOLE` value. This weakens operator accountability and incident reconstruction, but does not establish unauthorized rotation or secret disclosure.
+
+**Boundary:** static source review only. No key was generated, rotated or tested; no operator session, request, database, patient data, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
