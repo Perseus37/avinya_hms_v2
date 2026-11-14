@@ -3037,3 +3037,32 @@ If the supplied code equals the current tenant's own branch, the guard permits i
 **Assessment:** Medium-priority federation integration/functionality gap. Static source establishes that the partner registration route's intended cross-branch write conflicts with an active model-level tenant identity guard and fails before its control-plane registration branch. The previously stated arbitrary-branch active-node creation claim is withdrawn. This is not evidence of unauthorized federation identity creation or patient disclosure.
 
 **Boundary:** static source review only. No federation credential, request, database, patient data, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 101. Federation key revocation commits tenant-local disablement before control-plane authentication is revoked
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/federation/router.py` (`revoke_federated_branch_key`); `backend/core/dependencies.py` (`get_federated_node`); `backend/control_plane/models.py` (`FederatedNode`).
+
+### 101.1 Revocation spans two databases without an atomic or recoverable operation
+
+The tenant-scoped DELETE `/api/federation/clients/{client_id}` route loads the local `FederatedClient`, sets `is_active = False`, and commits the tenant database. Only after that commit does it query the control-plane `FederatedNode` by the client's branch code, set the node inactive, and commit the control-plane database. The route has no distributed transaction, durable revocation operation, outbox, retry state or reconciliation marker connecting the two commits.
+
+If the control-plane lookup or commit fails after the tenant-local commit succeeds, the request can fail after the local record is disabled while the central node remains active. This is a conditional partial-failure state; no such failure was induced or observed.
+
+### 101.2 Inbound authentication consults the control-plane node, not the tenant-local client flag
+
+The inbound `get_federated_node` dependency hashes the supplied `X-Federation-API-Key` and selects an active `FederatedNode` by key hash. It does not consult the tenant-local `FederatedClient.is_active` row. Consequently, if the local commit succeeds but the control-plane disablement does not, the old key continues to satisfy the reviewed inbound authentication predicate while the central node remains active. The local inactive flag alone does not revoke that inbound credential.
+
+This finding is about the failure boundary in the explicit revocation workflow. It does not assert that a control-plane outage occurred, that a revoked key was used, or that patient data was accessed. It is distinct from Section 73's missing owner-registry active-state check and Section 100's partner-registration route/tenant identity-guard conflict.
+
+### 101.3 Required remediation and acceptance evidence
+
+1. Represent revocation as a durable control-plane operation with an explicit pending/revoked state and idempotent operation identifier. Define the control-plane authentication behavior for pending revocation so the security boundary is unambiguous.
+2. Prefer disabling the central inbound credential first, then reconcile tenant-local mirror state. If the required product semantics demand the reverse order, ensure the API does not report successful revocation until the central authenticator rejects the key.
+3. Add retryable outbox/reconciliation handling for cross-database completion; expose partial status rather than returning success after only one side has committed.
+4. Add fault-injection tests for tenant commit failure, control-plane query/commit failure after tenant commit, process interruption between commits, duplicate revoke requests and reconciliation recovery.
+5. Verify with an integration test that after the revocation operation reports success, the old key is rejected by `get_federated_node`; test both tenant-local and control-plane state transitions independently.
+
+**Assessment:** Medium-priority federation credential lifecycle and revocation consistency gap. Static source establishes the order of independent commits and that inbound authentication relies on the control-plane active node. The continued-authentication outcome is conditional on a control-plane failure after the tenant commit; no production occurrence or unauthorized access is established.
+
+**Boundary:** static source review only. No key was created, rotated, revoked or tested; no federation request, database, patient data, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
