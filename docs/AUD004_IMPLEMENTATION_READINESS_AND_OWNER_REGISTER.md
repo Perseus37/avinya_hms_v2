@@ -4899,3 +4899,35 @@ No concurrent production edit/sign-off or actual post-signature mutation is esta
 **Assessment:** High-priority medico-legal record integrity race. Source establishes a check-then-write gap across the edit and sign-off routes; it does not establish an actual production incident or legal/patient impact.
 
 **Boundary:** exact-head static source review only. No clinical endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 172. Concurrent diagnosis attachment can bypass duplicate and single-primary checks
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `attach_encounter_diagnosis()`; `backend/domains/clinical/models.py`, `EncounterDiagnosis`.
+
+### 172.1 Application pre-checks are not backed by database uniqueness
+
+The route validates that the encounter is active and the diagnosis master row is active. It then performs two application-level checks:
+
+- For a requested `PRIMARY` diagnosis, it queries for an existing primary diagnosis on the encounter and returns 409 if one is found.
+- It queries for an existing row with the same `encounter_id` and `diagnosis_id`, returning 409 if found.
+
+If both checks pass, it inserts and commits a new `EncounterDiagnosis`.
+
+The reviewed model declares only a non-unique index on `created_at`, plus foreign keys and ordinary indexed columns. It does not declare a unique constraint for `(encounter_id, diagnosis_id)` or a partial unique constraint for one `PRIMARY` row per encounter. No row lock or serializing encounter-level lock surrounds the checks and insert.
+
+Two concurrent requests can therefore both observe no existing matching diagnosis and insert duplicates. Two concurrent requests attaching different diagnoses as `PRIMARY` can both observe no primary row and commit, leaving multiple primary diagnoses for one encounter. These are separate invariant violations arising from the same check-then-insert design.
+
+No actual duplicate or multiple-primary production rows are established.
+
+### 172.2 Required remediation and acceptance evidence
+
+1. Enforce diagnosis uniqueness in PostgreSQL with a unique constraint on `(encounter_id, diagnosis_id)`.
+2. Enforce at most one primary diagnosis per encounter with a partial unique index on `encounter_id WHERE diagnosis_type = 'PRIMARY'` (using the actual persisted enum representation).
+3. Translate the corresponding database uniqueness violations into stable 409 responses; retain application pre-checks only for friendly early feedback.
+4. Add two-session PostgreSQL tests for same-diagnosis concurrent insertion and different-diagnosis concurrent PRIMARY insertion. Assert exactly one commit succeeds in each case.
+5. Verify migration behavior against existing duplicate data before adding constraints; do not silently delete or reclassify clinical diagnoses.
+
+**Assessment:** High-priority encounter diagnosis integrity issue. The source proves that application checks are raceable and the reviewed ORM model lacks matching uniqueness declarations; it does not establish that the live deployed catalog lacks equivalent manually managed constraints or that production data is affected.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
