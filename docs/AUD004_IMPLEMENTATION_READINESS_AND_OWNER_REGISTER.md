@@ -2845,3 +2845,37 @@ This is an audit attribution and traceability gap, not evidence that receipt val
 **Assessment:** Medium-priority federation audit attribution and incident-investigation gap. Static code establishes that discovery logs credential identity while import logs only the requesting branch. It does not establish that any particular import was unauthorized or that an incident has occurred.
 
 **Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+## 95. Federation transfer-log immutability is enforced only by an ORM flush listener
+
+**Source reviewed:** `backend/domains/federation/models.py` (`FederationTransferLog`, `_protect_federation_transfer_logs`); `backend/domains/federation/router.py` (discovery and import audit writes).
+
+Static source review only. No federation request was sent, no patient record was read, and no database, credential, migration or production resource was accessed or changed.
+
+### 95.1 The immutability guard is scoped to SQLAlchemy unit-of-work flushes
+
+`FederationTransferLog` is described as an immutable audit log. Its protection is implemented by a global SQLAlchemy `Session` `before_flush` listener. The listener rejects dirty mapped `FederationTransferLog` instances and rejects instances placed in `session.deleted`. It also sanitizes ABHA identifiers when new mapped log instances are flushed.
+
+That listener is useful for ordinary ORM unit-of-work changes, but it is not a PostgreSQL constraint or trigger. SQLAlchemy ORM bulk DML and Core/raw SQL execute statements without placing each affected mapped instance in the session's `dirty`/`deleted` collections and do not invoke this `before_flush` object-level guard for those rows. The model therefore does not establish database-level append-only enforcement for the transfer-log table. A database principal able to issue UPDATE or DELETE against the table can bypass this Python listener.
+
+The reviewed router writes transfer rows through `branch_db.add(...)` followed by `branch_db.commit()` for discovery and `source_db.add(...)` followed by `source_db.commit()` for import. Those ordinary ORM inserts are covered by the listener's insertion-time ABHA sanitization. The import path's reduced credential attribution is separately documented in Section 94 and is not repeated here.
+
+The model source itself defines no database trigger or privilege boundary for `federation_transfer_logs`. The repository migration/trigger definition was not conclusively enumerated in this review, so this section does not claim that no external or migration-installed trigger exists in every deployed database. The actionable evidence is that the application model's stated immutability guarantee is implemented only at the ORM flush layer, and the deployment's database-level enforcement has not been demonstrated by the reviewed contract.
+
+### 95.2 Retention and audit correlation review
+
+The reviewed federation model and router contain no application-managed retention or archival operation for `FederationTransferLog`. This means no repository-managed retention lifecycle was identified in the reviewed paths; it does not prove that logs are retained forever or that an external database/backup lifecycle policy does not exist.
+
+Discovery writes one source-side log row for each source branch result. Import writes a separate source-side `CONTINUITY_OF_CARE_IMPORT_REQUESTED` row. The import row's missing validated node/key identity and receipt/correlation binding are already documented in Section 94; this section does not count that same attribution gap again. The separate events currently have no common operation/correlation field in the `FederationTransferLog` model, but Section 94 captures the specific import-to-receipt traceability deficiency and should own its remediation.
+
+### 95.3 Required remediation and acceptance evidence
+
+1. Enforce append-only behavior at the PostgreSQL boundary for `federation_transfer_logs`: deny UPDATE and DELETE to the runtime role and/or install a database trigger that rejects mutation. Ensure only a separately controlled retention/archival principal can perform any approved lifecycle operation.
+2. Add disposable PostgreSQL tests that attempt ORM mutation, SQLAlchemy bulk UPDATE/DELETE, Core statements and direct SQL using the runtime role; every mutation path must be denied by the database, not merely by a Python exception.
+3. Include the transfer-log table in the catalog proof: trigger definitions/enabled state, table and column grants, role membership, ownership and effective runtime privileges. Verify that the runtime principal cannot disable or bypass the guard.
+4. Define an approved retention and archival schedule, legal-hold behavior, access controls and evidence of deletion/archival. Until that policy is approved, do not introduce an ad hoc cleanup job.
+5. Keep the Section 94 import receipt/node/correlation remediation as a separate acceptance item; do not treat a shared correlation ID as a substitute for immutable storage.
+
+**Assessment:** Medium-priority audit-integrity control gap. The Python source proves that immutability checks are attached to ORM flushes, not enforced by the model at the database boundary. Actual deployed trigger/privilege state and any external retention policy remain unverified. This is not evidence that a transfer-log row has been altered or deleted.
+
+**Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
