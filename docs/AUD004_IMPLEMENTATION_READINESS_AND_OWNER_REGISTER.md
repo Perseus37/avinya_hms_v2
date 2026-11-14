@@ -3500,3 +3500,29 @@ The same calculation pattern appears in all four resource search families. Indiv
 
 **Boundary:** static source review only. No runtime, database, patient record, production credential, external FHIR client, or tenant configuration was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 118. DPDP patient dossier export accepts unverified data-rights requests
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py`, `export_patient_dpdp_dossier` (route `GET /data-rights/patients/{patient_id}/export-dossier`); `tests/test_61_streaming_export_and_registers.py`.
+
+### 118.1 Request-state gate does not require verification
+
+The export route's docstring and error response state that a verified DPDP Section 11 data-rights request is required. When a caller supplies `request_id`, however, the route checks only that the request exists, belongs to the selected patient, and is not `REJECTED`. It does not require `req.status == "VERIFIED"`.
+
+When no request ID is supplied, the route selects the newest request whose status is in `SUBMITTED`, `IN_REVIEW`, `IN_PROGRESS`, `FULFILLED`, or `VERIFIED`. The route then explicitly treats `SUBMITTED`, `IN_REVIEW`, and `IN_PROGRESS` as sufficient to proceed and changes the request to `FULFILLED`.
+
+The handler subsequently collects and packages a broad patient dossier, including allergies, comorbidities, encounters/admissions, clinical notes, vitals, diagnoses, prescriptions, diagnostic orders, surgeries, invoices, and consent records. The endpoint is permission-gated by `privacy:read`, but the request-state condition does not establish that the data-rights request has been verified before this sensitive export occurs.
+
+This is a request-verification workflow bypass, not an unauthenticated endpoint or a cross-tenant lookup. The request is still checked against the requested patient ID.
+
+### 118.2 Required remediation and acceptance evidence
+
+1. Define an explicit, auditable verification transition and require the request to be in `VERIFIED` before generating the dossier.
+2. Reject `SUBMITTED`, `IN_REVIEW`, and `IN_PROGRESS` requests for export; do not silently promote them to `FULFILLED`.
+3. If repeat export after fulfillment is intended, define and test that as a separate authorized state transition with actor, time, and reason recorded.
+4. Add synthetic tests for every request status, with both explicit `request_id` and implicit newest-request selection. Only `VERIFIED` (and any explicitly approved repeat-export state) should succeed.
+5. Verify that rejected attempts do not generate dossier content, change request status, or disclose whether unrelated patient records exist.
+
+**Assessment:** High-priority privacy workflow enforcement gap. Static source establishes that non-verified request states are accepted by the export handler, which then serializes a comprehensive clinical/administrative dossier. The existing test establishes that a request is required but does not establish that it must be verified. No dossier was generated and no patient data was accessed during this review.
+
+**Boundary:** static source and test review only. No runtime export, patient record access, tenant database, production credential, or external data-rights workflow was used or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
