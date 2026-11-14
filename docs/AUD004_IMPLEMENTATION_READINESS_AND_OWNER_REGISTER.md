@@ -5600,3 +5600,32 @@ No administration against a discharged/cancelled encounter was observed in a dep
 **Assessment:** Medium priority pending clinical workflow policy confirmation; potentially High if terminal encounters are required to hard-stop bedside administration. The source confirms no encounter lifecycle check in BCMA, but does not establish the intended policy for all post-discharge workflows.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 196. BCMA does not revalidate formulary medication activation before bedside administration
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/services.py`, `evaluate_bcma_five_rights()` and `execute_bcma_administration()`; `backend/domains/pharmacy/models.py`, `MedicationMaster`; `backend/domains/pharmacy/router.py`, medication deactivation and prescription creation.
+
+### 196.1 Prescription creation checks activation, but BCMA does not
+
+The prescription-creation route loads the requested medication records and explicitly rejects any medication where `is_active` is false. The formulary update/deactivation routes can later set `MedicationMaster.is_active = False`.
+
+The BCMA evaluator obtains the prescribed medication through `rx_item.medication` and validates barcode identity, dose, route, time, and allergy-related checks. It validates that the prescription is ACTIVE, but does not inspect the medication's current `is_active` state. The successful administration path uses that same medication relationship and writes an ADMINISTERED eMAR record; it does not perform a second activation check.
+
+Therefore, an existing ACTIVE prescription can remain administrable by BCMA after its medication master record has been deactivated. This is a separate downstream control point from Section 189, which identified the absence of a medication activation check in the pharmacy stock-dispense route. The BCMA gap concerns bedside administration after prescription creation.
+
+Deactivation may represent routine formulary retirement, where continuation of existing orders can be appropriate, or an urgent safety withdrawal/recall, where further administration may need to be blocked. The current boolean does not distinguish these meanings, and BCMA has no explicit continuation exception or urgent-withdrawal gate. This finding is therefore a policy-enforcement gap, not an assertion that every inactive medication must always be withheld.
+
+No inactive medication administration was observed in a deployed tenant; no patient harm is established.
+
+### 196.2 Required remediation and acceptance evidence
+
+1. Define medication lifecycle semantics that distinguish routine formulary retirement from urgent withdrawal, recall, or safety suspension.
+2. Enforce the current medication disposition at BCMA commit time. For routine retirement, define whether existing authorized prescriptions may continue; for urgent withdrawal, require a hard stop unless a formally approved clinical exception applies.
+3. Preserve the reason, effective time, actor, affected medication/lot scope, and any exception authorization in an auditable lifecycle record; do not overload one boolean with incompatible safety meanings.
+4. Recheck the authoritative medication disposition transactionally with the eMAR insert so a concurrent urgent withdrawal cannot race bedside administration.
+5. Add PostgreSQL tests for active, routinely retired, urgently withdrawn, and explicitly excepted medication states, including concurrent withdrawal-versus-administration. Rejected paths must not create ADMINISTERED eMAR rows.
+
+**Assessment:** High priority if urgent medication withdrawals are intended to block administration; otherwise Medium pending formulary governance policy. The code-level omission is established, but the required behavior depends on medication lifecycle policy.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
