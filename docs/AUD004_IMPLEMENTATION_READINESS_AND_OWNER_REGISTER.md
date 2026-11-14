@@ -4542,3 +4542,28 @@ A protocol template containing nursing or dietary instructions can therefore be 
 **Assessment:** High-priority clinical protocol completeness gap. The source establishes accepted item types and the two-item-family application filter; it does not establish a real order-set application or patient-care omission in production.
 
 **Boundary:** exact-head static source review only. No order-set endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 158. CPOE order-set application does not revalidate medication or diagnostic-service activation
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/models.py`, `MedicationMaster.is_active`; `backend/domains/diagnostics/models.py`, `ServiceCatalog.is_active`; `backend/domains/clinical/router.py`, `apply_cpoe_order_set_to_encounter()`.
+
+### 158.1 Deactivated catalog resources remain usable through previously saved templates
+
+The medication and diagnostic service master models both expose an `is_active` flag. However, order-set application does not include an active-state predicate when loading medication records: it selects `MedicationMaster` using only the IDs stored on the template. It then runs allergy, DDI, and drug-disease checks over the returned rows, and creates `PrescriptionItem` rows for every medication template item.
+
+The diagnostic path similarly creates `DiagnosticTask` rows directly from each stored `service_id`; it does not load the referenced `ServiceCatalog` record or verify `is_active`. Thus deactivating a medication or diagnostic service does not, by itself, prevent an already-active order-set template from instantiating that resource. The order-set master’s own active flag is checked, but the linked catalog resources’ lifecycle state is not.
+
+This creates a stale-template control gap: catalog deactivation is not an effective stop for CPOE application. The source establishes the missing checks, not that any inactive item has actually been prescribed or ordered in production.
+
+### 158.2 Required remediation and acceptance evidence
+
+1. Revalidate every referenced medication and service at application time, including `is_active`, and reject the complete transaction with a clear item-level error if any resource is inactive.
+2. Define whether deactivation should invalidate existing templates, require template revision, or permit a documented grandfathering workflow; do not let that behavior emerge accidentally from missing predicates.
+3. Ensure all medication safety checks run against the exact set of medication items that will be instantiated; fail closed if any referenced row is missing or inactive.
+4. Add synthetic tests that deactivate a medication or service after template creation and verify that application cannot silently instantiate it; include mixed active/inactive templates and transaction rollback assertions.
+5. Provide an attributable, auditable exception path only if clinical governance explicitly approves one.
+
+**Assessment:** High-priority catalog-lifecycle enforcement gap in clinical order execution. This is distinct from Section 157: Section 157 concerns item types/required references that the application never instantiates; Section 158 concerns valid linked resources that have since been deactivated.
+
+**Boundary:** exact-head static source review only. No catalog or order-set endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
