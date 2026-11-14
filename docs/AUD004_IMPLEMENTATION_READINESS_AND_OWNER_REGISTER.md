@@ -2441,3 +2441,30 @@ The candidate timestamp queries also suppress all exceptions. If all three queri
 **Assessment:** High-priority disaster-recovery measurement and certification-integrity gap. The current `measured_rpo_seconds` field is not an RPO measurement, and RPO is not part of the pass/fail predicate. The report can therefore claim `PASSED` without establishing whether the declared recovery-point objective was met.
 
 **Boundary:** static source review only. No restore drill, backup, tenant database, clinical record, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+
+## 82. Restore drill buffers the entire encrypted and decrypted dump in process memory
+
+**Sources reviewed on the audit branch:**
+- `backend/scripts/restore_drill.py` (`verify_backup_checksum`, `decrypt_backup_bytes`, `run_restore_drill`)
+
+Static source review only. No backup was opened or decrypted, no restore drill was run, and no database or production resource was accessed or changed.
+
+### 82.1 Multiple full-artifact memory allocations scale with backup size
+
+The checksum verifier reads the complete encrypted artifact with `f.read()` before hashing. `decrypt_backup_bytes()` then loads the complete encrypted file again with `Path.read_bytes()` and returns the complete decrypted dump as a bytes object. `run_restore_drill()` retains that decrypted bytes object and passes it as `subprocess.run(input=...)` while also setting `capture_output=True`, retaining pg_restore stdout/stderr in memory until the subprocess completes.
+
+Peak process memory therefore scales with the full backup size and can include the encrypted artifact, decrypted dump, subprocess input buffering and captured restore output. This is not a bounded streaming restore path. As tenant databases and restore diagnostics grow, a drill can exhaust its container/host memory or be OOM-killed before it produces a report. The same in-memory design also makes the restore-drill capacity profile materially different from the host restore script, which streams GPG output to `pg_restore`.
+
+### 82.2 Required remediation and acceptance evidence
+
+1. Hash the encrypted artifact incrementally in fixed-size chunks; do not call `read()` without a bounded size for the whole file.
+2. Stream decryption into a protected temporary file or pipe with restrictive permissions and cleanup guarantees; avoid returning the complete plaintext dump as a Python bytes object.
+3. Feed the stream/file directly to `pg_restore`; send stdout/stderr to bounded log files or retain only a capped diagnostic tail.
+4. Enforce a configured temporary-storage budget and verify available disk space before starting. Ensure plaintext temporary artifacts are removed on success, failure, interruption and process termination.
+5. Add large synthetic dump tests that assert bounded memory behavior, streaming correctness, checksum/decryption failure handling, interrupted restore cleanup and diagnostic truncation.
+6. Document expected memory/disk requirements and distinguish drill capacity from the production restore path.
+
+**Assessment:** High-priority restore-drill availability and scalability gap. A backup larger than available memory can prevent the drill from completing, weakening the reliability of scheduled recovery evidence. Actual failure thresholds depend on artifact size, runtime/container limits and subprocess buffering; none were measured in this static review.
+
+**Boundary:** static source review only. No backup, decryption, restore drill, database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
