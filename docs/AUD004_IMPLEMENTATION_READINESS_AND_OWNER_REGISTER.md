@@ -3476,3 +3476,27 @@ The current test covers a successful grant/export flow but does not exercise a c
 
 **Boundary:** static source and test review only. No runtime, database, consent record, patient data, production credential, external gateway, or tenant configuration was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 117. FHIR search pagination exposes counts for privacy-filtered records
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/fhir/router.py` (Patient, Encounter, Observation, and Condition search endpoints); `backend/domains/privacy/runtime.py` (`evaluate_tenant_data_use_for_patients`).
+
+### 117.1 Search totals and continuation links use unfiltered result counts
+
+The FHIR search endpoints first calculate `total` from the complete database query, then fetch only the current page and apply the tenant privacy evaluator to that page's patients. The response computes `adjusted_total` by subtracting only the number of denied records found on the current page. It does not evaluate all records contributing to the original `total`, so denied records on other pages remain included in the reported total.
+
+The continuation-link condition is also based on `offset + len(page)` compared with the original unfiltered `total`. As a result, an authorized caller can receive a Bundle total and pagination behavior that reflect records excluded by the privacy policy, even though those records are omitted from the current page's entries. Repeating searches with different offsets can reveal aggregate information about the existence/volume of privacy-filtered patient, encounter, observation, or condition records. This finding concerns metadata counts and pagination, not direct return of the filtered clinical resources.
+
+The same calculation pattern appears in all four resource search families. Individual resource reads and search entries still call the privacy evaluator; this finding does not claim those checks are absent.
+
+### 117.2 Required remediation and acceptance evidence
+
+1. Do not derive externally visible totals or continuation links from an unfiltered result set when row-level privacy filtering is applied.
+2. Prefer applying the privacy decision in the database query before pagination and counting, where policy semantics permit. Otherwise use a safe pagination strategy that does not disclose hidden-row counts or offsets.
+3. Ensure `Bundle.total`, next links, page sizes, and termination behavior all reflect only the caller-visible result set; avoid leaking whether hidden rows exist beyond the current page.
+4. Add synthetic tests with allowed and denied patients interleaved across multiple pages for Patient, Encounter, Observation, and Condition searches. Assert totals, page boundaries, continuation links, and returned entries do not reveal hidden-row counts.
+5. Verify audit events remain recorded for evaluated records without using their denied counts in externally visible response metadata.
+
+**Assessment:** Medium-priority privacy metadata disclosure. Static source establishes that all four search endpoints calculate totals and continuation links from unfiltered query counts while filtering only the current page's entries. No FHIR search was executed and no patient data or tenant database was accessed.
+
+**Boundary:** static source review only. No runtime, database, patient record, production credential, external FHIR client, or tenant configuration was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
