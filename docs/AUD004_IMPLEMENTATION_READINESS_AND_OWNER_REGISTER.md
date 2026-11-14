@@ -4040,3 +4040,28 @@ The same check-then-insert structure also merits concurrency coverage for withdr
 **Assessment:** High-priority consent-state integrity gap. Static source establishes a check-then-insert path without row/advisory locking or a database uniqueness fence for the matching consent identity. It supports duplicate current grants under concurrent submissions; it does not establish that such a race has occurred or that downstream access was granted because of duplicate rows.
 
 **Boundary:** exact-head static source review only. No consent was created, withdrawn or modified; no patient record or tenant database was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 139. Consent recording accepts purposes absent from the active consent policy
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`, `record_patient_consent()`, lines 801–918); `backend/domains/privacy/policy_schema.py` (versioned `ConsentPolicyV1` and `PurposeRule`); `backend/domains/privacy/models.py` (blob `74a4d4f61ccbb1dfda129ab93c5b19ce154c7bad`, `PatientConsentRecord`, lines 26–56).
+
+### 139.1 Unknown purpose codes bypass active-policy validation
+
+When an active CONSENT policy exists, the route looks up `payload.purpose` in that policy's `purposes` list. If a match exists, it records the active policy revision and applies scope, consenter, capture-method, evidence-reference and fixed-term expiry checks as applicable.
+
+If no purpose matches, however, `purpose_rule` and `policy_revision_id` remain `None`; the route does not reject the request. It skips the entire active-policy validation block and persists the supplied consent record with no policy revision association. The request model accepts an arbitrary nonblank purpose string (3–255 characters), and the record model likewise stores purpose as an unconstrained string. The versioned policy schema defines a bounded purpose allowlist, so an active policy can silently fail to govern a submitted purpose rather than rejecting it.
+
+This permits consent rows to be recorded for misspelled, obsolete or otherwise unconfigured purpose values while a policy is active. The row is not linked to that active revision, and this static finding does not establish that it is consumed by the data-use decision engine or that it authorizes any data use.
+
+### 139.2 Required remediation and acceptance evidence
+
+1. When an active consent policy exists, reject any submitted purpose code not present in its purpose list; do not silently fall back to an unversioned consent record.
+2. If legacy/unmanaged consent capture is intentionally supported, expose it as an explicit separately authorized workflow with a distinct state and clear downstream non-authoritative semantics.
+3. Validate canonical purpose codes consistently (including case/whitespace behavior) and ensure the persisted record references the policy revision whose rule was applied.
+4. Add PostgreSQL/API tests for a valid configured purpose, unknown purpose, misspelled purpose, retired purpose, and no-active-policy compatibility behavior. Assert unknown values cannot create records under an active policy.
+5. Confirm downstream decision evaluation only consumes consent evidence bound to the exact policy revision and purpose it is intended to satisfy.
+
+**Assessment:** Consent-policy integrity gap. The active-policy branch explicitly skips all policy-specific validation when the supplied purpose is not found. No actual invalid consent record or downstream disclosure was observed.
+
+**Boundary:** exact-head static source review only. No consent was created or modified; no patient record or tenant database was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
