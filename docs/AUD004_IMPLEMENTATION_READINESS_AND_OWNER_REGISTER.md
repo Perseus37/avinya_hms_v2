@@ -4116,3 +4116,28 @@ Consequently, a single user holding `privacy:approve` can disable an active poli
 **Assessment:** High-priority policy-governance gap. The deactivation route can set an active revision to OFF with one permission-bearing actor and no supplied rationale or independent approval. This does not establish actual policy disablement, patient-data disclosure, or production impact.
 
 **Boundary:** exact-head static source review only. No endpoint was called, no policy state was changed, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 142. Personal-data breach incident updates permit arbitrary lifecycle transitions without an attributable change history
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`), `BreachIncidentUpdate` and `update_data_breach_incident()`; `backend/domains/privacy/models.py` (blob `74a4d4f61ccbb1dfda129ab93c5b19ce154c7bad`), `PrivacyDataBreachIncident`.
+
+### 142.1 Status and reporting milestones are mutable without transition or audit controls
+
+The breach incident API exposes statuses REPORTED, INVESTIGATING, CONTAINED, RESOLVED and CLOSED. The PATCH route accepts any value from that enum and assigns it directly; it does not enforce an allowed transition graph or require prerequisite evidence before moving to RESOLVED/CLOSED. For example, the reviewed handler can set CLOSED without checking that containment, authority reporting, affected-subject notification or a resolution summary has been recorded. It also allows severity to be overwritten at any time.
+
+The same handler sets `contained_at` and `reported_to_authority_at` when the corresponding boolean is true, but does not persist who performed those milestones or the reporting reference/evidence. The model has no incident-event/history table or per-change actor fields beyond the original `reported_by_user_id`; the update handler writes no `PrivacyDecisionAudit` or other attributable transition event. A later status/severity update therefore overwrites the current state without a durable application-level record of the prior value, actor, timestamp and rationale.
+
+This is distinct from the DPDP data-rights request lifecycle finding in Section 119: this finding concerns the separate personal-data breach incident register and its containment/reporting/notification milestones. It is a source-level governance and incident-evidence gap, not proof that an incident was incorrectly closed or that any statutory notification was missed. No incident record was read or changed.
+
+### 142.2 Required remediation and acceptance evidence
+
+1. Define an explicit transition graph and reject invalid transitions, including closure before required containment, assessment, reporting/notification decisions and documented resolution.
+2. Make reporting and notification milestones evidence-bearing: record responsible actor, event time, destination/authority, reference or evidence artifact, outcome and applicable deadline.
+3. Add an append-only incident event log recording old/new status and severity, actor, timestamp, rationale and linked evidence for every change.
+4. Require a resolution summary and authorized review before RESOLVED/CLOSED; define controlled reopening and severity-reassessment paths.
+5. Add PostgreSQL/API tests for every permitted and forbidden transition, concurrent updates, audit completeness, missing milestone evidence and reopening; ensure direct ORM/bulk paths cannot silently bypass the intended history controls.
+
+**Assessment:** High-priority breach-response governance gap. The API permits arbitrary enum-valid status changes and does not record attributable change history or evidence for key reporting milestones. This does not establish a real breach, missed notification, or regulatory non-compliance event.
+
+**Boundary:** exact-head static source review only. No breach endpoint was called, no incident records or patient data were accessed, no tenant database was queried, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
