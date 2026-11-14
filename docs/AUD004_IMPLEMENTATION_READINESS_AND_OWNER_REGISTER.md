@@ -6088,3 +6088,27 @@ This does not affect deposits whose encounter association is intentionally null 
 
 **Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, or live financial transaction was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 214. RCM charge-event listing exposes patient-linked billing and clinical activity without the tenant privacy-use gate
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/router.py`, `list_charge_capture_events()`; `backend/domains/billing/rcm_schemas.py`, `ChargeCaptureEventResponse`; `backend/domains/billing/models.py`, `ChargeCaptureEvent`.
+
+### 214.1 The charge-event list returns patient-linked records using route permission alone
+
+The RCM charge-event endpoint accepts optional `encounter_id` and `patient_id` filters, then selects and returns matching `ChargeCaptureEvent` rows. Its only route authorization is `RequirePermission("billing:read", "auditor:read")`. Unlike the adjacent invoice, payment, deposit, and refund read routes, it does not declare an `x-privacy-data-use-point` annotation or call `evaluate_tenant_patient_data_uses()` before returning records.
+
+The response schema includes `patient_id`, `encounter_id`, `invoice_id`, service identifier, charge description, quantity, unit price, tax, total, tariff source, insurance-coverage flag, and posting time. The underlying event model directly links each event to a patient, encounter, and invoice. A caller with either accepted route permission can therefore retrieve patient-linked clinical charge activity without the additional patient-data-use decision enforced by the neighboring billing read paths. With neither filter supplied, the query returns the entire charge-event ledger in that tenant.
+
+This is a distinct RCM read-path privacy-control gap, not a claim that route permissions are absent or that all billing endpoints are affected. Whether a narrowly defined auditor purpose should be exempt is a policy decision; the current endpoint neither records such a purpose nor enforces an explicit exemption.
+
+### 214.2 Required remediation and acceptance evidence
+
+1. Define the permitted purpose(s) for RCM charge-event access, including whether auditor access is separately authorized and what scope it may inspect.
+2. Add a privacy data-use point and evaluate authorization for the patient IDs represented by the selected events before serializing any rows; enforce the same rule for filtered and unfiltered requests.
+3. For large result sets, design bounded authorization that prevents partial disclosure if any selected patient is denied. Do not stream or return a partial event list before the full relevant authorization decision is known.
+4. Restrict unfiltered ledger access to an explicit, approved operational/audit use case; otherwise require a patient or encounter scope and apply pagination.
+5. Add PostgreSQL-backed API tests for allowed and denied billing users, auditor-purpose policy, patient and encounter filters, unfiltered requests, mixed allowed/denied result sets, and zero-row behavior. Assert that denied requests disclose no event identifiers or patient-linked fields.
+
+**Assessment:** High priority privacy-control gap because the response exposes patient-, encounter-, invoice-, and service-linked billing activity without the patient-data-use gate used by adjacent billing read endpoints. The route/schema/model behavior is established by source review. No unauthorized access or patient disclosure was observed.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, or live RCM ledger was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
