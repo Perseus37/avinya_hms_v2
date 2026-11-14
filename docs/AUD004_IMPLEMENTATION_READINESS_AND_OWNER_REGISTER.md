@@ -2784,3 +2784,35 @@ This is distinct from Section 73's owner-tenant active-state invariant, Section 
 **Assessment:** High-priority privacy-purpose enforcement and audit-integrity gap for federated discovery. Static code establishes that the request purpose is not passed into the source privacy evaluator; it does not establish that any patient data has been disclosed under an improper purpose in production.
 
 **Boundary:** static source review only. No federation request, patient record, backup, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 93. Missing or non-enforcing source privacy configuration permits federated disclosure
+
+**Source reviewed:** `backend/domains/federation/router.py` (`_get_branch_policy`, `_fetch_branch_data`); `backend/domains/policies/models.py` (`HospitalPolicySetting` defaults); `backend/domains/privacy/runtime.py` (`_active_consent_revision`, `evaluate_tenant_data_use_for_patients`); `backend/domains/privacy/decision_engine.py` (`evaluate_data_use`, `_result`); `backend/domains/privacy/models.py` (`PrivacyPolicyRevision` activation constraints).
+
+Static source review only. No federation request was sent, no patient record was read, and no database, credential, migration or production resource was accessed or changed.
+
+### 93.1 Source-side configuration has permissive fallback states
+
+The federation source helper `_get_branch_policy` creates and flushes a new `HospitalPolicySetting` when no row exists. The model defaults that new row to `FULL_MESH`, `federation_share_demographics=True` and `federation_share_allergies=True`. Thus absence of a hospital federation policy row does not suppress sharing; it materializes the most permissive sharing mode and data-category flags.
+
+Separately, `_active_consent_revision` returns `None` when the source tenant has no active CONSENT revision. `evaluate_tenant_data_use_for_patients` then calls `evaluate_data_use(None, ..., mode="OFF")`, which returns `allowed=True` with reason `policy_off`. No consent record is required in this branch.
+
+A configured active revision is not sufficient by itself to guarantee enforcement. The decision engine explicitly treats `OFF` as allowed. In `AUDIT_ONLY`, a decision that would otherwise deny is converted to `allowed=True` with `would_deny=True`; the federation caller therefore still receives data while the denial is only recorded for audit. The database constraints permit an active approved revision in either `AUDIT_ONLY` or `ENFORCE` mode and do not establish that federation disclosure requires `ENFORCE`.
+
+The discovery path subsequently checks source patient activity, patient-level network-sharing opt-out, source sharing mode, ABHA/phone match and the returned decision's `allowed` flag. Those checks are useful, but they do not compensate for the permissive missing-policy and non-enforcing-mode behavior. With no hospital policy row and no active consent revision, the code path defaults to FULL_MESH sharing and an allowed consent decision. With an active AUDIT_ONLY revision, would-deny consent outcomes are also allowed to proceed.
+
+This is distinct from Section 92: Section 92 concerns the caller-declared purpose not being bound to the source evaluator. Section 93 concerns whether the source evaluator is actually configured to enforce any consent decision at all. It is also distinct from Section 73's active tenant registry/node lifecycle check.
+
+### 93.2 Required remediation and acceptance evidence
+
+1. Make absence of a source federation policy row fail closed. Do not create a permissive FULL_MESH row as a read/discovery side effect; require an explicit, approved sharing configuration before source disclosure.
+2. Require an active, approved CONSENT policy in `ENFORCE` mode for federation disclosure. Missing, invalid, inactive, OFF or AUDIT_ONLY policy state must deny remote disclosure (or keep the endpoint disabled) rather than treating the result as allowed.
+3. Separate audit-only simulation from the authorization decision exposed to the federation route. An audit-only `would_deny` result must not be interpreted as permission to disclose patient data.
+4. Add deployment/provisioning readiness checks that prove each enabled source tenant has an approved, valid consent policy with complete data-use-point coverage and enforcement mode ENFORCE, plus an explicit non-permissive federation sharing policy.
+5. Add tests for: absent hospital policy row; absent active consent revision; invalid policy document; OFF; AUDIT_ONLY with missing consent; ENFORCE with missing/withdrawn/expired consent; and explicit valid consent. Assert that no denied or unconfigured case returns demographics or allergies.
+6. Add an operational report that identifies tenants whose federation is disabled because policy prerequisites are missing. Do not silently auto-enable sharing during discovery.
+
+**Assessment:** High-priority privacy enforcement and default-deny gap. Static code establishes permissive behavior for missing hospital federation settings and missing/non-enforcing consent policy states. It does not establish that any particular production tenant is currently in one of those states or that a production disclosure occurred.
+
+**Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
