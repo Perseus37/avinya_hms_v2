@@ -4617,3 +4617,34 @@ A score can therefore be attached to encounter A while its provenance pointer re
 **Assessment:** High-priority clinical record integrity and provenance gap. The finding is the route's acceptance/persistence behavior and independent foreign keys, not evidence of cross-patient disclosure, a real mismatched record, or patient harm.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 161. NEWS2 temperature scoring has decimal gaps that fall into the highest-temperature fallback band
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `NEWS2EvaluationRequest.temperature_f`; `backend/domains/clinical/services.py`, `calculate_news2_score()`.
+
+### 161.1 Accepted fractional temperatures can be assigned to the wrong band
+
+The request model accepts `temperature_f` as an unrestricted optional float. The calculator accepts Celsius values from 15.0 to 50.0 (or Fahrenheit values from 60.0 to 120.0 and converts them to Celsius), but its scoring comparisons use decimal bands with gaps:
+
+- `temp_c <= 35.0`: 3 points;
+- `35.1 <= temp_c <= 36.0`: 1 point;
+- `36.1 <= temp_c <= 38.0`: 0 points;
+- `38.1 <= temp_c <= 39.0`: 1 point;
+- every remaining accepted value: 2 points, described in the code comment as `>= 39.1`.
+
+Values between those decimal boundaries are not rejected or normalized. For example, `36.05°C` does not satisfy any of the first four comparisons and reaches the final `else`, receiving 2 points. Similar gaps exist between 35.0/35.1, 36.0/36.1, and 38.0/38.1. The fallback therefore does not mean only temperatures at or above 39.1°C; it also captures valid values in the gaps.
+
+Because temperature contributes to the aggregate NEWS2 total and can affect the threshold/individual-parameter escalation logic, such inputs can inflate the score and change its risk or RRT classification. This is a deterministic scoring defect for accepted fractional inputs, not evidence that a real patient record or escalation was affected.
+
+### 161.2 Required remediation and acceptance evidence
+
+1. Define the accepted measurement precision and normalize/round temperature once, explicitly and consistently, before band evaluation; alternatively use continuous, non-overlapping interval comparisons that cover every accepted value.
+2. Keep the Fahrenheit-to-Celsius conversion and rounding policy explicit, including boundary behavior after conversion.
+3. Ensure the final high-temperature branch is an explicit lower-bound comparison, not an unconditional fallback for all unclassified values.
+4. Add synthetic tests at every boundary and immediately below/above it, including `36.05°C`, equivalent Fahrenheit inputs, and accepted extremes.
+5. Assert exact temperature sub-score, total NEWS2 score, risk level, and RRT flag for the boundary matrix.
+
+**Assessment:** High-priority clinical scoring correctness defect. The source proves the uncovered decimal intervals and fallback scoring; it does not establish a real-world misclassification or patient harm.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
