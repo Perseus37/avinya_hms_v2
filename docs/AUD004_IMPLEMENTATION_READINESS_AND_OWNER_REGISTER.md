@@ -3914,3 +3914,28 @@ A concrete race is possible: retention reads the active-hold set; a second autho
 **Assessment:** High-priority legal-hold enforcement and retention concurrency gap. Static source establishes that retention uses an earlier in-memory hold set while legal-hold creation commits independently, with no shared lock or mutation-boundary revalidation. It supports a race in which a newly committed hold can be missed by an in-flight anonymisation or category-wide audit-retention operation. It does not establish that a real hold was bypassed or that any patient/audit record was changed.
 
 **Boundary:** exact-head static source review only. No legal hold was created or released, no retention policy/job was run, no tenant database or patient record was accessed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 134. Scheduled retention sweep executes approved revisions without requiring active status
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/core/queue.py` (blob `aad0c663e52e7a73d7261658f5ecc1889b7e36b7`, `handle_scheduled_retention_sweep()` and `handle_retention_execute()`); `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`, policy approval, deactivation and manual retention execution); `backend/domains/privacy/models.py` (blob `74a4d4f61ccbb1dfda129ab93c5b19ce154c7bad`, `PrivacyPolicyRevision.is_active` and activation constraints); `backend/domains/privacy/retention_service.py` (blob `18b45ac9ccff4e187368b690ccc3f84705a55807`, execution service precondition).
+
+### 134.1 Scheduler and worker use approval status but omit the active-state fence
+
+The scheduled-sweep handler's docstring says it enqueues execution for "approved active retention policy revisions." Its tenant query filters only `policy_type == "RETENTION"` and `status == "APPROVED"`, orders by revision ID descending, and selects the first result. It does not add `is_active IS TRUE`. It then validates the document and enqueues every category in that revision.
+
+The retention worker re-loads the revision with the same policy-type and APPROVED-status predicates, again without checking `is_active`. `execute_retention_policy_revision()` itself rejects only a non-RETENTION or non-APPROVED revision. The synchronous execution route likewise checks approval status and approval metadata, but not active state. Therefore the active flag is not revalidated at the execution boundary either.
+
+This is material because `PrivacyPolicyRevision.is_active` is an explicit persisted lifecycle field, defaults to false, and is constrained separately from approval status. The shared deactivation endpoint can set an active revision to `is_active = false` and `enforcement_mode = "OFF"` without changing its APPROVED status. A scheduled sweep can consequently select an approved-but-inactive retention revision, and the worker/service accept it based on approval alone. A revision that becomes inactive after enqueue is also not rejected by the worker. This is a source-level lifecycle-fence gap; it does not establish that an inactive revision was actually scheduled or that a destructive run occurred.
+
+### 134.2 Required remediation and acceptance evidence
+
+1. Define the intended retention lifecycle explicitly: if scheduled execution is meant to follow activation, require `is_active IS TRUE` in scheduler selection, worker reload and service execution preconditions.
+2. Recheck active status immediately before execution, not only at enqueue time. If deactivation races with an already queued job, define and enforce whether deactivation cancels queued work or waits for in-flight execution.
+3. If retention approval itself is intentionally sufficient authorization and `is_active` is not intended to govern retention, remove the misleading "active" scheduler contract and document a separate, explicit scheduled-execution authorization state rather than leaving an unused ambiguous lifecycle flag.
+4. Add PostgreSQL-backed tests for: approved/inactive revision excluded from scheduled enqueue; active revision queued then deactivated before worker execution; active revision remains executable; and manual execution behavior matches the documented lifecycle.
+5. Ensure execution ledger/audit records the lifecycle state and decision that authorized the run, including a fail-closed outcome when a revision is no longer eligible.
+
+**Assessment:** High-priority retention authorization/lifecycle consistency gap for scheduled and queued execution. Static source establishes that scheduler, worker and service rely on APPROVED status but omit the persisted active-state check. It supports execution of an approved-but-inactive revision, including one deactivated after enqueue; it does not establish an actual scheduled run or data mutation.
+
+**Boundary:** exact-head static source review only. No scheduler, queue worker, policy, tenant database or patient record was accessed or executed. No retention job or destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
