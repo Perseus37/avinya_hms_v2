@@ -6354,3 +6354,29 @@ This is distinct from Section 213's advance-deposit allocation mismatch: this fi
 
 **Boundary:** exact-head static source/model and control-flow review only. No patient data, tenant database, pre-authorization, invoice, claim, or live financial transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 224. Insurance claim listing and CSV export bypass the tenant patient-data-use gate
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/insurance/router.py`, `list_insurance_claims()`, `download_claim_document()`; insurance claim response schema and adjacent privacy-gated document route.
+
+### 224.1 Claim list and export disclose patient-linked financial records on permission alone
+
+`list_insurance_claims()` is protected by `RequirePermission("billing:read")` and returns paginated insurance claim records. The same handler supports CSV export. Neither the route nor its handler declares an `x-privacy-data-use-point` annotation or calls `evaluate_tenant_patient_data_uses()` before returning records.
+
+The CSV generator explicitly includes patient MRN, patient name, payer/provider name, claim status, claimed amount, insurer payable, patient copay, settled amount, and settlement reference. The paginated response also returns claim-linked financial and authorization details through its response schema. By contrast, the adjacent single-claim PDF route declares `insurance.claim.pdf` and explicitly evaluates the patient's permitted data uses before rendering the document.
+
+Consequently, a user with the ordinary `billing:read` permission can list/export patient-linked insurance claim and financial information without this endpoint enforcing the tenant's patient-data-use policy. The CSV path is especially clear because it exports direct patient identifiers together with insurance and settlement details. This is a missing application privacy gate, not evidence that a user without route permission can access the endpoint.
+
+This is distinct from Section 208's invoice CSV export bypass and Section 214's RCM charge-event listing gap: this finding concerns the insurance claim listing/export endpoint and its claim-specific identifiers and payer settlement fields.
+
+### 224.2 Required remediation and acceptance evidence
+
+1. Define a dedicated insurance-claim listing/export data-use point and enforce it for both paginated JSON responses and CSV exports; do not rely on `billing:read` as a substitute for patient-data-use authorization.
+2. Evaluate authorization for every patient represented by the requested result set before returning or starting a streamed export. A mixed permitted/denied result must not leak rows through pagination or chunk boundaries.
+3. Apply the same patient-data-use decision consistently to any future claim list, bulk download, or alternate export format.
+4. Add PostgreSQL-backed tests for allowed and denied claim reads, denied CSV export, mixed-patient result sets, pagination, and streaming/chunk boundaries. Assert that a denied export emits no patient identifiers or financial rows.
+5. Record the data-use point, actor, decision, and export purpose in the approved privacy/audit evidence without copying patient data into logs.
+
+**Assessment:** High-priority privacy and financial-confidentiality control gap. A user holding `billing:read` can obtain claim-linked financial records, including MRN and patient name in CSV, without the tenant privacy-use gate used by the adjacent claim-document workflow. No unauthorized export or patient disclosure was observed.
+
+**Boundary:** exact-head static route/schema/control-flow review only. No patient data, tenant database, insurance claim, CSV export, or live financial transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
