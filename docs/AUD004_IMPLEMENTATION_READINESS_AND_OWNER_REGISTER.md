@@ -5047,3 +5047,34 @@ No historical record was observed to have been changed in a live tenant; the beh
 **Assessment:** High-priority clinical documentation provenance gap. Source proves historical responses dereference mutable master attributes; no real-world record alteration or patient harm is established.
 
 **Boundary:** exact-head static source/model/schema review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 177. BCMA right-time verification trusts a caller-supplied timestamp instead of an authoritative medication schedule
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/services.py`, `evaluate_bcma_five_rights()` and `execute_bcma_administration()`; `backend/domains/pharmacy/models.py`, `PrescriptionItem` and `MedicationAdministrationLog`; `backend/domains/pharmacy/router.py`, `bcma_verify_and_administer()` and its request contract.
+
+### 177.1 Caller controls the reference time used to decide whether a dose is early or late
+
+The BCMA evaluator describes a right-time check using a +/-60-minute window. Its implementation compares `datetime.now(timezone.utc)` with the optional `scheduled_time` argument:
+
+- When `scheduled_time` is provided, the evaluator labels the dose EARLY/LATE based on the difference between now and that supplied timestamp.
+- When `scheduled_time` is omitted, it labels the administration `PRN`, without an early/late warning.
+- The endpoint passes `payload.scheduled_time` directly into the evaluator and later persists that same caller-supplied value on `MedicationAdministrationLog`.
+
+The reviewed `PrescriptionItem` model contains medication, dosage instruction, requested quantity, and dispensed quantity, but no authoritative frequency, dose schedule, or scheduled-administration time. Thus the BCMA service does not compare the administration against a schedule established by the prescriber. A caller can submit a timestamp close to the current time to obtain `ON_TIME`, or omit the timestamp and obtain `PRN`, even when the medication is intended to be scheduled. The stored eMAR timestamp records the submitted reference, not proof of the prescribed due time.
+
+This weakens the claimed right-time control: the patient/drug/dose/route checks may still operate, but the time decision is not anchored to an authoritative prescription schedule.
+
+No actual bedside administration or patient impact was established.
+
+### 177.2 Required remediation and acceptance evidence
+
+1. Add a structured, prescriber-authorized medication schedule to the prescription/order model (frequency, start/end, due-time or interval semantics, timezone, and PRN indication as clinically appropriate).
+2. Derive the due dose/time server-side from that persisted schedule; do not accept a client-supplied timestamp as the authoritative due time.
+3. Treat PRN as an explicit prescribed administration mode with its own indication/interval/maximum-dose controls, not as the default when the timestamp is omitted.
+4. Persist both the authoritative due time and actual administration time, including timezone and any authorized override, so audit history can reconstruct the timing decision.
+5. Add tests for scheduled orders with omitted timestamps, forged near-current timestamps, early/late boundaries, timezone/DST behavior, explicit PRN orders, and authorized overrides. Verify the client cannot downgrade a scheduled dose to PRN by omitting the field.
+
+**Assessment:** High-priority medication-administration safety and audit-integrity gap. The source proves the time reference is caller-controlled and not bound to a persisted prescription schedule; it does not prove a real administration was mistimed or harm occurred.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
