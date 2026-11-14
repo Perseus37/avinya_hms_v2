@@ -3293,3 +3293,33 @@ Section 106 separately records that `GET /api/fleet/audit-logs` returns full aud
 **Assessment:** Medium-priority patient-identifier minimization and audit-data handling gap. Static source establishes the exact MRN-to-audit-details path for unmatched invoice rows. The reader-side impact is conditional on the authorization weakness in Section 106; no actual audit-log disclosure, unauthorized access or patient harm is claimed.
 
 **Boundary:** static source review only. No CSV was uploaded, ETL job executed, audit event queried, patient record accessed, tenant database changed, or production resource touched. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+## 110. Visual ETL defaults imported patients to federation sharing enabled
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/control_plane/api/routers/migration.py` (`_apply_dynamic_mapping`); `backend/control_plane/services/migration_catalog.py` (`get_migration_schema_catalog`); `backend/domains/patients/models.py` (`Patient.allow_network_sharing`).
+
+### 110.1 Missing source consent/sharing value becomes an affirmative destination value
+
+The migration catalog exposes `patients.allow_network_sharing` as an ordinary importable field. The ETL mapper permits it because it is not included in `PROTECTED_FIELDS`. More importantly, after applying the user mapping, `_apply_dynamic_mapping` executes:
+
+`clean_data.setdefault("allow_network_sharing", True)`
+
+whenever the destination model has that field. Therefore, if a patient CSV omits the field, the mapping omits it, or a source mapping does not populate it, the ETL worker creates the patient with network sharing enabled. The Patient ORM model independently declares `allow_network_sharing` as non-nullable with default `True`, consistent with the ETL behavior.
+
+The import path does not require a recorded patient consent decision or an explicit affirmative source value before assigning this sharing state. A legacy export that has no equivalent consent/sharing field is therefore silently converted into an affirmative sharing setting.
+
+### 110.2 Relationship to the existing federation privacy finding
+
+Section 93 records the separate source-side federation policy behavior when privacy configuration or consent is absent/non-enforcing. Section 110 documents an independent import-time writer that actively sets the patient-level sharing flag to `True` when the source CSV/mapping supplies no value. This finding does not assume that the federation endpoint will necessarily disclose a particular patient's record; it establishes that the ETL import creates a permissive patient-level state which downstream sharing controls may consume.
+
+### 110.3 Required remediation and acceptance evidence
+
+1. Default imported patients to `allow_network_sharing=False` unless an explicit, validated consent/provenance record authorizes the affirmative value.
+2. Do not infer consent from a missing legacy CSV column, a mapping fallback, or the ORM default. Preserve source consent status and provenance separately where supported.
+3. Require an explicit operator-approved mapping for any transition to sharing-enabled state, with an auditable basis and source timestamp.
+4. Add synthetic ETL tests for omitted field, blank field, explicit false, explicit true, and update-policy imports; omitted/blank values must remain non-shareable.
+5. Add a downstream federation authorization test proving that an imported patient with absent source consent cannot be returned by discovery.
+
+**Assessment:** High-priority privacy-default issue. Static source establishes that the visual ETL worker assigns `True` when the mapping does not supply `allow_network_sharing`. No actual CSV import, patient record, consent record, federation request or disclosure was observed.
+
+**Boundary:** static source review only. No CSV was uploaded, ETL job executed, patient data accessed, tenant database changed, or production resource touched. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
