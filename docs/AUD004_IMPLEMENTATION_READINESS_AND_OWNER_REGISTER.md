@@ -5020,3 +5020,30 @@ No actual STAT/URGENT order was downgraded in production; this is a source-level
 **Assessment:** High-priority clinical workflow integrity gap because accepted STAT/URGENT metadata is not represented in the generated medication and diagnostic records. The source proves the priority fields are not propagated; it does not prove a real-world delay or patient harm.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 176. Historical physical-examination observations resolve their label from a mutable master record
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/patients/models.py`, `PhysicalExaminationMaster`; `backend/domains/clinical/models.py`, `EncounterPhysicalExam`; `backend/domains/clinical/router.py`, physical-exam master update and encounter-record/list routes; `backend/domains/clinical/schemas.py`, `EncounterPhysicalExamResponse`.
+
+### 176.1 Master edits can rewrite the displayed meaning of an existing clinical observation
+
+An encounter physical-examination record stores `exam_master_id`, `is_normal`, `findings_notes`, and `recorded_by_id`. Its response includes the related `exam_master` object; the list route loads that relationship when returning historical observations.
+
+The referenced `PhysicalExaminationMaster` is mutable. The master update route permits changing its `code`, `name`, and `body_system` in place, including after encounter observations have referenced it. The encounter record does not snapshot those descriptive fields or reference a versioned taxonomy revision.
+
+Consequently, editing a master item can cause previously recorded examinations to be displayed under a new name, code, or body system. A later reader cannot determine from the observation record alone which taxonomy wording/classification was in force when the clinician recorded the finding. This is a clinical-record provenance and historical-interpretation risk, distinct from the duplicate-observation question.
+
+No historical record was observed to have been changed in a live tenant; the behavior follows from the mutable relationship and response serialization.
+
+### 176.2 Required remediation and acceptance evidence
+
+1. Make referenced clinical taxonomy entries immutable for semantic fields, or introduce versioned master revisions with effective dates and stable identifiers.
+2. Preserve the exact code, display name, body-system classification, and taxonomy revision on each observation at recording time; alternatively guarantee a versioned immutable referenced row.
+3. Permit deactivation without rewriting historical meaning. If a semantic correction is required, create a new revision and define how existing observations retain their original interpretation.
+4. Add regression tests: record an observation, revise/deactivate the master, then prove the historical response still returns the original recorded terminology and classification; verify new observations use the new revision.
+5. Include a migration/backfill strategy that does not guess historical labels where prior versions cannot be reconstructed.
+
+**Assessment:** High-priority clinical documentation provenance gap. Source proves historical responses dereference mutable master attributes; no real-world record alteration or patient harm is established.
+
+**Boundary:** exact-head static source/model/schema review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
