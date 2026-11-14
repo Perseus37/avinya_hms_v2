@@ -3597,3 +3597,31 @@ This is separate from Section 118's insufficient request-verification gate and S
 
 **Boundary:** static source review only. No dossier was generated, no patient data was read, no export endpoint was invoked, and no runtime or tenant database was accessed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+
+
+## 122. DPDP request and patient-access summary reads lack application-level actor-attributed access events
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py` (`list_data_rights_requests`, `get_data_rights_request`, `get_patient_data_access_summary`); `backend/domains/audit/router.py`; `backend/domains/audit/models.py`; `backend/domains/privacy/models.py`; `backend/core/audit.py`; `backend/main.py`.
+
+### 122.1 Sensitive reads are permission-gated but do not emit a read event
+
+The data-rights request list (`GET /api/privacy/data-rights/requests`), individual request retrieval (`GET /api/privacy/data-rights/requests/{request_id}`), and patient access summary (`GET /api/privacy/data-rights/patients/{patient_id}/summary`) are protected by `RequirePermission("privacy:read")`. The list and detail handlers do not receive the authenticated actor; the summary handler likewise receives only the patient ID and database session after its route-level permission dependency.
+
+These handlers return data-rights request records or a patient summary containing identifiers/profile fields, consent decisions and timestamps, and data-rights history. Their reviewed implementations do not insert a `PrivacyDecisionAudit`, `SecurityAuditExportRegister`, or another durable actor-attributed read event.
+
+The shared audit mechanisms reviewed do not fill this gap. `AuditMixin` stamps create/update actors only on entities that inherit it and only during writes; it does not record reads. `PatientDataRightsRequest` does not inherit `AuditMixin`. `PrivacyDecisionAudit` is used for privacy decision events and the dossier-export handler explicitly writes an actor-attributed export decision, but the list/detail/summary read handlers do not write corresponding access events. `SecurityAuditExportRegister` records SIEM stream exports, not ordinary privacy request or patient-summary reads. The global request-correlation middleware logs method, path, status and timing; the reviewed log statements do not persist an authenticated actor with a patient/request target as a queryable application audit event.
+
+This is an application-level auditability finding for the three named read paths. It is not an assertion that no reverse-proxy, infrastructure, database, or external SIEM logs exist, and it is not an authentication bypass: the routes remain protected by the `privacy:read` permission.
+
+### 122.2 Required remediation and acceptance evidence
+
+1. Add a durable, append-only access-event mechanism for sensitive privacy reads, recording authenticated actor, tenant/branch context, action/resource type, patient and/or request identifier, timestamp, request correlation ID, outcome, and a minimal purpose/context field.
+2. Emit events for list, detail, and patient-summary reads, including denied attempts where the application can safely identify the actor and target; avoid storing returned clinical/request content in the audit record.
+3. Define how list queries with multiple patients are represented without losing per-subject accountability or creating excessive sensitive metadata.
+4. Ensure audit persistence failure is handled according to an explicit fail-closed or documented risk policy for these sensitive read paths.
+5. Add synthetic tests proving successful and denied reads create correctly attributed events, including pagination/filtering, cross-tenant isolation, and absence of patient/request payloads in event details.
+6. Document any infrastructure-level access logging separately; do not treat request-path logging without actor and target attribution as a substitute for the application access ledger.
+
+**Assessment:** High-priority privacy auditability gap. Static source review establishes that the named request and summary read handlers have permission checks but no application-level durable actor-attributed read event. The dossier-export path does create its own actor-attributed decision event and is not included in this finding. No endpoint was invoked and no patient or tenant data was accessed.
+
+**Boundary:** static source review only. No runtime, database, audit record, patient record, production credential, or infrastructure log store was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
