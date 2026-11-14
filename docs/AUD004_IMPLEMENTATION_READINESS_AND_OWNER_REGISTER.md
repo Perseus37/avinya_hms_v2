@@ -6553,3 +6553,31 @@ No unauthorized export or patient disclosure was observed.
 **Assessment:** High-priority patient-data confidentiality control gap. The ADT CSV branch returns MRN/name and admission-location/discharge details before the privacy-use evaluator used by the JSON branch. No unauthorized disclosure was observed.
 
 **Boundary:** exact-head static route/export-helper control-flow review only. No patient data, tenant database, admission, CSV export, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 231. Concurrent encounter creation can bypass the active-encounter duplicate check
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/adt_router.py`, `create_encounter()`; `backend/domains/encounters/models.py`, `PatientEncounter`; `backend/alembic/versions/6f591125aedc_baseline.py`, `patient_encounters` table and indexes.
+
+### 231.1 The duplicate check is a read-before-insert without a database uniqueness boundary
+
+`create_encounter()` queries for an existing row matching the requested `patient_id`, `encounter_type`, and `ACTIVE` status. If it finds one, it returns HTTP 409; otherwise it inserts a new ACTIVE encounter and commits. The lookup does not lock a patient-level serialization row or otherwise serialize concurrent creation requests.
+
+The model and baseline migration define only a non-unique index on `(patient_id, status)`. There is no unique constraint or partial unique index enforcing the route's stated invariant for one active encounter of a given patient and encounter type. Under PostgreSQL's normal READ COMMITTED behavior, two concurrent requests for the same patient/type can both observe no active row, both insert, and both commit. The route-level check therefore prevents sequential duplicates but does not protect the invariant under concurrency.
+
+The current check is scoped by encounter type, so the intended invariant is one active encounter per patient and type, not one active encounter across every type. The database constraint and remediation must preserve that distinction.
+
+No concurrent duplicate encounter or resulting clinical workflow collision was observed.
+
+### 231.2 Required remediation and acceptance evidence
+
+1. Enforce the intended active-encounter invariant at the PostgreSQL boundary, preferably with a partial unique index on `(patient_id, encounter_type)` where `status = 'ACTIVE'`, after an approved duplicate-data review and reconciliation plan.
+2. Translate the unique-conflict outcome into the same stable HTTP 409 response used by the sequential duplicate check; do not rely on application prechecks for correctness.
+3. Keep the existing precheck for a friendly response if useful, but make the database constraint authoritative under races.
+4. Add PostgreSQL-backed concurrency tests that synchronize two independent sessions after both have passed the precheck, then assert exactly one ACTIVE encounter commits for the same patient/type.
+5. Add tests proving that different encounter types may coexist when policy permits, and that a closed encounter allows a later encounter of the same type.
+
+**Assessment:** High-priority clinical encounter-integrity and concurrency gap. Concurrent requests can create multiple ACTIVE encounters for the same patient and encounter type despite the endpoint's explicit duplicate prevention rule. No duplicate live encounter was observed.
+
+**Boundary:** exact-head static route/model/migration review only. No patient data, tenant database, encounter, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
