@@ -6671,3 +6671,30 @@ No overlapping live appointments or concurrent scheduling race was observed.
 **Assessment:** High-priority OPD scheduling integrity gap. Concurrent reschedule writes can create overlapping appointments for one doctor because the reschedule path does not participate in the doctor-row lock used by booking paths. No actual scheduling conflict or operational impact was observed.
 
 **Boundary:** exact-head static route/model/control-flow review only. No patient data, tenant database, appointment, doctor schedule, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 235. OPD consultation transition accepts a same-patient encounter without validating its lifecycle or type
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/opd_router.py`, `update_appointment_status()`; `backend/domains/encounters/models.py`, `PatientEncounter`, `EncounterTypeEnum`, and `EncounterStatusEnum`; `backend/domains/billing/services.py`, `auto_bill_opd_consultation()`.
+
+### 235.1 Patient equality is the only encounter eligibility check
+
+When an appointment transitions to `IN_CONSULTATION`, the handler requires an `encounter_id`, loads the referenced `PatientEncounter`, and rejects it only when the encounter is missing or its `patient_id` differs from the appointment's patient. It does not require `encounter.status == ACTIVE` or `encounter.encounter_type == OPD`, and it does not verify that the encounter's primary doctor/department is consistent with the appointment's doctor/department.
+
+The model explicitly supports `OPD`, `IPD`, and `ER` encounter types and `PLANNED`, `ACTIVE`, `DISCHARGED`, and `CANCELLED` lifecycle states. After the limited patient match, the handler assigns the supplied encounter ID to the appointment and invokes `auto_bill_opd_consultation()`. That billing service adds the doctor's consultation fee to the DRAFT invoice for the supplied encounter (when a positive consultation fee is configured).
+
+Therefore, an authorized OPD status update can attach the appointment to a same-patient IPD/ER, planned, discharged, or cancelled encounter and initiate OPD consultation billing against that encounter. A same-patient encounter belonging to a different primary doctor or department is also accepted without an explicit cross-provider workflow rule. This weakens encounter provenance and can place OPD charges on an unrelated or closed clinical episode.
+
+No invalid encounter attachment or misallocated charge was observed.
+
+### 235.2 Required remediation and acceptance evidence
+
+1. Define an explicit encounter-eligibility rule for the `IN_CONSULTATION` transition. At minimum require a same-patient, `OPD`, `ACTIVE` encounter; reject planned, discharged, cancelled, IPD, and ER encounters unless a separately authorized and documented workflow explicitly permits a given case.
+2. Validate doctor and department consistency against the appointment, or implement a documented reassignment/referral rule that records the authorizing actor and reason.
+3. Perform the eligibility check under a row lock on the encounter, with a consistent lock order relative to the appointment, so the encounter cannot be discharged/cancelled between validation and billing.
+4. Keep encounter attachment and consultation billing in the same database transaction; ensure a failed eligibility check or billing operation leaves neither a changed appointment link nor a partial charge.
+5. Add PostgreSQL-backed tests for valid active OPD attachment; same-patient IPD/ER, planned, discharged, and cancelled rejection; different-patient rejection; doctor/department mismatch policy; and concurrent encounter closure versus consultation transition. Assert no invoice line or appointment link is persisted for rejected cases.
+
+**Assessment:** High-priority clinical and billing integrity gap. The route treats patient identity equality as sufficient encounter eligibility even though the model represents encounter type and lifecycle explicitly and the transition triggers encounter-scoped billing.
+
+**Boundary:** exact-head static route/model/service review only. No patient data, tenant database, encounter, invoice, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
