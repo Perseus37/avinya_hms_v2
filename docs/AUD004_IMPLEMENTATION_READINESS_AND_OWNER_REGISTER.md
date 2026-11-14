@@ -4773,3 +4773,25 @@ The route permits manually supplied values and partial overrides of a referenced
 **Assessment:** High-priority clinical auditability and reproducibility gap. The source proves the model's limited persisted fields and route's manual/partial input behavior; it does not establish a specific historical score that cannot be reconstructed in deployed data or patient harm.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 167. NEWS2 accepts a nonexistent optional vital ID through calculation and defers failure to the database foreign key
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `NEWS2EvaluationRequest` and `evaluate_encounter_news2()`; `backend/domains/clinical/models.py`, `ClinicalEarlyWarningScore.vital_id`.
+
+### 167.1 A missing vital row is silently ignored during hydration but still persisted as the score's source
+
+The request accepts optional `vital_id`. The route calls `db.get(EncounterVital, payload.vital_id)`; it hydrates values only when the returned row exists and belongs to the requested encounter. If the ID does not resolve, the route does not reject it or clear it. When sufficient manual measurements are supplied, calculation continues and the route constructs `ClinicalEarlyWarningScore(vital_id=payload.vital_id)`.
+
+The model declares `vital_id` as a nullable foreign key to `encounter_vitals.id`. Therefore, a nonexistent ID reaches persistence and conflicts with the database FK at commit, rather than producing a deliberate client-facing validation response. This can turn a malformed request into an unhandled persistence failure (typically HTTP 500) after the calculator has completed. If the caller omits manual measurements, the calculator may instead reject the empty measured-vitals set before persistence; the failure path depends on the other request fields.
+
+### 167.2 Required remediation and acceptance evidence
+
+1. If `vital_id` is supplied, require that it resolves to an existing vital record and belongs to the requested encounter before calculation, regardless of whether manual values are also supplied.
+2. Return a deterministic 404/422 validation response for missing or foreign vital IDs; do not defer validation to a database constraint failure.
+3. Define whether a manual-only evaluation must omit `vital_id`; enforce that contract explicitly.
+4. Add synthetic tests for nonexistent ID with complete manual values, nonexistent ID with no manual values, foreign-encounter ID, valid same-encounter ID, and manual-only request with no ID. Assert no score row is created on invalid input and no unhandled 500 occurs.
+
+**Assessment:** High-priority input-validation and clinical provenance integrity defect. The source proves the missing-row branch is not rejected and the model FK exists; no malformed request or production failure is established.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
