@@ -2944,3 +2944,34 @@ The demonstrated concern is therefore stale central-index metadata, unnecessary 
 **Assessment:** Medium-priority privacy-minimization and index-lifecycle gap. Source-side discovery/import checks materially limit the demonstrated disclosure impact, but the central index can retain identifiers after publication has been denied and the update route does not surface the failed synchronization. No evidence establishes that this state currently exists in production.
 
 **Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 98. Patient update can deactivate a patient without removing its discovery pointer
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/patients/schemas.py` (`PatientUpdate.is_active`); `backend/domains/patients/router.py` (`update_patient`, `deactivate_patient`); `backend/domains/federation/router.py` (`sync_patient_pointer`, discovery source revalidation).
+
+Static source review only. No federation request was sent, no patient record was read, and no database, credential, migration or production resource was accessed or changed.
+
+### 98.1 The update contract permits soft deactivation but the update path republishes the pointer
+
+`PatientUpdate` exposes `is_active: Optional[bool]`. The `PUT /api/patients/{patient_id}` handler applies every supplied field, commits the tenant patient and then unconditionally calls `sync_patient_pointer`. That synchronizer checks publication privacy, patient network-sharing opt-out and hospital sharing mode, but does not reject or remove a pointer when `patient.is_active` is false. For an otherwise publishable patient, the existing pointer is refreshed (or a pointer is inserted) even after the update has made the source patient inactive.
+
+A separate `DELETE /api/patients/{patient_id}` handler explicitly sets `is_active=False` and deletes the corresponding `GlobalPatientPointer`. The two public mutation paths therefore implement different discovery-index lifecycle semantics for the same inactive patient state: DELETE removes the pointer; PUT with `is_active=false` leaves or republishes it.
+
+### 98.2 Source revalidation limits disclosure, but the index remains stale
+
+Federated discovery subsequently loads the source patient with `Patient.is_active IS TRUE` and returns no source result when the patient is inactive. Import also revalidates source patient eligibility. Thus this pointer alone does not establish that an inactive patient's demographics or allergies are disclosed.
+
+The demonstrated defect is retained searchable index metadata and unnecessary cross-branch candidate work after deactivation. It also makes the index inconsistent with the dedicated deactivation route and can leave the record discoverable as a candidate until source revalidation rejects it. This is distinct from Section 97's early return on a denied publication decision: here publication may be allowed, but the synchronizer itself does not treat the persisted inactive state as a removal condition.
+
+### 98.3 Required remediation and acceptance evidence
+
+1. Make `sync_patient_pointer` treat `patient.is_active is False` as an explicit pointer-removal outcome before attempting publication or identifier refresh.
+2. Remove or disallow `is_active` from the general `PatientUpdate` contract and require the dedicated deactivation operation, or make both routes call one shared lifecycle service with identical pointer-cleanup semantics.
+3. Ensure callers handle typed synchronization outcomes and define retry/reconciliation behavior for the tenant/control-plane commit boundary.
+4. Add regression tests for PUT deactivation, dedicated DELETE deactivation, reactivation (if supported), privacy denial and control-plane cleanup failure. Assert that no inactive source retains a discoverable pointer after successful lifecycle completion.
+5. Add a bounded reconciliation check for inactive source patients whose pointers remain in the control-plane index.
+
+**Assessment:** Medium-priority privacy-minimization and lifecycle consistency gap. Discovery/import source revalidation materially limits the demonstrated disclosure impact; this is not evidence of an authorization bypass or patient-data exposure. Static source establishes the inconsistent API behavior, not that it has occurred in production.
+
+**Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
