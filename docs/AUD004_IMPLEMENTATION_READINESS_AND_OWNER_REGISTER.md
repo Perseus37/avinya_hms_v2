@@ -4931,3 +4931,30 @@ No actual duplicate or multiple-primary production rows are established.
 **Assessment:** High-priority encounter diagnosis integrity issue. The source proves that application checks are raceable and the reviewed ORM model lacks matching uniqueness declarations; it does not establish that the live deployed catalog lacks equivalent manually managed constraints or that production data is affected.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 173. CPOE order-set medication quantity is not validated until prescription persistence
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `OrderSetItemInput`, `create_cpoe_order_set()`, and `apply_cpoe_order_set_to_encounter()`; `backend/domains/clinical/models.py`, `OrderSetItem`; `backend/domains/pharmacy/models.py`, `PrescriptionItem`.
+
+### 173.1 Invalid quantities can be saved in an active order-set template
+
+`OrderSetItemInput.quantity` is a plain integer with default 1 and no positive lower bound. The `OrderSetItem.quantity` column is non-null with a default but has no positive-value check constraint in the reviewed model. The order-set creation route persists supplied item quantities without validating that a medication quantity is positive.
+
+When an active order set is applied, medication line quantities are copied directly to `PrescriptionItem.requested_quantity`. That destination model has a PostgreSQL check constraint `ck_rx_req_qty_pos` requiring `requested_quantity > 0`.
+
+Consequently, a template containing a medication line with quantity zero or a negative quantity can be created successfully, but applying it reaches a database integrity failure during the final transaction commit. The route does not translate that constraint failure into a controlled validation response. Because the prescription and associated diagnostic rows are committed in the same transaction, the failed commit rolls back the attempted instantiation rather than partially creating those rows.
+
+This is a deterministic invalid-template-to-failed-application path from the reviewed source and model constraints. No actual invalid template or production application failure is established.
+
+### 173.2 Required remediation and acceptance evidence
+
+1. Validate medication quantities at the order-set input boundary with an explicit minimum of 1.
+2. Add a database check constraint on `order_set_items.quantity > 0` for medication line items (or on all item types if that is the chosen domain rule).
+3. Validate persisted templates before application so legacy invalid rows produce a controlled 422/409 response with the offending item identified.
+4. Add tests for zero, negative, and positive quantities at template creation and application; verify invalid application creates no prescription/order/task rows and returns a deliberate client error rather than an unhandled 500.
+5. Confirm whether quantity semantics differ for non-medication line types before applying a global constraint.
+
+**Assessment:** Medium-priority CPOE template validation and failure-handling defect. It is not a bypass of the destination prescription quantity constraint; that database constraint prevents invalid prescription persistence. The gap is that invalid templates are accepted and fail later during clinical order-set application.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
