@@ -5687,3 +5687,31 @@ No unauthorized override in a deployed tenant or patient harm was established.
 **Assessment:** High priority if timing overrides require restricted clinical authority; otherwise Medium pending clinical governance policy. The absence of a distinct override authorization check is established in the reviewed route/service path.
 
 **Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 199. BCMA dose matching accepts a partial match for multi-component prescribed doses
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/services.py`, `_extract_dose_tokens()`, `_is_dose_match()`, and `evaluate_bcma_five_rights()`.
+
+### 199.1 The matcher succeeds when any one dose token matches
+
+The dose parser extracts every numeric quantity/unit pair from the administered dose and the prescribed dosage instruction. When both sides contain tokens, `_is_dose_match()` compares every administered token with every prescribed token and returns `True` immediately when it finds a single equal normalized pair. It does not require all prescribed components to be present, reject extra administered components, or compare the complete normalized token collections.
+
+The BCMA evaluator uses this result as the dose-match decision. If the prescribed instruction contains a mass/volume unit, a successful partial match is sufficient; the medication-strength fallback is not used to tighten that comparison.
+
+For a combination-product instruction such as `500 mg/125 mg`, an administered-dose entry of only `500 mg` contains one matching pair. The matcher returns `True` even though the second prescribed component is absent from the administered-dose entry. The same any-pair behavior can accept a matching token alongside additional, unmatched quantities. This weakens the Right Dose check for multi-component instructions and can permit an incomplete or otherwise non-equivalent dose representation to pass BCMA verification.
+
+This is a deterministic source-level matching defect. It does not establish that a partial combination dose was actually administered or that any patient was harmed.
+
+### 199.2 Required remediation and acceptance evidence
+
+1. Define a canonical dose representation that distinguishes each active ingredient/component, quantity, unit, dosage form, concentration, and administration quantity where applicable; do not treat a free-text token overlap as dose equivalence.
+2. For multi-component products and instructions, require complete component-by-component equivalence after controlled unit normalization. Reject missing components, unexpected extra components, duplicate tokens, and ambiguous or unparseable instructions.
+3. Separate prescribed administered dose from product strength/concentration; do not let a match to one strength token substitute for the full prescribed dose.
+4. Preserve the exact prescribed dose source and normalized administered-dose evidence in the eMAR and BCMA audit record.
+5. Add PostgreSQL-backed tests for combination products (including one-component omission), extra components, reordered equivalent components, unit conversions, duplicate quantities, concentration-versus-volume cases, and ordinary single-component doses. Assert rejected cases create no ADMINISTERED eMAR record.
+
+**Assessment:** High-priority medication-administration safety-control gap. The current matcher can accept a partial match for a multi-component prescribed dose. No actual partial-dose administration or patient harm was established.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
