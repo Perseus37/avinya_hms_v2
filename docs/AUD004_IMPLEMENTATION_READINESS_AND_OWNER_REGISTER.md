@@ -4845,3 +4845,30 @@ This is a deterministic source-level inconsistency. It does not establish that a
 **Assessment:** High-priority clinical classification and downstream-consumer safety gap. The calculator and persistence path establish the mismatch; actual downstream misinterpretation or patient impact is not established.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 170. Concurrent SOAP note sign-off can overwrite the recorded signer
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `sign_off_clinical_note()`; `backend/domains/clinical/models.py`, `ClinicalNote`; `backend/core/audit.py`, `AuditMixin`.
+
+### 170.1 The unsigned-state check and signature write are not an atomic transition
+
+The sign-off route loads the note with `db.get(ClinicalNote, note_id)`, returns 404 when absent, and returns 409 if the in-memory row already has `is_signed=True`. Otherwise it sets `is_signed=True`, assigns the current request's `signed_at` and `signed_by_id`, updates the audit actor, and commits.
+
+There is no `SELECT ... FOR UPDATE`, conditional database update requiring `is_signed = false`, compare-and-swap/version check, or model version column. `ClinicalNote` stores one mutable signer and timestamp pair. `AuditMixin` supplies creation/update timestamps and actor IDs, but no optimistic concurrency token.
+
+Two transactions can therefore both load the same unsigned row before either commits. Both pass the check and both issue updates; the later commit can replace the earlier `signed_by_id` and `signed_at`. Each request may return success even though only the last writer remains represented in the note. This undermines the attribution and evidentiary value of the sign-off record under concurrent requests.
+
+This is a concurrency capability established by the route/model structure; no concurrent production sign-off or actual overwritten signature is established.
+
+### 170.2 Required remediation and acceptance evidence
+
+1. Make sign-off a single atomic state transition, e.g. conditional `UPDATE clinical_notes SET ... WHERE id = :id AND is_signed = false`, and require exactly one affected row.
+2. Alternatively, lock the row before checking and changing the sign-off state; ensure all sign-off paths use the same locking discipline.
+3. Preserve the winning signer and timestamp as immutable evidence. If multiple signature events are legitimately supported, store append-only signature events rather than overwriting the single signer fields.
+4. Return 409 to losing concurrent requests and do not report success unless the transition committed.
+5. Add a two-session PostgreSQL concurrency test that synchronizes both requests after reading the unsigned state; assert exactly one success, one conflict, and one stable signer/timestamp pair.
+
+**Assessment:** High-priority clinical record integrity and signature-attribution race. The source proves the check-then-write sequence lacks atomic concurrency control; it does not establish an actual production race or patient/legal impact.
+
+**Boundary:** exact-head static source review only. No clinical endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
