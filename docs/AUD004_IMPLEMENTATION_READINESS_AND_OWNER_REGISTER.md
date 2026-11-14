@@ -2716,3 +2716,39 @@ This is distinct from Section 76's restore-drill database-selection/drop behavio
 **Assessment:** High-priority tenant data availability and restore-integrity risk. The current helper can modify the live tenant database before discovering and reporting a restore error; no atomic rollback or isolated promotion boundary is present in the inspected command. No evidence was gathered that a production restore has failed or left a tenant database partial.
 
 **Boundary:** static source review only. No restore, backup, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 91. Restore drill reports pg_restore duration as end-to-end RTO
+
+**Source reviewed:** `backend/scripts/restore_drill.py` (`run_restore_drill`, RTO timer and report construction).
+
+Static source review only. No restore drill was run, no backup was opened, and no database, credential, patient record or production resource was accessed or changed.
+
+### 91.1 The RTO timer excludes recovery work before and after pg_restore
+
+The helper decrypts the complete backup before creating the drill database. It then creates the database and prepares the restore command. Only immediately before `subprocess.run(restore_cmd, ...)` does it start `restore_start_t`; it stops the timer as soon as the `pg_restore` subprocess returns. The resulting elapsed value is emitted as `measured_rto_seconds` and compared with `max_acceptable_rto_seconds` to set `sla_rto_passed`.
+
+Consequently, the reported duration excludes at least:
+- backup artifact checksum verification and decryption;
+- drill database creation and connection/setup;
+- post-restore catalog inspection, critical-table checks and table-count attempts;
+- the RPO query attempts and final certification decision;
+- any controlled promotion/cutover or application readiness check (none is part of this drill path).
+
+The measured value is therefore the duration of one restore command, not the elapsed time from recovery initiation to a verified, usable tenant service. A slow decryption, database provisioning step or post-restore validation can add substantial recovery time without affecting the reported RTO. The report can consequently mark the RTO threshold as met even though the end-to-end recovery objective has not been measured.
+
+This is separate from Section 76's ignored `pg_restore` exit status, Sections 81–83's RPO and integrity-certification gaps, and Section 90's live-database mutation boundary. Those findings concern whether restore success is trustworthy and safe; this finding concerns the scope of the clock used to claim an RTO result.
+
+### 91.2 Required remediation and acceptance evidence
+
+1. Define the RTO start and stop events explicitly in the disaster-recovery policy. For a service-recovery objective, start at the declared recovery trigger/operation acceptance and stop only when the restored tenant has passed required integrity checks and an application-level readiness probe.
+2. Record phase timings separately (artifact verification, decryption, database provisioning, restore, integrity validation and controlled cutover/readiness) while also calculating one end-to-end elapsed recovery duration from the defined start and stop events.
+3. Include the timing boundaries and phase outcomes in the report so an operator can distinguish command duration from service-recovery duration. Do not label the isolated `pg_restore` duration as the complete RTO.
+4. Make the RTO pass predicate use the end-to-end duration and the configured threshold. A missing phase, failed validation or absent readiness confirmation must not produce a passing RTO result.
+5. Add deterministic tests with injected delays/failures before restore, during restore and during post-restore validation. Prove that all elapsed recovery work contributes to the end-to-end metric and that certification cannot pass before readiness is established.
+6. Keep any separate database-command performance metric, if useful, clearly named (for example, `pg_restore_duration_seconds`) and do not substitute it for the service-level RTO.
+
+**Assessment:** High-priority disaster-recovery measurement and SLA-evidence gap. The current report's RTO value covers only the `pg_restore` subprocess and omits other required recovery phases. No actual recovery duration or production SLA breach was measured in this static review.
+
+**Boundary:** static source review only. No restore, backup, database, credential, migration, tenant record or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
