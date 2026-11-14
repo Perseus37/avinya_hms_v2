@@ -4820,3 +4820,28 @@ This is a source-level capability and missing-control finding. It does not estab
 **Assessment:** High-priority clinical temporal-validity and provenance gap. The reviewed model and route demonstrate that the measurement time is not represented and no freshness decision is made before calculation. Clinical policy must determine acceptable age thresholds and override rules.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 169. NEWS2 labels an incomplete assessment LOW when its observed subtotal is below escalation thresholds
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/services.py`, `calculate_news2_score()`; `backend/domains/clinical/router.py`, `evaluate_encounter_news2()`; `backend/domains/clinical/models.py`, `EarlyWarningRiskEnum` and `ClinicalEarlyWarningScore`.
+
+### 169.1 Missing mandatory observations do not prevent a LOW structured risk result
+
+The calculator identifies six core parameters and sets `is_complete_set` false when any are missing. However, risk classification is performed from the sum of the available subscores and the `any_parameter_is_3` flag without first gating the LOW classification on completeness. If the available subtotal is below 5 and no supplied parameter scores 3, the function returns `risk_level="LOW"` and `is_rrt_alert_triggered=False`, even when mandatory observations are missing. It changes only the free-text recommendation to begin with `INCOMPLETE_DATA` and instructs the caller to obtain a complete vital set before concluding low risk.
+
+The endpoint returns both structured risk fields and the completeness/missing-parameter fields. It also persists the LOW enum and false RRT flag in `ClinicalEarlyWarningScore`. The model's risk enum contains only LOW, MEDIUM and HIGH, so the persisted classification cannot represent an unassessed/incomplete state. A downstream dashboard, alert rule, export, or integration that relies on the structured risk/alert fields can therefore interpret an incomplete assessment as LOW despite the separate text warning.
+
+This is a deterministic source-level inconsistency. It does not establish that a downstream consumer actually ignored the completeness flag, that a specific incomplete assessment occurred in production, or that patient harm resulted.
+
+### 169.2 Required remediation and acceptance evidence
+
+1. Make completeness part of the structured classification contract. An incomplete assessment must not be represented as LOW; introduce a distinct INCOMPLETE/UNASSESSABLE state or a nullable/explicitly unavailable risk classification, subject to clinical governance.
+2. Define the RRT/urgent-review behavior for incomplete observations independently from the aggregate score. Preserve escalation when any observed parameter independently meets an escalation threshold.
+3. Ensure API responses, persisted history, UI, exports, and integrations all expose and honor completeness and missing parameters; do not rely on a free-text recommendation as the only warning.
+4. Add synthetic tests for incomplete low subtotal, incomplete subtotal with a single severe parameter, complete low assessment, and complete medium/high assessments. Assert risk state, RRT flag, recommendation, persisted record, and serialized history remain consistent.
+5. Obtain clinical-owner approval for the classification and escalation semantics before implementation.
+
+**Assessment:** High-priority clinical classification and downstream-consumer safety gap. The calculator and persistence path establish the mismatch; actual downstream misinterpretation or patient impact is not established.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
