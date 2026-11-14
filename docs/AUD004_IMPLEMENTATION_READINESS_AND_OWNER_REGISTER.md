@@ -5861,3 +5861,31 @@ This is distinct from Sections 201–203, which concern opening-balance provenan
 **Assessment:** High priority if the locked flag is intended as a safety/security interlock; otherwise Low/Medium documentation and state-model correctness issue pending explicit policy. The source-level gap is established: `is_locked=True` is initialized but never consulted by the movement service.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 205. Ordinary pharmacy dispensing bypasses the controlled-substance vault and its movement controls
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `dispense_medication()` and `dispense_controlled_substance_from_vault()`; `backend/domains/pharmacy/services.py`, `process_controlled_substance_movement()`; pharmacy medication, inventory, prescription, and controlled-vault models/schemas.
+
+### 205.1 The ordinary dispense path does not branch on the medication's controlled-substance classification
+
+The formulary exposes `MedicationMaster.is_controlled_substance`. Controlled-vault creation sets this flag to true and creates a separate `ControlledSubstanceVault` with a perpetual movement ledger. The dedicated vault movement service records balance-before/after, actor, optional witness, batch reference, and movement type; it applies the dedicated controlled-substance witness rules described in Sections 201–203.
+
+However, the ordinary `POST` prescription dispense handler, `dispense_medication()`, processes every prescription item through ordinary `InventoryBatch` stock. It validates prescription-item ownership, batch-to-medication identity, expiry, stock quantity, FEFO, and requested quantity, then decrements `InventoryBatch.stock_quantity`, increments `PrescriptionItem.dispensed_quantity`, and creates an invoice line. It does not load or inspect `MedicationMaster.is_controlled_substance`, require a controlled-vault movement, require a controlled-substance witness, or create a `ControlledSubstanceMovementLog`.
+
+The route is admitted by `pharmacy:write`. Therefore, if a medication marked as controlled is also represented in ordinary inventory batches and prescribed, the ordinary dispense endpoint can fulfil that prescription through the standard inventory path without invoking the dedicated vault ledger or its witness controls. This is a source-level alternate path around the dedicated controlled-substance controls; it does not establish that such a transaction occurred in a deployed tenant or that every jurisdiction requires the same vault workflow.
+
+This is distinct from Section 202 (witness may be omitted on the dedicated vault dispense path), Section 201 (opening balance bypasses receipt), and Section 178 (movement links may mismatch). Section 205 concerns a separate ordinary-pharmacy API path that never enters the controlled-vault service.
+
+### 205.2 Required remediation and acceptance evidence
+
+1. Define the authoritative fulfilment model for medications classified as controlled: dedicated vault only, ordinary stock with equivalent controls, or an explicitly governed combination.
+2. Enforce that policy in the ordinary dispense domain service, not only in the UI or route selection. If vault-only, reject controlled items from ordinary `InventoryBatch` dispensing and require a linked controlled-vault movement.
+3. If ordinary stock dispensing is permitted for any controlled class, apply the corresponding schedule/jurisdiction-specific witness, provenance, balance, and audit requirements to that path as well.
+4. Reconcile existing prescriptions and inventory representations so a single physical quantity cannot be represented simultaneously in ordinary batches and the controlled vault.
+5. Add PostgreSQL-backed tests proving that controlled medication cannot be dispensed through an ungoverned path, while non-controlled dispensing remains unchanged; test permitted exceptions and ledger/stock reconciliation.
+
+**Assessment:** High priority pending controlled-substance governance. The bypass path is established in source; the precise legal and operational controls depend on medication schedule, jurisdiction, and the institution's approved custody model. No bypassed dispense, diversion, or patient harm was established in a deployed tenant.
+
+**Boundary:** exact-head static source review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
