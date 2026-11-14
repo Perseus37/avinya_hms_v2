@@ -4091,3 +4091,28 @@ This is a source-level evidence/authority assurance gap, not proof that every gu
 **Assessment:** High-priority consent evidence integrity gap. The reviewed route validates only the declared consenter category against policy and the presence of an evidence-reference string; it contains no authority-verification step or structured binding to verified authority. This does not establish actual misuse, legal invalidity of a particular record, or downstream disclosure.
 
 **Boundary:** exact-head static source review only. No consent was created or modified, no authority evidence was accessed, no patient record or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 141. Privacy-policy deactivation lacks the independent approval and rationale required at activation
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`), `activate_privacy_policy_audit_only()` and `deactivate_privacy_policy()`; `backend/domains/privacy/models.py` (blob `74a4d4f61ccbb1dfda129ab93c5b19ce154c7bad`), `PrivacyPolicyRevision`.
+
+### 141.1 Deactivation can turn an active policy OFF without a second-person decision record
+
+The audit-only activation endpoint requires `privacy:approve`, verifies the activating actor differs from the policy configurator, accepts a validated `PrivacyPolicyModeApproval` payload with an approval reference, and writes a mode-change audit event identifying the actor.
+
+By contrast, `POST /policies/{revision_id}/deactivate` accepts no request payload. It requires only `privacy:approve`; if the revision is active, it sets `is_active=False`, changes `enforcement_mode` to `OFF`, clears the mode-set actor/time/reference fields, and writes a `PrivacyDecisionAudit` event with a fixed reason code. It does not require the actor to differ from the configurator or the prior mode approver, does not collect a deactivation rationale or approval reference, and does not capture a second approver. The row lock serializes updates to that revision but does not supply the missing governance authorization.
+
+Consequently, a single user holding `privacy:approve` can disable an active policy through this route without the independent approval evidence required by the corresponding activation route. This is a conditional authorization/governance gap; the reviewed source does not establish that such a user has misused the endpoint or that production ENFORCE mode is available. No policy was activated or deactivated.
+
+### 141.2 Required remediation and acceptance evidence
+
+1. Define whether emergency deactivation is permitted and the exact roles/conditions that may invoke it.
+2. Require a structured deactivation request with reason, reference, requested-by identity and (for ordinary operation) an independent approver distinct from the configurator and requester.
+3. Preserve immutable before/after mode, revision, actor, approver, reason, timestamp and approval reference in a durable audit record; do not erase the historical approval metadata without retaining its prior values.
+4. If emergency single-person deactivation is necessary, make it a separately permissioned, time-bounded break-glass path with mandatory justification, alerting and retrospective independent review.
+5. Add PostgreSQL/API tests for self-deactivation, same-approver deactivation, missing/blank rationale, unauthorized roles, emergency-path constraints, concurrent requests and complete audit attribution.
+
+**Assessment:** High-priority policy-governance gap. The deactivation route can set an active revision to OFF with one permission-bearing actor and no supplied rationale or independent approval. This does not establish actual policy disablement, patient-data disclosure, or production impact.
+
+**Boundary:** exact-head static source review only. No endpoint was called, no policy state was changed, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
