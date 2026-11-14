@@ -4065,3 +4065,29 @@ This permits consent rows to be recorded for misspelled, obsolete or otherwise u
 **Assessment:** Consent-policy integrity gap. The active-policy branch explicitly skips all policy-specific validation when the supplied purpose is not found. No actual invalid consent record or downstream disclosure was observed.
 
 **Boundary:** exact-head static source review only. No consent was created or modified; no patient record or tenant database was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 140. Guardian and representative consent authority is recorded as an assertion, not verified
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`, `ConsentRecordCreate` and `record_patient_consent()`); `backend/domains/privacy/policy_schema.py` (blob `8a9d25c580ea11e0593fa3860b6b5d78de8389b0`, `PurposeRule`); `backend/domains/privacy/models.py` (blob `74a4d4f61ccbb1dfda129ab93c5b19ce154c7bad`, `PatientConsentRecord`).
+
+### 140.1 Consenter category is accepted without an authority-validation boundary
+
+The request model permits `consenter_type` values `patient`, `guardian` and `representative`. When an active consent policy contains a matching purpose, the route checks whether that category appears in the purpose's configured `consenters` list. For a GRANTED decision, it also checks the configured capture method and requires a nonblank `evidence_reference`.
+
+Those checks establish that the submitted category is allowed by the policy and that the caller supplied an evidence-reference string. They do not establish who the guardian or representative is, their relationship to the patient, the legal or delegated basis for their authority, whether that authority is current, or whether the referenced evidence was verified. `PatientConsentRecord` stores the category, reference and recording user, but has no structured authority subject, relationship, verification status, verifier or verification timestamp. The reviewed route does not resolve or validate such information before persisting the GRANTED record.
+
+This is a source-level evidence/authority assurance gap, not proof that every guardian or representative consent is invalid. A hospital may hold supporting evidence in an external workflow, but the reviewed endpoint does not bind that workflow's verification result to the consent record. No consent was submitted and no patient data was accessed.
+
+### 140.2 Required remediation and acceptance evidence
+
+1. Define the permitted legal/delegated authority types and the evidence required for each (including age/capacity and emergency exceptions where applicable).
+2. Introduce a verifiable authority record or trusted verification result, linked to the patient, named consenter, scope, consent event and evidence artifact; do not treat a free-form reference string as proof.
+3. Require verified authority before accepting a guardian/representative GRANTED decision; record verifier identity, verification time, method and outcome. Keep patient-self consent on its appropriate separate path.
+4. Define revocation/expiry and re-verification behavior when guardianship or delegated authority ends or changes.
+5. Add API/PostgreSQL tests for valid, missing, mismatched, expired, revoked and unverified authority, including attempts to reuse one patient's authority for another patient.
+6. Ensure downstream consent decisions can distinguish verified representative consent from unverified or legacy records and fail closed where the applicable policy requires verified authority.
+
+**Assessment:** High-priority consent evidence integrity gap. The reviewed route validates only the declared consenter category against policy and the presence of an evidence-reference string; it contains no authority-verification step or structured binding to verified authority. This does not establish actual misuse, legal invalidity of a particular record, or downstream disclosure.
+
+**Boundary:** exact-head static source review only. No consent was created or modified, no authority evidence was accessed, no patient record or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
