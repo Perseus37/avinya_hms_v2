@@ -6523,3 +6523,33 @@ This is distinct from Section 228: Section 228 concerns publication ordering aro
 **Assessment:** High-priority ADT auditability and patient-flow safety gap. The cancellation path can erase the admission's transfer history and make its bed immediately reusable without housekeeping. No actual record loss, uncleaned-bed reuse, or financial impact was observed.
 
 **Boundary:** exact-head static route/model/migration control-flow review only. No patient data, tenant database, admission, bed, transfer log, housekeeping queue, invoice, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 230. Inpatient admission CSV export returns patient identifiers before the ADT privacy-use check
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/adt_router.py`, `list_admissions()`; `backend/core/export.py`, streaming CSV helpers.
+
+### 230.1 The CSV branch exits before evaluating patient-data-use decisions
+
+The `GET /api/adt/admissions` route declares the `adt.admissions.search` privacy data-use point and requires `adt:read`. In the handler, however, the `format=csv` branch builds a streaming row generator and immediately returns `stream_csv_response()`. That return occurs before the later paginated JSON branch calls `evaluate_tenant_patient_data_uses()`.
+
+The CSV row generator exports patient MRN and patient name alongside admission type, ward, bed code, discharge status/time, and admission creation time. The query can be filtered by date, patient, admission type, or discharge state, but the CSV path does not apply pagination and does not evaluate the privacy-use decision for the patients in the exported result set. A user with the ordinary `adt:read` permission can therefore obtain the endpoint's patient-linked admission export without this route enforcing the tenant patient-data-use gate that is applied to the JSON response.
+
+Because the response is streamed in chunks, simply adding an authorization check inside the generator would risk emitting earlier rows before a later patient's denial is discovered. Authorization must be completed for the full intended export scope before the response begins, or the export must use a safe pre-authorized snapshot/job.
+
+This is distinct from Sections 208 and 224: those findings concern invoice CSV and insurance-claim listing/export respectively. This finding concerns the ADT inpatient-admission export and its ward/bed/discharge context.
+
+No unauthorized export or patient disclosure was observed.
+
+### 230.2 Required remediation and acceptance evidence
+
+1. Enforce `adt.admissions.search` patient-data-use authorization for CSV exports as well as paginated JSON; do not treat `adt:read` as a substitute for the privacy-use decision.
+2. Establish the complete export patient scope and authorize it before streaming any row. For large exports, use a bounded, auditable export job or a stable pre-authorized snapshot rather than discovering denials after bytes have been sent.
+3. Ensure a mixed permitted/denied patient set fails atomically without emitting identifiers or partial financial/clinical rows; record the actor, purpose, data-use point, decision, and export outcome without copying patient data into logs.
+4. Add PostgreSQL-backed API tests for allowed/denied CSV, mixed-patient result sets, date and status filters, large chunk boundaries, and permission-only callers. Assert that denied exports return no patient identifiers or partial CSV body.
+5. Verify the same privacy gate is applied to any future alternate admission export format or background export workflow.
+
+**Assessment:** High-priority patient-data confidentiality control gap. The ADT CSV branch returns MRN/name and admission-location/discharge details before the privacy-use evaluator used by the JSON branch. No unauthorized disclosure was observed.
+
+**Boundary:** exact-head static route/export-helper control-flow review only. No patient data, tenant database, admission, CSV export, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
