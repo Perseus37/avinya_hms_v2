@@ -5299,3 +5299,31 @@ No actual unauthorized refund, cash disbursement, tender mismatch, or financial 
 **Assessment:** High-priority financial-control and reconciliation gap. Static source proves the route's permission set, same-actor approver assignment, hardcoded CASH method, and lack of payment-receipt lookup in this branch. It does not prove that a real refund was paid or misclassified in a deployed tenant.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 186. Draft pharmacy returns adjust only the first matching invoice line, not the full returned quantity
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `dispense_medication()` and `return_dispensed_medication()`; `backend/domains/billing/models.py`, `InvoiceLineItem`.
+
+### 186.1 Multiple dispense allocations create multiple lines, but return processing mutates only one
+
+Each successful pharmacy dispense item creates a new `InvoiceLineItem` tagged with the prescription-item ID (`[RxItem:{id}]`). The dispense route does not consolidate lines for the same prescription item. Multiple calls or multiple batch entries can therefore produce multiple invoice lines carrying the same RxItem tag, potentially with different batch unit prices.
+
+For a DRAFT invoice, the return route searches those lines using `next(...)`, selecting only the first matching line. If that line's quantity is less than or equal to the requested return quantity, it deletes that line; it does not continue to the next matching line or apply the remaining return quantity. If the first line is larger, it reduces only that line. The route then recalculates invoice totals and commits the return quantity change.
+
+Concrete source-level case: the same prescription item is dispensed as 2 units in one batch and 3 units in another, producing two tagged lines. A return of 4 units is allowed when the aggregate dispensed quantity is 5. The return handler deletes the first 2-unit line and leaves the second 3-unit line untouched, even though only 1 unit remains dispensed. The DRAFT invoice therefore continues to bill 3 units after the return, rather than the remaining 1. When batch prices differ, even smaller returns can also be applied to the wrong line's price because the return route does not match the invoice line to the returned batch allocation.
+
+This is distinct from Section 179's source-lot return provenance defect: Section 179 concerns which inventory lot is restored and credited; this section concerns how a valid aggregate return quantity is allocated across multiple invoice lines.
+
+No actual overbilling or patient account discrepancy was established.
+
+### 186.2 Required remediation and acceptance evidence
+
+1. Persist structured dispense-allocation records linking prescription item, source batch, quantity, unit price, invoice line, and returnable quantity; do not infer allocations from description tags.
+2. Allocate each return across the exact originating dispense allocations and corresponding invoice lines, consuming the requested quantity fully or rejecting the request if allocations do not reconcile.
+3. Recalculate line tax and invoice tax/discount totals using the approved accounting rules for each adjusted line; preserve the original allocation and return history rather than rewriting an unrelated batch line.
+4. Add PostgreSQL tests for multiple lines for one RxItem, multiple batches with different prices, return quantity smaller than/equal to/larger than the first line, multiple return items, and repeated partial returns. Assert billed quantities and amounts equal the unreversed dispense allocations.
+
+**Assessment:** High-priority pharmacy billing accuracy defect. The code path deterministically updates at most one matching line for each return item and does not consume any residual return quantity from further matching lines. The concrete example follows directly from the endpoint's allowed dispense and return contracts; no deployed invoice was inspected.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
