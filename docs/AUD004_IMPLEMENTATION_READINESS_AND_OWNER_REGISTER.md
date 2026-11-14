@@ -6466,3 +6466,30 @@ No live transfer log, zero-priced historical record, invoice, or financial loss 
 **Assessment:** High-priority evidence-integrity gap for room-rate history. The schema advertises a transfer-time rate snapshot, but the reviewed ADT write paths leave the field to its zero default. This undermines any downstream attempt to reconstruct historical room pricing from the transfer ledger.
 
 **Boundary:** exact-head static route/model/write-site review only. No patient data, tenant database, admission, bed, transfer log, invoice, or live financial transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 228. Discharge publishes housekeeping notification before the discharge transaction commits
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/adt_router.py`, `discharge_patient()` and `transfer_patient_bed()`; `backend/core/event_bus.py`, `publish_tenant_event()`; `backend/domains/billing/services.py`, `auto_bill_ipd_bed_stay()`.
+
+### 228.1 A Redis consumer can observe bed release before the database makes it durable
+
+In `discharge_patient()`, the handler locks the admission and current bed, changes the bed to HOUSEKEEPING, clears its current admission, sets the admission discharge fields and encounter DISCHARGED state, and then publishes `BED_HOUSEKEEPING_REQUIRED` to Redis. Only after that publish does it call `auto_bill_ipd_bed_stay()` and execute the database `commit()`.
+
+The event publisher calls Redis Pub/Sub directly and catches/logs all exceptions. It does not create a transactional outbox record. The discharge route therefore has no atomic relationship between the Redis message and the tenant database commit. If bed-stay billing or the final database commit fails after Redis accepts the message, the transaction can roll back while a housekeeping consumer has already been told to process the bed. Conversely, a Redis failure is swallowed and the database discharge can commit without the housekeeping event being delivered.
+
+The same event type is published by `transfer_patient_bed()` only after its database commit, showing that the discharge path uses a different and unsafe ordering. This finding is specifically the discharge-to-housekeeping transaction boundary, not a general claim that Redis delivery is guaranteed.
+
+No failed discharge, rolled-back bed release, missing housekeeping task, or incorrect room turnover was observed.
+
+### 228.2 Required remediation and acceptance evidence
+
+1. Insert a uniquely identified `BED_HOUSEKEEPING_REQUIRED` outbox record in the same tenant database transaction as the bed/admission discharge changes.
+2. Dispatch only committed outbox records through a retryable worker; record attempts, delivery outcome, and stable event identity for consumer deduplication.
+3. Ensure billing failure or database rollback leaves no dispatchable housekeeping event; ensure Redis outage leaves a committed event available for retry.
+4. Align transfer and discharge event publication on the same after-commit/outbox contract.
+5. Add PostgreSQL-backed tests with injected billing failure, commit failure, Redis outage, duplicate dispatch, and worker restart. Assert that no consumer-visible event exists for rolled-back state and every committed bed release remains dispatchable.
+
+**Assessment:** High-priority ADT workflow consistency and operational-control gap. The discharge route can announce housekeeping before the underlying bed release and discharge are committed, while Redis failures are silently treated as non-fatal. No inconsistent live bed or housekeeping state was observed.
+
+**Boundary:** exact-head static route/event-publisher/service control-flow review only. No patient data, tenant database, admission, bed, housekeeping queue, or live discharge was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
