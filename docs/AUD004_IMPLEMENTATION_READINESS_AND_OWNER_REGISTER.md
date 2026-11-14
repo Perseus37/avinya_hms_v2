@@ -4513,3 +4513,32 @@ The model does not expose a resolved/current flag on `EncounterDiagnosis`, so fi
 **Assessment:** High-priority clinical decision-support correctness gap. The source establishes that every encounter diagnosis for the patient is queried without lifecycle or currentness filtering; it does not establish that a historical diagnosis has triggered a real production block or that a clinician acted on an incorrect warning.
 
 **Boundary:** exact-head static source review only. No prescribing endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 157. CPOE order-set application silently drops accepted nursing and dietary items
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/models.py`, `OrderSetItemTypeEnum` and `OrderSetItem`; `backend/domains/clinical/router.py`, `OrderSetItemInput`, `create_cpoe_order_set()`, and `apply_cpoe_order_set_to_encounter()`.
+
+### 157.1 Accepted order-set item types are not all instantiated
+
+The order-set item enum accepts five types: `MEDICATION`, `DIAGNOSTIC_LAB`, `RADIOLOGY`, `NURSING_CARE`, and `DIETARY`. The create request accepts any enum value and persists the supplied item without type-specific validation.
+
+When an order set is applied, the implementation builds only two collections:
+- medication items where `item_type == MEDICATION` and `medication_id` is truthy;
+- investigation items where `item_type` is `DIAGNOSTIC_LAB` or `RADIOLOGY` and `service_id` is truthy.
+
+There is no application path for `NURSING_CARE` or `DIETARY`; those accepted and persisted items are silently omitted. The response still reports `status: success` and counts only the medication and investigation collections. The same filtering silently omits a medication item with no `medication_id` or a diagnostic/radiology item with no `service_id`. The model has nullable resource references and no type/resource consistency constraint, and the input model has no cross-field validator.
+
+A protocol template containing nursing or dietary instructions can therefore be reported as successfully applied while those components are absent from the resulting encounter orders. This is a protocol completeness and workflow-integrity risk, not evidence that a real patient missed care.
+
+### 157.2 Required remediation and acceptance evidence
+
+1. Either implement durable encounter-linked nursing-care and dietary order records, or reject those item types at template creation until supported. Do not accept and silently discard them.
+2. Add type-specific validation: MEDICATION requires exactly one valid `medication_id`; DIAGNOSTIC_LAB and RADIOLOGY require exactly one valid `service_id`; unsupported types must be rejected explicitly.
+3. Enforce cross-field consistency at the database boundary where feasible, in addition to request validation, so non-API writes cannot create malformed templates.
+4. Make application results enumerate every instantiated item and fail the transaction if any configured item cannot be represented. Do not return success for partial instantiation without an explicit, auditable partial-result state.
+5. Add synthetic tests for all five enum values, missing and extraneous resource IDs, mixed order sets, invalid references, and exact equality between configured and instantiated item counts.
+
+**Assessment:** High-priority clinical protocol completeness gap. The source establishes accepted item types and the two-item-family application filter; it does not establish a real order-set application or patient-care omission in production.
+
+**Boundary:** exact-head static source review only. No order-set endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
