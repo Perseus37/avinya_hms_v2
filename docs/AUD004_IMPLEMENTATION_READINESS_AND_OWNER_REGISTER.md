@@ -2912,3 +2912,35 @@ Thus expired receipt rows are reclaimed only when another discovery request late
 **Assessment:** Medium-priority capability lifecycle and audit-integrity gap. The two-minute expiry and extensive source revalidation materially limit exposure, but the same receipt is not consumed after use and cleanup is request-driven rather than scheduled. Static review does not establish that replay caused duplicate patient records or that control-plane storage is currently growing without bound.
 
 **Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+## 97. Denied pointer publication exits before stale discovery-index entries are purged
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/federation/router.py` (`sync_patient_pointer`); `backend/domains/patients/router.py` (`update_patient`, `deactivate_patient`, explicit publish endpoint); `backend/control_plane/models.py` (`GlobalPatientPointer`).
+
+Static source review only. No federation request was sent, no patient record was read, and no database, credential, migration or production resource was accessed or changed.
+
+### 97.1 Privacy denial returns before the existing pointer is located or removed
+
+When a tenant database session is supplied, `sync_patient_pointer` first evaluates `federation.patient.publish_pointer`. If that decision is denied, the function immediately returns `False`. The control-plane pointer lookup and the later patient-level opt-out / hospital `ISOLATED_SILO` purge branches occur only after this early return.
+
+The patient update route commits changes to the tenant patient and then calls `sync_patient_pointer`, but does not inspect its boolean return value. Therefore, when a previously indexed patient's updated state causes the publication decision to be denied, the update route can return the updated patient successfully while leaving the pre-existing `GlobalPatientPointer` untouched. The same ordering means a denied publication attempt does not itself purge a pointer when a patient has opted out or the hospital has moved to an isolated policy, if the publication decision denies first.
+
+This is a concrete stale-index lifecycle gap: the source record can move into a state where publication is denied while the central index still retains its prior phone hash, ABHA value, branch code and MRN locator. Deactivation has a separate explicit pointer deletion path, but the denied-sync path does not.
+
+### 97.2 Existing source-side checks limit the demonstrated impact
+
+Discovery does not return patient demographics solely because a pointer matched. It resolves an active tenant registry and re-reads the source patient, requires the patient to remain active and opted in, checks source sharing mode and re-evaluates the source data-use decision before returning demographic data. Import independently revalidates the source patient and sharing decision. Those checks reduce the risk that a stale pointer alone causes a disclosure.
+
+The demonstrated concern is therefore stale central-index metadata, unnecessary candidate routing and incomplete privacy-state cleanup—not proof that a denied source record is disclosed, that a privacy decision is bypassed, or that patient data has been exposed. This finding is distinct from Section 93's evaluator/default behavior: it concerns the order and outcome of pointer lifecycle handling after a decision has already denied publication.
+
+### 97.3 Required remediation and acceptance evidence
+
+1. Resolve the existing pointer before evaluating publication eligibility. On an explicit patient opt-out, isolated-silo policy or denied publication decision, remove the pointer (or mark it non-discoverable) and commit the cleanup with a defined retry/reconciliation strategy.
+2. Make pointer synchronization return a typed outcome such as published, removed, unchanged or denied-with-cleanup, and require callers—especially patient update and explicit publish—to handle it rather than silently ignoring `False`.
+3. Define the cross-database failure contract. A tenant update and control-plane pointer deletion cannot be made atomic by the current two-session flow; record a durable cleanup/reconciliation task or outbox event so a control-plane outage cannot leave stale identifiers indefinitely.
+4. Add tests for an already-indexed patient followed by privacy-policy denial, patient opt-out, hospital transition to `ISOLATED_SILO`, identifier changes, control-plane write failure and retry. Assert both the tenant-side response and final control-plane pointer state.
+5. Add a bounded reconciliation job that compares eligible active/shareable source patients with their central pointers and removes or repairs stale entries without exporting patient plaintext into logs or reports.
+
+**Assessment:** Medium-priority privacy-minimization and index-lifecycle gap. Source-side discovery/import checks materially limit the demonstrated disclosure impact, but the central index can retain identifiers after publication has been denied and the update route does not surface the failed synchronization. No evidence establishes that this state currently exists in production.
+
+**Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
