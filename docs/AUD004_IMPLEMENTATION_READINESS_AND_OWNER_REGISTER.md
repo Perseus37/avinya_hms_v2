@@ -6581,3 +6581,33 @@ No concurrent duplicate encounter or resulting clinical workflow collision was o
 **Assessment:** High-priority clinical encounter-integrity and concurrency gap. Concurrent requests can create multiple ACTIVE encounters for the same patient and encounter type despite the endpoint's explicit duplicate prevention rule. No duplicate live encounter was observed.
 
 **Boundary:** exact-head static route/model/migration review only. No patient data, tenant database, encounter, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 232. Encounter cancellation can race with IPD admission and leave an active admission on a cancelled encounter
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/adt_router.py`, `cancel_encounter()` and `admit_patient()`; `backend/domains/encounters/models.py`, `PatientEncounter.admissions` and `InpatientAdmission.encounter_id`.
+
+### 232.1 The two lifecycle handlers read the encounter without locking or a database state constraint
+
+`cancel_encounter()` loads the encounter without `FOR UPDATE`, verifies its status is ACTIVE, and checks the currently loaded admissions collection for any admission whose `discharge_time` is null. If none is found, it changes the encounter to CANCELLED and commits.
+
+`admit_patient()` independently loads the same encounter without a row lock, checks that its status is ACTIVE and its type is IPD, then locks only the requested bed. It creates the `InpatientAdmission` and initial transfer log, updates the bed, and commits. There is no second encounter-status check at the write boundary, no shared lock protocol with cancellation, and no database constraint preventing an admission from referencing a CANCELLED encounter.
+
+The following interleaving is therefore possible under ordinary concurrent requests: cancellation reads an ACTIVE encounter and sees no active admission; admission reads the same ACTIVE encounter and proceeds to lock an available bed; cancellation commits CANCELLED; admission then commits its new admission and occupied bed. The resulting state is a CANCELLED encounter with an active IPD admission and occupied bed. The inverse ordering can also let cancellation's precheck run before the admission becomes visible.
+
+This is distinct from Section 231: Section 231 concerns two concurrent encounter-creation requests and the missing uniqueness boundary. This finding concerns cancellation racing with admission creation across an existing encounter's lifecycle.
+
+No such concurrent race or inconsistent live encounter/admission/bed state was observed.
+
+### 232.2 Required remediation and acceptance evidence
+
+1. Establish one consistent lock order for encounter lifecycle transitions. Both cancellation and admission should lock the encounter row before checking or changing its state; admission must revalidate ACTIVE/IPD while holding that lock through commit.
+2. Make cancellation's active-admission check a database query performed under the same encounter lock, not only a relationship collection read that can become stale relative to a concurrent admission.
+3. Add a database-level invariant where practical, or a controlled lifecycle service/trigger, to prevent an active admission from being attached to a non-ACTIVE/non-IPD encounter.
+4. Define the permitted state transition and recovery workflow if cancellation and admission are submitted concurrently; ensure bed occupancy and admission rows roll back together when the lifecycle precondition fails.
+5. Add PostgreSQL-backed two-session race tests with barriers at the encounter precheck, including both commit orderings. Assert that the final state is either a valid ACTIVE encounter with an active admission or a CANCELLED encounter with no active admission and no occupied bed attributable to the rejected request.
+
+**Assessment:** High-priority ADT lifecycle and bed-occupancy consistency gap. Concurrent cancellation and admission can leave an active inpatient admission attached to a cancelled encounter. No inconsistent live state was observed.
+
+**Boundary:** exact-head static route/model/control-flow review only. No patient data, tenant database, encounter, admission, bed, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
