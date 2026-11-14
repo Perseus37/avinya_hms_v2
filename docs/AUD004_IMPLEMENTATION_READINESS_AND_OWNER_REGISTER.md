@@ -3702,3 +3702,28 @@ This is a fail-open safety design for a destructive operation: the code has no e
 **Assessment:** High-priority destructive-retention safety gap. The reviewed executor silently suppresses all exceptions from each dependency check and has no application-level fail-closed guard. This is not evidence that a patient was deleted, nor proof that every database error permits the later DELETE to commit.
 
 **Boundary:** static source review only. No retention job was run, no patient record was queried or changed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 126. Patient hard-delete dry-run overstates eligible and affected records
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/retention_service.py` (`execute_retention_category`, patient `action == "delete"` branch and dry-run handling); `backend/domains/privacy/router.py` (`execute_retention_run`).
+
+### 126.1 Dry-run skips the dependency guard used by destructive execution
+
+The patient hard-delete branch performs its six dependent-table checks only under `if not dry_run and candidates`. When `dry_run=True`, it enters the `else` branch and sets `affected_count = candidate_count` without checking encounters, invoices, allergies, diagnostic orders, insurance policies, or consent records.
+
+Consequently, a dry-run can report every inactive, age-qualified, non-held patient candidate as affected even though the corresponding destructive run would exclude patients with dependent records. The response's `candidate_count` is the pre-dependency candidate count, and its `affected_count` is also set to that same count; it does not represent the number actually eligible for deletion under the hard-delete guard.
+
+This is a misleading safety preview for an irreversible operation. It can overstate the deletion set and does not let an operator validate the precise set that would pass the dependency checks. This finding is distinct from Section 125: Section 125 concerns suppressed dependency-query failures during destructive execution; this section concerns the dry-run path bypassing those checks altogether.
+
+### 126.2 Required remediation and acceptance evidence
+
+1. Run the same dependency-selection logic in dry-run and destructive modes; the only difference should be whether the final DELETE is issued.
+2. Return separate, accurately defined counts for initial candidates, candidates blocked by dependencies, and deletion-eligible records.
+3. Ensure dry-run and immediate execution use a shared selection implementation and equivalent transaction/consistency boundaries.
+4. Add synthetic tests with a mix of dependent and dependency-free patients; assert dry-run eligible counts exactly match the set the destructive path would select.
+5. Add regression tests proving dry-run never issues DELETE and dependency lookup failures are surfaced rather than converted into an empty dependency set.
+
+**Assessment:** High-priority retention preview correctness gap. Static source establishes that the dry-run path bypasses all six patient dependency checks and reports the unfiltered candidate count as affected. No assertion is made that a dry-run itself changes data or that a real deletion has occurred.
+
+**Boundary:** static source review only. No retention job was run, no patient record was queried or changed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
