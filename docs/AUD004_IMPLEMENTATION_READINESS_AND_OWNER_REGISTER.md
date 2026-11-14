@@ -4297,3 +4297,28 @@ This finding is distinct from Section 145's OBX-11 lifecycle handling and Sectio
 **Assessment:** High-priority protocol-validation and clinical data integrity gap. The ORU processing path is selected by URL, not by verified HL7 message type/version. No production acceptance or clinical impact is established.
 
 **Boundary:** exact-head static source review only. No HL7 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 149. HL7 message-control identifiers are logged but not used as an idempotency or replay fence
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/service.py` (blob `68fcd948f6460b2c05f9343bd563dee769704a3d`), `process_hl7_oru_r01_in_session()`; `backend/domains/integrations/models.py`, `HL7IntegrationLog`.
+
+### 149.1 The control ID is recorded after processing, without duplicate detection
+
+The processor extracts MSH-10 as `msg_control_id`, uses it in the returned ACK, and writes it to `HL7IntegrationLog.message_control_id` only after task/result processing. The model declares this column indexed but not unique. The reviewed processing path does not query existing integration logs by equipment identity and message control ID before applying observations, nor does it compare a previously accepted payload with a replay.
+
+Consequently, resubmitting an already accepted message control ID is not stopped by an application-level replay check or a database uniqueness constraint in this model. The message can enter result processing again and create another SUCCESS log row. A sender that reuses a control ID with changed content is likewise not rejected as a conflicting duplicate. The current task state may be updated again, including result values and status-dependent fields, depending on the replayed payload.
+
+This is distinct from Section 147's ambiguous repeat-task mapping: Section 149 concerns message-level duplicate delivery and control-ID reuse, irrespective of which task the message resolves to. The source establishes the missing idempotency fence, not that a replay or changed-content collision has occurred in production.
+
+### 149.2 Required remediation and acceptance evidence
+
+1. Define the uniqueness scope for MSH-10 (at minimum the authenticated equipment identity plus sender/application identity and tenant); do not assume a control ID is globally unique across all analyzers.
+2. Persist a durable message receipt before applying clinical mutations, with a database-enforced unique key for that scope and a payload digest.
+3. For an identical duplicate, return the prior durable processing outcome without reapplying task changes. For the same key with a different digest, reject and raise an attributable security/integration event.
+4. Make receipt creation and clinical result application transactionally consistent, with explicit processing states and crash/retry recovery so a committed receipt cannot permanently suppress an uncommitted result.
+5. Add synthetic tests for identical replay, same-control-ID changed payload, concurrent duplicate delivery, two distinct equipment senders reusing the same ID, and process interruption around commit. Assert exactly-once clinical effect and deterministic ACK behavior.
+
+**Assessment:** High-priority integration integrity and replay-control gap. MSH-10 is currently an audit/ACK field, not a replay defense. No replay event or patient impact is established.
+
+**Boundary:** exact-head static source review only. No HL7 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
