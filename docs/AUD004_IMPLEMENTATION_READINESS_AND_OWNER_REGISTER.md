@@ -5238,3 +5238,35 @@ No actual status corruption or interrupted dispensing was established.
 **Assessment:** High-priority prescription lifecycle and dispensing-integrity defect. The source proves the generic update route permits terminal status assignment without validating item state and bypasses the dedicated cancellation guard; it does not prove a real prescription was incorrectly transitioned or care was affected.
 
 **Boundary:** exact-head static source/schema review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 184. Pharmacy returns on partially paid invoices restore stock but create no corresponding financial credit
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `return_dispensed_medication()`; `backend/domains/billing/models.py`, `InvoiceStatusEnum` and `RefundVoucher`.
+
+### 184.1 PARTIAL invoice state falls through both credit-handling branches
+
+The billing model defines distinct `DRAFT`, `UNPAID`, `PARTIAL`, `PAID`, and `VOID` invoice states. During a pharmacy return, the route restores the selected inventory batch quantity, decrements the prescription item's dispensed quantity, calculates a credit amount, and writes a `PharmacyReturnLog` for each return item.
+
+The financial adjustment is conditional on only two invoice cases:
+
+- For a `DRAFT` invoice, the route attempts to reduce/remove the matching pharmacy invoice line and recalculates invoice totals.
+- For a `PAID` invoice, it creates a `RefundVoucher` for the aggregate return credit.
+
+For a `PARTIAL` invoice, neither branch runs. The route still commits the stock restoration, prescription quantity decrement, and return log, but it does not reduce the invoice line/total, create a credit note, or create a refund voucher. The same fall-through applies to an `UNPAID` invoice. Consequently, the patient account can continue to show the original pharmacy charge after the dispensed quantity has been returned; for a partially paid invoice, the amount due/credit position is not reconciled to the return.
+
+This is independent of Section 179's wrong-batch valuation/provenance issue: even assuming the returned batch and credit amount are correct, the invoice-status branch omits the financial adjustment for PARTIAL and UNPAID states.
+
+No actual patient overcharge, unreconciled balance, or refund omission was established.
+
+### 184.2 Required remediation and acceptance evidence
+
+1. Define return accounting for every invoice state, including DRAFT, UNPAID, PARTIAL, PAID, and VOID; do not allow stock/prescription reversal to commit without its required financial disposition.
+2. For unpaid/partially paid invoices, issue a linked credit note or reduce the outstanding receivable and allocate the credit against the paid/unpaid portions according to an explicit accounting policy.
+3. For paid invoices, create an approved refund/credit instrument linked to the original payment allocations; do not assume a cash refund method without payment-method reconciliation and required approval.
+4. Make stock restoration, prescription quantity update, return log, invoice/credit-note mutation, and refund-voucher creation atomic and idempotent.
+5. Add PostgreSQL tests covering all invoice statuses, partial-payment amounts below/equal/above the return credit, multiple returns, retries, and rollback on financial-record failure; assert invoice totals, paid amount, outstanding balance, stock, and prescription quantities remain reconciled.
+
+**Assessment:** High-priority pharmacy/billing reconciliation defect. The source proves the PARTIAL and UNPAID states receive no financial adjustment in this return route while inventory and prescription quantities are changed; it does not prove an actual overcharge, loss, or patient impact.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
