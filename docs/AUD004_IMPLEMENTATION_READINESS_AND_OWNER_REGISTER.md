@@ -5327,3 +5327,32 @@ No actual overbilling or patient account discrepancy was established.
 **Assessment:** High-priority pharmacy billing accuracy defect. The code path deterministically updates at most one matching line for each return item and does not consume any residual return quantity from further matching lines. The concrete example follows directly from the endpoint's allowed dispense and return contracts; no deployed invoice was inspected.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 187. Pharmacy returns can reactivate a voided inventory batch and make it dispensable again
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/models.py`, `InventoryBatch`; `backend/domains/pharmacy/router.py`, `void_inventory_batch()`, `return_dispensed_medication()`, `list_inventory_batches()`, and `dispense_medication()`.
+
+### 187.1 Void is represented only by zero stock, while return can increase that same batch
+
+The `InventoryBatch` model has medication, batch number, expiry, stock quantity, and unit price, but no persistent lifecycle/disposition field for void, recall, quarantine, or release-after-inspection. The void endpoint locks the row and sets only `stock_quantity = 0`; it records no durable void state. Its success message explicitly describes the operation as a void for recall traceability, but subsequent code has no marker with which to enforce that disposition.
+
+The return endpoint accepts any existing batch whose `medication_id` matches the prescription item. It does not reject a batch previously voided, quarantined, or recalled, and it does not require a documented inspection/release decision. It then increments that batch's stock quantity. The inventory list includes every batch with positive stock, and the dispensing endpoint checks medication match, expiry, and quantity but has no void/recall/quarantine state to check.
+
+Concrete sequence: an unexpired batch is voided for a recall, setting its stock to zero. A later pharmacy return references that batch and passes the only batch-identity check (same medication). The return increments its stock above zero. The batch then appears in the ordinary positive-stock inventory list and can pass the dispensing endpoint's remaining batch checks. The void action therefore does not durably prevent returned stock from re-entering ordinary availability.
+
+This is distinct from Section 182, which concerns the absence of movement records and reason/disposition evidence for adjustments and voids. This finding concerns the operational consequence: a subsequent return can reverse the stock-zeroing effect and make a recalled/voided lot eligible for dispensing. It is also distinct from Section 179's missing proof that a return belongs to the originally dispensed source lot.
+
+No actual recalled batch was reactivated, dispensed, or associated with patient harm in a deployed tenant.
+
+### 187.2 Required remediation and acceptance evidence
+
+1. Introduce a durable batch lifecycle/disposition state (for example AVAILABLE, QUARANTINED, RECALLED, VOIDED, and RELEASED) with controlled transitions, actor, timestamp, reason, and supporting recall/inspection reference.
+2. Make return receipt a separate disposition decision. Returned units must enter quarantine/non-saleable stock by default where required; do not increase the sellable balance until an authorized inspection/release transition.
+3. Enforce the same eligible-state predicate in inventory selection, FEFO checks, dispensing, adjustments, and returns; a zero balance alone must never represent a permanent void/recall state.
+4. Preserve append-only stock movement and disposition events, including returned quantity, source dispense allocation, physical condition, segregation location, and release authority.
+5. Add PostgreSQL tests for return-to-voided, recalled, quarantined, expired, and released batches; assert that blocked returns do not increase sellable stock and that a quarantined/voided lot cannot be selected for dispense even after a return or concurrent request.
+
+**Assessment:** High-priority medication inventory safety-control gap. Static source establishes that void state is not persisted separately from stock quantity and that return/list/dispense paths do not enforce a disposition state. The sequence is feasible for an unexpired batch; no deployed recall failure, re-dispense, or patient impact was established.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
