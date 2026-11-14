@@ -4245,3 +4245,30 @@ No maximum segment count, OBX count, field length, or total message size is enfo
 **Assessment:** Availability and storage-exhaustion exposure in the integration input contract. Severity depends on external ingress limits, sender trust and rate controls, which were not established in this review.
 
 **Boundary:** exact-head static source review only. No HL7 endpoint was called, no oversized request was sent, no tenant database or patient data was accessed, and no runtime or migration changes were made. External proxy/gateway limits were not verified. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 147. HL7 analyzer-code mapping silently binds repeat tests to the first pending task
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/service.py` (blob `68fcd948f6460b2c05f9343bd563dee769704a3d`), `process_hl7_oru_r01_in_session()`.
+
+### 147.1 Mapped-code resolution bypasses the repeat-test ambiguity guard
+
+The service loads all pending, sample-collected and in-progress tasks for the patient and orders them FIFO by creation time. For a configured analyzer mapping, it resolves the mapped service ID and loops over `patient_tasks`, selecting the first task with that service ID and an eligible status. It breaks immediately and does not count or reject multiple candidates.
+
+The same first-match behavior is used when resolving an OBX test code through `mapping_dict`. By contrast, the unmapped service-code path explicitly checks whether multiple eligible tasks exist and rejects the message as ambiguous unless an OBR order-control identifier resolves the intended task.
+
+Therefore, when a patient has multiple eligible orders/tasks for the same mapped service (for example, repeat or separately ordered tests), a message without a usable OBR-2/OBR-3 task identifier can be silently attached to the oldest eligible task. FIFO ordering is not proof that the analyzer result belongs to that order. The route can then update the selected task and its parent order using the received observation.
+
+This is distinct from the general task-matching behavior and the status lifecycle findings in Sections 145–146: Section 147 isolates the inconsistent ambiguity protection on the mapped-code branch. The source establishes a deterministic first-candidate selection path, not that a real result has been misfiled.
+
+### 147.2 Required remediation and acceptance evidence
+
+1. Require a validated order/task control identifier for mapped codes whenever more than one eligible task can match.
+2. Apply the same candidate-count and ambiguity policy to mapped and unmapped service-code resolution; never silently choose the first candidate.
+3. Bind analyzer mapping to the exact configured equipment identity after the device-authentication controls in Section 144 are implemented.
+4. Reject ambiguous messages before any task, order, recollection or audit state is mutated; return a safe application error and preserve diagnostic traceability.
+5. Add synthetic tests with two or more pending tasks sharing a mapped service, both OBR-identified and unqualified messages, multiple OBX segments, and duplicate/reordered delivery. Assert that no task changes on ambiguous input and that an exact order identifier updates only its intended task.
+
+**Assessment:** High-priority clinical result-assignment integrity gap. The mapped-code branch can silently route a result to the oldest eligible repeat task instead of rejecting ambiguity. No live misassignment or patient harm is established.
+
+**Boundary:** exact-head static source review only. No HL7 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
