@@ -2468,3 +2468,35 @@ Peak process memory therefore scales with the full backup size and can include t
 **Assessment:** High-priority restore-drill availability and scalability gap. A backup larger than available memory can prevent the drill from completing, weakening the reliability of scheduled recovery evidence. Actual failure thresholds depend on artifact size, runtime/container limits and subprocess buffering; none were measured in this static review.
 
 **Boundary:** static source review only. No backup, decryption, restore drill, database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+
+## 83. Restore drill can certify table presence while table-count verification failed
+
+**Source reviewed:** `backend/scripts/restore_drill.py` (`run_restore_drill`).
+
+Static source review only. No restore drill, database query, backup or patient data was accessed or executed.
+
+### 83.1 Failed table reads are recorded but excluded from certification
+
+The drill enumerates table names and records missing entries from `CRITICAL_HMS_TABLES`. It then attempts `SELECT COUNT(*)` for each discovered table. Any exception is caught and stored as `table_counts[tbl] = -1`. However:
+
+- `all_tables_valid` checks only whether the six critical table names appear in the catalog.
+- `drill_passed` checks checksum, critical table-name presence and RTO only.
+- It never checks whether any table count equals `-1`, nor whether the critical tables were successfully queried.
+- `verified_tables_count` is populated with `len(table_counts)`, which includes entries whose count query failed.
+
+Consequently, a drill can mark the schema/table-presence check as valid and include failed table reads in its reported verified-table total. A permissions problem, damaged relation or other query failure can therefore be represented in the report without making the certification fail. A successful `COUNT(*)` would still prove only that the relation can be scanned/countable, not that clinical content is semantically correct or complete.
+
+This is distinct from the previously documented `pg_restore` return-code omission: even after restore exit handling is corrected, the current table-read verification itself is not a pass/fail gate.
+
+### 83.2 Required remediation and acceptance evidence
+
+1. Track per-table verification outcomes explicitly (queried, failed, skipped), with error classification and bounded diagnostics.
+2. Require successful reads for every required critical table; a failed or skipped required check must produce FAILED or UNVERIFIED, never PASSED.
+3. Rename the report count to distinguish discovered tables from successfully verified tables; compute the latter from successful checks only.
+4. Add deterministic tests that inject a count-query failure for each critical table and a noncritical table, and assert the certification state and report counters.
+5. Add a documented integrity policy for checks beyond row counts (schema/revision, constraints, representative domain invariants and backup-manifest/high-water-mark comparisons).
+
+**Assessment:** High-priority restore-evidence integrity gap. Current reporting can overstate what the drill actually read and verified. No claim is made that a particular production restore has failed.
+
+**Boundary:** static source review only; no backup, database, migration, restore drill, credential or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
