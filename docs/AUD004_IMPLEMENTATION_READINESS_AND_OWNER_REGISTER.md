@@ -6409,3 +6409,30 @@ No actual transfer, census run, invoice, incorrect charge, or financial loss was
 **Assessment:** Medium-priority room-revenue and patient-billing integrity gap. The model captures historical transfer-time rates, but the census billing path ignores that history and prices from the current bed only. The final financial impact depends on the hospital's approved occupancy/proration policy.
 
 **Boundary:** exact-head static source/model/control-flow review only. No patient data, tenant database, bed assignment, transfer record, invoice, census job, or live financial transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 226. Midnight census endpoint accepts arbitrary past and future billing dates
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/rcm_schemas.py`, `MidnightCensusRunRequest`; `backend/domains/billing/router.py`, `run_inpatient_midnight_census_charges()`; `backend/domains/billing/rcm_services.py`, `execute_midnight_census_charge_run()`.
+
+### 226.1 Caller-supplied date controls the charge reference without a time or census eligibility check
+
+The request schema accepts `census_date` as an unconstrained optional string. The endpoint forwards it directly to the census service. The service uses the supplied value verbatim (or the current UTC date when omitted) in each `CENSUS-{encounter_id}-{bed_id}-{target_date}` source reference. It does not parse the date, reject a future or stale date, or establish that the requested census boundary has occurred.
+
+The active-admission query is evaluated at execution time: it selects admissions that are currently undisclosed by discharge time, have a current bed, and whose encounter is not DISCHARGED. It does not reconstruct which admissions were present on the requested historical date. Thus a caller with `billing:write` or `admin:write` can submit a future date and post today's active admissions as future-dated room charges, or submit a past date and post today's active admissions under a historical census reference. The latter is not a historical census; it is a current snapshot mislabeled with a caller-selected date. Repeated requests for different arbitrary dates create distinct idempotency references and can post additional charges.
+
+This is distinct from Section 225: Section 225 concerns how a valid census day's charge is calculated across bed transfers; this finding concerns whether the endpoint may run for that date at all and whether its admission cohort corresponds to that date.
+
+No arbitrary-date census request, duplicate charge, future-dated charge, historical correction, or financial loss was observed.
+
+### 226.2 Required remediation and acceptance evidence
+
+1. Parse `census_date` as a strict date type with timezone-aware census-boundary semantics; reject malformed values.
+2. Restrict ordinary execution to the authorized current census date after the configured local-hospital census boundary. Handle backdated corrections through a separate, explicitly authorized and audited adjustment workflow.
+3. Do not support future census billing through this endpoint; if prebilling is a legitimate policy, implement a distinct accrual workflow with separate accounting treatment and approval.
+4. Select the admission/bed occupancy cohort that was valid at the census instant, rather than selecting current active admissions and labeling them with a caller-supplied date.
+5. Add PostgreSQL-backed API/service tests for malformed, future, prior-day, boundary-time, timezone/DST, discharged-before-census, admitted-after-census, and authorized correction cases. Assert that rejected requests create no invoice line or charge-capture event, and that reruns cannot create a second daily charge.
+
+**Assessment:** High-priority billing-period and revenue-integrity control gap. The endpoint can create room charges for arbitrary dates against the current admission cohort, bypassing the intended temporal meaning of a midnight census. No actual misdated charge was observed.
+
+**Boundary:** exact-head static schema/route/service review only. No patient data, tenant database, census request, admission, invoice, charge event, or live financial transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
