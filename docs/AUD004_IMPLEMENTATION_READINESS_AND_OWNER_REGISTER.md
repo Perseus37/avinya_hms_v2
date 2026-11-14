@@ -5833,3 +5833,31 @@ This verifier is used by the controlled-substance receipt, return, and wastage f
 **Assessment:** High priority if the controlled-substance dual-witness policy requires a licensed and appropriately credentialed independent professional; otherwise Medium pending jurisdiction- and schedule-specific governance. The source-level limitation is established: the witness qualification decision is based on permissions and role strings, not verified professional credentials. No unqualified witness transaction in a deployed tenant was established.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 204. Controlled-substance movements ignore the vault's locked state
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/models.py`, `ControlledSubstanceVault.is_locked`; `backend/domains/pharmacy/router.py`, vault creation and movement endpoints; `backend/domains/pharmacy/services.py`, `process_controlled_substance_movement()`.
+
+### 204.1 The vault is created locked, but the movement service never checks that state
+
+The `ControlledSubstanceVault` model defines `is_locked` as a non-null Boolean defaulting to true. The vault creation route explicitly sets `is_locked=True`. In the reviewed pharmacy router, the only reference to `is_locked` is this initialization; there is no unlock/lock command or controlled state-transition endpoint.
+
+All receipt, dispense, return, and wastage endpoints delegate to `process_controlled_substance_movement()`. That service locks the database row with `SELECT ... FOR UPDATE` to serialize balance changes, but it does not inspect the separate `vault.is_locked` field before applying any movement. The row lock is a database concurrency mechanism, not a physical or operational safe-unlock authorization.
+
+Consequently, a newly created vault whose recorded state is `is_locked=True` can still accept stock movements, including dispense and wastage, through the ordinary movement endpoints. The field therefore does not enforce a locked-vault control. Whether a physical safe must be explicitly unlocked and re-locked for each access is a policy and hardware-integration question; the code currently has no enforceable state transition or authorization boundary for that control.
+
+This is distinct from Sections 201–203, which concern opening-balance provenance and witness controls. No unauthorized physical access or deployed movement against a locked safe was established.
+
+### 204.2 Required remediation and acceptance evidence
+
+1. Define whether `is_locked` represents physical safe state, application workflow state, or merely descriptive metadata; do not imply physical enforcement if no trusted hardware signal exists.
+2. If it is an operational control, add explicit authorized unlock/re-lock transitions with actor, time, reason, and any required second-person approval.
+3. Enforce the permitted state at the domain-service transaction boundary for each movement type; distinguish a database row lock from the vault's operational locked state.
+4. Define fail-safe behavior for missing, stale, or unavailable hardware state if an electronic safe integration is intended.
+5. Add PostgreSQL-backed tests proving that prohibited movements against a locked vault fail without changing balance or writing a movement row, and that only authorized transitions permit subsequent movement.
+
+**Assessment:** High priority if the locked flag is intended as a safety/security interlock; otherwise Low/Medium documentation and state-model correctness issue pending explicit policy. The source-level gap is established: `is_locked=True` is initialized but never consulted by the movement service.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
