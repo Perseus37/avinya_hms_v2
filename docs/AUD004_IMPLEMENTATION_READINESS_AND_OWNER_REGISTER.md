@@ -6382,3 +6382,30 @@ This is distinct from Section 208's invoice CSV export bypass and Section 214's 
 
 **Boundary:** exact-head static route/schema/control-flow review only. No patient data, tenant database, insurance claim, CSV export, or live financial transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+
+
+## 225. Midnight census billing ignores bed-transfer rate history and charges only the current bed's full daily rate
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/rcm_services.py`, `execute_midnight_census_charge_run()`; `backend/domains/encounters/models.py`, `InpatientAdmission` and `BedTransferLog`; `backend/domains/facility/models.py`, `Bed.base_daily_rate_paise`.
+
+### 225.1 The census charge is calculated from the current bed snapshot, not the patient's bed occupancy intervals
+
+The census runner selects active admissions with a non-null `current_bed_id`, loads that one current `Bed`, and calculates the charge from its current `base_daily_rate_paise`. Its idempotency reference is `CENSUS-{encounter_id}-{bed_id}-{target_date}`. It does not read the admission's `transfer_logs` or use transfer timestamps/rates to calculate the charge for the census date.
+
+The data model separately records every `BedTransferLog` with `from_bed_id`, `to_bed_id`, `transfer_time`, and `unit_price_paise`. The model comment explicitly says the captured rate locks the historical bed rate at transfer time to prevent retroactive overcharging. That historical pricing evidence is not consumed by the midnight census calculation.
+
+For an admission transferred between beds during a billing day, the runner therefore posts the full daily rate of whichever bed is current when the job executes; it does not account for the time spent in the previous bed or the transfer-time rate captured in the log. Depending on the approved hospital room-charge policy, this can misstate the day's room charge (including applying a new bed's full daily rate to a partial-day stay). The exact proration/census convention is a finance policy decision; the implementation currently has no visible reconciliation between the transfer ledger and the charge calculation.
+
+No actual transfer, census run, invoice, incorrect charge, or financial loss was observed.
+
+### 225.2 Required remediation and acceptance evidence
+
+1. Finance and ADT owners must define the charge convention for admission, discharge, and each bed transfer on a census day (full-day snapshot, hourly proration, half-day slabs, or another explicit tariff rule).
+2. Make the census charge calculation consume the authoritative bed-occupancy intervals and the rate captured for each interval; do not silently substitute the bed's current master rate for historical occupancy.
+3. Define deterministic treatment of transfers exactly at the census boundary, multiple transfers on one day, missing/overlapping transfer logs, and retroactive corrections.
+4. Make one encounter/date charge operation idempotent across all bed segments; avoid separate full-day charges per bed segment unless the approved policy explicitly requires them.
+5. Add PostgreSQL-backed tests for no transfer, one and multiple same-day transfers, transfer at the census boundary, admission/discharge mid-day, rate changes after transfer, retries, and concurrent census workers. Reconcile the resulting invoice lines to the authoritative occupancy timeline.
+
+**Assessment:** Medium-priority room-revenue and patient-billing integrity gap. The model captures historical transfer-time rates, but the census billing path ignores that history and prices from the current bed only. The final financial impact depends on the hospital's approved occupancy/proration policy.
+
+**Boundary:** exact-head static source/model/control-flow review only. No patient data, tenant database, bed assignment, transfer record, invoice, census job, or live financial transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
