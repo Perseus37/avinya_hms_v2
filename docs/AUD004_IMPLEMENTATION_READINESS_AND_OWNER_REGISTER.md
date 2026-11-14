@@ -6248,3 +6248,30 @@ No actual order was changed and no stale invoice or inconsistent task set was ob
 
 **Boundary:** exact-head static source/schema/service review only. No patient data, tenant database, diagnostic order, or invoice was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 220. Diagnostic order completion uses distinct service IDs and can complete while duplicate-service tasks remain unverified
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/diagnostics/services.py`, `explode_clinical_orders()`; `backend/domains/diagnostics/router.py`, `place_diagnostic_order()` and `submit_task_result()`; `backend/domains/diagnostics/models.py`, `DiagnosticTask` and `ServiceBundleMapping`.
+
+### 220.1 Task cardinality is discarded during aggregate completion evaluation
+
+Order explosion intentionally supports quantities: bundle mappings have a positive `quantity`, and `explode_clinical_orders()` multiplies nested quantities and returns a count per executable service. `place_diagnostic_order()` creates one `DiagnosticTask` per unit, so a valid order can contain multiple task rows with the same `service_id`.
+
+After a task transition, `submit_task_result()` calculates both `ordered_services` and `verified_services` as Python sets of service IDs. This discards the number of tasks for each service. The completion branch later compares those sets and uses a separate `has_pending` check that counts only PENDING, SAMPLE_COLLECTED, and IN_PROGRESS tasks. In the partial-result branch, it can mark the parent order COMPLETED when the distinct service-ID sets match and no such pending task exists, even when another same-service task is RESULT_ENTERED or SAMPLE_REJECTED.
+
+Concrete static execution example: an order contains two tasks for service X (from a bundle quantity of two, or duplicate service IDs). Task X-1 is VERIFIED and task X-2 is RESULT_ENTERED. The distinct sets are both `{X}`; `has_pending` is false. The initial completion condition is blocked by `has_result_entered`, but the subsequent partial-result branch checks only `not has_pending` and set equality, then assigns COMPLETED. A second example is one VERIFIED and one SAMPLE_REJECTED task: the first completion branch can succeed because rejected tasks are not counted as pending or result-entered.
+
+This can make the order-level state report COMPLETED while one or more required task instances have not been verified. It is distinct from Section 219's caller-supplied terminal status bypass: this defect occurs in the normal task-result transition logic itself.
+
+No affected order or premature completion was observed in a live tenant. The defect is established by the supported quantity expansion and the set-based completion logic.
+
+### 220.2 Required remediation and acceptance evidence
+
+1. Evaluate completion against task instances, not distinct service IDs: require every required task row to be VERIFIED, with explicit policy for cancelled/rejected tasks and partial orders.
+2. If service-level aggregation is needed, compare expected and completed counts per service and preserve task identity; do not use set equality as a substitute for cardinality.
+3. Centralize order-state derivation in a pure domain function used by every task transition and cancellation path.
+4. Add PostgreSQL-backed tests for duplicate direct service IDs, bundle quantity greater than one, nested bundle quantities, and mixed task states (VERIFIED + RESULT_ENTERED, VERIFIED + SAMPLE_REJECTED, VERIFIED + PENDING). Assert the order cannot become COMPLETED until every required task instance satisfies the approved terminal policy.
+
+**Assessment:** High-priority clinical workflow integrity defect. A valid multi-quantity diagnostic order can be marked COMPLETED before all task instances are verified. No premature completion, incorrect report release, or patient harm was observed.
+
+**Boundary:** exact-head static source/model review and control-flow analysis only. No patient data, tenant database, diagnostic order, or result was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
