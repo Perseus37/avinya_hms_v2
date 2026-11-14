@@ -3144,3 +3144,36 @@ This finding is limited to the key-rotation audit event's actor attribution. The
 **Assessment:** Medium-priority privileged-operation audit attribution gap. Static source establishes that the rotation route omits actor and the model default is a generic `VENDOR_CONSOLE` value. This weakens operator accountability and incident reconstruction, but does not establish unauthorized rotation or secret disclosure.
 
 **Boundary:** static source review only. No key was generated, rotated or tested; no operator session, request, database, patient data, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 105. Several privileged fleet mutations do not enforce the named-operator role matrix
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/control_plane/api/routers/fleet_ops.py`; `backend/control_plane/services/auth.py` (`verify_control_plane_secret`, `_verify_vendor_key`, `require_operator_role`).
+
+### 105.1 Vendor-key validation is used where endpoint-specific role authorization is absent
+
+The control-plane auth service supports named operator sessions and role-specific dependencies. `require_operator_role(...)` enforces the named session's role, with superadmin override. Separately, `_verify_vendor_key` allows a superadmin session to bypass the vendor setup key; every other caller must present the configured `MASTER_ONBOARDING_KEY`. That helper validates possession of a shared credential; it does not inspect whether the named operator is ops, support, billing or viewer.
+
+The following mutating fleet routes call `verify_control_plane_secret` and `_verify_vendor_key` but do not declare `require_operator_role`:
+
+- `PATCH /api/tenants/{slug}/status` — suspends/reactivates the tenant and federation node.
+- `PATCH /api/tenants/{slug}/deployment-mode` — changes CLOUD/ON_PREM deployment mode.
+- `PATCH /api/tenants/{slug}/entitlements` — changes modules, quotas, commercial terms and maintenance mode.
+- `POST /api/tenants/{slug}/sync` and `POST /api/tenants/sync-fleet` — run tenant or fleet schema/template synchronization.
+- `POST /api/tenants/{slug}/saas-billing/charge` — records a SaaS payment entry and changes payment status.
+
+By contrast, nearby sensitive routes such as key rotation, emergency admin reset and sandbox cloning explicitly declare role dependencies. Consequently, for named operator sessions, the routes listed above rely on the shared vendor key without enforcing the operator's role at the route boundary. A named operator account with a lower-privilege role that also obtains the vendor key can pass the helper; the helper itself does not reject that role. This is a conditional authorization-boundary weakness, not proof that a viewer currently possesses the key or that any such request occurred.
+
+The legacy static control-plane credential path is a separate compatibility case: `require_operator_role` treats callers without a named operator identity as superadmin when that legacy path is enabled. This finding concerns named operator sessions and the missing route-level role checks, not the separate legacy compatibility policy.
+
+### 105.2 Required remediation and acceptance evidence
+
+1. Define a route-to-role matrix for every control-plane read and mutation; assign least-privilege roles for tenant suspension, deployment mode, entitlements, schema sync and billing.
+2. Require `require_operator_role` on each route and keep the vendor setup key as an additional credential only where explicitly justified, not as a substitute for authorization.
+3. Add negative tests for viewer, support and billing sessions against each mutation, plus positive tests for the intended ops/billing/superadmin roles.
+4. Test named-session and legacy-static-key paths separately; document and govern any legacy superadmin-equivalent behavior.
+5. Ensure audit records identify the authenticated principal and record the authorization mode for each successful mutation.
+
+**Assessment:** High-priority control-plane authorization consistency gap. The route/helper composition permits a lower-privilege named operator who also has the shared vendor key to invoke mutations without a role check. No evidence establishes that such a credential combination exists in practice or that an unauthorized mutation has occurred.
+
+**Boundary:** static source review only. No control-plane request, operator account, vendor key, database, migration, tenant, patient data or production resource was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
