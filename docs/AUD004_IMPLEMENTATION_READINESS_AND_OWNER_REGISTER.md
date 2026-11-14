@@ -4488,3 +4488,28 @@ For a multi-analyte panel, the first numeric observation is not necessarily the 
 **Assessment:** High-priority laboratory result interpretation and delta-check correctness gap. The source establishes that the configured parameter name is unused and that multi-OBX values are reduced to first-number extraction; it does not establish a wrong delta alert or patient impact in production.
 
 **Boundary:** exact-head static source review only. No HL7 endpoint or analyzer was used, no delta-check execution was performed against patient data, no tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 156. Drug–disease contraindication checks treat diagnoses from every historical encounter as active
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/services.py`, `check_drug_disease_contraindications()`; `backend/domains/clinical/models.py`, `EncounterDiagnosis`; `backend/domains/encounters/models.py`, `PatientEncounter.status` and `EncounterStatusEnum`; `backend/domains/patients/models.py`, `DiagnosisMaster.is_active`.
+
+### 156.1 Historical encounter diagnoses are included in current prescribing checks
+
+The contraindication evaluator's docstring says it evaluates proposed medications against the patient's active diagnoses. Its query joins `DiagnosisMaster` to `EncounterDiagnosis` and then `PatientEncounter`, filtering only on `PatientEncounter.patient_id`. It does not constrain encounter status, diagnosis type, or `DiagnosisMaster.is_active`.
+
+The encounter model explicitly distinguishes `PLANNED`, `ACTIVE`, `DISCHARGED`, and `CANCELLED` states. Nevertheless, diagnoses linked to discharged or cancelled encounters remain eligible inputs to the contraindication rules. For example, a diagnosis recorded during a prior encounter can continue to match a drug-disease rule and cause the evaluator to raise a 409 hard-stop or critical warning during a later order-set application, even when that historical diagnosis is no longer intended to represent a current condition.
+
+The model does not expose a resolved/current flag on `EncounterDiagnosis`, so filtering only to ACTIVE encounters may not be a complete clinical solution: some chronic conditions need to remain relevant after discharge, while resolved acute conditions should not remain active indefinitely. The source-backed defect is that the evaluator silently treats all historical encounter diagnoses as active without a currentness/relevance policy. This is distinct from Section 155's analyte identity issue and from allergy checks, which explicitly filter active patient-allergy records.
+
+### 156.2 Required remediation and acceptance evidence
+
+1. Define a clinical diagnosis-currentness model, including explicit status/resolution, onset/abatement, and chronicity semantics; do not infer currentness solely from the existence of an encounter-diagnosis link.
+2. Make contraindication evaluation consume only diagnoses explicitly classified as current/relevant under that model, while preserving chronic conditions across encounter closure where clinically appropriate.
+3. Define how provisional, historical, ruled-out, resolved, and inactive master diagnoses participate in each contraindication rule.
+4. Ensure diagnosis changes and resolution are attributable and auditable; do not delete historical diagnoses merely to suppress a warning.
+5. Add synthetic tests covering active, discharged, cancelled, and planned encounters; resolved and unresolved diagnoses; chronic conditions spanning encounters; inactive diagnosis-master entries; and both hard-stop and overridable-warning rules.
+
+**Assessment:** High-priority clinical decision-support correctness gap. The source establishes that every encounter diagnosis for the patient is queried without lifecycle or currentness filtering; it does not establish that a historical diagnosis has triggered a real production block or that a clinician acted on an incorrect warning.
+
+**Boundary:** exact-head static source review only. No prescribing endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
