@@ -5571,3 +5571,32 @@ No over-quantity administration was observed in a deployed tenant; this is a sou
 **Assessment:** High-priority medication-administration safety-control gap. The source path writes an ADMINISTERED eMAR event even when the quantity counter has reached its requested limit; the limit only prevents another counter increment. No actual excess dose or patient harm was established.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 195. BCMA does not validate encounter lifecycle before recording bedside administration
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/services.py`, `evaluate_bcma_five_rights()`; `backend/domains/encounters/models.py`, `EncounterStatusEnum` and `PatientEncounter`.
+
+### 195.1 Encounter existence and prescription status are checked, but encounter status is not
+
+The BCMA evaluator loads the requested `PatientEncounter` and rejects a missing encounter. It then loads the patient and prescription item, verifies that the prescription item belongs to the requested encounter, and requires the parent prescription status to be ACTIVE.
+
+The encounter model separately defines lifecycle states PLANNED, ACTIVE, DISCHARGED, and CANCELLED. The BCMA evaluator does not inspect `encounter.status` or `end_time` before proceeding through barcode, dose, route, time, and allergy checks. The successful execution path can therefore create an ADMINISTERED eMAR event for an existing DISCHARGED or CANCELLED encounter when its linked prescription remains ACTIVE and the other checks pass.
+
+This is a lifecycle consistency gap at the bedside administration boundary. Whether every post-discharge or cancelled-encounter medication event must be prohibited is a clinical workflow policy decision: approved continuity, transfer, emergency, or retrospective documentation workflows may need explicit handling. The current code has no visible policy distinction or explicit override path for these encounter states.
+
+This is distinct from Section 189's inactive formulary check, Section 190's PARTIAL prescription hard stop, and Sections 193–194's eMAR outcome and quantity controls. It concerns encounter lifecycle, not medication catalog state or prescription quantity.
+
+No administration against a discharged/cancelled encounter was observed in a deployed tenant; no patient impact is established.
+
+### 195.2 Required remediation and acceptance evidence
+
+1. Define which encounter states permit real-time BCMA administration, retrospective documentation, transfer continuation, and emergency exceptions.
+2. Enforce the approved encounter-state policy in the same transactional boundary that creates the eMAR and BCMA audit records; do not rely on UI filtering.
+3. If exceptions are clinically required, use an explicit permissioned workflow with reason, actor, event time, and audit evidence rather than silently accepting terminal encounter states.
+4. Recheck encounter state under a suitable row lock or conditional write so a concurrent discharge/cancellation cannot race the administration commit.
+5. Add PostgreSQL tests for ACTIVE, PLANNED, DISCHARGED, and CANCELLED encounters, including a concurrent discharge-versus-administration case. Assert rejected paths create neither an ADMINISTERED eMAR record nor a success audit record, except where a specifically approved exception applies.
+
+**Assessment:** Medium priority pending clinical workflow policy confirmation; potentially High if terminal encounters are required to hard-stop bedside administration. The source confirms no encounter lifecycle check in BCMA, but does not establish the intended policy for all post-discharge workflows.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
