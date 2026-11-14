@@ -2565,3 +2565,34 @@ The helper unlinks the staging file in a `finally` block after the restore funct
 **Assessment:** High-priority confidentiality and restore-concurrency gap in the tenant restore helper. The source writes decrypted database contents into a shared persistent backup volume without explicitly restrictive file creation or crash-residue recovery. Whether another service process can read a particular file depends on runtime UID/GID, umask and filesystem permissions; those live attributes were not inspected. A hard process termination can bypass the `finally` cleanup, and concurrent restore operations have no operation-specific staging isolation in the reviewed path.
 
 **Boundary:** static source/configuration review only. No encrypted artifact, plaintext dump, restore, volume, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 86. Manual backup and restore operations are acknowledged through process-local background tasks, not durable work records
+
+**Source reviewed:** `backend/control_plane/api/routers/fleet_ops.py` (`trigger_manual_backup_snapshot`, `restore_tenant_from_snapshot`).
+
+Static source review only. No endpoint was invoked, no background task was started, and no backup, tenant database, credential or production state was accessed or changed.
+
+### 86.1 A successful queued response does not establish durable execution or recoverability
+
+Both manual operations register an in-process callable through FastAPI `BackgroundTasks` and then return a success response stating that the snapshot or restoration was queued. The backup task calls `_dump_and_encrypt`; the restore task attempts the mandatory safety snapshot and then calls `restore_encrypted_backup`. Completion and failure are recorded as audit-log events from inside the task, but the reviewed path does not persist a durable task/operation record with a recoverable payload, lease, retry policy or startup reconciliation.
+
+FastAPI background tasks execute within the application process after the response is sent; they are not a durable queue. If the serving process/container exits after the client receives the queued response but before the task finishes, the process-local callable is not automatically recovered by another worker. A restore may therefore be acknowledged without a durable mechanism to resume or conclusively reconcile the operation. The pre-restore session termination ordering documented in Section 84 makes this especially consequential: a process interruption after termination can leave the tenant disconnected while the queued restore work is lost or its outcome remains ambiguous.
+
+The control-plane audit event written by the request handler records that work was queued; it is not proof that the task started, completed, or can be resumed. A later completion/failure audit event is best-effort evidence, and its absence cannot distinguish a task that never ran from one interrupted before it could record its outcome. The same durability limitation applies to manual backup creation, where the caller can receive a queued response without a durable retry/reconciliation path.
+
+This finding is about privileged backup/restore task execution durability. It is distinct from Section 69's generic webhook processing path, Section 84's ordering of session termination versus safety snapshot, and Section 75's unresolved safety-snapshot helper import.
+
+### 86.2 Required remediation and acceptance evidence
+
+1. Persist an operation record before acknowledging the request, with a unique operation ID, tenant/database identity, immutable snapshot reference, requested action, actor, timestamps and explicit state.
+2. Dispatch work through a durable queue or database-backed worker/outbox pattern with leases, bounded retries, idempotent state transitions and startup recovery. Do not treat FastAPI `BackgroundTasks` as the system of record for destructive restore work.
+3. Return the operation ID and a status resource; distinguish accepted, running, safety-snapshot-verified, restoring, completed, failed and outcome-unknown states. Keep audit events correlated to that operation ID.
+4. On worker restart or lease expiry, reconcile the database and snapshot state before retrying. Never blindly replay a restore whose destructive phase may have started; require an explicit recovery decision when the outcome cannot be established.
+5. Add deterministic tests that terminate or simulate loss of the worker after acceptance, during backup, after safety snapshot, after session drain, and during restore. Prove that every operation is either resumed safely or surfaced as an explicit recoverable/unknown state, with no false completed status.
+6. Keep restore-task recovery tests separate from the safety-snapshot ordering tests in Section 84 and the helper existence/decryptability tests in Section 75.
+
+**Assessment:** High-priority backup/restore operational durability gap. The endpoints can acknowledge work that is held only in the serving process, without a durable task state or automatic recovery mechanism in the reviewed implementation. No claim is made that a production task has been lost; actual exposure depends on process lifecycle and whether an external supervisor/operator provides recovery outside the reviewed code.
+
+**Boundary:** static source review only. No endpoint, task, backup, tenant database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
