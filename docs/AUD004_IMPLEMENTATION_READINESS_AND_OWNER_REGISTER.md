@@ -6493,3 +6493,33 @@ No failed discharge, rolled-back bed release, missing housekeeping task, or inco
 **Assessment:** High-priority ADT workflow consistency and operational-control gap. The discharge route can announce housekeeping before the underlying bed release and discharge are committed, while Redis failures are silently treated as non-fatal. No inconsistent live bed or housekeeping state was observed.
 
 **Boundary:** exact-head static route/event-publisher/service control-flow review only. No patient data, tenant database, admission, bed, housekeeping queue, or live discharge was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 229. Cancelling an active admission deletes its occupancy history and immediately reopens the bed
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/adt_router.py`, `cancel_admission()`; `backend/domains/encounters/models.py`, `InpatientAdmission` and `BedTransferLog`; `backend/alembic/versions/6f591125aedc_baseline.py`, the admission and transfer-log foreign keys.
+
+### 229.1 The cancellation endpoint destroys the admission/transfer record and bypasses bed turnover
+
+`DELETE /api/adt/admissions/{admission_id}` accepts any admission whose `discharge_time` is null. If it has a current bed, the handler locks that bed, changes its status directly to `AVAILABLE`, clears `current_admission_id`, and clears `admission.current_bed_id`. It then deletes the `InpatientAdmission` row and commits. The request has no cancellation reason or replacement status/history record.
+
+This is a hard delete, not a recorded cancellation. The baseline migration defines `bed_transfer_logs.admission_id` with `ON DELETE CASCADE`; deleting the admission therefore cascades to and removes its bed-transfer history. That history contains the initial bed assignment and subsequent transfers, including transfer times, requester and reason, and is also the source used by the discharge bed-stay billing routine. The route does not preserve a cancellation snapshot or a durable reference to those records.
+
+The same path marks the last occupied bed `AVAILABLE` immediately. It does not set `HOUSEKEEPING`, publish `BED_HOUSEKEEPING_REQUIRED`, or wait for a housekeeping completion state before making the bed available for another admission. By contrast, normal discharge and transfer paths put the vacated bed into `HOUSEKEEPING`. The endpoint also leaves the parent patient encounter's status unchanged; it only deletes the admission row.
+
+This creates two distinct consequences of one cancellation operation: loss of the ADT occupancy/audit trail, and bypass of the bed-turnover control. The source does not establish whether every caller uses this endpoint only before physical occupancy, and no actual deleted admission, lost transfer log, reused uncleaned bed, or billing discrepancy was observed.
+
+This is distinct from Section 228: Section 228 concerns publication ordering around a normal discharge transaction. This finding concerns the cancellation endpoint's hard-delete semantics and its direct bed-status transition.
+
+### 229.2 Required remediation and acceptance evidence
+
+1. Replace hard deletion with an explicit, attributable cancellation state or append-only cancellation event containing actor, timestamp, reason, and the prior admission/bed context. Preserve the admission and all transfer logs for audit and billing reconciliation.
+2. Define whether cancellation is permitted only before physical bed occupancy. If an occupied bed is released, transition it to `HOUSEKEEPING` and use the same durable housekeeping notification/outbox contract as discharge and transfer; do not mark it `AVAILABLE` until turnover is complete.
+3. Keep the encounter lifecycle consistent: define whether the encounter remains active, is cancelled, or requires another explicit state transition when its only admission is cancelled.
+4. Reconcile any census or other room charges already posted before cancellation through explicit attributable billing adjustment/reversal records; do not rely on deleting the admission or its transfer logs to erase the source history.
+5. Add PostgreSQL-backed tests for cancellation before and after bed assignment, cancellation after one or more transfers, transfer-log preservation, housekeeping state and event delivery, encounter lifecycle, existing census charges, concurrent cancellation/discharge, and retry behavior. Assert that a cancelled admission cannot silently make an occupied bed available or erase its historical occupancy evidence.
+
+**Assessment:** High-priority ADT auditability and patient-flow safety gap. The cancellation path can erase the admission's transfer history and make its bed immediately reusable without housekeeping. No actual record loss, uncleaned-bed reuse, or financial impact was observed.
+
+**Boundary:** exact-head static route/model/migration control-flow review only. No patient data, tenant database, admission, bed, transfer log, housekeeping queue, invoice, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
