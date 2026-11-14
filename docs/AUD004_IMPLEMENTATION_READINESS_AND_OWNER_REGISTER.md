@@ -6039,3 +6039,28 @@ A concrete sequence follows directly from the handlers: collect a 100-unit depos
 **Assessment:** High financial-integrity risk if deposit refunds and payment reversals can occur in this order. The inconsistent state transition is established from the handlers; no actual affected deposit, lost patient credit, or financial loss was observed.
 
 **Boundary:** exact-head static source/model review only. No patient data, tenant database, refund, or payment transaction was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+## 212. Removing a discounted draft invoice line can violate the invoice discount constraint
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/router.py`, `apply_invoice_discount()` and `remove_line_item()`; `backend/domains/billing/models.py`, `Invoice`.
+
+### 212.1 Line removal reduces gross total without reconciling an existing draft discount
+
+The discount endpoint explicitly permits invoices in DRAFT, UNPAID, or PARTIAL states and stores the requested discount amount on the invoice. The line-removal endpoint is limited to DRAFT invoices, but it subtracts the selected line's gross and tax amounts from the invoice without adjusting `discount_amount_paise`.
+
+The Invoice model has a database check constraint requiring `discount_amount_paise <= total_amount_paise`. Therefore, a valid sequence can make a later line removal violate that constraint: for example, a draft invoice with a gross total of 100 and a discount of 80 can have a 50 line removed, leaving a gross total of 50 while the discount remains 80. The commit then fails at the database constraint. The handler does not catch or translate that integrity failure into a validation response.
+
+This is a draft-invoice mutation failure, not evidence that an invalid invoice was committed. It is distinct from Section 210's payment idempotency behavior and Section 211's deposit lifecycle inconsistency.
+
+### 212.2 Required remediation and acceptance evidence
+
+1. Define whether a draft discount is a fixed amount or must be recalculated when its underlying line items change.
+2. Before removing a line, validate the resulting gross total against the existing discount and either reject the change with a clear 4xx response or apply an explicitly approved discount adjustment.
+3. Keep discount reason and approver attribution consistent if a discount is recalculated; do not silently increase or erase a concession.
+4. Add PostgreSQL-backed tests for removing a line when the discount is below, equal to, and greater than the resulting gross total, including tax-bearing lines and multiple remaining lines.
+5. Assert that rejected operations leave the invoice and line items unchanged and return a deterministic API error rather than an unhandled integrity exception.
+
+**Assessment:** Medium priority billing reliability and draft-invoice consistency defect. The constraint conflict follows from the reviewed handler and model invariant. No deployed failed request, corrupted invoice, or financial loss was observed.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, or live financial transaction was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
