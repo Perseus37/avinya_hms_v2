@@ -2343,3 +2343,39 @@ This is distinct from local encrypted snapshot creation: a local backup may exis
 **Assessment:** High-priority recovery-point and operational-reporting gap for deployments that rely on off-host replication. The checked-in settings advertise endpoint/region/static credentials that the client ignores, and the caller counts false delivery results as successful tenant backups. Whether a particular deployment still succeeds through ambient AWS credentials/default endpoints depends on external environment configuration and was not tested.
 
 **Boundary:** static source/configuration review only. No off-host destination, S3, backup, database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+
+## 79. Host backup retention is local-only and the freshness metric certifies local publication, not remote replication
+
+**Sources reviewed on the audit branch:**
+- `deployments/backup-postgres.sh` (success/failure metric publication, optional `BACKUP_REMOTE_DEST` rsync, retention cleanup)
+- `deployments/prometheus-alerts.yml` (`BackupFreshnessWarning`, `BackupRunFailed`)
+- `deployments/prometheus.yml` (node-exporter scrape)
+
+Static source/configuration review only. No backup command, rsync, remote destination, Prometheus server, storage path, credential or production state was accessed or changed.
+
+### 79.1 The success timestamp is written before optional remote replication
+
+After the encrypted database/global dumps have been generated, decrypted/list-validated, checksummed and atomically moved into the local final directory, the script publishes `backup_last_completion_timestamp_seconds` and sets `backup_last_status 1`. Only after publishing those metrics does it perform the optional `rsync` to `BACKUP_REMOTE_DEST`.
+
+If rsync fails, the EXIT trap subsequently changes `backup_last_status` to zero and records a failure/attempt timestamp, so the existing `BackupRunFailed` rule can alert when the status textfile update succeeds. However, the last-success timestamp remains the timestamp of the locally completed snapshot. `BackupFreshnessWarning` therefore measures local snapshot freshness, not successful completion/freshness of the configured remote copy. Its description says “verified database backup” without distinguishing the two recovery copies.
+
+This is not a claim that rsync failure is completely unalerted: the separate status rule exists. The gap is that the freshness metric and alert do not establish remote-copy freshness, and a successful local run can continue to look fresh while remote replication remains unavailable.
+
+### 79.2 Retention cleanup never applies to the remote destination
+
+The script applies `find ... -mtime +$RETENTION_DAYS -exec rm -rf` only under `$BACKUP_ROOT`. The optional rsync creates a timestamped remote subdirectory named `$backup_name`, but no corresponding remote pruning, lifecycle policy, retention verification or remote-capacity monitoring is implemented in this script. Consequently, when `BACKUP_REMOTE_DEST` is used as a persistent remote filesystem destination without an independently configured lifecycle policy, each run adds another backup directory and the configured local `RETENTION_DAYS` does not bound remote storage growth.
+
+The repository cannot establish whether operators have configured an external remote retention policy; this finding is limited to the checked-in script.
+
+### 79.3 Required remediation and acceptance evidence
+
+1. Publish distinct local-snapshot and remote-replication state/timestamps. Make metric names and alert descriptions state precisely which copy has completed.
+2. Add a remote freshness alert whenever remote replication is configured; it must detect missing metrics, failed transfer, and a remote copy older than the declared RPO.
+3. Implement remote retention with a documented policy and safe selection rules, or require and validate an external object/filesystem lifecycle policy. Never silently assume local retention applies remotely.
+4. Verify remote artifact count, size, checksum/manifest and retention behavior; ensure failed/partial rsync runs are not treated as complete remote snapshots.
+5. Add shell-level tests with a disposable local/remote fixture for rsync success, failure, interruption, retention boundary dates, and preservation of the newest known-good remote snapshot. Test the Prometheus expressions against absent, stale and failed local/remote metrics.
+
+**Assessment:** High-priority disaster-recovery operations and storage-governance gap for deployments that configure `BACKUP_REMOTE_DEST` and rely on this script for remote retention or remote RPO assurance. Local retention is implemented; remote retention and remote freshness certification are not. External lifecycle controls may mitigate storage growth, but they are not established by the reviewed repository configuration.
+
+**Boundary:** static source/configuration review only. No backup, restore, rsync, remote destination, storage, database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
