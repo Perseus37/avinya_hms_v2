@@ -5270,3 +5270,32 @@ No actual patient overcharge, unreconciled balance, or refund omission was estab
 **Assessment:** High-priority pharmacy/billing reconciliation defect. The source proves the PARTIAL and UNPAID states receive no financial adjustment in this return route while inventory and prescription quantities are changed; it does not prove an actual overcharge, loss, or patient impact.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 185. Paid pharmacy returns auto-approve cash refunds without billing reversal authorization or tender reconciliation
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `return_dispensed_medication()`; `backend/domains/billing/router.py`, `refund_unused_patient_deposit()` and `record_payment()`; `backend/domains/billing/models.py`, `PaymentReceipt` and `RefundVoucher`.
+
+### 185.1 Pharmacy return endpoint creates a voucher as an already-approved cash refund
+
+For a PAID encounter invoice, `return_dispensed_medication()` constructs and persists a `RefundVoucher` directly. The route's authorization dependency accepts `pharmacy:write` or `pharmacy:dispense`; it does not require the billing reversal permissions used by the billing refund workflow (`billing:reverse` or `billing:void`). The route sets `approved_by_id=current_user.id`, so the pharmacy actor is recorded as the voucher approver at creation time. There is no separate approval step or evidence of an independent billing approver in this path.
+
+The same code unconditionally sets `refund_method=PaymentMethodEnum.CASH` and uses a synthetic transaction reference `RX-RET-{rx.id}`. However, invoice payments are represented by individual `PaymentReceipt` rows, each with its own `payment_method` and optional transaction reference. The payment endpoint supports multiple receipts and payment methods against an invoice. The pharmacy return path does not load or reconcile those receipts before choosing CASH.
+
+Thus a paid invoice originally settled by UPI, card, bank transfer, or multiple tenders can receive a voucher recorded as a cash refund, while a user holding only pharmacy permissions can be recorded as its approver. The voucher may document an intended credit, but it does not establish that money was actually returned through the original tender or that the billing reversal control was exercised.
+
+This is distinct from Section 184: Section 184 concerns the absence of a credit for PARTIAL/UNPAID invoices; this section concerns the authorization and payment-method integrity of the PAID-invoice refund branch.
+
+No actual unauthorized refund, cash disbursement, tender mismatch, or financial loss was established.
+
+### 185.2 Required remediation and acceptance evidence
+
+1. Separate return authorization from refund approval. A pharmacy return may record stock and clinical disposition, but a financial refund must pass the billing reversal/approval policy and record an independently authorized actor where required.
+2. Derive refundable amounts from immutable invoice payment allocations and enforce a policy for mixed-tender refunds; do not default every refund to CASH.
+3. Record actual refund execution evidence (gateway/bank/cash transaction reference, amount, tender, timestamp, operator) separately from approval; do not represent a generated voucher as proof of disbursement.
+4. Bind each refund/credit instrument to the originating invoice, return-log IDs, and eligible payment receipt allocations; enforce cumulative refund ceilings against net captured payments and prior refunds/credits.
+5. Add PostgreSQL tests proving pharmacy-only actors cannot approve financial refunds, billing-authorized approvals are attributable, UPI/card/cash/mixed tender outcomes reconcile correctly, duplicate/retried returns cannot over-refund, and refund persistence is atomic with the intended accounting state.
+
+**Assessment:** High-priority financial-control and reconciliation gap. Static source proves the route's permission set, same-actor approver assignment, hardcoded CASH method, and lack of payment-receipt lookup in this branch. It does not prove that a real refund was paid or misclassified in a deployed tenant.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
