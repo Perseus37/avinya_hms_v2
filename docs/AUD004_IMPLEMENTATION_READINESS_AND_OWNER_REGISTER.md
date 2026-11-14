@@ -2816,3 +2816,32 @@ This is distinct from Section 92: Section 92 concerns the caller-declared purpos
 **Assessment:** High-priority privacy enforcement and default-deny gap. Static code establishes permissive behavior for missing hospital federation settings and missing/non-enforcing consent policy states. It does not establish that any particular production tenant is currently in one of those states or that a production disclosure occurred.
 
 **Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 94. Federated import audit omits the authenticated requesting-node identity
+
+**Source reviewed:** `backend/domains/federation/router.py` (discovery source-log creation and `import_federated_patient_locally`); `backend/domains/federation/models.py` (`FederationTransferLog`); `backend/control_plane/models.py` (`FederatedDiscoveryReceipt`).
+
+Static source review only. No federation request was sent, no patient record was read, and no database, credential, migration or production resource was accessed or changed.
+
+### 94.1 Discovery captures the credential identity, but the later import audit drops that binding
+
+During discovery, the source tenant's `FederationTransferLog` row records `requesting_node_id`, `requesting_key_prefix` and `requesting_branch_code` from the authenticated `calling_node`, alongside the patient and caller-declared purpose. The server-issued discovery receipt separately stores `calling_node_id` and is checked at import for node existence and active status.
+
+The import route then reloads and revalidates the source patient and policy, but its source-side `FederationTransferLog` insert sets only `requesting_branch_code`, the patient ID, a hashed-MRN-derived operation label and the fixed purpose `CONTINUITY_OF_CARE_IMPORT_REQUESTED`. It does not populate the available `requesting_node_id` or `requesting_key_prefix` fields, nor does it persist the receipt identity/hash or a correlation ID linking this import audit row to the receipt and discovery event. The model has no human-actor field either, even though the destination route has an authenticated `current_user`.
+
+Consequently, the source tenant's audit trail can record that a branch-labelled import was requested, but cannot independently identify which authenticated federation node/key credential performed that import or correlate the import to the exact discovery receipt. If multiple nodes or credentials can act for the same branch over time, branch code alone is not a reliable credential-level attribution. The separate discovery log may show a credential used earlier, but the import event itself is not bound to it.
+
+This is an audit attribution and traceability gap, not evidence that receipt validation is bypassed or that an unauthorized import occurred. The import route does validate the receipt's calling node and active state, and rechecks source sharing/privacy conditions. This finding is distinct from Section 92's purpose-enforcement mismatch and Section 93's permissive privacy-policy defaults; it concerns what identity evidence is retained for the import operation after those checks.
+
+### 94.2 Required remediation and acceptance evidence
+
+1. Populate `requesting_node_id`, `requesting_key_prefix` and `requesting_branch_code` from the already-validated receipt/calling node on every source-side import audit row; do not trust caller-supplied identity fields.
+2. Persist a non-secret receipt identifier or one-way receipt fingerprint and a stable import operation/correlation ID so discovery, authorization and import events can be joined without storing the bearer token.
+3. Define the human-actor attribution model for cross-tenant operations. Where a verifiable destination-user assertion is not available, record that the human actor is unknown rather than implying branch or API-key identity proves a person acted.
+4. Ensure audit rows distinguish import requested, destination commit completed, idempotent-existing-patient outcome and failure/unknown outcome. Do not treat the source-side REQUESTED event as proof that the destination clone committed.
+5. Add tests proving import audit rows preserve the receipt-bound node ID/key prefix and correlation identifier, cannot be spoofed through payload fields, and accurately represent idempotent and failed destination outcomes.
+
+**Assessment:** Medium-priority federation audit attribution and incident-investigation gap. Static code establishes that discovery logs credential identity while import logs only the requesting branch. It does not establish that any particular import was unauthorized or that an incident has occurred.
+
+**Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
