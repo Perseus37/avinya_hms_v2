@@ -6189,3 +6189,34 @@ No actual missed clinical event, inappropriate result release, or patient harm w
 
 **Boundary:** exact-head static source review only. No patient data, tenant database, laboratory result, or live clinical workflow was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 218. Laboratory delta-check configuration accepts thresholds and lookback windows that disable or distort the check
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/diagnostics/schemas.py`, `LabDeltaCheckConfigCreate`; `backend/domains/diagnostics/router.py`, `create_or_update_delta_config()`; `backend/domains/diagnostics/models.py`, `LabDeltaCheckConfig`; `backend/domains/clinical/services.py`, `evaluate_lab_delta_check()`.
+
+### 218.1 Invalid or ineffective clinical thresholds are accepted and persisted
+
+The configuration request schema accepts optional absolute and percentage thresholds without positivity or range constraints. It also accepts `lookback_hours` without a positive lower bound and `severity` as unrestricted text. The endpoint persists these values after checking only that the referenced service exists and is active; the model has no corresponding check constraints.
+
+The evaluator gives these accepted configurations materially different and potentially unintended behavior:
+
+- If both thresholds are null, neither comparison can exceed a limit, so the configured check always returns NORMAL for numeric values with a prior result.
+- A negative absolute or percentage threshold makes even a zero difference exceed that threshold, producing a false delta alert for otherwise unchanged values.
+- A zero or negative lookback window can exclude legitimate historical baselines; a negative window places the cutoff in the future.
+- Arbitrary severity text is accepted, while the evaluation path does not use severity to enforce a defined clinical action or review policy.
+
+Consequently, a configuration can appear successfully created or updated while effectively disabling the check, generating constant alerts, or preventing the intended historical comparison. This is a configuration-integrity defect distinct from Section 217's failure to enforce a returned alert during verification.
+
+No malformed configuration or affected patient result was observed. The accepted input ranges and evaluator behavior are established by the request schema, persistence path, and calculation logic.
+
+### 218.2 Required remediation and acceptance evidence
+
+1. Define clinically governed allowed ranges and units for each service's absolute and percentage thresholds; reject negative values and reject a configuration with no active threshold unless an explicit disabled state is selected and audited.
+2. Require a positive, bounded lookback window and validate it against the approved laboratory policy.
+3. Replace free-text severity with a controlled enum whose values have documented operational meanings and enforcement behavior.
+4. Validate configuration changes through an authorized approval workflow, preserving old/new values, actor, timestamp, rationale, and effective time; do not silently alter the interpretation of in-flight results.
+5. Add PostgreSQL-backed API and evaluator tests for missing thresholds, negative/zero thresholds, zero/negative/excessive lookback, invalid severity, boundary values, and approved disabled configurations. Verify the persisted configuration and actual evaluator outcome for each case.
+
+**Assessment:** High-priority clinical configuration-integrity gap. The API accepts configurations that can disable or distort a safety-related delta check. No actual misconfiguration, missed alert, or patient harm was observed.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, laboratory result, or live configuration was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
