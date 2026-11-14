@@ -5745,3 +5745,35 @@ No unsupported-unit administration or patient harm was established.
 **Assessment:** High-priority medication-administration safety-control gap because a declared allowlist is not enforced and arbitrary units can satisfy the Right Dose comparison. No actual unsupported-unit administration or patient harm was established.
 
 **Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 201. Controlled-substance vault creation can introduce an opening balance without a witnessed receipt or movement-ledger entry
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `create_controlled_substance_vault_entry()` and `receive_controlled_substance_into_vault()`; `backend/domains/pharmacy/schemas.py`, `ControlledSubstanceVaultCreate` and `ControlledSubstanceReceiptRequest`; `backend/domains/pharmacy/models.py`, `ControlledSubstanceVault` and `ControlledSubstanceMovementLog`; `backend/domains/pharmacy/services.py`, `process_controlled_substance_movement()`.
+
+### 201.1 Positive opening stock bypasses the controlled receipt controls and perpetual ledger
+
+The vault-creation request accepts `initial_balance_units` as a nonnegative integer, defaulting to zero. The creation endpoint loads the selected medication, marks it as a controlled substance, and creates the vault with `current_balance_units=payload.initial_balance_units`. It then commits and returns the vault.
+
+This path does not call `process_controlled_substance_movement()`, create a `ControlledSubstanceMovementLog`, require a secondary witness, verify witness credentials, require a batch/lot number, or require procurement/supply-reference documentation.
+
+The separate controlled-substance receipt endpoint does enforce those controls: its request requires a positive quantity, batch number, witness user and password, and supply notes; the service verifies the witness and records a `RECEIPT` movement with before/after balances.
+
+Consequently, a caller authorized to create a vault can submit a positive opening balance and establish controlled-drug stock directly in the perpetual balance without the witnessed receipt event that subsequent replenishment uses. The ledger can therefore begin with no movement explaining the opening quantity, source lot, or independent witness. This is an opening-balance provenance and reconciliation gap, not a claim that the quantity was physically present or that diversion occurred.
+
+This is distinct from Section 178, which concerns mismatched vault/medication/encounter/prescription relationships during movements, and Section 182, which concerns ordinary pharmacy inventory adjustments and voids without movement records. The present finding is specific to the controlled-substance vault bootstrap path.
+
+No unverified opening balance, diversion, or patient impact was established in a deployed tenant.
+
+### 201.2 Required remediation and acceptance evidence
+
+1. Make vault creation initialize the balance to zero only. Require every positive quantity, including opening stock, to enter through a witnessed receipt workflow.
+2. If an opening-balance migration or controlled stocktake is required, implement a separate governed conversion operation requiring dual authorization, source inventory evidence, lot/batch identity, effective timestamp, reconciliation reference, and immutable opening-balance movement record.
+3. Enforce the invariant that a vault's current balance is explainable by its immutable movement ledger, including the opening event; verify this invariant transactionally and through reconciliation.
+4. Do not permit the creation request to set a positive balance or accept an undocumented bypass flag. Ensure any approved exception is separately permissioned, attributable, and independently reviewed.
+5. Add PostgreSQL-backed tests proving that positive balance cannot be introduced through vault creation, witnessed receipt creates a matching movement and balance delta atomically, and opening-balance conversion requires all required evidence and approvals.
+
+**Assessment:** High-priority controlled-substance accountability and diversion-detection control gap. The API can establish a positive vault balance without the dual-witness receipt evidence and corresponding movement record. No actual diversion, unexplained physical stock, or patient harm was established.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
