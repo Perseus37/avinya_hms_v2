@@ -3964,3 +3964,28 @@ The `executed_tenants` name also represents tenants whose enqueue call returned,
 **Assessment:** High-priority scheduled-retention observability and operational reliability gap. Static source establishes that tenant-level exceptions are caught and suppressed from the returned aggregate status. It does not establish an actual tenant failure, missed execution, or destructive data operation.
 
 **Boundary:** exact-head static source review only. No scheduler, queue worker, policy, tenant database or patient record was accessed or executed. No retention job or destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 136. Retention job status lookup is not bound to the requesting tenant
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`, `GET /api/privacy/retention/jobs/{job_id}`); `backend/core/queue.py` (blob `aad0c663e52e7a73d7261658f5ecc1889b7e36b7`, `KEY_TASK_PREFIX` and `get_task_status()`).
+
+### 136.1 A tenant-authorized caller can query any known global task ID
+
+The retention status route requires `RequirePermission("privacy:read")`, but it does not use the resolved tenant context or compare the job with a tenant-owned execution record. It passes the caller-supplied `job_id` directly to the global queue helper. In the queue module, task hashes use the process-wide `avinya:task:` prefix rather than a tenant-qualified key, and `get_task_status()` performs `HGETALL` for that ID without a tenant check.
+
+The returned status object includes task ID, task name, status, retry counts, creation/scheduled/completion timestamps and the stored error string. The route's `actor` dependency is not otherwise used. Therefore, if a user with `privacy:read` in tenant A obtains a valid retention job UUID belonging to tenant B, the same endpoint can return tenant B's queue metadata and error text. UUID unpredictability limits blind enumeration, so this is not an unauthenticated endpoint or proof that another tenant's ID is readily discoverable. It is a cross-tenant object-authorization gap once an ID is known.
+
+This is distinct from Section 131's worker crash/recovery behavior and Section 135's scheduler aggregate reporting. It concerns read authorization for a job-status resource, not job execution or mutation.
+
+### 136.2 Required remediation and acceptance evidence
+
+1. Persist a durable job/execution record with tenant identity, opaque job ID, initiating principal/service identity and policy revision; authorize every status read against that tenant record.
+2. Alternatively, use tenant-qualified queue namespaces and enforce tenant binding at the API boundary; do not treat UUID secrecy as authorization.
+3. Return only the minimum status fields required by the caller. Sanitize or classify worker error details before exposing them through tenant-facing APIs.
+4. Add PostgreSQL/Redis integration tests: tenant A can read its own job; tenant A receives the same non-disclosing not-found response for tenant B's known job ID; tenant B can read its own job; unauthorized permissions cannot read either; expired jobs have defined behavior.
+5. Keep operator-wide fleet inspection separate, explicitly privileged, audited and scoped to an approved operational purpose.
+
+**Assessment:** Medium-priority cross-tenant job-metadata confidentiality and object-authorization gap. Static source establishes a global queue-key lookup with no tenant ownership check in the route/helper. The cross-tenant disclosure scenario requires the caller to know a valid other-tenant job ID; no such ID disclosure or unauthorized status read was observed.
+
+**Boundary:** exact-head static source review only. No Redis instance, job status, worker, tenant database, policy or patient record was accessed. No task was executed or modified. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
