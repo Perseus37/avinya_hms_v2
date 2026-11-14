@@ -5658,3 +5658,32 @@ No mismatched-route administration was observed in a deployed tenant; no patient
 **Assessment:** High-priority medication-administration safety-control gap. The source contains a permissive fallback for unclassified formulations that can accept routes without a positive compatibility rule. No actual wrong-route administration or patient harm was established.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 198. BCMA time-window warning override is authorized by broad write access rather than a distinct clinical override control
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `bcma_verify_and_administer()`; `backend/domains/pharmacy/schemas.py`, `BCMAVerificationRequest`; `backend/domains/pharmacy/services.py`, `execute_bcma_administration()`; `backend/domains/pharmacy/models.py`, `BCMAScanAuditLog`.
+
+### 198.1 Any caller admitted by one of the endpoint's general write permissions can submit the override
+
+The BCMA endpoint admits a caller with any one of `nursing:write`, `clinical:write`, `opd:write`, `adt:write`, or `pharmacy:write`. The request exposes caller-controlled `override_warning` and `override_reason`.
+
+When the evaluator reports an EARLY or LATE time warning, the service requires `override_warning=True` and a nonblank reason of at least five characters. It then marks the event `WARNING_OVERRIDDEN` and creates an ADMINISTERED eMAR row. The reviewed path does not perform a separate override-specific permission check, role check, independent approval, or reason-code validation. The reason is stored in the BCMA audit row and included in eMAR notes, which provides a record but does not establish that the actor was authorized to waive the timing warning.
+
+Consequently, a user admitted through any of the endpoint's broad write permissions can request the timing override by supplying a boolean and arbitrary text. Whether some or all of these permissions should be allowed to make this clinical decision is a governance question; the code does not express a narrower authorization policy.
+
+This finding is specifically about the EARLY/LATE timing-warning override. It does not claim that a user can bypass patient, medication, dose, route, or allergy hard-stops through this flag.
+
+No unauthorized override in a deployed tenant or patient harm was established.
+
+### 198.2 Required remediation and acceptance evidence
+
+1. Define which clinical roles may authorize early/late administration and whether the administering clinician may self-authorize or an independent approver is required.
+2. Enforce a dedicated permission or explicit policy decision for timing overrides; do not infer override authority from generic nursing, clinical, OPD, ADT, or pharmacy write access.
+3. Replace free-text-only rationale with controlled reason codes plus supporting notes; preserve actor, permission decision, scheduled/due-time source, actual administration time, and any approving actor.
+4. Apply the authorization check in the service/domain boundary as well as the API boundary so alternate callers cannot bypass it.
+5. Add PostgreSQL tests proving that each permitted role can override only under policy, unauthorized write roles cannot, missing/invalid reasons fail, and the denial path creates no ADMINISTERED eMAR record.
+
+**Assessment:** High priority if timing overrides require restricted clinical authority; otherwise Medium pending clinical governance policy. The absence of a distinct override authorization check is established in the reviewed route/service path.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
