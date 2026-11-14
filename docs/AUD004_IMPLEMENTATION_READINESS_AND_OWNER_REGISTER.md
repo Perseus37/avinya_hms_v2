@@ -4698,3 +4698,28 @@ This can understate the calculated NEWS2 total by two points when the patient is
 **Assessment:** High-priority NEWS2 completeness and potential under-scoring defect. The source proves that omission is defaulted to false and excluded from completeness; it does not establish omitted oxygen documentation or patient harm in production.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 164. NEWS2 Scale 2 can be selected without recording its clinical eligibility
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `NEWS2EvaluationRequest` and `evaluate_encounter_news2()`; `backend/domains/clinical/services.py`, `calculate_news2_score()`.
+
+### 164.1 Request-controlled scale selection changes oxygen scoring without an eligibility check
+
+The request model exposes `spo2_scale: int = 1`. The route passes this value directly to the calculator. The calculator validates only that the value is 1 or 2. Its own documentation describes Scale 2 as the scale for hypercapnic respiratory failure/COPD, and the Scale 2 SpO2 bands use a different target range (88–92%) from Scale 1.
+
+In the reviewed route/calculator path, selection of Scale 2 is not tied to a recorded clinical indication, a clinician attestation, or an eligibility decision. A caller with permission to submit a NEWS2 evaluation can therefore select Scale 2 for an encounter without this path establishing that the patient is eligible. For example, at SpO2 90%, Scale 1 assigns 3 points while Scale 2 assigns 0 points before any supplemental-oxygen contribution. An inappropriate scale choice can materially lower the score and alter risk/escalation classification.
+
+This is a control gap in the reviewed evaluation path; the source review does not establish whether another external workflow or clinical governance process constrains scale selection in deployed use.
+
+### 164.2 Required remediation and acceptance evidence
+
+1. Require an explicit, attributable clinical indication for Scale 2, rather than accepting a bare integer selector.
+2. Validate eligibility against an authoritative documented clinical decision/diagnosis and any required clinician authorization; do not infer eligibility solely from a generic COPD label if the governing clinical protocol requires confirmed hypercapnic respiratory failure.
+3. Persist the selected scale, indication, authorizing clinician, and relevant source evidence with the score so the decision is auditable.
+4. Make Scale 1 the safe default only where protocol permits; prevent silent caller override to Scale 2 without the required eligibility evidence.
+5. Add synthetic tests proving Scale 2 is rejected without eligibility evidence, accepted with valid attributable evidence, and that the expected Scale 1/Scale 2 score differences are reflected in persisted provenance and escalation outputs.
+
+**Assessment:** High-priority clinical governance and scoring-integrity control gap. The source proves caller-controlled selection and differing score bands; it does not establish an inappropriate selection in production or patient harm.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
