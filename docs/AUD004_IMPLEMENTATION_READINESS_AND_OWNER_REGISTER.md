@@ -5137,3 +5137,30 @@ No actual wrong-lot return or financial discrepancy was established.
 **Assessment:** High-priority pharmacy inventory provenance and financial reconciliation gap. The source proves the return batch is caller-selected and checked only for medication identity; it does not prove a wrong-lot return, financial loss, or patient harm occurred.
 
 **Boundary:** exact-head static source/model/router review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 180. FEFO override is advertised by the dispense service but absent from the API request contract
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `dispense_medication()`; `backend/domains/pharmacy/schemas.py`, `DispenseItem` and `DispenseRequest`.
+
+### 180.1 The request cannot express the override required by the service
+
+The dispense service checks for any older unexpired batch with positive stock for the medication. If one exists, it rejects the selected batch unless `getattr(disp_item, "override_fefo", False)` is true. Its 409 response explicitly instructs the caller to pass `override_fefo=True`.
+
+However, the Pydantic `DispenseItem` request model contains only `prescription_item_id`, `batch_id`, and positive `quantity_to_dispense`. It has no `override_fefo` field, and `DispenseRequest` is an alias of the list wrapper around this item model. Under the normal Pydantic request parsing path, an extra `override_fefo` input is not represented on the validated item object; the service's `getattr(..., False)` therefore remains false.
+
+As a result, API callers cannot perform the documented FEFO override. When an older unexpired batch has stock, selecting a later-expiry batch is unconditionally rejected through this endpoint, even if an authorized operational exception is required. The service also has no override actor/reason fields in this request path, so the intended exception cannot be documented here.
+
+No actual blocked dispense or patient impact was established.
+
+### 180.2 Required remediation and acceptance evidence
+
+1. Decide whether FEFO exceptions are permitted and define authorized roles, reason codes, and required justification; if exceptions are not permitted, remove the misleading override instruction and make the policy explicit.
+2. If permitted, add a typed override field plus mandatory reason/authorization evidence to the dispense request, enforce permission server-side, and persist the decision in an immutable dispense audit record.
+3. Keep the default path strictly FEFO and ensure an override cannot bypass expiry, recall, quarantine, or stock-availability checks.
+4. Add API-level tests proving an ordinary request is rejected when an older eligible batch exists, an authorized documented override succeeds, unauthorized or reasonless overrides fail, and expired/otherwise ineligible batches remain blocked.
+5. Verify the actual request model alias and OpenAPI contract expose the intended fields; do not rely on dynamic attributes or `getattr` for safety-critical request controls.
+
+**Assessment:** Medium-priority pharmacy workflow and exception-governance defect. The source proves the documented override cannot be supplied through the declared API contract; it does not prove an actual dispense was delayed or a patient was harmed.
+
+**Boundary:** exact-head static source/schema/router review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
