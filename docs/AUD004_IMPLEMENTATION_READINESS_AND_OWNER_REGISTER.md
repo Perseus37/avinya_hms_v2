@@ -6300,3 +6300,29 @@ No post-cancellation analyzer message or changed clinical result was observed. T
 
 **Boundary:** exact-head static source/model and control-flow review only. No patient data, tenant database, diagnostic order, analyzer message, or result was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 222. Automatic insurance tariff selection ignores the policy effective start date
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/services.py`, `resolve_patient_service_price_paise()` and its diagnostic/surgery charge callers; `backend/domains/insurance/models.py`, `PatientInsurancePolicy.valid_from`, `valid_till`, and `InsurancePlanTariff`.
+
+### 222.1 Future-dated active policies can supply today's negotiated rate
+
+`PatientInsurancePolicy` has both non-null `valid_from` and `valid_till` timestamps. The shared billing resolver selects active policies for the patient, checks that `valid_till` has not passed, verifies that the linked plan is active and configured for automatic tariffs, then applies a covered service tariff. It never compares `valid_from` with the current time.
+
+A policy that has been created and marked active but whose coverage starts in the future can therefore influence a charge before its effective start date. If its plan contains an automatically applied tariff for the service, the resolver returns that negotiated amount instead of the standard service catalog rate. The resolver is called by diagnostic-order auto-billing and completed-surgery procedure billing, so the missing start-date check affects both paths.
+
+This is a distinct temporal eligibility defect: policy activation and end-date validity are checked, but the explicit start of contractual coverage is ignored. The source establishes the premature tariff-selection path, not that any future-dated policy or incorrect invoice exists in a tenant.
+
+No policy, tariff, invoice, patient record, or billing transaction was accessed or changed.
+
+### 222.2 Required remediation and acceptance evidence
+
+1. Require the policy's effective interval to contain the billing decision time: `valid_from <= now < valid_till`, using timezone-aware normalization and a documented inclusive/exclusive boundary.
+2. Centralize policy eligibility in one tested helper used by every automatic tariff consumer; do not duplicate date checks in individual billing callers.
+3. Define behavior for overlapping active policies and multiple eligible plans, including whether an explicit payer selection is required rather than choosing by descending policy ID.
+4. Add PostgreSQL-backed tests for future-start, currently valid, expired, inactive, and boundary-equality policies across diagnostic and surgery billing. Assert future and expired policies use the standard rate (or the separately approved no-coverage behavior), while an eligible policy uses its covered tariff.
+5. Preserve the policy/tariff decision inputs and effective timestamp in billing provenance so later review can explain why a rate was selected.
+
+**Assessment:** Medium-priority financial and contract-eligibility integrity defect. A future-dated policy can cause a negotiated insurance tariff to be applied before coverage begins. No incorrect charge, claim, or financial loss was observed.
+
+**Boundary:** exact-head static source/model and call-site review only. No patient data, tenant database, insurance policy, tariff, invoice, or live billing transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
