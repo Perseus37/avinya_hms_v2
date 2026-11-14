@@ -6611,3 +6611,33 @@ No such concurrent race or inconsistent live encounter/admission/bed state was o
 **Assessment:** High-priority ADT lifecycle and bed-occupancy consistency gap. Concurrent cancellation and admission can leave an active inpatient admission attached to a cancelled encounter. No inconsistent live state was observed.
 
 **Boundary:** exact-head static route/model/control-flow review only. No patient data, tenant database, encounter, admission, bed, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 233. Concurrent transfers of one admission can leave multiple beds marked occupied
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/encounters/adt_router.py`, `transfer_patient_bed()`; `backend/domains/encounters/models.py`, `InpatientAdmission.current_bed_id` and `Bed.current_admission_id`.
+
+### 233.1 Destination-bed locks do not serialize transfers on the admission
+
+`transfer_patient_bed()` loads the admission with an ordinary `db.get()`, checks that it is not discharged, and reads `old_bed_id = admission.current_bed_id` before acquiring any row lock on the admission. It then locks the requested destination bed, locks the previously read old bed, updates the admission to point at the destination, marks the old bed HOUSEKEEPING, marks the destination OCCUPIED, inserts a transfer log, and commits.
+
+The destination lock prevents two requests from simultaneously claiming the same destination bed, but it does not serialize two transfers of the same admission when they target different available beds. Both requests can read the same original `old_bed_id` and lock different destination beds. One request can lock and release the original bed, set destination B occupied, and commit. The second request then obtains the original bed lock using its stale `old_bed_id`, sets destination C occupied, and overwrites the admission's current bed pointer to C. It does not know that the first request already occupied B, so B can remain OCCUPIED with `current_admission_id` still pointing to the same admission while the admission itself points to C.
+
+This leaves contradictory occupancy state: one admission can be represented as occupying multiple beds, and the stale destination can be unavailable for future admissions despite no longer being the admission's current bed. The transfer log records each request's stale source-bed assumption rather than a serialized sequence of actual occupancy transitions.
+
+No concurrent transfer, duplicate occupied bed, blocked bed, or inconsistent live admission was observed.
+
+This is distinct from Sections 227 and 228: Section 227 concerns missing historical rate snapshots, and Section 228 concerns discharge event publication ordering. This finding concerns serialization and bed occupancy invariants for concurrent transfers.
+
+### 233.2 Required remediation and acceptance evidence
+
+1. Lock the `InpatientAdmission` row with `FOR UPDATE` before reading `current_bed_id`; retain that lock through destination/source bed updates, transfer-log insertion, and commit.
+2. After acquiring the admission lock, re-read and validate the current source bed and its `current_admission_id`; reject or reconcile inconsistent source occupancy rather than silently proceeding.
+3. Use a consistent lock order across admission and bed rows for admission, transfer, discharge, and cancellation paths to avoid deadlocks and stale-state transitions.
+4. Enforce the intended bed/admission occupancy invariant at the database boundary where feasible, and add a reconciliation check for beds whose `current_admission_id` and admission `current_bed_id` disagree.
+5. Add PostgreSQL-backed two-session tests that synchronize two transfers of the same admission to different available destination beds. Assert that one request serializes or fails, exactly one destination remains OCCUPIED for the admission, the prior bed enters HOUSEKEEPING, and transfer logs form a valid ordered chain. Include a transfer-versus-discharge race test.
+
+**Assessment:** High-priority ADT concurrency and facility-capacity integrity gap. Concurrent transfers of the same admission can leave a stale destination bed marked occupied after the admission has moved elsewhere. No actual occupancy corruption or operational impact was observed.
+
+**Boundary:** exact-head static route/model/control-flow review only. No patient data, tenant database, admission, bed, transfer log, or live transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
