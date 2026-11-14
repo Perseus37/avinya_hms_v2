@@ -3177,3 +3177,28 @@ The legacy static control-plane credential path is a separate compatibility case
 **Assessment:** High-priority control-plane authorization consistency gap. The route/helper composition permits a lower-privilege named operator who also has the shared vendor key to invoke mutations without a role check. No evidence establishes that such a credential combination exists in practice or that an unauthorized mutation has occurred.
 
 **Boundary:** static source review only. No control-plane request, operator account, vendor key, database, migration, tenant, patient data or production resource was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 106. Fleet audit-log read endpoint exposes unredacted privileged-operation details without an operator-role gate
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/control_plane/api/routers/fleet_ops.py` (`list_control_plane_audit_logs`, privileged audit writers); `backend/control_plane/services/auth.py` (`verify_control_plane_secret`, `_verify_vendor_key`, `require_operator_role`).
+
+### 106.1 Audit-log reader checks shared credentials but does not enforce a named operator role or redact details
+
+`GET /api/fleet/audit-logs` depends on `verify_control_plane_secret` and calls `_verify_vendor_key`, but does not declare `require_operator_role`. The vendor-key helper checks shared-key possession for non-superadmin sessions; it does not authorize a named operator role. This is the same missing role-boundary pattern as the fleet mutations in Section 105, but this endpoint is a read surface with a distinct audit-data exposure impact.
+
+The endpoint returns each selected row's `action`, `target_slug`, `actor`, full `details` and timestamp. Its optional filters only constrain action and a substring of target; there is no actor-based scope, role-based field projection or redaction. The source's audit writers place operationally sensitive context in `details`, including the administrator email for emergency tenant-admin reset and the free-text justification for global MPI lookup (along with a truncated phone-hash prefix and match count). Other privileged-operation details include tenant/database identifiers and backup/restore task context. Therefore the endpoint can disclose more than a minimal audit-event envelope to any caller who satisfies the shared credential checks, including a lower-privilege named operator if that operator also has the vendor key.
+
+This is not an unauthenticated endpoint: control-plane authentication and vendor-key checks remain present, and a named operator without the vendor key is rejected by the helper unless superadmin. The finding does not establish that any lower-privilege operator has the key, that any particular audit row contains patient-identifying data, or that an audit-log read occurred. The concern is that the endpoint does not independently enforce the intended operator role or minimize returned detail once the shared key check succeeds.
+
+### 106.2 Required remediation and acceptance evidence
+
+1. Assign a dedicated audit-read permission/role and enforce it with `require_operator_role`; do not treat vendor-key possession as an authorization role.
+2. Define separate audit projections for ordinary operational viewers and restricted security/compliance investigators. Redact or tokenize email addresses, justifications, identifiers, hashes and secret-adjacent operational details unless a documented purpose requires them.
+3. Add tests proving viewer/unauthorized roles cannot read audit logs even with the vendor setup key, and intended audit roles receive only their approved projection.
+4. Add tests with synthetic audit rows covering emergency reset, MPI lookup, backup/restore and key rotation; assert restricted fields are absent from ordinary responses and pagination/filtering cannot bypass the projection.
+5. Audit the audit-log read itself with authenticated actor, role, filters, result count and justification where access is exceptional; avoid recursive disclosure of sensitive query values.
+
+**Assessment:** High-priority privileged audit-data access-control and minimization gap. The endpoint's route signature and response construction establish missing role enforcement and full-detail serialization. Exploitability by a lower-privilege named operator remains conditional on possession of the shared vendor setup key; no unauthorized access or disclosure is claimed.
+
+**Boundary:** static source review only. No audit records, operator accounts, vendor keys, requests, databases, patient data or production resources were accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
