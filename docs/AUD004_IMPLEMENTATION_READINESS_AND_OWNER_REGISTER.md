@@ -2411,3 +2411,33 @@ No per-tenant backup outcome metric is emitted by this daemon path. The producti
 **Assessment:** High-priority tenant-level recovery assurance gap if this daemon is used as the tenant backup scheduler. A single tenant can miss a backup while the daemon cycle returns normally and proceeds to its regular interval, with only a log entry to indicate the failure. The repository's production Compose file does not itself launch this daemon, so deployment usage must be confirmed before attributing this behavior to a live environment.
 
 **Boundary:** static source/configuration review only. No daemon, backup, tenant database, scheduler, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+
+## 81. Restore drill labels record age as RPO without measuring the recovery-point gap
+
+**Sources reviewed on the audit branch:**
+- `backend/scripts/restore_drill.py` (`run_restore_drill`, report construction and CLI exit status)
+
+Static source review only. The restore drill was not run; no tenant database, backup, clinical record, credential or production state was accessed or changed.
+
+### 81.1 The reported RPO is the age of the newest restored record
+
+The drill queries `MAX(created_at)` from `patient_encounters`, `invoices` and `patients`, takes the newest timestamp it can read, and computes:
+
+`current_UTC_time - newest_restored_record_timestamp`
+
+That value is emitted as `measured_rpo_seconds`. It measures the age of the newest available record in the restored snapshot, not the RPO/data-loss interval. A valid RPO measurement needs a defined failure/cutoff time and the latest committed source transaction represented in the recoverable backup (or an equivalent independently recorded recovery-point marker). The current implementation does not capture or compare those two points. It can therefore report a large value during normal low activity, or a small value even when transactions after the backup were lost.
+
+The candidate timestamp queries also suppress all exceptions. If all three queries fail or yield no timestamp, the report emits `null` for RPO; the drill pass predicate does not require an RPO value or enforce an RPO threshold. The report can still be marked `PASSED` based on checksum, presence of six critical table names, and RTO alone.
+
+### 81.2 Required remediation and acceptance evidence
+
+1. Define the RPO reference point explicitly (for example, a recorded simulated incident cutoff) and persist a trustworthy source-side high-water mark/transaction timestamp at that point.
+2. Record the backup's recovery-point timestamp independently at backup creation; compare it with the incident cutoff and, where appropriate, verify the restored snapshot's latest committed marker.
+3. Do not infer RPO from the wall-clock age of the newest clinical row. Treat missing/unreadable markers as an unverified RPO, not a numeric measurement.
+4. Add a configured RPO threshold to the drill pass predicate if the report is intended to certify an RPO objective. A missing RPO measurement must not silently pass that gate.
+5. Add deterministic tests for low-activity tenants, stale backups, post-backup transactions, missing timestamp columns, query failures, empty datasets, and clock/time-zone handling. Assert that the computed loss interval matches the known simulated cutoff and backup marker.
+
+**Assessment:** High-priority disaster-recovery measurement and certification-integrity gap. The current `measured_rpo_seconds` field is not an RPO measurement, and RPO is not part of the pass/fail predicate. The report can therefore claim `PASSED` without establishing whether the declared recovery-point objective was met.
+
+**Boundary:** static source review only. No restore drill, backup, tenant database, clinical record, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
