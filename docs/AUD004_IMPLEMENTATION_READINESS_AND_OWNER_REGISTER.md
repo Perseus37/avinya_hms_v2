@@ -5445,3 +5445,38 @@ No actual bedside administration was blocked in a deployed tenant, and no patien
 **Assessment:** High-priority medication workflow integrity defect. Exact source review establishes that the pharmacy route intentionally produces PARTIAL for incomplete fulfilment, while the BCMA evaluator rejects all non-ACTIVE states. The result is a deterministic hard-stop for a remaining item on a normally partially fulfilled prescription. No deployed blocked administration or patient harm was established.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 191. Pharmacy returns decrement a quantity counter that also records bedside administrations
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/models.py`, `PrescriptionItem` and `MedicationAdministrationLog`; `backend/domains/pharmacy/router.py`, `dispense_medication()` and `return_dispensed_medication()`; `backend/domains/pharmacy/services.py`, `execute_bcma_administration()`.
+
+### 191.1 One counter represents two different clinical and inventory events
+
+`PrescriptionItem` stores one integer `dispensed_quantity`, constrained to be nonnegative and no greater than `requested_quantity`. The pharmacy dispense route treats it as stock supplied: it calculates remaining quantity as requested minus dispensed, increments it by the batch quantity removed from inventory, and creates invoice lines for that pharmacy supply.
+
+The BCMA administration service also increments the same `dispensed_quantity` after creating an ADMINISTERED eMAR record. Its code comment describes this as the dispensed/administered quantity count. It does not create a pharmacy inventory movement or pharmacy invoice line for that increment. It also does not recalculate the parent prescription status after the increment.
+
+The pharmacy return route then uses this shared counter as its return ceiling: it rejects a return larger than `rx_item.dispensed_quantity`, restores the selected inventory batch, and decrements that same counter. It does not distinguish quantities previously supplied by pharmacy from quantities already administered and recorded in eMAR.
+
+Consequently, the pharmacy return ceiling and the pharmacy remaining-to-dispense calculation can include bedside administrations that were never recorded as pharmacy stock supply. A return can also decrement a counter that includes administered doses, even though a stock return cannot reverse an administration event. The counter can therefore cease to reconcile to either physical pharmacy supply or the immutable administration history.
+
+Illustrative sequence: an item requests five units. Two bedside administrations are recorded while the prescription is ACTIVE; BCMA increments `dispensed_quantity` to two. Pharmacy subsequently calculates only three units remaining and supplies/bills three. The shared counter reaches five and pharmacy marks the prescription DISPENSED, although only three units were supplied by pharmacy and two were recorded as administered. A later pharmacy return of one supplied unit decrements the same counter to four and recalculates the parent status as PARTIAL, despite the two eMAR administration records remaining unchanged. The data model cannot independently answer how many units were supplied, returned, and administered.
+
+This is distinct from Section 190's ACTIVE-only BCMA hard-stop for PARTIAL prescriptions. Section 190 concerns status eligibility; this section concerns the underlying quantity ledger shared across pharmacy supply, returns, and bedside administration.
+
+No deployed quantity discrepancy, incorrect invoice, or patient impact was established.
+
+### 191.2 Required remediation and acceptance evidence
+
+1. Replace the overloaded counter with separately defined quantities/ledgers, at minimum pharmacy quantity supplied, pharmacy quantity returned, and bedside quantity administered. Define whether ward-stock administrations are linked to pharmacy issue allocations or are a separate stock source.
+2. Make pharmacy remaining-to-dispense and return ceilings derive only from durable pharmacy dispense allocations and their returns. Do not infer physical stock supply from eMAR administration counts.
+3. Make BCMA enforce the remaining authorized administration quantity using a dedicated administration counter or event ledger, with an atomic row lock/conditional update. Do not silently allow an ADMINISTERED eMAR event when no authorized quantity remains.
+4. Derive prescription lifecycle status from explicitly defined fulfilment and administration semantics; do not let a pharmacy stock return reopen or decrement bedside administration history.
+5. Preserve the original administration events. A medication return, held dose, or refused dose must not erase or reduce an ADMINISTERED eMAR event.
+6. Add PostgreSQL tests for BCMA-before-pharmacy, pharmacy-before-BCMA, partial pharmacy return after administration, return limits, duplicate/concurrent administration, and full reconciliation among inventory movements, invoice allocations, pharmacy returns, and eMAR records.
+
+**Assessment:** High-priority medication quantity and reconciliation integrity defect. Exact source establishes that pharmacy dispense, BCMA administration, and pharmacy return all mutate the same `dispensed_quantity` despite representing different events. The counter is also used to calculate pharmacy stock-supply remainder and return limits. No deployed discrepancy, incorrect billing, or patient harm was established.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
