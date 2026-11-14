@@ -5415,3 +5415,33 @@ No actual inactive medication was dispensed in a deployed tenant, and no patient
 **Assessment:** Medium-priority formulary and medication-safety policy gap pending an explicit deactivation policy. Static source establishes that the create-prescription path rejects inactive medication but the direct dispense path does not recheck the activation flag. The clinical and operational effect depends on the intended semantics of deactivation; no deployed dispensing or patient harm was established.
 
 **Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 190. BCMA hard-stops partially dispensed prescriptions and prevents administration of their remaining authorized quantity
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `dispense_medication()` and `bcma_verify_and_administer()`; `backend/domains/pharmacy/services.py`, `evaluate_bcma_five_rights()` and `execute_bcma_administration()`; `backend/domains/pharmacy/models.py`, `PrescriptionStatusEnum` and `PrescriptionItem`.
+
+### 190.1 Pharmacy creates PARTIAL state, while BCMA permits only ACTIVE
+
+The prescription status enum explicitly includes ACTIVE, PARTIAL, DISPENSED, and CANCELLED. The pharmacy dispensing endpoint permits a prescription unless it is already DISPENSED or CANCELLED. After dispensing, it compares each prescription item's `dispensed_quantity` with `requested_quantity`; if any requested quantity remains, it sets the parent prescription status to PARTIAL.
+
+The BCMA five-rights evaluator applies a stricter status check: it rejects every prescription whose status is not exactly ACTIVE, with a hard-stop stating that only ACTIVE prescriptions can be administered. The BCMA route delegates to this evaluator before creating an eMAR record. It does not distinguish PARTIAL from terminal DISPENSED or CANCELLED status, nor does it test whether the specific prescription item still has authorized quantity remaining.
+
+Concrete sequence: a prescription requests multiple units; pharmacy dispenses fewer than the requested quantity; the pharmacy endpoint correctly marks the prescription PARTIAL. A nurse then scans the remaining prescribed dose through BCMA. The evaluator rejects the request solely because the parent status is PARTIAL, even though the prescription is neither cancelled nor fully dispensed and the item may still have remaining quantity. This conflicts with the dispensing endpoint's explicit treatment of PARTIAL as a non-terminal state that can continue to be fulfilled.
+
+This is distinct from Section 183's generic prescription status update bypass and Section 189's inactive-medication check: this finding concerns the BCMA status allowlist and the normal PARTIAL transition produced by pharmacy fulfilment.
+
+No actual bedside administration was blocked in a deployed tenant, and no patient impact was established.
+
+### 190.2 Required remediation and acceptance evidence
+
+1. Define separate, unambiguous lifecycle semantics for pharmacy fulfilment and bedside administration. A PARTIAL prescription should not be treated as terminal if remaining authorized quantity may be administered.
+2. Replace the blanket ACTIVE-only check with an explicit transition/eligibility rule that rejects CANCELLED and fully DISPENSED prescriptions while permitting valid remaining quantity in PARTIAL state, subject to clinical authorization and any required time/schedule checks.
+3. Enforce remaining quantity atomically for the specific prescription item; prevent concurrent BCMA requests from exceeding the authorized amount, using a row lock or conditional update and a database-backed invariant.
+4. Clarify whether `dispensed_quantity` represents stock supplied to the patient or doses administered at bedside. Pharmacy dispensing and BCMA administration currently both mutate this same counter; model separate quantities/allocations if those are different lifecycle events, and derive parent status consistently.
+5. Add PostgreSQL integration tests for ACTIVE, PARTIAL with remaining quantity, PARTIAL with no remaining quantity, DISPENSED, and CANCELLED prescriptions; include concurrent bedside administrations and assert no unauthorized quantity is recorded.
+
+**Assessment:** High-priority medication workflow integrity defect. Exact source review establishes that the pharmacy route intentionally produces PARTIAL for incomplete fulfilment, while the BCMA evaluator rejects all non-ACTIVE states. The result is a deterministic hard-stop for a remaining item on a normally partially fulfilled prescription. No deployed blocked administration or patient harm was established.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
