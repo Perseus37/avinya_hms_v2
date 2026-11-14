@@ -4795,3 +4795,28 @@ The model declares `vital_id` as a nullable foreign key to `encounter_vitals.id`
 **Assessment:** High-priority input-validation and clinical provenance integrity defect. The source proves the missing-row branch is not rejected and the model FK exists; no malformed request or production failure is established.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 168. NEWS2 can calculate from an old encounter vital as though it were current
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/models.py`, `EncounterVital`; `backend/core/audit.py`, `AuditMixin`; `backend/domains/clinical/router.py`, `record_encounter_vitals()` and `evaluate_encounter_news2()`; `backend/domains/clinical/schemas.py`, `EncounterVitalCreate`.
+
+### 168.1 The source record has no clinical measurement timestamp or freshness gate
+
+`EncounterVital` stores observations and inherits `created_at` from `AuditMixin`. That timestamp is assigned by the database when the row is inserted; the vital model has no separate `measured_at`/observation-time field. The create request likewise accepts measurements and notes but no observation timestamp. Consequently, the system cannot distinguish when a measurement was taken from when it was entered.
+
+The NEWS2 route accepts any `vital_id` that resolves to a record belonging to the requested encounter. It hydrates omitted values from that record without checking its age or any configured clinical freshness interval. A same-encounter vital entered substantially earlier can therefore supply values to a new NEWS2 calculation and be persisted as the source of that evaluation. The existing same-encounter check prevents cross-encounter hydration, but it does not establish temporal relevance.
+
+This is a source-level capability and missing-control finding. It does not establish that an old vital was actually used in production, that any particular NEWS2 score was incorrect, or that patient harm occurred.
+
+### 168.2 Required remediation and acceptance evidence
+
+1. Add an explicit observation/measurement timestamp with timezone-aware semantics, distinct from row creation/entry time; preserve both timestamps and the recording actor.
+2. Define clinically governed freshness rules for NEWS2 inputs, including the behavior for stale, future-dated, or partially refreshed observations. Do not invent a universal interval in code without clinical-owner approval.
+3. Before hydration, validate the observation timestamp against the approved policy. Reject stale inputs or require a deliberate, attributable clinician override with a recorded rationale; never silently treat stale observations as current.
+4. Persist the exact observation timestamp and per-parameter source/provenance in the NEWS2 calculation snapshot, including which values were manually overridden.
+5. Add synthetic tests for fresh, stale, future-dated, partially overridden, and manual-only evaluations; assert deterministic validation, override audit evidence, and no score persistence for rejected stale input.
+
+**Assessment:** High-priority clinical temporal-validity and provenance gap. The reviewed model and route demonstrate that the measurement time is not represented and no freshness decision is made before calculation. Clinical policy must determine acceptable age thresholds and override rules.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
