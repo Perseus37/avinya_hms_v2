@@ -3006,3 +3006,37 @@ This is a privileged operational MPI disclosure-scope inconsistency, not an unau
 **Assessment:** Medium-priority privileged data-minimization and control-plane scope gap. The ordinary federation discovery path already excludes inactive tenant registries, and the operator endpoint is authenticated, role-gated and audited. The concern is the unfiltered privileged lookup of retained identifiers for suspended tenants, not proof of unauthorized access or disclosure.
 
 **Boundary:** static source review only. No MPI lookup, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 100. Tenant-controlled partner registration can mint an active control-plane federation identity for an unregistered branch code
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/federation/router.py` (`register_federated_branch`); `backend/core/dependencies.py` (`get_federated_node`); `backend/domains/federation/router.py` (discovery caller identity and active-registry resolution); `backend/control_plane/models.py` (`TenantRegistry`, `FederatedNode`).
+
+Static source review only. No federation key was created or used, no discovery request was made, and no tenant database, patient record, credential or production resource was accessed.
+
+### 100.1 Registration trusts the requesting tenant's branch-code assertion
+
+The tenant-scoped `POST /api/federation/clients` route requires the caller to hold `iam:write`. It takes `payload.branch_code`, normalizes it, checks only whether a `FederatedClient` with that code already exists in the caller's tenant database, generates a new API key, and commits that client row.
+
+It then checks the control-plane `FederatedNode` table for the supplied branch code. If no node exists, it creates an active node using the caller-supplied branch code and name, but sets `subdomain_slug` to the *requesting tenant's* subdomain. The route does not resolve the supplied branch code to an existing `TenantRegistry`, verify ownership/control of that branch, or require an invitation/acceptance proof from the claimed branch. Thus a tenant administrator with `iam:write` can cause an active central federation identity to be created for a branch code that has no tenant registry entry, with the identity's subdomain metadata pointing at the registering tenant.
+
+The authentication dependency `get_federated_node` accepts a request when the presented key hash matches an active `FederatedNode`. It does not require a matching active `TenantRegistry` row. The discovery route later attempts to resolve the calling node's active registry; if absent, its caller group is null. Corporate-group-only source checks fail closed for a missing caller group, but the FULL_MESH path does not require a registry-backed caller identity. This creates a route from unverified partner registration to an authenticated but unregistered caller identity in the federation control plane.
+
+### 100.2 Scope and distinction from the tenant-suspension finding
+
+This is an identity-enrollment and branch-ownership verification gap. It is distinct from Section 73's owner-tenant-active-state check: Section 73 addresses a node whose owner tenant later becomes inactive or otherwise drifts, while this section identifies a code path that can create an active node without establishing that the claimed branch is a registered tenant or that the registering party controls it. It is also distinct from Section 99's privileged MPI lookup scope.
+
+The route is authenticated and permission-gated; this is not an unauthenticated endpoint. Source-side patient sharing/privacy checks still run, and corporate-group-only checks fail closed when the caller has no registered group. The demonstrated concern is that an unverified branch identity can enter the authenticated federation namespace and, under FULL_MESH behavior, act as a caller identity. No production abuse or patient disclosure is established.
+
+### 100.3 Required remediation and acceptance evidence
+
+1. Separate partner/client credential records from the authenticated identity of the local calling tenant. The caller identity on inbound discovery must be derived from a credential issued to and bound to the actual registered caller tenant, not from an arbitrary partner code supplied by another tenant.
+2. If partner enrollment is required, model it as a pending invitation/relationship. Require control-plane approval or a verifiable acceptance from the claimed partner before creating an active `FederatedNode`.
+3. Enforce a database-backed invariant that every active `FederatedNode` maps to exactly one active `TenantRegistry` with the same branch code and consistent tenant identity metadata. Do not silently treat an unregistered node as FULL_MESH.
+4. Make `get_federated_node` reject missing, inactive or mismatched owner registry records; keep this runtime check independent of enrollment-time validation.
+5. Add tests: arbitrary unregistered branch code cannot create an active node; registered partner acceptance binds the correct owner/subdomain; caller cannot authenticate as another branch; orphan/mismatched node fails closed; FULL_MESH and CORPORATE_GROUP_ONLY both require a valid caller identity.
+6. Define recovery for the existing two-database commit sequence so a failed control-plane enrollment cannot leave a local `FederatedClient` presented as successfully registered.
+
+**Assessment:** High-priority federation identity-integrity gap requiring resolution before enabling partner federation. It is statically demonstrated that the registration route can create an active node without registry/ownership verification; practical reachability depends on granting `iam:write` and on the relevant deployment's federation configuration. No evidence of production exploitation or patient disclosure.
+
+**Boundary:** static source review only. No federation credential, request, database, patient data, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
