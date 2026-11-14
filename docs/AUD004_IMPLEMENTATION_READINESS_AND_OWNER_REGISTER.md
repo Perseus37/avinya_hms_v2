@@ -4348,3 +4348,33 @@ The mapped service ID is then used to select the first eligible patient task for
 **Assessment:** High-priority analyzer configuration and clinical result-routing integrity gap. The source establishes that conflicting duplicate mappings can be accepted and that ingestion overwrites collisions without deterministic ordering; it does not establish that a production analyzer has such duplicate configuration or that a result has been misrouted.
 
 **Boundary:** exact-head static source review only. No mapping endpoint was called, no tenant database or patient data was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 151. Specimen-recollection alerts are published before the clinical transaction commits and failures are swallowed
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/service.py`, `process_hl7_oru_r01_in_session()`, OBX unobtainable-result handling and final transaction commit.
+
+### 151.1 Redis notification is not transactionally coupled to specimen state
+
+When an OBX result is treated as unobtainable, the processor updates the diagnostic task to `SAMPLE_REJECTED`, may create a recollection task, and then publishes a `LAB_SPECIMEN_UNOBTAINABLE` event to Redis. This publish occurs inside the processing loop, before the function's final `db.commit()`. Any exception from obtaining Redis or publishing is caught and discarded. The clinical transaction is committed only later, after all task updates and the HL7 integration log are added.
+
+This creates both sides of a delivery inconsistency:
+- If Redis accepts the event but a later operation or database commit fails, the consumer may receive an alert for a rejection/recollection state that was rolled back.
+- If Redis is unavailable or publish fails, the exception is swallowed; the database can still commit the rejection/recollection state without a durable notification or retry record.
+
+The reviewed path has no transactional outbox row or durable retry mechanism for this event. The code therefore cannot guarantee that the notification corresponds to committed clinical state or that every committed specimen rejection is eventually surfaced to downstream consumers.
+
+This finding is distinct from Sections 131–136, which concern privacy-retention job queue/execution behavior, and from Section 149, which concerns inbound HL7 replay. It concerns outbound clinical event delivery coupled to the analyzer result transaction.
+
+### 151.2 Required remediation and acceptance evidence
+
+1. Insert a specimen-alert outbox event in the same database transaction as the task/recollection updates, with a stable event ID and patient/order/task references.
+2. Dispatch outbox events asynchronously only after commit; mark delivery attempts and outcomes durably.
+3. Retry transient failures with bounded backoff and a dead-letter/reconciliation path; make consumers idempotent by event ID.
+4. Do not report successful alert delivery merely because an in-process Redis publish call returned; expose delivery state separately from clinical result acceptance.
+5. Add synthetic tests for Redis unavailable, publish exception, database commit failure after event creation, worker crash after publish, duplicate dispatch, and eventual delivery. Assert no event is emitted for rolled-back state and every committed rejection remains dispatchable.
+
+**Assessment:** High-priority clinical workflow reliability gap. The source establishes pre-commit publication and swallowed delivery failures; it does not establish a real lost alert, false alert, or patient impact in production.
+
+**Boundary:** exact-head static source review only. No Redis channel was published to, no HL7 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
