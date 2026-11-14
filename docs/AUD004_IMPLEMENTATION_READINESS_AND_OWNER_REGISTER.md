@@ -2879,3 +2879,36 @@ Discovery writes one source-side log row for each source branch result. Import w
 **Assessment:** Medium-priority audit-integrity control gap. The Python source proves that immutability checks are attached to ORM flushes, not enforced by the model at the database boundary. Actual deployed trigger/privilege state and any external retention policy remain unverified. This is not evidence that a transfer-log row has been altered or deleted.
 
 **Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+## 96. Discovery receipts are replayable until expiry and expired-row cleanup is opportunistic
+
+**Source reviewed:** `backend/control_plane/models.py` (`FederatedDiscoveryReceipt`); `backend/domains/federation/router.py` (discovery receipt issuance, expiry cleanup and `import_federated_patient_locally`).
+
+Static source review only. No federation request was sent, no patient record was read, and no database, credential, migration or production resource was accessed or changed.
+
+### 96.1 Receipt validation enforces expiry, but does not consume the bearer capability
+
+Discovery issues a random bearer receipt, stores only its SHA-256 token hash in the control-plane database and sets `expires_at` to two minutes after issuance. Import hashes the supplied token, retrieves the receipt, verifies destination branch, expiry, response-summary digest, active calling node, selector digest, current pointer snapshot and exact source pointer. It also revalidates source patient activity, sharing policy, consent decision and current demographic values before cloning. These are meaningful validation controls; this finding does not claim that the receipt can be used after expiry or that source policy checks are skipped.
+
+The receipt model has no consumed/imported/revoked state, nonce-use record or import-operation identifier. The import route does not delete or mark the receipt used after a successful destination commit or an idempotent-existing-patient return. Consequently, the same valid bearer receipt remains acceptable for repeated import requests during its two-minute validity window, provided the caller still has the destination `patients:write` permission and all source/index checks continue to pass.
+
+The destination's identity-based existing-patient lookup reduces ordinary duplicate creation, but it is not one-time receipt consumption. Replays still repeat control-plane pointer validation, source-tenant patient/policy reads and source-side `CONTINUITY_OF_CARE_IMPORT_REQUESTED` audit writes. The source audit row is committed before the destination patient commit, so a replay or failed destination commit can leave multiple REQUESTED events without a corresponding committed-import outcome. The destination route also returns an existing patient without consuming the receipt.
+
+This is a bounded replay/idempotency and audit-noise gap, not evidence of authorization bypass: the bearer is short-lived, destination-bound, tied to the authenticated calling node and current pointer snapshot, and each attempt rechecks source policy and destination permission. It is distinct from Section 94's missing import credential attribution and Section 19's broader cross-database clone recovery/idempotency concerns; the specific additional point here is that the server-issued capability itself is not one-time.
+
+### 96.2 Expired receipt cleanup is coupled to future discovery traffic
+
+The only application cleanup found in the reviewed router is a bulk delete of receipts whose `expires_at` is at or before the current time, executed at the beginning of each discovery request. The import route rejects expired receipts but does not delete them. No scheduled cleanup worker, periodic task or bounded retention mechanism for this table was identified in the reviewed model/router paths.
+
+Thus expired receipt rows are reclaimed only when another discovery request later runs the cleanup statement. If discovery traffic stops, expired rows remain in the control-plane table; the repository does not provide a time-bounded cleanup guarantee. The expiry index supports the delete predicate, but an index does not itself remove expired rows. This is a storage-lifecycle observation, not a claim that expired receipts remain usable: import still checks `expires_at`.
+
+### 96.3 Required remediation and acceptance evidence
+
+1. Define receipt semantics explicitly. If import is intended to be one-time, atomically claim/consume the receipt with a conditional state transition or unique import-operation record before allowing the cross-database workflow to proceed. Do not rely on a read-then-delete sequence that permits concurrent replay.
+2. Preserve recoverability across the source/destination transaction boundary: persist operation state and distinguish claimed, source-authorized, destination-committed, idempotent-existing and failed/unknown outcomes. A consumed receipt must not strand a valid import after a transient destination failure; define a safe retry/recovery rule.
+3. Add concurrency tests that submit the same receipt in parallel and sequentially, including destination commit failure, existing-patient return, source-policy change, pointer change, expiry boundary and node revocation. Assert one logical import operation and accurate audit outcomes.
+4. Move expired-receipt reclamation to a durable scheduled cleanup/retention process with bounded batches, observability and failure/restart tests. Keep import-time expiry validation authoritative regardless of cleanup lag.
+5. Extend the disposable PostgreSQL catalog/integration proof to verify receipt state transitions, conditional claim uniqueness and cleanup behavior without touching non-disposable databases.
+
+**Assessment:** Medium-priority capability lifecycle and audit-integrity gap. The two-minute expiry and extensive source revalidation materially limit exposure, but the same receipt is not consumed after use and cleanup is request-driven rather than scheduled. Static review does not establish that replay caused duplicate patient records or that control-plane storage is currently growing without bound.
+
+**Boundary:** static source review only. No federation request, patient record, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
