@@ -3780,3 +3780,31 @@ The source does not establish that audit rows actually belong to or identify a p
 **Assessment:** High-priority legal-hold scope-integrity gap. Static source establishes that a supported hold request can express a patient/category combination that the audit executor cannot apply, and the execution result reports no held records for this category. No claim is made that an actual held patient's audit record was deleted.
 
 **Boundary:** static source review only. No legal hold was created, no retention policy or job was executed, no patient or tenant data was accessed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 129. Redis enqueue failure can return a queued retention job after synchronous execution fails
+
+**Source reviewed:** PR #19 head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/core/queue.py` (blob `aad0c663e52e7a73d7261658f5ecc1889b7e36b7`); `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`).
+
+### 129.1 Retention endpoint reports QUEUED regardless of synchronous fallback outcome
+
+The retention execution endpoint calls `enqueue_task("privacy.retention.execute", ...)` in async mode and unconditionally returns `status: "QUEUED"` with the returned job ID.
+
+The queue helper defaults `sync_fallback=True`. When Redis enqueue fails, it attempts to invoke the registered handler synchronously. That fallback wraps the handler in `try/except Exception`, logs a warning if the handler fails, and then returns the generated task ID either way. It does not persist a fallback task status/result or re-raise the handler exception. The task hash and queue entry were never successfully written to Redis in this path.
+
+Consequently, if Redis is unavailable and the retention handler raises, the API still returns a success-shaped QUEUED response although no queued job exists and no retention result was committed by that failed handler. The job-status endpoint subsequently consults Redis via `get_task_status(job_id)`; because no task hash exists, it returns not-found. If synchronous fallback succeeds, the operation may already have run inline while the response still says QUEUED, and the same missing status record prevents the caller from retrieving its result through the job-status endpoint.
+
+This is a retention execution observability and outcome-integrity issue. The source does not establish that Redis was unavailable in a deployed environment or that a real retention execution failed.
+
+### 129.2 Required remediation and acceptance evidence
+
+1. For retention execution, prefer fail-closed enqueue behavior (`sync_fallback=False`) or implement a durable fallback result/status contract that distinguishes completed-inline, failed-inline, and queued.
+2. Never swallow a retention handler exception while returning a job ID that the status API cannot resolve.
+3. Return `QUEUED` only after durable queue persistence succeeds; return an explicit failure or inline-completion response otherwise.
+4. Persist task ownership, tenant identity, terminal status, result/error, and correlation ID in a durable job record that remains queryable through the status endpoint.
+5. Add synthetic tests with Redis enqueue failure and handler success/failure. Assert the API response accurately reflects the actual outcome, no false QUEUED status is emitted, and every returned job ID has a retrievable terminal or queued state.
+6. Verify retry behavior does not cause duplicate retention execution when a worker outcome is uncertain.
+
+**Assessment:** High-priority retention execution reliability and auditability gap. Static source establishes a path where the API reports QUEUED after a synchronous handler failure has been caught and suppressed, with no Redis job record available for status lookup. No claim is made that a live retention run failed or that any patient records were affected.
+
+**Boundary:** static source review only. No Redis queue was contacted, no retention task was enqueued or executed, no patient or tenant data was accessed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
