@@ -4433,3 +4433,33 @@ Consequently, an inbound message that explicitly names a task already in `RESULT
 **Assessment:** High-priority clinical result integrity and lifecycle enforcement gap. The reviewed source establishes the bypass and overwrite path; it does not establish that an analyzer has exercised it or that a production result was overwritten.
 
 **Boundary:** exact-head static source review only. No HL7 endpoint or analyzer was used, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 154. HL7 processing exceptions discard the parsed message-control ID and return an uncorrelated negative ACK
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/service.py`, `process_hl7_oru_r01_in_session()` exception handler; `backend/domains/integrations/router.py`, ACK response construction.
+
+### 154.1 Error handling loses the inbound MSH-10 correlation value
+
+The processor extracts `MSH-10` into `msg_control_id` near the start of processing. However, its outer exception handler unconditionally rolls back and returns:
+
+```python
+return "UNKNOWN", False, "HL7 processing failed: Internal laboratory interface error.", []
+```
+
+This happens even when a valid MSH segment and message-control ID were already parsed and a later operation fails (for example, a database flush, delta-check interaction, or commit). The route then constructs the negative ACK using the returned control ID, so the MSA-2 value becomes `UNKNOWN` rather than the inbound MSH-10.
+
+The receiver therefore cannot reliably correlate the negative acknowledgment with the message it sent. Depending on analyzer/interface-engine retry policy, this can cause manual reconciliation or repeated delivery. This compounds, but is distinct from, Section 149: Section 149 concerns the absence of a durable duplicate/replay fence; this section concerns loss of the protocol correlation identifier on processing exceptions.
+
+### 154.2 Required remediation and acceptance evidence
+
+1. Initialize the control ID before entering fallible processing and preserve the validated inbound MSH-10 through every error path.
+2. Return a negative ACK containing the original MSH-10 whenever it was successfully parsed; use `UNKNOWN` only when no valid control ID is available.
+3. Persist a failed/retryable receipt or integration-log outcome with the same control ID and a sanitized failure classification, without falsely recording success.
+4. Add tests that force failures after MSH parsing (query/flush/commit failure) and assert that the returned ACK MSA-2 exactly matches inbound MSH-10.
+5. Test retry behavior together with the durable idempotency design from Section 149 so a retry after an uncertain commit cannot duplicate clinical mutations.
+
+**Assessment:** Medium-to-high priority HL7 reliability and message-correlation gap. The source establishes the uncorrelated ACK path; it does not establish a real analyzer retry, duplicate clinical mutation, or production incident.
+
+**Boundary:** exact-head static source review only. No HL7 endpoint or analyzer was used, no database failure was induced, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
