@@ -3526,3 +3526,27 @@ This is a request-verification workflow bypass, not an unauthenticated endpoint 
 
 **Boundary:** static source and test review only. No runtime export, patient record access, tenant database, production credential, or external data-rights workflow was used or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 119. DPDP data-rights lifecycle endpoint permits unrestricted terminal-state rewrites
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/router.py`, `DataRightsStatusUpdate` and `update_data_rights_request_status`; `backend/domains/privacy/models.py`, `PatientDataRightsRequest`; `tests/test_61_streaming_export_and_registers.py`.
+
+### 119.1 Current-state transition is not validated
+
+The status update payload permits `IN_REVIEW`, `FULFILLED`, or `REJECTED`. The handler loads the request and assigns `req.status = payload.status` directly. It does not inspect the existing status or enforce a transition graph. Consequently, requests already marked `FULFILLED` or `REJECTED` can be changed again, including reopening a rejected request as `IN_REVIEW` or marking it fulfilled without an intervening review/verification state.
+
+The handler records the latest `handled_by_user_id`, but the reviewed model has no append-only transition history for prior status, actor, timestamp, and reason. A later update overwrites the single current status/handler fields. `fulfilled_at` is set on FULFILLED; it is not cleared when a later update changes the status away from FULFILLED. Rejection reason is similarly retained unless a later FULFILLED update clears it.
+
+There is also a workflow-model inconsistency: `DataRightsStatusUpdate.status` does not permit `VERIFIED`, although the dossier export route treats `VERIFIED` as a request status and describes verification as a prerequisite. The ordinary lifecycle API therefore has no explicit transition to the state that the export contract says it requires.
+
+### 119.2 Required remediation and acceptance evidence
+
+1. Define an explicit state machine, including who may verify, fulfill, reject, and reopen a request; validate every transition against the locked current state.
+2. Treat terminal states as immutable unless a separately authorized, reasoned reopen operation is defined.
+3. Add an append-only transition ledger with previous/new state, actor, timestamp, reason, and correlation ID; do not rely only on mutable current-row fields.
+4. Define the verification state and transition consistently across request creation, review, export, and response APIs.
+5. Add synthetic transition-matrix tests covering every source/destination state, concurrent updates, terminal-state rewrites, and consistency of `fulfilled_at` and rejection metadata.
+
+**Assessment:** High-priority privacy workflow integrity and accountability gap. Static source shows that the update handler permits direct state replacement without a transition guard, while the model stores only current lifecycle fields. The existing streaming/export test exercises dossier creation but does not test the data-rights status transition matrix.
+
+**Boundary:** static source and test review only. No data-rights request was created or changed, no patient data or tenant database was accessed, and no runtime workflow was executed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
