@@ -4673,3 +4673,28 @@ The same unvalidated value is used by qSOFA: unknown non-empty strings count as 
 **Assessment:** High-priority clinical input-validation and scoring-integrity defect. The source proves the permissive request type and calculator behavior; it does not establish malformed clinical data in production or patient harm.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 163. NEWS2 treats omitted supplemental-oxygen status as confirmed room air and excludes it from completeness
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `NEWS2EvaluationRequest`; `backend/domains/clinical/services.py`, `calculate_news2_score()`.
+
+### 163.1 Default value masks an unrecorded NEWS2 parameter
+
+The request model declares `on_supplemental_oxygen: bool = False`. A caller that omits the field is therefore indistinguishable from one that explicitly records the patient as not receiving supplemental oxygen.
+
+The calculator unconditionally adds the supplemental-oxygen subscore: 2 points when true and 0 when false. However, its `core_parameters` completeness map includes respiratory rate, SpO2, systolic BP, pulse, consciousness, and temperature, but not supplemental-oxygen status. Consequently, a request containing all six listed core values but omitting oxygen status can be marked `is_complete_set=True` and receive zero oxygen points, even though the oxygen state was never supplied.
+
+This can understate the calculated NEWS2 total by two points when the patient is actually receiving supplemental oxygen, and the completeness indicator does not reveal the missing input.
+
+### 163.2 Required remediation and acceptance evidence
+
+1. Represent oxygen status as an explicitly supplied value (e.g. nullable/required boolean or a validated observation enum); do not default an omitted field to room air.
+2. Include oxygen status in the NEWS2 completeness contract and missing-parameter reporting.
+3. Define how incomplete oxygen status affects scoring and escalation; do not silently calculate a definitive complete-set score.
+4. Preserve the distinction between an explicitly documented room-air state and an unknown/unrecorded state in persisted score provenance.
+5. Add synthetic tests for explicit room air, explicit supplemental oxygen, omitted status, and partial vital sets; assert oxygen subscore, total, completeness, risk, and RRT outputs.
+
+**Assessment:** High-priority NEWS2 completeness and potential under-scoring defect. The source proves that omission is defaulted to false and excluded from completeness; it does not establish omitted oxygen documentation or patient harm in production.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
