@@ -4748,3 +4748,28 @@ The issue is not a claim that these extreme values are common; it is that the AP
 **Assessment:** High-priority measurement-contract and scoring-integrity defect. The source proves the threshold-based unit inference and discontinuous validation; it does not establish a mis-entered temperature or patient harm in production.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 166. Persisted NEWS2 history omits the component evidence and completeness state needed to reproduce the score
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/models.py`, `ClinicalEarlyWarningScore`; `backend/domains/clinical/router.py`, `evaluate_encounter_news2()`; `backend/domains/clinical/services.py`, `calculate_news2_score()`.
+
+### 166.1 The response contains calculation detail that the persisted record does not retain
+
+The calculator returns the aggregate NEWS2 and qSOFA scores, risk, RRT flag, completeness flag, missing-parameter list, per-parameter `sub_scores`, and recommendation. The route returns these fields to the immediate caller.
+
+The `ClinicalEarlyWarningScore` model persists only encounter ID, optional vital ID, evaluator ID, aggregate NEWS2 score, risk level, qSOFA score, RRT flag, and recommendation. It has no persisted columns or structured evidence field for the individual observations used, per-parameter subscores, selected SpO2 scale, supplemental-oxygen state, temperature unit/normalized value, completeness flag, or missing-parameter list.
+
+The route permits manually supplied values and partial overrides of a referenced vital record. It persists only the optional `vital_id` reference, not a snapshot of the actual values used. Consequently, a historical score may not be independently reproducible from its stored row: manual values are not captured, and a linked vital row is not an immutable snapshot of the exact calculation inputs. The immediate API response cannot substitute for durable, queryable clinical provenance.
+
+### 166.2 Required remediation and acceptance evidence
+
+1. Persist an immutable, versioned calculation snapshot containing every input actually used, its source (vital record or manual override), unit, selected scoring scale, oxygen state, and normalized value.
+2. Persist per-parameter subscores, missing parameters, completeness, aggregate scores, risk, RRT decision, and the scoring-algorithm/version identifier.
+3. Preserve source vital identity and the exact snapshot even if the underlying vital record is later amended; record amendment/correction history rather than rewriting the historical calculation evidence.
+4. Ensure the snapshot is tenant-local, access-controlled, auditable, and covered by retention/privacy policy.
+5. Add synthetic tests for all-manual inputs, vital hydration, partial overrides, later vital amendment, and score retrieval; prove the stored snapshot reproduces the returned calculation exactly.
+
+**Assessment:** High-priority clinical auditability and reproducibility gap. The source proves the model's limited persisted fields and route's manual/partial input behavior; it does not establish a specific historical score that cannot be reconstructed in deployed data or patient harm.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
