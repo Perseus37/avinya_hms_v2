@@ -5807,3 +5807,29 @@ This is distinct from Section 201, which concerns positive opening balances crea
 **Assessment:** High priority if the applicable controlled-drug policy requires dual-witness dispensing; otherwise Medium pending schedule-specific legal and clinical governance. The source-level bypass is established: a dispense can commit with `witness_verified=False` and no witness identity.
 
 **Boundary:** exact-head static source/schema/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+
+## 203. Controlled-substance witness eligibility is inferred from broad permissions and role labels rather than verified professional credentials
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/services.py`, `_verify_witness_credentials()`; `backend/domains/pharmacy/models.py`, user/role relationships and `ControlledSubstanceMovementLog`.
+
+### 203.1 Password verification does not establish the claimed professional qualification
+
+The witness verifier rejects self-witnessing and requires an active user account and a valid password. It then treats any of the following as sufficient evidence of witness qualification: superuser status; `pharmacy:write`, `adt:write`, or `opd:write` permission; or a role named doctor, nurse, pharmacist, admin, lead_pharmacist, or pharmacy_technician.
+
+The code does not consult a professional registration/licence identifier, credentialing record, scope-of-practice approval, credential expiry, or independent credential-verification source. In particular, the accepted `admin` role and broad operational write permissions are not themselves evidence that a person is a licensed healthcare professional, despite the verifier's error message asserting that qualification. A password proves control of the account credential; it does not establish the witness's professional standing or current authorization for the specific controlled-drug activity.
+
+This verifier is used by the controlled-substance receipt, return, and wastage flows, and by dispense when optional witness information is supplied. The finding is about the quality of the witness eligibility decision, not password strength or the independent self-witness rejection. It is distinct from Section 202, where dispense can omit witness verification entirely.
+
+### 203.2 Required remediation and acceptance evidence
+
+1. Define witness eligibility by transaction type, controlled-drug schedule, jurisdiction, and institutional policy.
+2. Use an authoritative, tenant-scoped credentialing record with verified professional registration, credential status/expiry, scope, and authorization for the relevant activity; do not treat superuser or generic administrative permissions as clinical credentials.
+3. Separate application permission to perform the transaction from professional eligibility to act as its witness.
+4. Record the credential reference/version and eligibility decision with the movement event, without storing unnecessary sensitive credential data.
+5. Add PostgreSQL-backed negative tests for admin-only, superuser-only, expired/unverified credentials, out-of-scope credentials, and positive tests for currently verified eligible witnesses.
+
+**Assessment:** High priority if the controlled-substance dual-witness policy requires a licensed and appropriately credentialed independent professional; otherwise Medium pending jurisdiction- and schedule-specific governance. The source-level limitation is established: the witness qualification decision is based on permissions and role strings, not verified professional credentials. No unqualified witness transaction in a deployed tenant was established.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
