@@ -2500,3 +2500,34 @@ This is distinct from the previously documented `pg_restore` return-code omissio
 **Assessment:** High-priority restore-evidence integrity gap. Current reporting can overstate what the drill actually read and verified. No claim is made that a particular production restore has failed.
 
 **Boundary:** static source review only; no backup, database, migration, restore drill, credential or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 84. Restore request terminates active tenant database sessions before the safety snapshot is secured
+
+**Sources reviewed on the audit branch:**
+- `backend/control_plane/api/routers/fleet_ops.py` (`_terminate_db_connections`, `restore_tenant_from_snapshot`)
+
+Static source review only. The restore endpoint was not invoked; no tenant connection, database, backup, credential or production state was accessed or changed.
+
+### 84.1 Session termination happens synchronously before the background restore's safety gate
+
+The restore request handler calls `_terminate_db_connections(control_db, tenant.db_name)` immediately after checking that the requested snapshot path exists. That helper executes `pg_terminate_backend` for every other session whose `pg_stat_activity.datname` matches the tenant database, then commits.
+
+Only after terminating those sessions does the handler capture the tenant key and register `_execute_restore` with FastAPI `BackgroundTasks`. The mandatory pre-restore safety snapshot is performed later, inside that background task. If the safety snapshot fails, the task aborts before `restore_encrypted_backup()` is called—but the earlier connection termination has already occurred.
+
+This ordering creates an avoidable availability window: an operator can submit a restore request and have all active tenant sessions forcibly disconnected before the system has secured the rollback snapshot or established that the restore can proceed. In the currently reviewed source, Section 75 separately documents that the safety-snapshot import is unresolved; with that defect present, the request can terminate sessions and then fail at the safety gate without performing the intended restore. Even after the missing helper is corrected, a slow or failed snapshot leaves the tenant's active sessions disrupted for longer than necessary.
+
+This finding concerns session availability and sequencing. It does not claim that terminating sessions corrupts the database, that all clients remain disconnected permanently, or that a particular production request has caused an outage.
+
+### 84.2 Required remediation and acceptance evidence
+
+1. Move tenant-session termination out of the synchronous request handler. Validate the snapshot, establish a durable operation record, and complete and verify the mandatory pre-restore safety snapshot before entering the short maintenance/termination window.
+2. Re-check the target tenant and restore operation state immediately before termination and restore, so stale or superseded requests cannot unexpectedly disconnect the tenant.
+3. Make the transition explicit: queued → safety snapshot created and verified → maintenance/connection drain → restore started → restored/failed → tenant available. Do not report the restore as safely underway before the safety snapshot gate passes.
+4. On every pre-restore failure, prove that tenant sessions were not terminated and that the tenant remains available. On restore failure after termination, define and test the reconnection/availability recovery behavior.
+5. Add deterministic tests with a mocked `pg_terminate_backend` and injected safety-snapshot success/failure. Assert that no termination occurs on missing/failed snapshot, and that termination occurs only after a verified snapshot and immediately before the restore operation.
+6. Keep this acceptance evidence separate from the Section 75 test that proves the safety snapshot helper exists and works, and from Section 76's isolated restore-drill database safety checks.
+
+**Assessment:** High-priority availability and restore-sequencing gap in the privileged tenant restore endpoint. The handler disconnects all current sessions before the mandatory rollback snapshot is attempted; a safety-snapshot failure therefore does not leave the tenant's existing sessions untouched. Actual user-visible impact depends on connection-pool/client reconnect behavior and was not measured.
+
+**Boundary:** static source review only. No restore endpoint, tenant session, backup, database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
