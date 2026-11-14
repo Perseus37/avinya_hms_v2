@@ -6112,3 +6112,26 @@ This is a distinct RCM read-path privacy-control gap, not a claim that route per
 
 **Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, or live RCM ledger was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 215. Surgery completion billing can be triggered before a case is completed or after it is cancelled
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/router.py`, `post_surgical_case_completion_charges()`; `backend/domains/billing/rcm_services.py`, `post_surgery_completion_charges()`; `backend/domains/surgery/models.py`, `SurgicalSchedule.status` and `SurgeryStatusEnum`.
+
+### 215.1 The charge-posting service does not require COMPLETED status
+
+The endpoint `POST /rcm/surgeries/{surgery_id}/post-charges` delegates to `post_surgery_completion_charges()`. The service loads the `SurgicalSchedule`, checks only whether the record exists, and then posts an OT facility charge and a procedure charge. It never checks `surgery.status`.
+
+The source model defines distinct `SCHEDULED`, `PRE_OP_CLEARED`, `IN_PROGRESS`, `COMPLETED`, and `CANCELLED` states. Despite the endpoint and service describing completion-triggered billing, the current implementation permits the same charge-posting path for any existing schedule, including a case that has not started or has been cancelled. Both charge events are committed through the shared posting service, so this is not merely a response-label mismatch: invoking the endpoint can create invoice line items and charge-capture ledger entries for a non-completed case.
+
+No actual premature or cancelled-case charge was observed. The defect is established by the absence of a status guard in the complete service flow and the explicit status enum in the model.
+
+### 215.2 Required remediation and acceptance evidence
+
+1. Require `SurgeryStatusEnum.COMPLETED` before calculating or posting either charge; reject all other states without creating an invoice, line item, or charge event.
+2. Define whether completed cases may be re-billed after reversal or correction, and implement that as an explicit, audited workflow rather than relying on a generic endpoint retry.
+3. Keep completion-state validation and charge creation consistent under concurrency, preferably by locking/revalidating the surgery row in the same transaction boundary as the charge operation.
+4. Add PostgreSQL-backed API/service tests for SCHEDULED, PRE_OP_CLEARED, IN_PROGRESS, CANCELLED, and COMPLETED cases. Assert that every non-COMPLETED request leaves invoices, line items, and charge events unchanged, while a valid completion posts the approved charges exactly once.
+
+**Assessment:** High priority billing-integrity control gap. The route requires billing/admin write permission plus surgery write permission, but those permissions do not establish that the surgical case reached its billable terminal state. No actual premature charge, cancelled-case charge, or financial loss was observed.
+
+**Boundary:** exact-head static source/model review only. No patient data, tenant database, or live surgery/billing record was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
