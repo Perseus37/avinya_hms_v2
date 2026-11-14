@@ -4592,3 +4592,28 @@ The source establishes the defaulting and scoring behavior; it does not establis
 **Assessment:** High-priority early-warning score data-quality and under-triage risk. The finding is the conflation of missing assessment with normal Alert, not a claim that the NEWS2 algorithm itself was clinically validated or that a real patient was under-scored.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 160. NEWS2 score can retain a vital record from a different encounter
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `NEWS2EvaluationRequest` and `evaluate_encounter_news2()`; `backend/domains/clinical/models.py`, `EncounterVital` and `ClinicalEarlyWarningScore`.
+
+### 160.1 The route checks encounter ownership only for hydration, not for acceptance
+
+The NEWS2 endpoint loads `EncounterVital` by the caller-supplied `vital_id`. It copies observations from that row only when `vital.encounter_id == encounter_id`. If the vital exists but belongs to another encounter, the hydration block is skipped; the endpoint nevertheless continues scoring the request's manually supplied observations (or returns the calculator's validation error if insufficient observations were supplied).
+
+On successful scoring, the endpoint persists `ClinicalEarlyWarningScore(encounter_id=encounter_id, vital_id=payload.vital_id, ...)` without clearing or rejecting the mismatched identifier. The model defines independent foreign keys from the score to `patient_encounters.id` and `encounter_vitals.id`; no composite constraint or model-level ownership validation ties the selected vital to the score's encounter.
+
+A score can therefore be attached to encounter A while its provenance pointer references a vital recorded under encounter B. When request observations override some or all stored values, the record also does not capture which individual values came from the vital versus the request. This is a clinical-record provenance and encounter-integrity defect. The source does not establish that a cross-encounter score has actually been persisted or that any clinical decision was affected.
+
+### 160.2 Required remediation and acceptance evidence
+
+1. If `vital_id` is supplied, require that it exists and belongs to the requested encounter; return a client error before scoring or persistence when it does not.
+2. If the score is calculated entirely from request-supplied values, omit `vital_id` unless the API explicitly models and records a verified source relationship.
+3. Define whether mixed manual overrides are allowed. If allowed, persist per-observation source/provenance and override attribution rather than implying that all values came from the linked vital.
+4. Where feasible, enforce encounter/vital consistency at the database boundary (for example, a composite relationship/constraint supported by the chosen PostgreSQL model) as defense in depth.
+5. Add synthetic tests for same-encounter vital, foreign-encounter vital, nonexistent vital, fully manual observations, and partial overrides. Assert that no mismatched score row is committed.
+
+**Assessment:** High-priority clinical record integrity and provenance gap. The finding is the route's acceptance/persistence behavior and independent foreign keys, not evidence of cross-patient disclosure, a real mismatched record, or patient harm.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
