@@ -6064,3 +6064,27 @@ This is a draft-invoice mutation failure, not evidence that an invalid invoice w
 
 **Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, or live financial transaction was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
+## 213. Encounter-linked advance deposits can be applied to another encounter's invoice
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/router.py`, `collect_patient_advance_deposit()` and `apply_advance_deposit_to_invoice()`; `backend/domains/billing/models.py`, `PatientDeposit` and `Invoice`; `backend/domains/billing/schemas.py`, `PatientDepositCreate`.
+
+### 213.1 Deposit application checks patient identity but ignores encounter linkage
+
+Deposit collection accepts and persists an optional `encounter_id`, and validates that the encounter belongs to the supplied patient. The invoice model also carries an optional `encounter_id`.
+
+When applying a deposit, the handler verifies that the deposit belongs to the same patient as the invoice and that the deposit is active with a positive balance. It does not compare `deposit.encounter_id` with `invoice.encounter_id`. Consequently, a deposit explicitly associated with one encounter can be applied to an invoice for a different encounter belonging to the same patient, including an invoice with no encounter association.
+
+This does not affect deposits whose encounter association is intentionally null and intended as a patient-level wallet. The issue is the missing enforcement or documented interpretation of a non-null encounter binding.
+
+### 213.2 Required remediation and acceptance evidence
+
+1. Finance must define whether a non-null deposit encounter is a strict allocation restriction or only informational provenance.
+2. If encounter-bound, require the target invoice encounter to match the deposit encounter before changing either balance; reject mismatches without partial writes.
+3. If cross-encounter transfer is permitted, model it as an explicit, attributable transfer/reallocation event with reason and approval rather than silently applying the balance.
+4. Preserve patient-level unallocated deposits as a distinct, explicitly permitted case.
+5. Add PostgreSQL-backed tests for same-encounter application, cross-encounter rejection/approved transfer, null-encounter wallet use, and rollback behavior.
+
+**Assessment:** Medium financial allocation and encounter-accounting integrity risk, pending finance policy. The missing relationship check is established in the handler; no actual cross-encounter application, accounting misstatement, or patient loss was observed.
+
+**Boundary:** exact-head static source/schema/model review only. No patient data, tenant database, or live financial transaction was accessed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
