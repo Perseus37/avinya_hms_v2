@@ -4166,3 +4166,28 @@ This is distinct from Section 113, which concerns authentication accepted by the
 **Assessment:** High-priority privacy/data-minimization exposure. A role intended for equipment-master read can retrieve full stored HL7 payloads, including patient and result fields, through the troubleshooting endpoint. Actual access, permission assignment and deployed exposure have not been established.
 
 **Boundary:** exact-head static source review only. No endpoint was called, no integration logs or patient data were accessed, no tenant database was queried, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 144. HL7 ingestion does not enforce equipment activation or bind the authenticated sender to the claimed analyzer
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/integrations/router.py` (blob `ceba912675b3525197055a0ffea944fe604d179b`), `require_hl7_auth()` and `ingest_hl7_oru_r01_message()`; `backend/domains/integrations/service.py` (blob `68fcd948f6460b2c05f9343bd563dee769704a3d`), `process_hl7_oru_r01_in_session()`; `backend/domains/integrations/models.py` (blob `32d40b58d6dec8056729533c30f193f413cba096`), `EquipmentMaster` and `EquipmentTestMapping`.
+
+### 144.1 Tenant-level authentication is not an equipment-level authorization check
+
+The ingestion dependency accepts either the tenant's single shared `X-HL7-Secret` or an ordinary user bearer token carrying `lab:write` or `mdm:write`. The shared secret is resolved from the tenant registry; it is not associated with an individual `EquipmentMaster` record. The request's `equipment_id` is an optional payload field passed directly to the processing service.
+
+The service uses that caller-supplied ID to select active `EquipmentTestMapping` rows, but does not load the corresponding `EquipmentMaster`, verify that it exists, or check its `is_active` flag. The equipment model explicitly has `is_active`, defaulting true. Consequently, deactivating an analyzer does not, in the reviewed ingestion path, prevent a sender holding the tenant-wide secret (or an accepted user bearer token) from continuing to submit results attributed to that equipment ID and using its mappings. The authentication check also cannot distinguish one analyzer from another within the tenant.
+
+This is distinct from Section 113's finding that a normal user bearer token is accepted as analyzer authentication, and Section 144 does not repeat that authentication-mechanism concern. It records the separate missing equipment authorization/lifecycle binding: even after a tenant authenticates, the claimed device is neither authenticated nor checked for active status. The source establishes the missing checks, not that an inactive analyzer has submitted results or that a particular secret is compromised.
+
+### 144.2 Required remediation and acceptance evidence
+
+1. Bind each analyzer to an independently revocable credential or authenticated gateway identity; do not treat one tenant-wide secret as proof of individual equipment identity.
+2. Require a valid equipment identity for device-originated messages and resolve it server-side from the authenticated credential, not from an untrusted payload field.
+3. Check that the equipment belongs to the current tenant, is active, and is authorized for the submitted protocol/message type before parsing or applying results.
+4. Define immediate revocation/deactivation semantics, including credential rotation, replay handling and in-flight messages.
+5. Add synthetic tests for unknown IDs, cross-device ID substitution, inactive devices, revoked credentials, mismatched protocol, tenant boundary and successful active-device ingestion. Verify rejected messages cannot mutate diagnostic tasks or create misleading device attribution.
+
+**Assessment:** High-priority integration authorization and device-lifecycle gap. Tenant authentication is not tied to the physical analyzer, and the persisted active flag is not enforced on ingestion. This could allow a tenant-authenticated sender to continue using an inactive analyzer's mapping identity. No misuse or patient-result corruption is established.
+
+**Boundary:** exact-head static source review only. No HL7 endpoint was called, no equipment records, integration logs or patient data were accessed, no tenant database was queried, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
