@@ -2379,3 +2379,35 @@ The repository cannot establish whether operators have configured an external re
 **Assessment:** High-priority disaster-recovery operations and storage-governance gap for deployments that configure `BACKUP_REMOTE_DEST` and rely on this script for remote retention or remote RPO assurance. Local retention is implemented; remote retention and remote freshness certification are not. External lifecycle controls may mitigate storage growth, but they are not established by the reviewed repository configuration.
 
 **Boundary:** static source/configuration review only. No backup, restore, rsync, remote destination, storage, database, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
+
+
+## 80. Tenant backup daemon treats partial tenant failures as a completed cycle and exposes no per-tenant failure signal
+
+**Sources reviewed on the audit branch:**
+- `backend/scripts/backup_service.py` (`run_backup_cycle`, `run_backup_daemon`, `main`)
+- `docker-compose.prod.yml` (declared production services and commands)
+
+Static source/configuration review only. The daemon was not started; no tenant database, backup, scheduler, credential or production state was accessed or changed.
+
+### 80.1 Per-tenant dump errors are logged and swallowed
+
+`run_backup_cycle()` iterates active cloud tenants. A tenant dump/decryption exception is caught, logged, and the loop continues; the function ultimately returns only an integer count of local snapshots created. It does not return a structured list of tenant outcomes, raise an aggregate failure when one or more tenants fail, or persist a per-tenant last-success/last-failure timestamp. The existing return count is not consumed by the daemon.
+
+### 80.2 The daemon resets backoff and waits the full interval after a partially failed cycle
+
+`run_backup_daemon()` calls `run_backup_cycle()` and ignores its return value. If the cycle returns normally—even when one or more tenants failed inside the per-tenant exception handler—the daemon enters the `else` branch, resets retry delay to the initial value, and waits the full configured interval. Exponential retry is reserved for an `OperationalError` escaping the cycle, such as a control-plane database connection failure; it does not apply to swallowed tenant-level failures.
+
+No per-tenant backup outcome metric is emitted by this daemon path. The production Compose file reviewed does not declare a service running `backend/scripts/backup_service.py --daemon`; therefore this daemon finding applies only where an operator or external scheduler actually launches it. This does not establish that the separate host-level `deployments/backup-postgres.sh` is unscheduled or inactive.
+
+### 80.3 Required remediation and acceptance evidence
+
+1. Return structured per-tenant outcomes from each cycle, including local snapshot, checksum, off-host result, timestamps and sanitized error category.
+2. Treat a cycle with any required tenant failure as degraded/failed. Do not silently reset retry state or wait a full interval without recording and surfacing the failed tenant set.
+3. Persist per-tenant last-success and last-failure state in a durable control-plane operational register or another explicitly designed monitoring store; avoid high-cardinality or patient-identifying metric labels.
+4. Add alerts for tenant backup coverage, missing tenant success within the RPO, repeated tenant failures and unexpected changes in the eligible tenant set.
+5. Add tests with multiple synthetic tenants where one dump fails, one succeeds, and off-host delivery fails; assert exact aggregate status, retry behavior, durable outcome and alert signal.
+6. Document and test the production scheduler/launcher for this daemon, including single-instance/overlap protection and expected behavior during restarts. Keep this distinct from the host-level PostgreSQL backup schedule.
+
+**Assessment:** High-priority tenant-level recovery assurance gap if this daemon is used as the tenant backup scheduler. A single tenant can miss a backup while the daemon cycle returns normally and proceeds to its regular interval, with only a log entry to indicate the failure. The repository's production Compose file does not itself launch this daemon, so deployment usage must be confirmed before attributing this behavior to a live environment.
+
+**Boundary:** static source/configuration review only. No daemon, backup, tenant database, scheduler, credential, migration or production state was exercised or changed. PostgreSQL database-per-tenant remains the architecture. AUD-004 remains blocked.
