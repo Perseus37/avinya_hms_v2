@@ -6300,9 +6300,9 @@ No post-cancellation analyzer message or changed clinical result was observed. T
 
 **Boundary:** exact-head static source/model and control-flow review only. No patient data, tenant database, diagnostic order, analyzer message, or result was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
-## 222. Automatic insurance tariff selection ignores the policy effective start date
+## 222. Insurance policy validity intervals are not enforced across tariff selection, pre-authorization, and claim submission
 
-**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/services.py`, `resolve_patient_service_price_paise()` and its diagnostic/surgery charge callers; `backend/domains/insurance/models.py`, `PatientInsurancePolicy.valid_from`, `valid_till`, and `InsurancePlanTariff`; `backend/domains/insurance/router.py`, `submit_cashless_preauth()`.
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/billing/services.py`, `resolve_patient_service_price_paise()` and its diagnostic/surgery charge callers; `backend/domains/insurance/models.py`, `PatientInsurancePolicy.valid_from`, `valid_till`, and `InsurancePlanTariff`; `backend/domains/insurance/router.py`, `submit_cashless_preauth()` and `submit_insurance_claim()`.
 
 ### 222.1 Future-dated active policies can supply today's negotiated rate
 
@@ -6312,19 +6312,21 @@ A policy that has been created and marked active but whose coverage starts in th
 
 This is a distinct temporal eligibility defect: policy activation and end-date validity are checked, but the explicit start of contractual coverage is ignored. The same missing lower-bound check exists in `submit_cashless_preauth()`: it requires an active encounter and active patient policy, rejects only when `valid_till` is before the current UTC time, and does not require `valid_from` to have begun. A future-start policy can therefore be used to create a cashless pre-authorization before coverage begins, independently of the premature tariff selection.
 
-The source establishes these paths, not that a future-dated policy has actually produced a tariff or pre-authorization in a tenant.
+The claim-submission path has the same temporal eligibility gap in a broader form. `submit_insurance_claim()` loads the selected policy and checks only that it exists, is marked active, and belongs to the invoice patient. It does not compare either `valid_from` or `valid_till` with the claim decision time. Thus, a future-start or already-expired policy can pass claim submission validation when its `is_active` flag remains true. This is separate from Section 223's pre-authorization-to-encounter relationship defect: even a pre-authorization-free claim can pass the policy date check because no date check is performed.
 
-No policy, pre-authorization, tariff, invoice, patient record, or billing transaction was accessed or changed.
+The source establishes the missing checks and reachable code paths, not that a future-dated or expired policy has actually supplied a tariff, created a pre-authorization, or been used to submit a claim in a tenant.
+
+No policy, pre-authorization, tariff, invoice, patient record, claim, or billing transaction was accessed or changed.
 
 ### 222.2 Required remediation and acceptance evidence
 
 1. Require the policy's effective interval to contain the billing decision time: `valid_from <= now < valid_till`, using timezone-aware normalization and a documented inclusive/exclusive boundary.
-2. Centralize policy eligibility in one tested helper used by automatic tariff consumers and cashless pre-authorization creation; do not duplicate date checks in individual billing callers or pre-auth routes.
+2. Centralize policy eligibility in one tested helper used by automatic tariff consumers, cashless pre-authorization creation, and insurance claim submission; do not duplicate date checks in individual billing callers or insurance routes.
 3. Define behavior for overlapping active policies and multiple eligible plans, including whether an explicit payer selection is required rather than choosing by descending policy ID.
-4. Add PostgreSQL-backed tests for future-start, currently valid, expired, inactive, and boundary-equality policies across diagnostic billing, surgery billing, and cashless pre-authorization creation. Assert future-start and expired policies cannot supply negotiated tariffs or create pre-auths, while eligible policies follow the approved tariff/pre-auth rules.
+4. Add PostgreSQL-backed tests for future-start, currently valid, expired, inactive, and boundary-equality policies across diagnostic billing, surgery billing, cashless pre-authorization creation, and claim submission (including claims without a pre-auth). Assert future-start and expired policies cannot supply negotiated tariffs, create pre-auths, or pass claim policy validation, while eligible policies follow the approved rules.
 5. Preserve the policy/tariff decision inputs and effective timestamp in billing provenance so later review can explain why a rate was selected.
 
-**Assessment:** Medium-priority financial and contract-eligibility integrity defect. A future-dated policy can cause a negotiated insurance tariff to be applied and a cashless pre-authorization to be created before coverage begins. No incorrect charge, claim, pre-authorization, or financial loss was observed.
+**Assessment:** Medium-priority financial and contract-eligibility integrity defect. A future-dated policy can influence negotiated tariffs, create a cashless pre-authorization, or pass claim submission before coverage begins; an expired policy can also pass claim submission while still marked active. No incorrect charge, claim, pre-authorization, or financial loss was observed.
 
 **Boundary:** exact-head static source/model and call-site review only. No patient data, tenant database, insurance policy, pre-authorization, tariff, invoice, or live billing transaction was accessed or changed; no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
 
