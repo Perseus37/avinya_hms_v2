@@ -5889,3 +5889,27 @@ This is distinct from Section 202 (witness may be omitted on the dedicated vault
 **Assessment:** High priority pending controlled-substance governance. The bypass path is established in source; the precise legal and operational controls depend on medication schedule, jurisdiction, and the institution's approved custody model. No bypassed dispense, diversion, or patient harm was established in a deployed tenant.
 
 **Boundary:** exact-head static source review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 206. FEFO validation raises an unhandled multiple-row error when more than one older batch is available
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `dispense_medication()`, FEFO query in the prescription-item loop; `backend/domains/pharmacy/models.py`, `InventoryBatch`.
+
+### 206.1 The FEFO existence query requires at most one row, but its predicate permits many
+
+For each selected dispense batch, the handler queries `InventoryBatch` for rows with the same medication, positive stock, an expiry later than the current time, an expiry earlier than the selected batch, and a different batch ID. This is an existence check: the business decision only needs to know whether at least one older eligible batch exists.
+
+The query has no ordering, limit, or uniqueness condition, but the handler consumes it with `scalar_one_or_none()`. SQLAlchemy raises `MultipleResultsFound` when two or more rows satisfy the predicate. The handler catches `OperationalError` only; it does not translate this result into the intended FEFO 409 response. Thus, when a medication has at least two older unexpired positive-stock batches than the caller-selected batch, the ordinary dispense request can fail with an unhandled server error instead of returning a controlled FEFO decision. The request may fail even though the application could have made the intended decision by checking existence or selecting the earliest eligible batch.
+
+This is distinct from Section 180: that finding concerns the missing API contract for an authorized FEFO override. Section 206 concerns the query's cardinality assumption and the resulting error when multiple older batches exist. It does not establish that FEFO was bypassed or that a dispense occurred against the wrong batch.
+
+### 206.2 Required remediation and acceptance evidence
+
+1. Express the rule as an existence query (for example, `EXISTS`) or use a deterministic ordered query with `LIMIT 1`; do not use a single-row result method for a predicate that is not unique.
+2. Preserve the intended semantics: any older eligible batch should continue to block a later batch unless a separately authorized and auditable FEFO exception is implemented.
+3. Translate expected FEFO conflicts into a stable 409 response; ensure unexpected database/programming errors are not silently presented as policy denials.
+4. Add PostgreSQL-backed tests with zero, one, and at least two older eligible batches, plus expired/depleted batches and an authorized override case if policy permits. Assert the response and that rejected requests leave inventory, prescription counters, and invoice lines unchanged.
+
+**Assessment:** Medium priority reliability defect in the pharmacy dispensing path. The source-level cardinality mismatch is established. No deployed 500 response, blocked patient dispense, inventory mutation, or patient harm was established.
+
+**Boundary:** exact-head static source review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
