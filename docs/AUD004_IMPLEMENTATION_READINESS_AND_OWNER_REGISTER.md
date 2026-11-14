@@ -5541,3 +5541,33 @@ No actual held/refused/missed dose was misrecorded in a deployed tenant; this is
 **Assessment:** High-priority medication-administration documentation integrity gap. The enum supports non-administration statuses, but the reviewed BCMA request and execution path always write ADMINISTERED and provide no way to select or document the other outcomes. No actual misdocumentation or patient harm was established.
 
 **Boundary:** exact-head static source/model/API-contract review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 194. BCMA continues creating ADMINISTERED eMAR records after the prescription quantity counter is exhausted
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/services.py`, `evaluate_bcma_five_rights()` and `execute_bcma_administration()`; `backend/domains/pharmacy/models.py`, `PrescriptionItem` and `MedicationAdministrationLog`.
+
+### 194.1 Quantity exhaustion suppresses the counter increment but does not reject administration
+
+The BCMA evaluator checks prescription/encounter identity, active prescription status, patient and medication barcodes, dose/route matching, time warnings, and allergy rules. It does not reject when `PrescriptionItem.dispensed_quantity >= requested_quantity`.
+
+After the duplicate check, `execute_bcma_administration()` unconditionally creates a new `MedicationAdministrationLog` with status `ADMINISTERED`. Only afterward, in the quantity update step, it conditionally increments the counter when `dispensed_quantity < requested_quantity`. If the counter is already at the requested quantity, the increment is skipped, but the eMAR row and BCMA audit row are still committed and the request returns success.
+
+The parent prescription status is not recalculated by this BCMA path. Consequently, a prescription that remains ACTIVE after BCMA itself has filled the counter can be administered again through a distinct scheduled_time: the duplicate query matches the same scheduled timestamp, or the 15-minute window when scheduled_time is absent, but does not enforce a total quantity ceiling across distinct schedule events. A subsequent request can therefore create another ADMINISTERED record while the quantity counter remains capped at the requested quantity.
+
+This is distinct from Section 192's concurrent duplicate check-then-insert race: this path can occur sequentially with different scheduled-time values. It is also distinct from Section 191's conflation of pharmacy supply and bedside administration quantities. It concerns the missing hard stop when the prescription quantity is already exhausted.
+
+No over-quantity administration was observed in a deployed tenant; this is a source-established control gap, not evidence that an excess dose was actually given.
+
+### 194.2 Required remediation and acceptance evidence
+
+1. Define the clinical meaning and unit of `requested_quantity` and the authoritative quantity remaining for administration. Do not assume a tablet/unit count is interchangeable with dose-event count.
+2. Before creating an ADMINISTERED event, atomically verify the prescribed schedule instance and remaining authorized quantity. Reject exhausted, cancelled, discontinued, or otherwise ineligible orders.
+3. Do not rely on a conditional counter increment as a safety check. The event insert and quantity reservation/update must share one transaction and concurrency fence.
+4. Reconcile the parent prescription lifecycle from authoritative supply and administration state; do not leave an ACTIVE order after its authorized administration allowance is exhausted.
+5. Add PostgreSQL integration tests for sequential requests using different scheduled-time values after quantity exhaustion, same-event concurrent requests, and boundary quantities. Assert that no excess ADMINISTERED eMAR record or BCMA success response is produced.
+6. Keep schedule authority server-side and preserve the intended scheduled-dose identity; caller-supplied timestamps alone must not create additional authorized doses.
+
+**Assessment:** High-priority medication-administration safety-control gap. The source path writes an ADMINISTERED eMAR event even when the quantity counter has reached its requested limit; the limit only prevents another counter increment. No actual excess dose or patient harm was established.
+
+**Boundary:** exact-head static source/model review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
