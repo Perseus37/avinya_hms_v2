@@ -4648,3 +4648,28 @@ Because temperature contributes to the aggregate NEWS2 total and can affect the 
 **Assessment:** High-priority clinical scoring correctness defect. The source proves the uncovered decimal intervals and fallback scoring; it does not establish a real-world misclassification or patient harm.
 
 **Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 162. NEWS2 accepts unrecognized and blank consciousness values instead of enforcing ACVPU
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/clinical/router.py`, `NEWS2EvaluationRequest`; `backend/domains/clinical/services.py`, `calculate_news2_score()`.
+
+### 162.1 Unvalidated strings produce inconsistent scoring and completeness
+
+The request model declares `consciousness` as `Optional[str]` without an enum, length constraint, or validator. The calculator also does not reject values outside the documented ACVPU states.
+
+For a non-empty value, the scoring branch awards zero only when the normalized string is `ALERT` or `A`; every other non-empty string receives 3 points. Thus an arbitrary value such as `"UNKNOWN"` is scored as a confirmed abnormal consciousness state and contributes to the single-parameter escalation logic. Conversely, a whitespace-only value is non-None and therefore excluded from `missing_parameters`, but the scoring branch skips it after trimming; it contributes zero points. The endpoint's `payload.consciousness or "ALERT"` fallback does not normalize whitespace, so the whitespace case reaches the calculator unchanged.
+
+The same unvalidated value is used by qSOFA: unknown non-empty strings count as altered mentation, while whitespace-only values do not. This permits malformed input to produce either a false abnormal score or a falsely complete parameter set with no consciousness points.
+
+### 162.2 Required remediation and acceptance evidence
+
+1. Restrict the API and calculator boundary to an explicit normalized ACVPU enum: Alert, Confusion, Voice, Pain, and Unresponsive (with documented accepted aliases only).
+2. Trim and normalize before completeness evaluation; reject blank strings rather than treating them as present.
+3. Reject unknown values with a clear 422 response; never silently map an unknown state to Alert or to a confirmed abnormal state.
+4. Apply the same validated normalized state to NEWS2 and qSOFA calculations.
+5. Add synthetic tests for all five valid states, supported aliases, lowercase/whitespace-padded valid values, empty and whitespace-only strings, and arbitrary unknown values. Assert score, completeness, missing parameters, qSOFA, risk, and RRT behavior.
+
+**Assessment:** High-priority clinical input-validation and scoring-integrity defect. The source proves the permissive request type and calculator behavior; it does not establish malformed clinical data in production or patient harm.
+
+**Boundary:** exact-head static source review only. No NEWS2 endpoint was called, no patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
