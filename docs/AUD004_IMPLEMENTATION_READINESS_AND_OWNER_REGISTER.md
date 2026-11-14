@@ -2624,3 +2624,35 @@ This is the backup-creation counterpart to Section 82's separate restore-drill b
 **Assessment:** High-priority backup availability and scalability gap. The current Python tenant backup path holds the complete dump and encrypted output in memory, so its resource use grows with tenant database size and can prevent backup completion under constrained worker memory. Actual failure thresholds depend on tenant size and runtime limits and were not measured.
 
 **Boundary:** static source review only. No backup, database, credential, migration, tenant record or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 88. Tenant backup artifact is published before its checksum sidecar, leaving a crash-visible incomplete backup set
+
+**Sources reviewed:**
+- `backend/scripts/backup_service.py` (`_dump_and_encrypt`)
+- `backend/scripts/restore_drill.py` (`verify_backup_checksum`)
+
+Static source review only. No backup was created, read, decrypted or verified; no database, credential or production resource was accessed or changed.
+
+### 88.1 The artifact and its verification sidecar are not published as one completed unit
+
+`_dump_and_encrypt()` writes encrypted bytes to a temporary file and atomically replaces the final `.dump.enc` path. Only after that final artifact is visible does it calculate the SHA-256 digest and write the `.dump.enc.sha256` sidecar directly to its final path.
+
+This creates a publication interval in which the final encrypted artifact exists but the checksum sidecar does not. A process/container termination in that interval, or a sidecar write/permission/storage failure, leaves an apparently published backup artifact without the companion verification file. The sidecar itself is not written through a temporary file plus atomic rename, so an interrupted sidecar write can also leave a partial sidecar.
+
+The restore-drill verifier explicitly returns `False` when the sidecar is absent, so such an artifact cannot pass that checksum gate even if Fernet decryption would otherwise authenticate it. Other directory consumers can still observe/count the final `.dump.enc` file before the backup set is complete; for example, the fleet overview counts encrypted snapshot filenames without checking for a matching sidecar. This is a publication/completeness gap, not a claim that an artifact with a missing sidecar is necessarily cryptographically corrupted.
+
+The host-level backup script uses a different publication model: it creates a staging directory, writes and verifies checksum manifests, and only then renames the completed directory into the final backup namespace. That does not repair the Python tenant backup helper.
+
+### 88.2 Required remediation and acceptance evidence
+
+1. Treat the encrypted artifact and checksum/manifest as a single backup set. Write both under an operation-specific staging name or directory.
+2. Write the sidecar/manifest through a temporary file, flush and close it, verify it against the completed encrypted artifact, and publish the complete set atomically (for example, by renaming a completed staging directory).
+3. Ensure consumers enumerate only completed sets with a valid completion manifest; do not infer backup readiness from the presence of a `.dump.enc` filename alone.
+4. Add startup reconciliation for abandoned staging sets and incomplete final artifacts. Quarantine or safely remove only operation-owned incomplete outputs; never silently bless them as completed backups.
+5. Add deterministic failure-injection tests for process interruption after artifact publication, sidecar creation/write failure, checksum mismatch, and concurrent enumeration. Assert that no incomplete set is advertised as available or certified.
+6. Keep checksum-sidecar completeness separate from Fernet authentication: both checks may be useful, but neither should be silently substituted for the other.
+
+**Assessment:** High-priority backup publication and recovery-evidence integrity gap. The Python helper exposes the encrypted artifact before its checksum sidecar is safely published, so interruption can leave an incomplete backup set that consumers may count while the restore-drill checksum gate rejects it. No evidence was gathered that this interruption has occurred in a deployed environment.
+
+**Boundary:** static source review only. No backup, checksum, decryption, database, credential, migration or production state was accessed or changed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
