@@ -3753,3 +3753,30 @@ This is distinct from the preview registry: `preview_retention_counts()` rejects
 **Assessment:** High-priority retention governance and legal-compliance readiness gap. Static source establishes that the policy lifecycle can approve categories without handlers and that execution converts unsupported categories into zero-count no-ops while continuing to record the run. This does not establish that a real retention policy has been approved or that any records were incorrectly retained or deleted.
 
 **Boundary:** static source review only. No retention policy was created/approved, no retention job was invoked, no patient or tenant data was accessed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 128. Patient-scoped legal holds for privacy-decision-audits are accepted but not enforceable by the executor
+
+**Source reviewed:** PR #19 head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/privacy/retention_service.py` (blob `18b45ac9ccff4e187368b690ccc3f84705a55807`); `backend/domains/privacy/models.py` (blob `74a4d4f61ccbb1dfda129ab93c5b19ce154c7bad`); `backend/domains/privacy/router.py` (blob `e63ec483c6aec0f5e8568b82885e5f0b68d68a31`).
+
+### 128.1 Accepted hold scope is not consumed by the audit-retention handler
+
+The legal-hold creation request permits both `patient_id` and `data_category` to be supplied together. The category validator canonicalizes and accepts `privacy-decision-audits`; the creation route persists both scope fields. This represents a patient-specific hold scoped to the privacy-decision-audits category.
+
+At execution, `execute_retention_category()` loads active holds, computes `held_patient_ids`, and passes the category through the category-wide hold check. For `privacy-decision-audits`, however, the deletion candidate and DELETE statements filter only by `occurred_at`, `result`, and protected `data_use_point` values. They never consume `held_patient_ids`. The returned audit-category result also hardcodes `held_count: 0`.
+
+The reviewed `PrivacyDecisionAudit` model contains no `patient_id` or other patient-target reference. Therefore the current executor has no key with which to select audit rows attributable to the held patient. A patient-scoped `privacy-decision-audits` hold can be accepted and stored, yet cannot protect corresponding audit rows through this handler. This is distinct from a category-wide hold, which is checked and skips the whole category.
+
+The source does not establish that audit rows actually belong to or identify a particular patient; rather, it establishes that the API accepts a patient/category scope while the executor and model provide no patient-level association or enforcement for that combination.
+
+### 128.2 Required remediation and acceptance evidence
+
+1. Define legal-hold scope semantics explicitly: whether patient-only holds apply to all patient-associated records and whether patient-plus-category holds are supported for every category.
+2. Until patient-level audit attribution exists, reject creation of patient-scoped `privacy-decision-audits` holds rather than accepting an unenforceable scope.
+3. If patient-level audit preservation is required, add a privacy-safe, durable patient association/reference to the audit record and enforce it in both candidate-count and DELETE predicates; assess historical rows and avoid exposing patient identifiers in general audit views.
+4. Ensure held counts reflect the actual excluded rows and distinguish category-wide skips from patient-specific exclusions.
+5. Add synthetic tests proving a patient/category hold prevents matching audit-row deletion, a different patient's rows remain eligible, category-wide holds skip the category, and unsupported hold combinations fail at creation.
+
+**Assessment:** High-priority legal-hold scope-integrity gap. Static source establishes that a supported hold request can express a patient/category combination that the audit executor cannot apply, and the execution result reports no held records for this category. No claim is made that an actual held patient's audit record was deleted.
+
+**Boundary:** static source review only. No legal hold was created, no retention policy or job was executed, no patient or tenant data was accessed, and no destructive action was performed. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
