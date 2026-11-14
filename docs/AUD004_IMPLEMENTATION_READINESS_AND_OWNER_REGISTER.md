@@ -5110,3 +5110,30 @@ No mismatched movement or production ledger corruption was established; this is 
 **Assessment:** High-priority controlled-substance traceability and reconciliation integrity gap. The source proves independent existence checks and missing cross-reference validation; it does not prove a real-world misdispense, ledger alteration, or patient harm.
 
 **Boundary:** exact-head static source/model/router review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
+
+
+## 179. Pharmacy returns can restore stock to a different batch from the one originally dispensed
+
+**Source reviewed:** PR #19 source head `0d20e97ba5eb2f603fbadf677c2f01dc4db45a29`; `backend/domains/pharmacy/router.py`, `dispense_medication()` and `return_dispensed_medication()`; `backend/domains/pharmacy/models.py`, `PharmacyReturnLog`, `InventoryBatch`, and `PrescriptionItem`.
+
+### 179.1 Return validation checks medication identity but not dispensed-batch provenance
+
+The dispense endpoint accepts a caller-selected inventory batch, verifies that the batch belongs to the prescription item's medication, decrements that batch's stock, and writes the batch number into the pharmacy invoice-line description together with the prescription-item marker. It does not create a durable structured dispense-allocation record linking the prescription item, batch, and quantity.
+
+The return endpoint locks the requested batch and verifies only that its `medication_id` matches the prescription item's medication. It then increments that batch's stock by the returned quantity. It does not establish that this batch supplied the quantity being returned. The return log records the caller-selected batch, not a verified original dispense allocation.
+
+Consequently, a return can increase stock in a different lot from the lot originally dispensed. This can distort lot-level balances and expiry/recall traceability; the invoice credit is also calculated using the selected return batch's unit price rather than a proven original dispense allocation. This is distinct from the general return-quantity cap: the route checks the prescription item's aggregate dispensed quantity, but does not attribute that quantity to a particular batch.
+
+No actual wrong-lot return or financial discrepancy was established.
+
+### 179.2 Required remediation and acceptance evidence
+
+1. Persist structured dispense allocations per prescription item and batch, including dispensed quantity, unit cost, and transaction identity; do not rely on invoice-description text as the only provenance.
+2. On return, require an unreturned quantity from the exact source batch allocation, lock that allocation and batch, and decrement its remaining returnable quantity atomically.
+3. Restore stock only to the verified source lot, subject to an explicit quarantine/recall/expiry policy for returned medicines; do not silently make returned stock available for dispensing.
+4. Calculate credits from the original dispense allocation and define how partial returns, multiple source lots, discounts, and tax adjustments are handled.
+5. Add PostgreSQL tests for same-batch returns, attempted cross-batch returns of the same medication, multi-batch partial returns, over-return races, expired/recalled lot handling, and proof that rejected returns change neither stock nor invoice/refund state.
+
+**Assessment:** High-priority pharmacy inventory provenance and financial reconciliation gap. The source proves the return batch is caller-selected and checked only for medication identity; it does not prove a wrong-lot return, financial loss, or patient harm occurred.
+
+**Boundary:** exact-head static source/model/router review only. No patient data or tenant database was accessed, and no runtime or migration changes were made. PostgreSQL database-per-tenant remains unchanged. AUD-004 remains blocked.
