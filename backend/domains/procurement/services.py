@@ -149,7 +149,13 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
     if not invoice.po_id:
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
-    po = db.get(PurchaseOrder, invoice.po_id)
+    # Serialize every invoice reconciliation against this PO. Review/edit
+    # operations acquire the same PO lock before changing invoice lines.
+    po = db.execute(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id == invoice.po_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if (
         not po
         or po.vendor_id != invoice.vendor_id
@@ -178,15 +184,27 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
     if abs(calculated_gross - invoice.total_amount_paise) > 100:
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
-    # Rule 2: Aggregate invoice quantities by PO line before comparing limits.
+    # Rule 2: Aggregate quantities across every non-rejected invoice for
+    # this PO, not merely the invoice currently being reconciled. The PO row
+    # lock above serializes competing reconciliations and invoice review writes.
     po_lines_by_id = {line.id: line for line in po.items}
-    invoiced_by_po_line = {}
-    for item in invoice.items:
-        if not item.po_item_id or item.po_item_id not in po_lines_by_id:
-            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        invoiced_by_po_line[item.po_item_id] = (
-            invoiced_by_po_line.get(item.po_item_id, 0) + item.quantity
-        )
+    invoiced_by_po_line = {
+        row.po_item_id: int(row.total_quantity)
+        for row in db.execute(
+            select(
+                VendorInvoiceItem.po_item_id,
+                func.sum(VendorInvoiceItem.quantity).label("total_quantity"),
+            )
+            .join(VendorInvoice, VendorInvoice.id == VendorInvoiceItem.invoice_id)
+            .where(
+                VendorInvoice.po_id == po.id,
+                VendorInvoice.status != VendorInvoiceStatusEnum.REJECTED,
+            )
+            .group_by(VendorInvoiceItem.po_item_id)
+        ).all()
+    }
+    if any(item.po_item_id not in po_lines_by_id for item in invoice.items):
+        return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
     received_by_po_line = {}
     if receipt:
