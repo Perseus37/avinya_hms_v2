@@ -10,6 +10,9 @@ from datetime import datetime, timedelta, timezone
 import json
 import re
 import pytest
+from sqlalchemy.orm import sessionmaker
+
+from backend.domains.billing.models import Invoice, PaymentReceipt
 
 
 def _create_patient(client, headers, name="ABDM Track Patient", dob="1987-11-20T00:00:00Z"):
@@ -217,7 +220,9 @@ def test_abdm_m2_consent_and_m3_fhir_health_data_transfer(client, superuser_head
 # 3. NHCX: National Health Claims Exchange Connector
 # =============================================================================
 
-def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuser_headers, billing_headers):
+def test_nhcx_claim_bundle_submission_and_adjudication_callback(
+    client, superuser_headers, billing_headers, multi_tenant_env
+):
     """
     Scenario 4: Compiles an internal insurance claim into a standardized NHCX FHIR R4
     Claim Bundle, submits it to the exchange, and receives digital insurer adjudication.
@@ -359,6 +364,12 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuse
     assert callback_data["settled_amount_paise"] == 0
     assert callback_data["settlement_utr_reference"] is None
 
+    TenantSession = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with TenantSession() as db:
+        invoice = db.get(Invoice, invoice_id)
+        assert invoice.amount_paid_paise == 0
+        assert db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).count() == 0
+
     # 6. A separate SETTLED callback posts the insurer receipt to the invoice ledger.
     settlement_payload = {
         "transaction_id": txn_id,
@@ -377,6 +388,16 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuse
     assert settlement_data["settled_amount_paise"] == 450000
     assert settlement_data["settlement_utr_reference"] == "UTR-HDFC-2026-990011"
 
+    with TenantSession() as db:
+        invoice = db.get(Invoice, invoice_id)
+        assert invoice.amount_paid_paise == 450000
+        assert invoice.status.value == "PARTIAL"
+        receipts = db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).all()
+        assert len(receipts) == 1
+        assert receipts[0].amount_paid_paise == 450000
+        assert receipts[0].payment_method.value == "INSURANCE"
+        assert receipts[0].transaction_reference == "UTR-HDFC-2026-990011"
+
     # Re-delivery of the same settlement callback is idempotent.
     retry_res = client.post(
         "/v1/api/nhcx/claims/adjudication-callback",
@@ -385,6 +406,9 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuse
     )
     assert retry_res.status_code == 200, retry_res.text
     assert retry_res.json() == settlement_data
+    with TenantSession() as db:
+        assert db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).count() == 1
+        assert db.get(Invoice, invoice_id).amount_paid_paise == 450000
 
     # 7. Verify Transaction Log Retrieval
     log_res = client.get(
