@@ -1846,3 +1846,45 @@ def test_consent_carry_over_does_not_resurrect_withdrawn_consent(
 
         w_c = db.query(PatientConsentRecord).filter_by(patient_id=p_w_id, policy_revision_id=rev2_id).first()
         assert w_c is None
+
+
+def test_dpdp_access_summary_excludes_withdrawn_declined_and_expired_consents(
+    client, multi_tenant_env, superuser_headers
+):
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    now = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        doctor = db.query(User).filter_by(email="doctor@default.com").one()
+        patient = Patient(
+            mrn="DPDP-SUMMARY-STATE-001",
+            full_name="Synthetic Consent Summary Patient",
+            gender=GenderEnum.OTHER,
+            phone_number="+919876543210",
+            date_of_birth=datetime(1990, 1, 1, tzinfo=timezone.utc),
+            is_active=True,
+        )
+        db.add(patient)
+        db.flush()
+        patient_id = patient.id
+        rows = [
+            PatientConsentRecord(patient_id=patient_id, consent_type="DATA_SHARING", purpose="LAB_SHARING", decision="GRANTED", source="WRITTEN", scope_type="recipient", scope_key="withdrawn-lab", recorded_by_user_id=doctor.id, recorded_at=now-timedelta(minutes=4)),
+            PatientConsentRecord(patient_id=patient_id, consent_type="DATA_SHARING", purpose="LAB_SHARING", decision="WITHDRAWN", source="WRITTEN", scope_type="recipient", scope_key="withdrawn-lab", recorded_by_user_id=doctor.id, recorded_at=now-timedelta(minutes=3)),
+            PatientConsentRecord(patient_id=patient_id, consent_type="RESEARCH", purpose="RESEARCH_USE", decision="DECLINED", source="WRITTEN", scope_type="patient", scope_key=None, recorded_by_user_id=doctor.id, recorded_at=now-timedelta(minutes=2)),
+            PatientConsentRecord(patient_id=patient_id, consent_type="DATA_SHARING", purpose="LAB_SHARING", decision="GRANTED", source="WRITTEN", scope_type="recipient", scope_key="expired-lab", expires_at=now-timedelta(minutes=1), recorded_by_user_id=doctor.id, recorded_at=now-timedelta(minutes=1)),
+            PatientConsentRecord(patient_id=patient_id, consent_type="DATA_SHARING", purpose="LAB_SHARING", decision="GRANTED", source="WRITTEN", scope_type="recipient", scope_key="active-lab", recorded_by_user_id=doctor.id, recorded_at=now),
+        ]
+        db.add_all(rows)
+        db.commit()
+
+    response = client.get(
+        f"/v1/api/privacy/data-rights/patients/{patient_id}/summary",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [item["scope_key"] for item in body["active_consents"]] == ["active-lab"]
+    states = {item["scope_key"]: item["state"] for item in body["consent_history"] if item["scope_key"]}
+    assert states["withdrawn-lab"] == "WITHDRAWN"
+    assert states["expired-lab"] == "EXPIRED"
+    assert states["active-lab"] == "ACTIVE"
+    assert any(item["decision"] == "DECLINED" and item["state"] == "DECLINED" for item in body["consent_history"])
