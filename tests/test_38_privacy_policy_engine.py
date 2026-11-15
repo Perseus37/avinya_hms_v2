@@ -1898,9 +1898,9 @@ def test_dpdp_summary_latest_decision_supersedes_across_policy_revisions_and_typ
     now = datetime.now(timezone.utc)
     rows = [
         SimpleNamespace(
-            id=1, consent_type="DATA_SHARING", purpose="LAB_SHARING",
-            scope_type="recipient", scope_key="lab-a", policy_revision_id=10,
-            decision="GRANTED", expires_at=None, recorded_at=now-timedelta(days=2),
+            id=3, consent_type="CARE", purpose="LAB_SHARING",
+            scope_type="recipient", scope_key="lab-a", policy_revision_id=11,
+            decision="WITHDRAWN", expires_at=None, recorded_at=now,
         ),
         SimpleNamespace(
             id=2, consent_type="DATA_SHARING", purpose="LAB_SHARING",
@@ -1908,9 +1908,9 @@ def test_dpdp_summary_latest_decision_supersedes_across_policy_revisions_and_typ
             decision="GRANTED", expires_at=None, recorded_at=now-timedelta(days=1),
         ),
         SimpleNamespace(
-            id=3, consent_type="CARE", purpose="LAB_SHARING",
-            scope_type="recipient", scope_key="lab-a", policy_revision_id=11,
-            decision="WITHDRAWN", expires_at=None, recorded_at=now,
+            id=1, consent_type="DATA_SHARING", purpose="LAB_SHARING",
+            scope_type="recipient", scope_key="lab-a", policy_revision_id=10,
+            decision="GRANTED", expires_at=None, recorded_at=now-timedelta(days=2),
         ),
     ]
 
@@ -1918,5 +1918,5 @@ def test_dpdp_summary_latest_decision_supersedes_across_policy_revisions_and_typ
 
     assert active == []
     assert [item["state"] for item in history] == [
-        "SUPERSEDED", "SUPERSEDED", "WITHDRAWN"
+        "WITHDRAWN", "SUPERSEDED", "SUPERSEDED"
     ]
