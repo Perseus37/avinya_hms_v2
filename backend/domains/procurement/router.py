@@ -813,7 +813,8 @@ def allocate_supplier_credit(
     if paid + total_credits_after >= int(invoice.total_amount_paise):
         invoice.status = VendorInvoiceStatusEnum.PAID
         expense.status = ExpenseStatusEnum.PAID
-        expense.receipt_reference = f"SUPPLIER-CREDIT-{credit.id}"
+        if not expense.receipt_reference:
+            expense.receipt_reference = f"SUPPLIER-CREDIT-{credit.id}"
         expense.updated_by_id = current_user.id
 
     db.commit()
