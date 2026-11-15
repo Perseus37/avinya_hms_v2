@@ -229,6 +229,49 @@ class PurchaseReturnItem(AuditMixin, Base):
     inventory_batch: Mapped["InventoryBatch"] = relationship()
 
 
+class SupplierCreditNote(Base):
+    """Append-only vendor credit created from one accepted purchase return."""
+    __tablename__ = "procurement_supplier_credit_notes"
+    __table_args__ = (
+        UniqueConstraint("purchase_return_id", name="uq_supplier_credit_purchase_return"),
+        CheckConstraint("amount_paise >= 0", name="ck_supplier_credit_amount_nonnegative"),
+        Index("ix_supplier_credit_vendor_created", "vendor_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    purchase_return_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_purchase_returns.id", ondelete="RESTRICT"), nullable=False
+    )
+    vendor_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_vendors.id", ondelete="RESTRICT"), nullable=False
+    )
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+
+
+class SupplierCreditAllocation(Base):
+    """Append-only application of vendor credit to one approved supplier invoice."""
+    __tablename__ = "procurement_supplier_credit_allocations"
+    __table_args__ = (
+        CheckConstraint("amount_paise > 0", name="ck_supplier_credit_allocation_positive"),
+        UniqueConstraint("credit_note_id", "invoice_id", name="uq_supplier_credit_invoice"),
+        Index("ix_supplier_credit_allocation_invoice", "invoice_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    credit_note_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_supplier_credit_notes.id", ondelete="RESTRICT"), nullable=False
+    )
+    invoice_id: Mapped[int] = mapped_column(
+        ForeignKey("procurement_vendor_invoices.id", ondelete="RESTRICT"), nullable=False
+    )
+    amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
+    reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+    allocated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    allocated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+
+
 class StoreIndent(AuditMixin, Base):
     """Ward or Department request for consumables/medicines from the Central Pharmacy/Store either for ward stock or a specific patient."""
     __tablename__ = "procurement_indents"
