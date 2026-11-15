@@ -70,12 +70,12 @@ def _consent_access_summary(consents: list[PatientConsentRecord], now: datetime)
     """Return current grants separately from the immutable consent decision history."""
     latest_by_scope: dict[tuple[Any, ...], PatientConsentRecord] = {}
     for consent in consents:
+        # Match policy carry-over semantics: a later decision for the same
+        # purpose and scope supersedes earlier revisions and consent types.
         key = (
-            consent.consent_type,
             consent.purpose,
             consent.scope_type,
             consent.scope_key,
-            consent.policy_revision_id,
         )
         if key not in latest_by_scope:
             latest_by_scope[key] = consent
@@ -83,12 +83,12 @@ def _consent_access_summary(consents: list[PatientConsentRecord], now: datetime)
     active_consents: list[dict[str, Any]] = []
     history: list[dict[str, Any]] = []
     for consent in consents:
+        # Match policy carry-over semantics: a later decision for the same
+        # purpose and scope supersedes earlier revisions and consent types.
         key = (
-            consent.consent_type,
             consent.purpose,
             consent.scope_type,
             consent.scope_key,
-            consent.policy_revision_id,
         )
         is_latest = latest_by_scope[key].id == consent.id
         expires_at = _utc(consent.expires_at) if consent.expires_at else None
