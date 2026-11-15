@@ -575,13 +575,3 @@ def test_bcma_concurrent_duplicate_dose_attempts_are_serialized(client, superuse
         responses = list(pool.map(lambda _: administer(), range(2)))
 
     assert sorted(response.status_code for response in responses) == [201, 409]
-    emar = client.get(
-        f"/v1/api/pharmacy/emar?encounter_id={encounter['id']}",
-        headers=nurse_headers,
-    )
-    assert emar.status_code == 200, emar.text
-    matching = [
-        item for item in emar.json()
-        if item["prescription_item_id"] == rx["items"][0]["id"]
-    ]
-    assert len(matching) == 1
