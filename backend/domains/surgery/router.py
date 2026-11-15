@@ -293,12 +293,23 @@ def upsert_operative_anesthesia_record(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("opd:write")),
 ):
-    surgery = db.get(SurgicalSchedule, surgery_id)
+    surgery = db.execute(
+        select(SurgicalSchedule)
+        .where(SurgicalSchedule.id == surgery_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not surgery:
         raise HTTPException(status_code=404, detail="Surgical schedule not found.")
+    if surgery.status in {SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot modify operative record for a {surgery.status.value} surgery.",
+        )
 
     rec = db.execute(
-        select(OperativeAnesthesiaRecord).where(OperativeAnesthesiaRecord.surgery_id == surgery_id)
+        select(OperativeAnesthesiaRecord)
+        .where(OperativeAnesthesiaRecord.surgery_id == surgery_id)
+        .with_for_update()
     ).scalar_one_or_none()
 
     if rec:
