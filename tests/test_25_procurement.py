@@ -1643,3 +1643,13 @@ def test_supplier_payment_request_rejects_amount_above_balance_after_credits():
     assert error.value.detail["allocated_credit_paise"] == 2000
     assert error.value.detail["available_paise"] == 4000
 
+
+
+
+def test_billing_role_can_read_supplier_credit_ledger(client, billing_headers):
+    response = client.get(
+        "/v1/api/procurement/supplier-credits",
+        headers=billing_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert {"items", "total", "page", "page_size"} <= set(response.json())
