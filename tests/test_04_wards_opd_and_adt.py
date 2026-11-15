@@ -491,3 +491,36 @@ def test_16_moving_bed_into_full_room_is_rejected(client, superuser_headers):
         json={"room_id": target_room},
     )
     assert move.status_code == 409
+
+
+def test_17_concurrent_same_type_encounter_creation_is_serialized(client, doctor_headers):
+    """Two simultaneous creates for one patient/type must not both become active."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={"full_name": "Concurrent Encounter Patient", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"},
+    ).json()
+    barrier = Barrier(2)
+
+    def create_encounter():
+        barrier.wait()
+        return client.post(
+            "/v1/api/adt/encounters",
+            headers=doctor_headers,
+            json={"patient_id": patient["id"], "encounter_type": "OPD", "primary_doctor_id": 2, "department_id": 1},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: create_encounter(), range(2)))
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    active = client.get("/v1/api/adt/encounters/active", headers=doctor_headers)
+    assert active.status_code == 200, active.text
+    matching = [
+        item for item in active.json().get("items", [])
+        if item["patient_id"] == patient["id"] and item["encounter_type"] == "OPD"
+    ]
+    assert len(matching) == 1
