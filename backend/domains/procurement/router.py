@@ -826,6 +826,47 @@ def allocate_supplier_credit(
         "invoice_outstanding_paise": max(int(invoice.total_amount_paise) - paid - total_credits_after, 0),
     }
 
+
+@router.get("/supplier-credits")
+def list_supplier_credits(
+    vendor_id: Optional[int] = Query(default=None, gt=0),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    page, page_size = validate_pagination(page, page_size)
+    query = db.query(
+        SupplierCreditNote,
+        func.coalesce(func.sum(SupplierCreditAllocation.amount_paise), 0).label("allocated_paise"),
+    ).outerjoin(
+        SupplierCreditAllocation,
+        SupplierCreditAllocation.credit_note_id == SupplierCreditNote.id,
+    ).group_by(SupplierCreditNote.id)
+    if vendor_id is not None:
+        query = query.filter(SupplierCreditNote.vendor_id == vendor_id)
+    total = db.query(func.count(SupplierCreditNote.id))
+    if vendor_id is not None:
+        total = total.filter(SupplierCreditNote.vendor_id == vendor_id)
+    rows = query.order_by(
+        SupplierCreditNote.created_at.desc(), SupplierCreditNote.id.desc()
+    ).offset((page - 1) * page_size).limit(page_size).all()
+    items = []
+    for credit, allocated_paise in rows:
+        allocated = int(allocated_paise or 0)
+        items.append({
+            "id": credit.id,
+            "purchase_return_id": credit.purchase_return_id,
+            "vendor_id": credit.vendor_id,
+            "amount_paise": int(credit.amount_paise),
+            "allocated_paise": allocated,
+            "remaining_paise": max(int(credit.amount_paise) - allocated, 0),
+            "created_at": credit.created_at,
+            "created_by_id": credit.created_by_id,
+        })
+    return {"items": items, "total": total.scalar(), "page": page, "page_size": page_size}
+
+
 @router.get("/vendors/{vendor_id}/metrics")
 def get_vendor_metrics(vendor_id: int, db: Session = Depends(get_db), _: User = Depends(RequirePermission("procurement:read"))):
     """Calculates fulfillment rates and delivery delays for vendor evaluation."""
