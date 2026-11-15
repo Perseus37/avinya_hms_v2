@@ -359,3 +359,98 @@ def test_06_ffp_uses_abo_plasma_compatibility_and_ignores_rh(
     )
     assert response.status_code == 201
     assert response.json()["blood_bag"]["status"] == "CROSS_MATCHED"
+
+
+def test_07_pacs_metadata_and_impression_are_immutable_after_verification(
+    client, superuser_headers, doctor_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.diagnostics.models import DiagnosticTask, TaskStatusEnum
+
+    cat = client.post(
+        "/v1/api/diagnostics/categories", headers=superuser_headers,
+        json={"department_id": 1, "code": "CAT_PACS_LOCK", "name": "PACS Lock"},
+    ).json()
+    svc = client.post(
+        "/v1/api/diagnostics/catalog", headers=superuser_headers,
+        json={"category_id": cat["id"], "code": "RAD_PACS_LOCK", "name": "CT Chest",
+              "service_type": "RADIOLOGY", "base_price_paise": 100000, "is_order_set": False},
+    ).json()
+    patient, _ = _create_patient_with_blood_group(client, doctor_headers)
+    order = client.post(
+        "/v1/api/diagnostics/orders", headers=doctor_headers,
+        json={"patient_id": patient["id"], "ordered_service_ids": [svc["id"]]},
+    ).json()
+    task_id = order["tasks"][0]["id"]
+    original = {
+        "study_instance_uid": "1.2.840.10008.5.1.4.1.1.2.202611150001",
+        "accession_number": "ACC-PACS-LOCK-001", "modality": "CT",
+        "pacs_viewer_url": "https://pacs.example.test/study/001",
+        "radiation_dose_mgy": 4.2, "radiologist_impression": "No acute thoracic finding.",
+    }
+    attached = client.put(
+        f"/v1/api/diagnostics/tasks/{task_id}/dicom-study",
+        headers=doctor_headers, json=original,
+    )
+    assert attached.status_code == 200
+
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(engine) as session:
+        task = session.get(DiagnosticTask, task_id)
+        task.status = TaskStatusEnum.VERIFIED
+        session.commit()
+
+    changed = {**original, "radiologist_impression": "Replacement impression."}
+    update = client.put(
+        f"/v1/api/diagnostics/tasks/{task_id}/dicom-study",
+        headers=doctor_headers, json=changed,
+    )
+    assert update.status_code == 409
+    current = client.get(
+        f"/v1/api/diagnostics/tasks/{task_id}/dicom-study", headers=doctor_headers,
+    )
+    assert current.status_code == 200
+    assert current.json()["radiologist_impression"] == original["radiologist_impression"]
+
+
+def test_08_pacs_metadata_cannot_be_attached_to_cancelled_task(
+    client, superuser_headers, doctor_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.diagnostics.models import DiagnosticTask, TaskStatusEnum
+
+    cat = client.post(
+        "/v1/api/diagnostics/categories", headers=superuser_headers,
+        json={"department_id": 1, "code": "CAT_PACS_CANCEL", "name": "PACS Cancel"},
+    ).json()
+    svc = client.post(
+        "/v1/api/diagnostics/catalog", headers=superuser_headers,
+        json={"category_id": cat["id"], "code": "RAD_PACS_CANCEL", "name": "CT Chest",
+              "service_type": "RADIOLOGY", "base_price_paise": 100000, "is_order_set": False},
+    ).json()
+    patient, _ = _create_patient_with_blood_group(client, doctor_headers)
+    order = client.post(
+        "/v1/api/diagnostics/orders", headers=doctor_headers,
+        json={"patient_id": patient["id"], "ordered_service_ids": [svc["id"]]},
+    ).json()
+    task_id = order["tasks"][0]["id"]
+
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(engine) as session:
+        task = session.get(DiagnosticTask, task_id)
+        task.status = TaskStatusEnum.CANCELLED
+        session.commit()
+
+    payload = {
+        "study_instance_uid": "1.2.840.10008.5.1.4.1.1.2.202611150002",
+        "accession_number": "ACC-PACS-CANCEL-001", "modality": "CT",
+        "pacs_viewer_url": "https://pacs.example.test/study/002",
+        "radiation_dose_mgy": 3.1, "radiologist_impression": "Should not be attached.",
+    }
+    response = client.put(
+        f"/v1/api/diagnostics/tasks/{task_id}/dicom-study",
+        headers=doctor_headers, json=payload,
+    )
+    assert response.status_code == 409
