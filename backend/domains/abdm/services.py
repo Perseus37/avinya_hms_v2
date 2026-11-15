@@ -689,6 +689,19 @@ def process_nhcx_adjudication_callback(
         claim.remarks = f"NHCX Claim Rejected: {rejection_reason or 'No reason provided'}"
 
     else:  # SETTLED: the only callback outcome that posts money to the invoice.
+        if log.nhcx_status not in {"APPROVED", "PARTIAL", "SETTLED"}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A claim must have an approved NHCX adjudication before settlement.",
+            )
+        if (
+            log.adjudicated_amount_paise is not None
+            and settled_amount_paise > log.adjudicated_amount_paise
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Settlement amount exceeds the amount approved by NHCX adjudication.",
+            )
         if claim.status == ClaimStatusEnum.REJECTED:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
