@@ -617,8 +617,10 @@ def dispense_medication(
                     InventoryBatch.stock_quantity > 0,
                     InventoryBatch.expiry_date > datetime.now(timezone.utc),
                     InventoryBatch.expiry_date < batch.expiry_date,
-                    InventoryBatch.id != batch.id
+                    InventoryBatch.id != batch.id,
                 )
+                .order_by(InventoryBatch.expiry_date.asc(), InventoryBatch.id.asc())
+                .limit(1)
             ).scalar_one_or_none()
             
             if older_unexpired_batch and not getattr(disp_item, "override_fefo", False):
