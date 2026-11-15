@@ -21,6 +21,7 @@ from backend.domains.procurement.models import (
     GRNStatusEnum,
     PurchaseReturnRecord,
     PurchaseReturnItem,
+    SupplierCreditNote,
     VendorInvoice,
     VendorInvoiceItem,
     VendorInvoiceStatusEnum,
@@ -430,6 +431,13 @@ def process_purchase_return(
             return_reason=item.return_reason,
             created_by_id=current_user_id,
         ))
+
+    db.add(SupplierCreditNote(
+        purchase_return_id=return_record.id,
+        vendor_id=vendor_id,
+        amount_paise=total_credit_paise,
+        created_by_id=current_user_id,
+    ))
 
     db.add(ExpenseRecord(
         category=ExpenseCategoryEnum.PHARMACY_STOCK,
