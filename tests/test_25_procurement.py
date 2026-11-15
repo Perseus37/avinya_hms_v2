@@ -1577,8 +1577,9 @@ def test_supplier_payment_request_rejects_amount_above_balance_after_credits():
     import pytest
     from fastapi import HTTPException
     from backend.domains.procurement.models import (
-        VendorMaster, VendorInvoice, VendorInvoiceStatusEnum, ExpenseStatusEnum,
+        VendorMaster, VendorInvoice, VendorInvoiceStatusEnum,
     )
+    from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
     from backend.domains.procurement.router import create_supplier_payment_request
     from backend.domains.procurement.schemas import SupplierPaymentRequestCreate
 
