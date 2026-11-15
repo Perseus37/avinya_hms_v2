@@ -1597,6 +1597,8 @@ def test_supplier_payment_request_rejects_amount_above_balance_after_credits():
             self.row, self.rows, self.scalar_value = row, rows, scalar_value
         def filter(self, *_args):
             return self
+        def join(self, *_args):
+            return self
         def order_by(self, *_args):
             return self
         def with_for_update(self):
