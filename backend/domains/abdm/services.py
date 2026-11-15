@@ -617,6 +617,7 @@ def process_nhcx_adjudication_callback(
     that posts the insurer receipt and updates the invoice ledger.
     """
     adj_status_upper = (adjudication_status or "").strip().upper()
+    normalized_settlement_utr = (settlement_utr or "").strip()
     if adj_status_upper not in {"APPROVED", "PARTIAL", "REJECTED", "SETTLED"}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -628,7 +629,7 @@ def process_nhcx_adjudication_callback(
             detail="Adjudicated amount cannot be negative.",
         )
     if adj_status_upper == "SETTLED" and (
-        settled_amount_paise <= 0 or not (settlement_utr or "").strip()
+        settled_amount_paise <= 0 or not normalized_settlement_utr
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -717,7 +718,7 @@ def process_nhcx_adjudication_callback(
             # payloads must be investigated rather than posting a second receipt.
             if (
                 claim.settled_amount_paise != settled_amount_paise
-                or claim.settlement_utr_reference != settlement_utr
+                or claim.settlement_utr_reference != normalized_settlement_utr
             ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -737,7 +738,7 @@ def process_nhcx_adjudication_callback(
                 ),
                 amount_paid_paise=settled_amount_paise,
                 payment_method=PaymentMethodEnum.INSURANCE,
-                transaction_reference=settlement_utr.strip(),
+                transaction_reference=normalized_settlement_utr,
             )
             session.add(receipt)
             invoice.amount_paid_paise += settled_amount_paise
@@ -748,11 +749,13 @@ def process_nhcx_adjudication_callback(
             )
             claim.status = ClaimStatusEnum.SETTLED
             claim.settled_amount_paise = settled_amount_paise
-            claim.settlement_utr_reference = settlement_utr.strip()
+            claim.settlement_utr_reference = normalized_settlement_utr
             claim.remarks = f"NHCX Digital Settlement. TransID: {transaction_id}"
 
     log.nhcx_status = adj_status_upper
-    log.adjudicated_amount_paise = settled_amount_paise
+    # Preserve the adjudicated ceiling when a later settlement is lower.
+    if adj_status_upper in {"APPROVED", "PARTIAL"}:
+        log.adjudicated_amount_paise = settled_amount_paise
     log.rejection_reason = rejection_reason
     if adjudication_bundle:
         log.response_bundle_json = json.dumps(adjudication_bundle)
