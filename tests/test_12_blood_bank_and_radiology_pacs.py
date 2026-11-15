@@ -134,6 +134,22 @@ def test_02_universal_donor_o_neg_cross_match_issue_auto_billing_and_reaction_qu
     assert rxn_res.status_code == 200
     assert rxn_res.json()["blood_bag"]["status"] == "REACTION_HALTED"
 
+    # The first reaction report is an immutable clinical record. A later report
+    # must not replace it or clear it by sending NONE.
+    overwrite_res = client.patch(
+        f"/v1/api/blood-bank/cross-match/{cm_id}/reaction",
+        headers=nurse_headers,
+        json={"reaction_type": "ACUTE_HEMOLYTIC", "reaction_notes": "Conflicting second report"},
+    )
+    assert overwrite_res.status_code == 409
+    clear_res = client.patch(
+        f"/v1/api/blood-bank/cross-match/{cm_id}/reaction",
+        headers=nurse_headers,
+        json={"reaction_type": "NONE", "reaction_notes": None},
+    )
+    assert clear_res.status_code == 409
+    assert clear_res.json()["message"] == overwrite_res.json()["message"]
+
 
 def test_03_pacs_dicom_study_attaches_to_radiology_task_and_blocks_lab_tasks(
     client, superuser_headers, doctor_headers
