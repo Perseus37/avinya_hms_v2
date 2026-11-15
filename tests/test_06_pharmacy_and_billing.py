@@ -80,10 +80,23 @@ def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_hea
     adj_ok = client.patch(
         f"/v1/api/pharmacy/inventory/batches/{batch['id']}/adjust",
         headers=pharmacist_headers,
-        json={"quantity_adjustment": -20},
+        json={"quantity_adjustment": -20, "reason": "Physical stock count correction"},
     )
     assert adj_ok.status_code == 200
     assert adj_ok.json()["stock_quantity"] == 80
+
+    ledger = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert ledger.status_code == 200
+    assert len(ledger.json()) == 1
+    movement = ledger.json()[0]
+    assert movement["quantity_adjustment"] == -20
+    assert movement["quantity_before"] == 100
+    assert movement["quantity_after"] == 80
+    assert movement["reason"] == "Physical stock count correction"
+    assert movement["actor_id"] > 0
 
     # Deduct 100 units from 80 -> 400 Bad Request
     adj_fail = client.patch(
@@ -92,6 +105,12 @@ def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_hea
         json={"quantity_adjustment": -100},
     )
     assert adj_fail.status_code == 400
+    # Rejected corrections must not create ledger entries.
+    ledger_after_rejection = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert len(ledger_after_rejection.json()) == 1
 
 
 def test_04_erx_prescription_enforces_cpoe_allergy_hard_stop(client, doctor_headers, pharmacist_headers):
