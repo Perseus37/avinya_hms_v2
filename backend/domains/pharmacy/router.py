@@ -748,32 +748,54 @@ def return_dispensed_medication(
 
         # 2. Adjust DRAFT invoice line item if invoice is still open
         # FIN-003: Rely on strict embedded RxItem tracking instead of fragile name matching
-        if invoice and invoice.status == InvoiceStatusEnum.DRAFT and med:
+        if invoice and invoice.status in {
+            InvoiceStatusEnum.DRAFT,
+            InvoiceStatusEnum.UNPAID,
+            InvoiceStatusEnum.PARTIAL,
+        } and med:
             exact_tag = f"[RxItem:{rx_item.id}]"
             matching_line = next(
-                (
-                    li
-                    for li in invoice.line_items
-                    if exact_tag in li.description
-                ),
+                (li for li in invoice.line_items if exact_tag in li.description),
                 None,
             )
             if matching_line:
                 if matching_line.quantity <= ret.quantity_to_return:
-                    if matching_line in invoice.line_items:
-                        invoice.line_items.remove(matching_line)
+                    invoice.line_items.remove(matching_line)
                     db.delete(matching_line)
                 else:
                     matching_line.quantity -= ret.quantity_to_return
                     matching_line.total_price_paise = matching_line.quantity * matching_line.unit_price_paise
-                    if matching_line.gst_rate_percent and matching_line.gst_rate_percent > 0:
-                        matching_line.tax_amount_paise = round(
-                            (matching_line.total_price_paise * matching_line.gst_rate_percent) / 100
-                        )
+                    matching_line.tax_amount_paise = round(
+                        matching_line.total_price_paise * (matching_line.gst_rate_percent or 0) / 100
+                    )
                 db.flush()
                 recalculate_invoice_totals(invoice)
                 if invoice.discount_amount_paise and invoice.discount_amount_paise > invoice.total_amount_paise:
                     invoice.discount_amount_paise = invoice.total_amount_paise
+
+                # A partial payment can exceed the revised invoice balance after
+                # the returned item is credited. Refund only that excess and
+                # keep the invoice's paid amount within its new net total.
+                revised_net = invoice.net_amount_paise
+                excess_paid = max(0, invoice.amount_paid_paise - revised_net)
+                if excess_paid:
+                    invoice.amount_paid_paise = revised_net
+                    db.add(RefundVoucher(
+                        voucher_number=f"RFND-PHM-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(6).upper()}",
+                        patient_id=invoice.patient_id,
+                        deposit_id=None,
+                        invoice_id=invoice.id,
+                        refund_amount_paise=excess_paid,
+                        refund_method=PaymentMethodEnum.CASH,
+                        transaction_reference=f"RX-RET-{rx.id}-{secrets.token_hex(4).upper()}",
+                        reason="Pharmacy return credit exceeded the remaining unpaid invoice balance",
+                        approved_by_id=current_user.id,
+                    ))
+                invoice.status = (
+                    InvoiceStatusEnum.PARTIAL if invoice.amount_paid_paise > 0
+                    else InvoiceStatusEnum.UNPAID if invoice.status != InvoiceStatusEnum.DRAFT
+                    else InvoiceStatusEnum.DRAFT
+                )
 
         log = PharmacyReturnLog(
             prescription_id=rx.id,
