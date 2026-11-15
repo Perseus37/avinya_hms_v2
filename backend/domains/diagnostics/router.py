@@ -636,19 +636,29 @@ def submit_task_result(
 ):
     """H8 FIX: Enforces task lifecycle, checks action-specific permission, and prevents self-verification."""
     
-    task = (
-        db.query(DiagnosticTask)
-        .options(
-            joinedload(DiagnosticTask.service),
-            joinedload(DiagnosticTask.order).joinedload(DiagnosticOrder.tasks),
-        )
-        .filter(DiagnosticTask.id == task_id)
-        .first()
-    )
+    task = db.execute(
+        select(DiagnosticTask)
+        .where(DiagnosticTask.id == task_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    if not task.order or task.order.status == OrderStatusEnum.CANCELLED:
-        raise HTTPException(status_code=400, detail="Cannot submit results for a cancelled order.")
+
+    # Lock the parent order as well: task result entry must not race order
+    # cancellation or completion, and completed orders are immutable.
+    order = db.execute(
+        select(DiagnosticOrder)
+        .where(DiagnosticOrder.id == task.order_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if not order or order.status in {OrderStatusEnum.CANCELLED, OrderStatusEnum.COMPLETED}:
+        state = order.status.value if order else "MISSING"
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot submit results for a {state.lower()} diagnostic order.",
+        )
+    task.service
+    order.tasks
     if task.status in [TaskStatusEnum.VERIFIED, TaskStatusEnum.CANCELLED]:
         raise HTTPException(
             status_code=409,
