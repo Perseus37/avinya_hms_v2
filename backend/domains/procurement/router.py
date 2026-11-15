@@ -719,9 +719,21 @@ def return_indent_stock(
 # --- Vendor Purchase Returns ---
 @router.post("/returns", status_code=status.HTTP_201_CREATED)
 def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
-    process_purchase_return(db, payload.vendor_id, payload.grn_id, payload.items, current_user.id, payload.remarks)
+    return_record = process_purchase_return(
+        db, payload.vendor_id, payload.grn_id, payload.items, current_user.id, payload.remarks
+    )
+    db.flush()
+    credit_note = db.query(SupplierCreditNote).filter(
+        SupplierCreditNote.purchase_return_id == return_record.id
+    ).one()
     db.commit()
-    return {"status": "success", "message": "Purchase return processed and Debit Note generated."}
+    return {
+        "status": "success",
+        "message": "Purchase return processed and supplier credit note generated.",
+        "purchase_return_id": return_record.id,
+        "credit_note_id": credit_note.id,
+        "credit_amount_paise": credit_note.amount_paise,
+    }
 
 
 
@@ -1086,13 +1098,15 @@ def review_supplier_payment_request(
             if expense is None or expense.status != ExpenseStatusEnum.APPROVED or int(expense.amount_paise) != int(invoice.total_amount_paise):
                 raise HTTPException(status_code=409, detail="A requested Accounts Payable entry is no longer payable or no longer matches the invoice total.")
             paid = _supplier_invoice_paid_paise(db, invoice.id)
+            credits = _supplier_invoice_credit_paise(db, invoice.id)
             reserved = _supplier_invoice_reserved_paise(db, invoice.id, exclude_request_id=request_row.id)
-            available = max(int(invoice.total_amount_paise) - paid - reserved, 0)
+            available = max(int(invoice.total_amount_paise) - paid - credits - reserved, 0)
             if allocation.amount_paise > available:
                 raise HTTPException(status_code=409, detail={
                     "message": f"Invoice {invoice.invoice_number} no longer has sufficient unreserved balance.",
                     "invoice_id": invoice.id,
-                    "outstanding_paise": max(int(invoice.total_amount_paise) - paid, 0),
+                    "outstanding_paise": max(int(invoice.total_amount_paise) - paid - credits, 0),
+                    "allocated_credit_paise": credits,
                     "reserved_paise": reserved,
                     "available_paise": available,
                 })
@@ -1184,13 +1198,15 @@ def execute_supplier_payment_request(
             raise HTTPException(status_code=409, detail="A requested Accounts Payable entry is no longer payable or no longer matches the invoice total.")
         expenses[invoice.id] = expense
         paid = _supplier_invoice_paid_paise(db, invoice.id)
+        credits = _supplier_invoice_credit_paise(db, invoice.id)
         reserved = _supplier_invoice_reserved_paise(db, invoice.id, exclude_request_id=request_row.id)
-        available = max(int(invoice.total_amount_paise) - paid - reserved, 0)
+        available = max(int(invoice.total_amount_paise) - paid - credits - reserved, 0)
         if allocation.amount_paise > available:
             raise HTTPException(status_code=409, detail={
                 "message": f"Invoice {invoice.invoice_number} no longer has sufficient unreserved balance.",
                 "invoice_id": invoice.id,
-                "outstanding_paise": max(int(invoice.total_amount_paise) - paid, 0),
+                "outstanding_paise": max(int(invoice.total_amount_paise) - paid - credits, 0),
+                "allocated_credit_paise": credits,
                 "reserved_paise": reserved,
                 "available_paise": available,
             })
