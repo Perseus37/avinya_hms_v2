@@ -295,6 +295,42 @@ def test_vendor_invoice_review_match_and_approval_are_end_to_end(
             == 1
         )
 
+    # A second invoice cannot reuse the same PO/GRN quantity already invoiced.
+    second_upload = client.post(
+        "/v1/api/procurement/invoices/upload-document",
+        params={"vendor_id": vendor_id},
+        headers=pharmacist_headers,
+        files={"file": ("invoice-2.pdf", b"%PDF-1.7\\nsynthetic invoice 2", "application/pdf")},
+    )
+    assert second_upload.status_code == 200, second_upload.text
+    second_invoice_id = second_upload.json()["invoice_id"]
+    second_review_payload = {
+        **review_payload,
+        "invoice_number": "INV-MANUAL-002",
+        "subtotal_paise": 100,
+        "tax_amount_paise": 18,
+        "total_amount_paise": 118,
+        "items": [
+            {
+                **review_payload["items"][0],
+                "quantity": 1,
+                "total_price_paise": 100,
+            }
+        ],
+    }
+    second_review = client.patch(
+        f"/v1/api/procurement/invoices/{second_invoice_id}/review",
+        headers=superuser_headers,
+        json=second_review_payload,
+    )
+    assert second_review.status_code == 200, second_review.text
+    second_match = client.patch(
+        f"/v1/api/procurement/invoices/{second_invoice_id}/reconcile",
+        headers=superuser_headers,
+    )
+    assert second_match.status_code == 200, second_match.text
+    assert second_match.json()["status"] == "PENDING_VERIFICATION"
+
 
 def test_invoice_review_requires_consistent_totals(client, superuser_headers, monkeypatch, tmp_path):
     from backend.core.config import settings
