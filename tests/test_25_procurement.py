@@ -1578,6 +1578,7 @@ def test_supplier_payment_request_rejects_amount_above_balance_after_credits():
     from fastapi import HTTPException
     from backend.domains.procurement.models import (
         VendorMaster, VendorInvoice, VendorInvoiceStatusEnum,
+        SupplierPayment, SupplierPaymentRequest,
     )
     from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
     from backend.domains.procurement.router import create_supplier_payment_request
@@ -1622,6 +1623,8 @@ def test_supplier_payment_request_rejects_amount_above_balance_after_credits():
                 return Query(rows=[invoice])
             if entity is ExpenseRecord:
                 return Query(row=expense)
+            if entity is SupplierPayment.id or entity is SupplierPaymentRequest.id:
+                return Query()
             return Query(scalar_value=next(self.aggregate_values))
 
     payload = SupplierPaymentRequestCreate.model_validate({
