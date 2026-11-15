@@ -1570,3 +1570,70 @@ def test_supplier_invoice_credit_total_is_derived_from_immutable_allocations():
     assert _supplier_invoice_credit_paise(FakeDb(), 44) == 3750
 
 
+
+
+def test_supplier_payment_request_rejects_amount_above_balance_after_credits():
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.models import (
+        VendorMaster, VendorInvoice, VendorInvoiceStatusEnum, ExpenseStatusEnum,
+    )
+    from backend.domains.procurement.router import create_supplier_payment_request
+    from backend.domains.procurement.schemas import SupplierPaymentRequestCreate
+
+    vendor = SimpleNamespace(id=1, is_active=True)
+    invoice = SimpleNamespace(
+        id=11, vendor_id=1, status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+        linked_expense_id=8, invoice_number="INV-CREDIT-TEST", total_amount_paise=10000,
+    )
+    expense = SimpleNamespace(
+        id=8, status=ExpenseStatusEnum.APPROVED, amount_paise=10000,
+    )
+
+    class Query:
+        def __init__(self, row=None, rows=None, scalar_value=None):
+            self.row, self.rows, self.scalar_value = row, rows, scalar_value
+        def filter(self, *_args):
+            return self
+        def order_by(self, *_args):
+            return self
+        def with_for_update(self):
+            return self
+        def one_or_none(self):
+            return self.row
+        def all(self):
+            return self.rows or []
+        def first(self):
+            return None
+        def scalar(self):
+            return self.scalar_value
+
+    class FakeDb:
+        def __init__(self):
+            self.aggregate_values = iter([1000, 2000, 3000])
+        def query(self, entity):
+            if entity is VendorMaster:
+                return Query(row=vendor)
+            if entity is VendorInvoice:
+                return Query(rows=[invoice])
+            if entity is ExpenseRecord:
+                return Query(row=expense)
+            return Query(scalar_value=next(self.aggregate_values))
+
+    payload = SupplierPaymentRequestCreate.model_validate({
+        "vendor_id": 1,
+        "payment_reference": "CREDIT-TEST-001",
+        "payment_method": "NEFT",
+        "scheduled_date": "2026-11-15",
+        "amount_paise": 5000,
+        "allocations": [{"invoice_id": 11, "amount_paise": 5000}],
+    })
+    with pytest.raises(HTTPException) as error:
+        create_supplier_payment_request(
+            payload, FakeDb(), SimpleNamespace(id=22)
+        )
+    assert error.value.status_code == 409
+    assert error.value.detail["allocated_credit_paise"] == 2000
+    assert error.value.detail["available_paise"] == 4000
+
