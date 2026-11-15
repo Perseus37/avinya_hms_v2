@@ -441,3 +441,22 @@ def test_diagnostic_csv_export_is_blocked_when_patient_privacy_denies(
     assert response.status_code == 403
     detail = response.json().get("message", response.json().get("detail", ""))
     assert "privacy policy" in detail.lower()
+
+
+def test_result_entry_rejected_for_completed_parent_order(client, superuser_headers, doctor_headers):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.diagnostics.models import DiagnosticOrder, OrderStatusEnum
+
+    items = _setup_cbc_bundle(client, superuser_headers)
+    patient = client.post('/v1/api/patients', headers=doctor_headers, json={'full_name': 'Completed Order Guard', 'date_of_birth': '1990-01-01T00:00:00Z', 'gender': 'OTHER'}).json()
+    order = client.post('/v1/api/diagnostics/orders', headers=doctor_headers, json={'patient_id': patient['id'], 'ordered_service_ids': [items['rbc']['id']]}).json()
+    task_id = order['tasks'][0]['id']
+    engine = tenant_engine_pool.get_engine('hms_default')
+    with Session(engine) as session:
+        db_order = session.get(DiagnosticOrder, order['id'])
+        db_order.status = OrderStatusEnum.COMPLETED
+        session.commit()
+    response = client.patch(f'/v1/api/diagnostics/tasks/{task_id}/result', headers=doctor_headers, json={'result_value': '4.7', 'status': 'RESULT_ENTERED'})
+    assert response.status_code == 409
+    assert 'completed diagnostic order' in response.json()['message'].lower()
