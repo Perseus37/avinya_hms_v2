@@ -255,7 +255,6 @@ class SupplierCreditAllocation(Base):
     __tablename__ = "procurement_supplier_credit_allocations"
     __table_args__ = (
         CheckConstraint("amount_paise > 0", name="ck_supplier_credit_allocation_positive"),
-        UniqueConstraint("credit_note_id", "invoice_id", name="uq_supplier_credit_invoice"),
         Index("ix_supplier_credit_allocation_invoice", "invoice_id"),
     )
 
