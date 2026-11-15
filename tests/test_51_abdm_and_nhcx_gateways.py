@@ -410,6 +410,22 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(
         assert db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).count() == 1
         assert db.get(Invoice, invoice_id).amount_paid_paise == 450000
 
+    # A conflicting callback for an already settled claim must not post a second receipt.
+    conflicting_payload = {
+        **settlement_payload,
+        "settled_amount_paise": 440000,
+        "settlement_utr": "UTR-HDFC-CONFLICT-01",
+    }
+    conflict_res = client.post(
+        "/v1/api/nhcx/claims/adjudication-callback",
+        headers=billing_headers,
+        json=conflicting_payload,
+    )
+    assert conflict_res.status_code == 409, conflict_res.text
+    with TenantSession() as db:
+        assert db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).count() == 1
+        assert db.get(Invoice, invoice_id).amount_paid_paise == 450000
+
     # 7. Verify Transaction Log Retrieval
     log_res = client.get(
         f"/v1/api/nhcx/transactions/{txn_id}",
