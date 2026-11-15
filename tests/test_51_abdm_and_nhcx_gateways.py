@@ -342,25 +342,51 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuse
     assert any(e["resource"]["resourceType"] == "Claim" for e in bundle["entry"])
     assert any(e["resource"]["resourceType"] == "Coverage" for e in bundle["entry"])
 
-    # 5. Receive NHCX Insurer Adjudication Callback
+    # 5. Adjudication approval is not a financial settlement.
     callback_res = client.post(
         "/v1/api/nhcx/claims/adjudication-callback",
         headers=billing_headers,
         json={
             "transaction_id": txn_id,
             "adjudication_status": "APPROVED",
-            "settled_amount_paise": 480000,  # 4800 INR settled (200 INR deduction)
-            "settlement_utr": "UTR-HDFC-2026-990011",
+            "settled_amount_paise": 480000,  # legacy field carries adjudicated amount here
             "adjudication_bundle": {"adjudicationReason": "Adjudicated under Optima Secure standard terms"},
         },
     )
     assert callback_res.status_code == 200, callback_res.text
     callback_data = callback_res.json()
-    assert callback_data["claim_status"] == "SETTLED"
-    assert callback_data["settled_amount_paise"] == 480000
-    assert callback_data["settlement_utr_reference"] == "UTR-HDFC-2026-990011"
+    assert callback_data["claim_status"] == "APPROVED"
+    assert callback_data["settled_amount_paise"] == 0
+    assert callback_data["settlement_utr_reference"] is None
 
-    # 6. Verify Transaction Log Retrieval
+    # 6. A separate SETTLED callback posts the insurer receipt to the invoice ledger.
+    settlement_payload = {
+        "transaction_id": txn_id,
+        "adjudication_status": "SETTLED",
+        "settled_amount_paise": 480000,
+        "settlement_utr": "UTR-HDFC-2026-990011",
+    }
+    settlement_res = client.post(
+        "/v1/api/nhcx/claims/adjudication-callback",
+        headers=billing_headers,
+        json=settlement_payload,
+    )
+    assert settlement_res.status_code == 200, settlement_res.text
+    settlement_data = settlement_res.json()
+    assert settlement_data["claim_status"] == "SETTLED"
+    assert settlement_data["settled_amount_paise"] == 480000
+    assert settlement_data["settlement_utr_reference"] == "UTR-HDFC-2026-990011"
+
+    # Re-delivery of the same settlement callback is idempotent.
+    retry_res = client.post(
+        "/v1/api/nhcx/claims/adjudication-callback",
+        headers=billing_headers,
+        json=settlement_payload,
+    )
+    assert retry_res.status_code == 200, retry_res.text
+    assert retry_res.json() == settlement_data
+
+    # 7. Verify Transaction Log Retrieval
     log_res = client.get(
         f"/v1/api/nhcx/transactions/{txn_id}",
         headers=billing_headers,
@@ -368,5 +394,5 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuse
     assert log_res.status_code == 200, log_res.text
     log_data = log_res.json()
     assert log_data["transaction_id"] == txn_id
-    assert log_data["nhcx_status"] == "APPROVED"
+    assert log_data["nhcx_status"] == "SETTLED"
     assert log_data["adjudicated_amount_paise"] == 480000
