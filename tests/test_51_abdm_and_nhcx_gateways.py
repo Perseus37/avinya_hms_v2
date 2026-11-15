@@ -363,7 +363,7 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuse
     settlement_payload = {
         "transaction_id": txn_id,
         "adjudication_status": "SETTLED",
-        "settled_amount_paise": 480000,
+        "settled_amount_paise": 450000,  # actual remittance is below the 480,000 adjudication
         "settlement_utr": "UTR-HDFC-2026-990011",
     }
     settlement_res = client.post(
@@ -374,7 +374,7 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuse
     assert settlement_res.status_code == 200, settlement_res.text
     settlement_data = settlement_res.json()
     assert settlement_data["claim_status"] == "SETTLED"
-    assert settlement_data["settled_amount_paise"] == 480000
+    assert settlement_data["settled_amount_paise"] == 450000
     assert settlement_data["settlement_utr_reference"] == "UTR-HDFC-2026-990011"
 
     # Re-delivery of the same settlement callback is idempotent.
