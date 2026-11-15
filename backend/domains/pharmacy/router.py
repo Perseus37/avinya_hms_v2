@@ -21,6 +21,7 @@ from backend.domains.pharmacy.models import (
     ControlledSubstanceMovementLog,
     ControlledSubstanceVault,
     InventoryBatch,
+    InventoryStockAdjustmentLog,
     MedicationMaster,
     PharmacyReturnLog,
     Prescription,
@@ -264,7 +265,7 @@ def adjust_inventory_stock(
     batch_id: int,
     payload: InventoryStockAdjustment,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:write")),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
 ):
     if payload.quantity_adjustment == 0:
         raise HTTPException(status_code=400, detail="Quantity adjustment cannot be zero.")
@@ -275,16 +276,45 @@ def adjust_inventory_stock(
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found.")
 
-        if batch.stock_quantity + payload.quantity_adjustment < 0:
+        quantity_before = batch.stock_quantity
+        quantity_after = quantity_before + payload.quantity_adjustment
+        if quantity_after < 0:
             raise HTTPException(status_code=400, detail="Stock adjustment cannot result in negative inventory.")
 
-        batch.stock_quantity += payload.quantity_adjustment
+        # Persist the stock balance and its immutable provenance in one transaction.
+        batch.stock_quantity = quantity_after
+        db.add(
+            InventoryStockAdjustmentLog(
+                batch_id=batch.id,
+                quantity_adjustment=payload.quantity_adjustment,
+                quantity_before=quantity_before,
+                quantity_after=quantity_after,
+                reason=payload.reason.strip(),
+                actor_id=current_user.id,
+            )
+        )
         db.commit()
         db.refresh(batch)
         return batch
     except OperationalError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Inventory batch is locked by another transaction.")
+
+
+@router.get("/inventory/adjustments")
+def list_inventory_stock_adjustments(
+    batch_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("pharmacy:read")),
+):
+    """Read the append-only stock correction history, newest first."""
+    stmt = select(InventoryStockAdjustmentLog).order_by(
+        InventoryStockAdjustmentLog.created_at.desc(),
+        InventoryStockAdjustmentLog.id.desc(),
+    )
+    if batch_id is not None:
+        stmt = stmt.where(InventoryStockAdjustmentLog.batch_id == batch_id)
+    return list(db.execute(stmt).scalars().all())
 
 
 @router.delete("/inventory/batches/{batch_id}", status_code=200)
