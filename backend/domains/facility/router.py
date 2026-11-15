@@ -281,7 +281,9 @@ def reconfigure_bed(
     _: User = Depends(RequirePermission("wards:write")),
 ):
     """Shifts an unoccupied bed to another room, changes its bed_type, or updates its daily rate."""
-    bed = db.get(Bed, bed_id)
+    bed = db.execute(
+        select(Bed).where(Bed.id == bed_id).with_for_update()
+    ).scalar_one_or_none()
     if not bed:
         raise HTTPException(status_code=404, detail="Bed not found.")
     if payload.room_id is not None and payload.room_id != bed.room_id:
@@ -290,8 +292,16 @@ def reconfigure_bed(
                 status_code=409,
                 detail="Cannot move an OCCUPIED bed to another room while a patient is admitted.",
             )
-        if not db.get(PhysicalRoom, payload.room_id):
-            raise HTTPException(status_code=404, detail="Target room not found.")
+        target_room = db.execute(
+            select(PhysicalRoom)
+            .where(PhysicalRoom.id == payload.room_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if not target_room or not target_room.is_active:
+            raise HTTPException(status_code=404, detail="Active target room not found.")
+        target_bed_count = db.query(Bed.id).filter(Bed.room_id == target_room.id).count()
+        if target_bed_count >= target_room.bed_capacity:
+            raise HTTPException(status_code=409, detail="Target room bed capacity has been reached.")
         bed.room_id = payload.room_id
     if payload.bed_number is not None:
         bed.bed_number = payload.bed_number
