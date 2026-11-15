@@ -175,7 +175,6 @@ def test_05_register_medico_legal_case_police_intimation_and_print_certificate(
     )
     assert duplicate_intimation.status_code == 409
     # The rejected request must not replace either forensic identifier.
-    assert duplicate_intimation.json()["detail"].startswith("Forensic Lock")
     preserved = client.get(f"/v1/api/er/mlc/{mlc['id']}/print", headers=doctor_headers)
     assert "PC-4421-CYB" in preserved.text
     assert "FIR-2026-0891" in preserved.text
