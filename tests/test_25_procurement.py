@@ -1462,7 +1462,7 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
     assert cross_grn_return.status_code == 400, cross_grn_return.text
     assert "does not belong" in cross_grn_return.json()["message"].lower()
 
-    from backend.domains.procurement.models import PurchaseReturnRecord, PurchaseReturnItem
+    from backend.domains.procurement.models import PurchaseReturnRecord, PurchaseReturnItem, SupplierCreditNote
     from backend.domains.pharmacy.models import InventoryBatch
 
     accepted_return = client.post(
@@ -1490,6 +1490,11 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
         ).one()
         assert return_record.remarks == "Return approved by supplier."
         assert return_record.total_credit_paise == 1000
+        credit_note = db.query(SupplierCreditNote).filter_by(
+            purchase_return_id=return_record.id
+        ).one()
+        assert credit_note.vendor_id == vendor.json()["id"]
+        assert credit_note.amount_paise == return_record.total_credit_paise == 1000
         assert return_line.return_quantity == 2
         assert return_line.return_reason == "Damaged outer packaging"
         batch = db.get(InventoryBatch, return_line.inventory_batch_id)
@@ -1527,3 +1532,23 @@ def test_patient_indent_issue_and_return_contract_rejects_empty_item_lists():
         IndentIssueRequest.model_validate({"items": []})
     with pytest.raises(ValidationError):
         IndentReturnRequest.model_validate({"items": []})
+
+
+def test_supplier_credit_allocation_contract_normalizes_reason_and_rejects_blank_reason():
+    import pytest
+    from pydantic import ValidationError
+    from backend.domains.procurement.schemas import SupplierCreditAllocationCreate
+
+    payload = SupplierCreditAllocationCreate.model_validate({
+        "invoice_id": 15,
+        "amount_paise": 2500,
+        "reason": "  Apply supplier credit to returned stock  ",
+    })
+    assert payload.reason == "Apply supplier credit to returned stock"
+
+    with pytest.raises(ValidationError):
+        SupplierCreditAllocationCreate.model_validate({
+            "invoice_id": 15,
+            "amount_paise": 2500,
+            "reason": "    ",
+        })
