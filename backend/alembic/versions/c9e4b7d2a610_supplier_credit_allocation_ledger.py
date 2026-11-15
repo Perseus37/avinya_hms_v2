@@ -43,7 +43,6 @@ def upgrade() -> None:
         sa.Column("allocated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("allocated_by_id", sa.Integer(), nullable=False),
         sa.CheckConstraint("amount_paise > 0", name="ck_supplier_credit_allocation_positive"),
-        sa.UniqueConstraint("credit_note_id", "invoice_id", name="uq_supplier_credit_invoice"),
         sa.ForeignKeyConstraint(["credit_note_id"], [f"{CREDIT_TABLE}.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["invoice_id"], ["procurement_vendor_invoices.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["allocated_by_id"], ["users.id"], ondelete="RESTRICT"),
