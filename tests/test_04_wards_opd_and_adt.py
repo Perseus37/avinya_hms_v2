@@ -458,3 +458,36 @@ def test_15_concurrent_bed_creation_cannot_exceed_room_capacity(
     rooms = [room for ward in ward_map for room in ward["rooms"] if room["id"] == ids["room_id"]]
     assert len(rooms) == 1
     assert len(rooms[0]["beds"]) == 3
+
+
+
+def test_16_moving_bed_into_full_room_is_rejected(client, superuser_headers):
+    ids = _setup_ward_and_two_beds(client, superuser_headers)
+    target_room = client.post(
+        "/v1/api/ip/rooms",
+        headers=superuser_headers,
+        json={
+            "ward_id": ids["ward_id"],
+            "room_number": "102",
+            "room_type": "SINGLE",
+            "bed_capacity": 1,
+        },
+    ).json()["room_id"]
+    target_bed = client.post(
+        "/v1/api/ip/beds",
+        headers=superuser_headers,
+        json={
+            "room_id": target_room,
+            "bed_number": "102-A",
+            "bed_type": "ICU",
+            "base_daily_rate_paise": 500000,
+        },
+    )
+    assert target_bed.status_code == 201
+
+    move = client.patch(
+        f"/v1/api/ip/beds/{ids['bed1_id']}",
+        headers=superuser_headers,
+        json={"room_id": target_room},
+    )
+    assert move.status_code == 409
