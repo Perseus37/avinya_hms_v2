@@ -88,7 +88,28 @@ def schedule_surgery(
     if end_utc <= start_utc:
         raise HTTPException(status_code=400, detail="scheduled_end_time must be after scheduled_start_time.")
 
-    # ARCH-004: Push overlap evaluation down to PostgreSQL to prevent OOM and race conditions
+    # Serialize competing bookings on stable resource rows. Lock order is always
+    # theatre first, then lead surgeon, so requests sharing either resource
+    # contend even when no overlapping SurgicalSchedule row exists yet.
+    # These locks remain held until the schedule transaction commits.
+    locked_theatre = db.execute(
+        select(OperationTheatre)
+        .where(OperationTheatre.id == payload.theatre_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if locked_theatre is None or not locked_theatre.is_active:
+        raise HTTPException(status_code=404, detail="Active operation theatre not found.")
+
+    locked_surgeon = db.execute(
+        select(User)
+        .where(User.id == payload.lead_surgeon_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if locked_surgeon is None:
+        raise HTTPException(status_code=404, detail="Lead surgeon not found.")
+
+    # The resource locks above close the empty-result race; this query checks
+    # the protected interval against bookings committed by the prior lock holder.
     from sqlalchemy import or_, and_
     overlap_conflict = db.execute(
         select(SurgicalSchedule).where(
