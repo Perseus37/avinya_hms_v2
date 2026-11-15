@@ -328,3 +328,34 @@ def test_05_future_collection_date_rejected_on_receipt_cross_match_and_issue(
     )
     assert issue.status_code == 409
     assert "future collection date" in issue.json()["message"].lower()
+
+
+def test_06_ffp_uses_abo_plasma_compatibility_and_ignores_rh(
+    client, superuser_headers, doctor_headers
+):
+    now = datetime.now(timezone.utc)
+    bag = client.post(
+        "/v1/api/blood-bank/bags",
+        headers=superuser_headers,
+        json={
+            "bag_number": "BAG-FFP-A-POS-TO-O-NEG",
+            "component_type": "FFP",
+            "blood_group": "A+",
+            "volume_ml": 250,
+            "collection_date": (now - timedelta(days=1)).isoformat(),
+            "expiry_date": (now + timedelta(days=20)).isoformat(),
+            "processing_fee_paise": 0,
+        },
+    ).json()
+    _, encounter = _create_patient_with_blood_group(client, doctor_headers, blood_group="O-")
+    response = client.post(
+        "/v1/api/blood-bank/cross-match",
+        headers=superuser_headers,
+        json={
+            "encounter_id": encounter["id"],
+            "blood_bag_id": bag["id"],
+            "ordered_by_doctor_id": 2,
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["blood_bag"]["status"] == "CROSS_MATCHED"
