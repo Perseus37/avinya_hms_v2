@@ -92,6 +92,17 @@ class FakeRedis:
                 removed += 1
         return removed
 
+    def eval(self, script, numkeys, *args):
+        # Execute the scheduled-promotion script as one indivisible fake-Redis
+        # operation so unit tests exercise its remove/enqueue/status contract.
+        scheduled_key, pending_key, task_key = args[:3]
+        task_id = args[3]
+        removed = self.zrem(scheduled_key, task_id)
+        if removed:
+            self.rpush(pending_key, task_id)
+            self.hset(task_key, "status", "QUEUED")
+        return removed
+
     def set(self, key, value, ex=None):
         self._strings[key] = value
         return True
@@ -136,6 +147,20 @@ def test_enqueue_scheduled_task_and_promotion(fake_redis):
         assert promoted == 1
         assert task_id in fake_redis._lists.get(KEY_PENDING_TASKS, [])
         assert task_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
+
+
+def test_scheduled_promotion_is_atomic_and_idempotent(fake_redis):
+    task_id = enqueue_task("sample.task", {"data": "preserve"}, delay_seconds=10, sync_fallback=False)
+    due_time = time.time() + 20
+
+    with patch("time.time", return_value=due_time):
+        assert promote_scheduled_tasks(fake_redis) == 1
+        # A competing worker cannot enqueue the same scheduled ID again.
+        assert promote_scheduled_tasks(fake_redis) == 0
+
+    assert fake_redis._lists[KEY_PENDING_TASKS].count(task_id) == 1
+    assert task_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
+    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")["status"] == "QUEUED"
 
 
 def test_dequeue_and_completion_lifecycle(fake_redis):
