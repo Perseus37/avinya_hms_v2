@@ -214,11 +214,30 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
                 + receipt_item.accepted_quantity
             )
 
+    # A PO may be fulfilled through multiple GRNs. Enforce the GRN ceiling
+    # against invoices referencing this exact GRN, while the PO ceiling above
+    # remains cumulative across every GRN for the order.
+    invoiced_by_grn_line = {
+        row.po_item_id: int(row.total_quantity)
+        for row in db.execute(
+            select(
+                VendorInvoiceItem.po_item_id,
+                func.sum(VendorInvoiceItem.quantity).label("total_quantity"),
+            )
+            .join(VendorInvoice, VendorInvoice.id == VendorInvoiceItem.invoice_id)
+            .where(
+                VendorInvoice.grn_id == receipt.id,
+                VendorInvoice.status != VendorInvoiceStatusEnum.REJECTED,
+            )
+            .group_by(VendorInvoiceItem.po_item_id)
+        ).all()
+    }
+
     for item in invoice.items:
         po_line = po_lines_by_id[item.po_item_id]
         if invoiced_by_po_line[item.po_item_id] > po_line.quantity_ordered:
             return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        if receipt and invoiced_by_po_line[item.po_item_id] > received_by_po_line.get(po_line.id, 0):
+        if invoiced_by_grn_line.get(item.po_item_id, 0) > received_by_po_line.get(po_line.id, 0):
             return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
         # Flag variance if invoiced unit price strictly exceeds PO unit price
