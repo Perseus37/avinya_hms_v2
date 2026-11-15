@@ -791,11 +791,13 @@ def return_dispensed_medication(
                         reason="Pharmacy return credit exceeded the remaining unpaid invoice balance",
                         approved_by_id=current_user.id,
                     ))
-                invoice.status = (
-                    InvoiceStatusEnum.PARTIAL if invoice.amount_paid_paise > 0
-                    else InvoiceStatusEnum.UNPAID if invoice.status != InvoiceStatusEnum.DRAFT
-                    else InvoiceStatusEnum.DRAFT
-                )
+                if invoice.status != InvoiceStatusEnum.DRAFT:
+                    if revised_net > 0 and invoice.amount_paid_paise >= revised_net:
+                        invoice.status = InvoiceStatusEnum.PAID
+                    elif invoice.amount_paid_paise > 0:
+                        invoice.status = InvoiceStatusEnum.PARTIAL
+                    else:
+                        invoice.status = InvoiceStatusEnum.UNPAID
 
         log = PharmacyReturnLog(
             prescription_id=rx.id,
