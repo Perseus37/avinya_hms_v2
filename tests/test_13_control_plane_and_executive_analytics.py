@@ -1,3 +1,7 @@
+import os
+
+import pytest
+from sqlalchemy import create_engine, text
 from fastapi.testclient import TestClient
 from backend.core.config import settings
 from backend.core.database import get_control_db
@@ -256,3 +260,43 @@ def test_06_clinical_quality_pharmacy_fefo_doctor_productivity_and_inventory_rad
     inv_res = client.get("/v1/api/analytics/inventory-and-blood-radar", headers=superuser_headers)
     assert inv_res.status_code == 200
     assert "total_active_report_templates" in inv_res.json()["governance_and_security"]
+
+
+def test_postgresql_transaction_advisory_lock_serializes_policy_creation():
+    """Exercise PostgreSQL's transaction-scoped mutex with independent connections."""
+    database_url = os.getenv("TEST_POSTGRES_URL")
+    if not database_url:
+        pytest.skip("Set TEST_POSTGRES_URL to run the PostgreSQL concurrency proof.")
+
+    engine = create_engine(database_url, pool_pre_ping=True)
+    first = second = None
+    lock_key = 72134789012345
+    try:
+        first = engine.connect()
+        second = engine.connect()
+
+        first.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        )
+        acquired_while_held = second.execute(
+            text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        ).scalar_one()
+        assert acquired_while_held is False
+
+        first.commit()
+        acquired_after_release = second.execute(
+            text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        ).scalar_one()
+        assert acquired_after_release is True
+        second.commit()
+    finally:
+        if first is not None:
+            first.rollback()
+            first.close()
+        if second is not None:
+            second.rollback()
+            second.close()
+        engine.dispose()
