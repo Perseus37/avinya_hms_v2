@@ -454,6 +454,7 @@ def test_15_concurrent_bed_creation_cannot_exceed_room_capacity(
         responses = [first.result(), second.result()]
 
     assert sorted(response.status_code for response in responses) == [201, 409]
-    room = client.get(f"/v1/api/ip/rooms/{ids['room_id']}", headers=superuser_headers)
-    assert room.status_code == 200
-    assert len(room.json().get("beds", [])) <= 3
+    ward_map = client.get("/v1/api/ip/beds/map-view", headers=superuser_headers).json()
+    rooms = [room for ward in ward_map for room in ward["rooms"] if room["id"] == ids["room_id"]]
+    assert len(rooms) == 1
+    assert len(rooms[0]["beds"]) == 3
