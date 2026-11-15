@@ -1,6 +1,7 @@
 import json
 import importlib
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -1888,3 +1889,34 @@ def test_dpdp_access_summary_excludes_withdrawn_declined_and_expired_consents(
     assert states["expired-lab"] == "EXPIRED"
     assert states["active-lab"] == "ACTIVE"
     assert any(item["decision"] == "DECLINED" and item["state"] == "DECLINED" for item in body["consent_history"])
+
+
+
+def test_dpdp_summary_latest_decision_supersedes_across_policy_revisions_and_types():
+    from backend.domains.privacy.router import _consent_access_summary
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        SimpleNamespace(
+            id=1, consent_type="DATA_SHARING", purpose="LAB_SHARING",
+            scope_type="recipient", scope_key="lab-a", policy_revision_id=10,
+            decision="GRANTED", expires_at=None, recorded_at=now-timedelta(days=2),
+        ),
+        SimpleNamespace(
+            id=2, consent_type="DATA_SHARING", purpose="LAB_SHARING",
+            scope_type="recipient", scope_key="lab-a", policy_revision_id=11,
+            decision="GRANTED", expires_at=None, recorded_at=now-timedelta(days=1),
+        ),
+        SimpleNamespace(
+            id=3, consent_type="CARE", purpose="LAB_SHARING",
+            scope_type="recipient", scope_key="lab-a", policy_revision_id=11,
+            decision="WITHDRAWN", expires_at=None, recorded_at=now,
+        ),
+    ]
+
+    active, history = _consent_access_summary(rows, now)
+
+    assert active == []
+    assert [item["state"] for item in history] == [
+        "SUPERSEDED", "SUPERSEDED", "WITHDRAWN"
+    ]
