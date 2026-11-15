@@ -1552,3 +1552,21 @@ def test_supplier_credit_allocation_contract_normalizes_reason_and_rejects_blank
             "amount_paise": 2500,
             "reason": "    ",
         })
+
+
+def test_supplier_invoice_credit_total_is_derived_from_immutable_allocations():
+    from backend.domains.procurement.router import _supplier_invoice_credit_paise
+
+    class Query:
+        def filter(self, *_args):
+            return self
+        def scalar(self):
+            return 3750
+
+    class FakeDb:
+        def query(self, *_args):
+            return Query()
+
+    assert _supplier_invoice_credit_paise(FakeDb(), 44) == 3750
+
+
