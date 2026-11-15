@@ -272,3 +272,58 @@ def test_03_completing_surgery_auto_bills_procedure_ot_room_and_implants_and_pri
     assert "SURGICAL &amp; ANESTHESIA OPERATIVE RECORD" in print_res.text
     assert "ZIMMER-TI-2026-99" in print_res.text
     assert "Severe osteoarthritic changes" in print_res.text
+
+def test_09_operative_record_cannot_be_replaced_after_surgery_terminal_state(
+    client, superuser_headers, doctor_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.surgery.models import (
+        OperativeAnesthesiaRecord, SurgicalSchedule, SurgeryStatusEnum,
+    )
+
+    for index, terminal_state in enumerate(
+        [SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED], start=1
+    ):
+        _, enc, ot, proc = _setup_ipd_surgical_case(
+            client, superuser_headers, doctor_headers, ot_code=f"OT_OPREC_LOCK_{index}"
+        )
+        surgery = client.post(
+            "/v1/api/ot/surgeries", headers=doctor_headers,
+            json={
+                "encounter_id": enc["id"], "theatre_id": ot["id"],
+                "procedure_service_id": proc["id"], "lead_surgeon_id": 2,
+                "scheduled_start_time": f"2026-12-{10 + index:02d}T08:00:00Z",
+                "scheduled_end_time": f"2026-12-{10 + index:02d}T09:00:00Z",
+            },
+        ).json()
+        original = {
+            "anesthesia_type": "SPINAL", "asa_physical_status": 2,
+            "anesthesia_notes": "Initial anesthesia note.",
+            "operative_findings": "Original operative findings.",
+            "post_op_instructions": "Initial post-operative instructions.",
+            "estimated_blood_loss_ml": 150,
+        }
+        created = client.put(
+            f"/v1/api/ot/surgeries/{surgery['id']}/operative-record",
+            headers=doctor_headers, json=original,
+        )
+        assert created.status_code == 200
+
+        engine = tenant_engine_pool.get_engine("hms_default")
+        with Session(engine) as session:
+            db_surgery = session.get(SurgicalSchedule, surgery["id"])
+            db_surgery.status = terminal_state
+            session.commit()
+
+        replacement = {**original, "operative_findings": "Overwritten findings."}
+        response = client.put(
+            f"/v1/api/ot/surgeries/{surgery['id']}/operative-record",
+            headers=doctor_headers, json=replacement,
+        )
+        assert response.status_code == 409
+        with Session(engine) as session:
+            record = session.query(OperativeAnesthesiaRecord).filter_by(
+                surgery_id=surgery["id"]
+            ).one()
+            assert record.operative_findings == original["operative_findings"]
