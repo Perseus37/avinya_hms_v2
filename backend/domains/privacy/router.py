@@ -1128,7 +1128,7 @@ def get_patient_data_access_summary(
     consents = db.execute(
         select(PatientConsentRecord)
         .where(PatientConsentRecord.patient_id == patient_id)
-        .order_by(PatientConsentRecord.recorded_at.desc())
+        .order_by(PatientConsentRecord.recorded_at.desc(), PatientConsentRecord.id.desc())
     ).scalars().all()
 
     requests = db.execute(
