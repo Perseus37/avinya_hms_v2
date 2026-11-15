@@ -589,3 +589,56 @@ def test_policy_settings_creation_takes_postgresql_transaction_advisory_lock():
     assert "pg_advisory_xact_lock" in db.calls[0][0]
     assert db.calls[0][1] == {"lock_key": 72134789012345}
     assert "hospital_policy_settings" in db.calls[1][0]
+
+def test_leave_creation_locks_staff_user_before_overlap_lookup():
+    """The stable user-row lock must precede the empty-range overlap check."""
+    from types import SimpleNamespace
+
+    from backend.domains.identity.models import User, UserStatusEnum
+    from backend.domains.workforce.models import LeaveRequest
+    from backend.domains.workforce.router import LeaveRequestCreate, create_leave_request
+
+    staff = SimpleNamespace(id=41, status=UserStatusEnum.ACTIVE)
+
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class FakeSession:
+        def __init__(self):
+            self.statements = []
+            self.added = []
+            self.committed = False
+
+        def execute(self, statement):
+            self.statements.append(statement)
+            return FakeResult(staff if len(self.statements) == 1 else None)
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            self.committed = True
+
+        def refresh(self, _value):
+            return None
+
+    db = FakeSession()
+    payload = LeaveRequestCreate(
+        user_id=41,
+        leave_type="CASUAL",
+        start_date=date(2026, 12, 1),
+        end_date=date(2026, 12, 2),
+        reason="Personal leave",
+    )
+
+    created = create_leave_request(payload, db, SimpleNamespace(id=7))
+
+    assert db.statements[0].column_descriptions[0]["entity"] is User
+    assert db.statements[0]._for_update_arg is not None
+    assert db.statements[1].column_descriptions[0]["entity"] is LeaveRequest
+    assert db.added == [created]
+    assert db.committed is True
