@@ -758,3 +758,54 @@ def test_report_template_branding_catalog_uses_neutral_tenant_samples():
     assert samples["Branch Code"] == "SAMPLE-01"
     assert "Apollo" not in " ".join(samples.values())
 
+
+
+
+def test_09_concurrent_clinical_note_edit_and_sign_preserves_signed_lock(
+    client, doctor_headers
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    _, enc = _create_active_opd_encounter(client, doctor_headers)
+    note = client.post(
+        f"/v1/api/clinical/encounters/{enc['id']}/notes",
+        headers=doctor_headers,
+        json={"subjective_notes": "Initial symptom", "plan_notes": "Initial plan"},
+    ).json()
+    note_id = note["id"]
+    start = Barrier(2)
+
+    def edit_note():
+        start.wait()
+        return client.put(
+            f"/v1/api/clinical/notes/{note_id}",
+            headers=doctor_headers,
+            json={"plan_notes": "Concurrent revised plan"},
+        )
+
+    def sign_note():
+        start.wait()
+        return client.patch(
+            f"/v1/api/clinical/notes/{note_id}/sign",
+            headers=doctor_headers,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        edit_future = pool.submit(edit_note)
+        sign_future = pool.submit(sign_note)
+        edit_response = edit_future.result()
+        sign_response = sign_future.result()
+
+    # Depending on lock acquisition order, the edit either commits before
+    # sign-off (200) or observes the signed state and is rejected (409).
+    assert edit_response.status_code in (200, 409)
+    assert sign_response.status_code == 200
+    assert sign_response.json()["is_signed"] is True
+
+    final_edit = client.put(
+        f"/v1/api/clinical/notes/{note_id}",
+        headers=doctor_headers,
+        json={"plan_notes": "Post-sign tampering attempt"},
+    )
+    assert final_edit.status_code == 409
