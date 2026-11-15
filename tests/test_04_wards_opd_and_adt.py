@@ -135,7 +135,49 @@ def test_05_opd_reschedule_excludes_self_from_overlap_check(client, doctor_heade
     assert resched.status_code == 200
 
 
-def test_06_opd_linear_state_machine_and_encounter_binding(client, doctor_headers):
+
+def test_06_opd_overlap_uses_existing_appointment_duration(client, doctor_headers, multi_tenant_env):
+    """A longer existing slot must block a shorter appointment starting before it ends."""
+    from sqlalchemy.orm import sessionmaker
+    from backend.domains.identity.models import DoctorProfile
+
+    patient_one = client.post(
+        "/v1/api/patients", headers=doctor_headers,
+        json={"full_name": "Long Slot Patient", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"},
+    ).json()
+    patient_two = client.post(
+        "/v1/api/patients", headers=doctor_headers,
+        json={"full_name": "Short Slot Patient", "date_of_birth": "1992-01-01T00:00:00Z", "gender": "FEMALE"},
+    ).json()
+
+    SessionLocal = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with SessionLocal() as db:
+        doctor = db.query(DoctorProfile).filter(DoctorProfile.user_id == 2).one()
+        doctor.consultation_duration_minutes = 30
+        db.commit()
+
+    start = datetime(2026, 10, 18, 10, 0, tzinfo=timezone.utc)
+    first = client.post(
+        "/v1/api/opd/appointments", headers=doctor_headers,
+        json={"patient_id": patient_one["id"], "doctor_id": 2, "department_id": 1, "appointment_time": start.isoformat()},
+    )
+    assert first.status_code == 201
+    assert first.json()["planned_duration_minutes"] == 30
+
+    with SessionLocal() as db:
+        doctor = db.query(DoctorProfile).filter(DoctorProfile.user_id == 2).one()
+        doctor.consultation_duration_minutes = 15
+        db.commit()
+
+    overlapping = client.post(
+        "/v1/api/opd/appointments", headers=doctor_headers,
+        json={"patient_id": patient_two["id"], "doctor_id": 2, "department_id": 1,
+              "appointment_time": (start + timedelta(minutes=20)).isoformat()},
+    )
+    assert overlapping.status_code == 409
+
+
+def test_07_opd_linear_state_machine_and_encounter_binding(client, doctor_headers):
     """Scenario 6: Enforce SCHEDULED -> ARRIVED -> IN_CONSULTATION (with encounter) -> COMPLETED."""
     p = client.post("/v1/api/patients", headers=doctor_headers, json={"full_name": "State P1", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"}).json()
     appt = client.post(
