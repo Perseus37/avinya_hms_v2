@@ -392,3 +392,68 @@ def test_13_concurrent_transfers_for_one_admission_commit_only_one_destination(
     assert bed_states[current_bed_id] == "OCCUPIED"
     other_destination = third_bed if current_bed_id == ids["bed2_id"] else ids["bed2_id"]
     assert bed_states[other_destination] == "AVAILABLE"
+
+
+
+def test_14_room_bed_capacity_blocks_overflow_and_unsafe_reduction(
+    client, superuser_headers
+):
+    ids = _setup_ward_and_two_beds(client, superuser_headers)
+
+    overflow = client.post(
+        "/v1/api/ip/beds",
+        headers=superuser_headers,
+        json={
+            "room_id": ids["room_id"],
+            "bed_number": "101-C",
+            "bed_type": "ICU",
+            "base_daily_rate_paise": 500000,
+        },
+    )
+    assert overflow.status_code == 409
+
+    reduce_below_configured = client.put(
+        f"/v1/api/ip/rooms/{ids['room_id']}",
+        headers=superuser_headers,
+        json={"bed_capacity": 1},
+    )
+    assert reduce_below_configured.status_code == 409
+
+
+def test_15_concurrent_bed_creation_cannot_exceed_room_capacity(
+    client, superuser_headers
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    ids = _setup_ward_and_two_beds(client, superuser_headers)
+    capacity_update = client.put(
+        f"/v1/api/ip/rooms/{ids['room_id']}",
+        headers=superuser_headers,
+        json={"bed_capacity": 3},
+    )
+    assert capacity_update.status_code == 200
+    start = Barrier(2)
+
+    def create_bed(number):
+        start.wait()
+        return client.post(
+            "/v1/api/ip/beds",
+            headers=superuser_headers,
+            json={
+                "room_id": ids["room_id"],
+                "bed_number": number,
+                "bed_type": "ICU",
+                "base_daily_rate_paise": 500000,
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(create_bed, "101-C")
+        second = pool.submit(create_bed, "101-D")
+        responses = [first.result(), second.result()]
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    room = client.get(f"/v1/api/ip/rooms/{ids['room_id']}", headers=superuser_headers)
+    assert room.status_code == 200
+    assert len(room.json().get("beds", [])) <= 3
