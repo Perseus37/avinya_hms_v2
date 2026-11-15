@@ -102,7 +102,7 @@ def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_hea
     adj_fail = client.patch(
         f"/v1/api/pharmacy/inventory/batches/{batch['id']}/adjust",
         headers=pharmacist_headers,
-        json={"quantity_adjustment": -100},
+        json={"quantity_adjustment": -100, "reason": "Counted stock discrepancy"},
     )
     assert adj_fail.status_code == 400
     # Rejected corrections must not create ledger entries.
