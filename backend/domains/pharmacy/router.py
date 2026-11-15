@@ -276,6 +276,10 @@ def adjust_inventory_stock(
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found.")
 
+        reason = payload.reason.strip()
+        if len(reason) < 5:
+            raise HTTPException(status_code=400, detail="Stock adjustment reason must contain at least 5 non-whitespace characters.")
+
         quantity_before = batch.stock_quantity
         quantity_after = quantity_before + payload.quantity_adjustment
         if quantity_after < 0:
@@ -289,7 +293,7 @@ def adjust_inventory_stock(
                 quantity_adjustment=payload.quantity_adjustment,
                 quantity_before=quantity_before,
                 quantity_after=quantity_after,
-                reason=payload.reason.strip(),
+                reason=reason,
                 actor_id=current_user.id,
             )
         )
