@@ -161,8 +161,18 @@ def get_task_status(task_id: str) -> Optional[dict[str, Any]]:
         return None
 
 
+_PROMOTE_SCHEDULED_TASK_LUA = """
+local removed = redis.call("ZREM", KEYS[1], ARGV[1])
+if removed == 1 then
+    redis.call("RPUSH", KEYS[2], ARGV[1])
+    redis.call("HSET", KEYS[3], "status", "QUEUED")
+end
+return removed
+"""
+
+
 def promote_scheduled_tasks(r: redis.Redis) -> int:
-    """Moves scheduled tasks that are now due from the sorted set to the pending queue."""
+    """Atomically moves due scheduled task IDs to the pending queue."""
     now = time.time()
     due_tasks = r.zrangebyscore(KEY_SCHEDULED_TASKS, min="-inf", max=now)
     if not due_tasks:
@@ -170,11 +180,19 @@ def promote_scheduled_tasks(r: redis.Redis) -> int:
 
     promoted = 0
     for task_id in due_tasks:
-        # Atomic remove and push
-        if r.zrem(KEY_SCHEDULED_TASKS, task_id):
-            r.rpush(KEY_PENDING_TASKS, task_id)
-            r.hset(f"{KEY_TASK_PREFIX}{task_id}", "status", "QUEUED")
-            promoted += 1
+        # One Lua invocation prevents a crash between ZREM and RPUSH and makes
+        # competing workers idempotent: only the worker that removes the member
+        # can enqueue it and transition its metadata to QUEUED.
+        promoted += int(
+            r.eval(
+                _PROMOTE_SCHEDULED_TASK_LUA,
+                3,
+                KEY_SCHEDULED_TASKS,
+                KEY_PENDING_TASKS,
+                f"{KEY_TASK_PREFIX}{task_id}",
+                task_id,
+            )
+        )
 
     if promoted:
         logger.info("Promoted %d scheduled tasks to pending queue.", promoted)
