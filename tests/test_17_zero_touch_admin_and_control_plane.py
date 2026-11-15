@@ -1,5 +1,6 @@
 import io
 import json
+from datetime import date
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
