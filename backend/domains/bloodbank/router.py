@@ -54,6 +54,20 @@ PRBC_COMPATIBILITY_MATRIX: Dict[BloodGroupEnum, Set[BloodGroupEnum]] = {
     },
 }
 
+# Plasma compatibility is the inverse of red-cell compatibility: donor plasma
+# must not contain anti-A/anti-B antibodies against recipient red-cell antigens.
+# Rh(D) is not used to restrict FFP compatibility.
+FFP_COMPATIBILITY_MATRIX: Dict[BloodGroupEnum, Set[BloodGroupEnum]] = {
+    BloodGroupEnum.O_NEG: {BloodGroupEnum.O_NEG, BloodGroupEnum.O_POS, BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+    BloodGroupEnum.O_POS: {BloodGroupEnum.O_NEG, BloodGroupEnum.O_POS, BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+    BloodGroupEnum.A_NEG: {BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+    BloodGroupEnum.A_POS: {BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+    BloodGroupEnum.B_NEG: {BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+    BloodGroupEnum.B_POS: {BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+    BloodGroupEnum.AB_NEG: {BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+    BloodGroupEnum.AB_POS: {BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+}
+
 
 # =====================================================================
 # 1. BLOOD BANK INVENTORY, ABO/RH CROSS-MATCHING & TRANSFUSION SAFETY
@@ -200,8 +214,8 @@ def cross_match_and_reserve_blood_bag(
                 ),
             )
     elif bag.component_type == BloodComponentTypeEnum.FFP:
-        # For Plasma (FFP), AB is the universal donor; otherwise group must match recipient's compatible plasma
-        if bag.blood_group not in {patient.blood_group, BloodGroupEnum.AB_POS, BloodGroupEnum.AB_NEG}:
+        compatible_plasma_donors = FFP_COMPATIBILITY_MATRIX.get(patient.blood_group, set())
+        if bag.blood_group not in compatible_plasma_donors:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
