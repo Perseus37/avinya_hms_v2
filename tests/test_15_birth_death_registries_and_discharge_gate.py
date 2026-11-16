@@ -93,6 +93,16 @@ def test_02_statutory_mccd_death_certification_releases_bed_closes_encounter_and
     assert "cannot be in the future" in future_res.json()["detail"].lower()
     enc_after_rejection = client.get(f"/v1/api/adt/encounters/{enc['id']}", headers=doctor_headers).json()
     assert enc_after_rejection["status"] == "ACTIVE"
+    ward_map = client.get("/v1/api/ip/beds/map-view", headers=superuser_headers)
+    assert ward_map.status_code == 200, ward_map.text
+    rejected_bed = next(
+        bed
+        for ward in ward_map.json()
+        for room in ward["rooms"]
+        for bed in room["beds"]
+        if bed["id"] == bed_id
+    )
+    assert rejected_bed["status"] == "OCCUPIED"
 
     d_res = client.post(
         "/v1/api/registries/deaths",
