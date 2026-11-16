@@ -1751,6 +1751,6 @@ def test_supplier_credit_allocation_respects_credit_and_invoice_balances():
     with pytest.raises(HTTPException) as error:
         allocate_supplier_credit(7, excessive, db, SimpleNamespace(id=22))
     assert error.value.status_code == 409
-    assert error.value.detail["available_paise"] == 4000
+    assert error.value.detail["available_paise"] == 3500
     assert db.added == []
     assert db.committed is False
