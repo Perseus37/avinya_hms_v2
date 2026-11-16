@@ -187,10 +187,13 @@ def seed_universal_hospital_data(
     perm_map = ensure_permissions_exist(db)
 
     if db.query(User).first():
-        # Idempotently grant the tenant-branding permission to existing system admins.
+        # Idempotently grant newly introduced permissions to roles in existing tenants.
         existing_admin_role = db.query(Role).filter(Role.code == "ROLE_ADMIN").first()
         if existing_admin_role and perm_map["config:write"] not in existing_admin_role.permissions:
             existing_admin_role.permissions.append(perm_map["config:write"])
+        existing_billing_role = db.query(Role).filter(Role.code == "ROLE_BILLING").first()
+        if existing_billing_role and perm_map["finance:read"] not in existing_billing_role.permissions:
+            existing_billing_role.permissions.append(perm_map["finance:read"])
         db.commit()
         return False
 
