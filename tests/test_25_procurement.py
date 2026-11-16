@@ -1798,3 +1798,29 @@ def test_existing_tenant_seed_grants_new_finance_read_to_billing_role():
     assert permission_map["config:write"] in admin_role.permissions
     assert permission_map["finance:read"] in billing_role.permissions
     assert db.committed is True
+
+
+def test_purchase_return_rejects_duplicate_grn_item_lines(client, superuser_headers):
+    response = client.post(
+        "/v1/api/procurement/returns",
+        headers=superuser_headers,
+        json={
+            "grn_id": 9999,
+            "vendor_id": 9999,
+            "items": [
+                {
+                    "grn_item_id": 9999,
+                    "return_quantity": 1,
+                    "return_reason": "Damaged item",
+                },
+                {
+                    "grn_item_id": 9999,
+                    "return_quantity": 1,
+                    "return_reason": "Damaged item",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Each GRN item may appear only once" in response.text
