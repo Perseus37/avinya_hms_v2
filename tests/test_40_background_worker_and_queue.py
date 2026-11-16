@@ -26,13 +26,15 @@ class FakeRedis:
     """In-memory Redis mock for queue and task testing."""
 
     def __init__(self):
+        self._pipeline_transactions = []
         self._hashes = {}
         self._lists = {}
         self._zsets = {}
         self._strings = {}
         self._expirations = []
 
-    def pipeline(self):
+    def pipeline(self, transaction=True):
+        self._pipeline_transactions.append(transaction)
         return self
 
     def hset(self, key, *args, mapping=None, **kwargs):
@@ -229,6 +231,7 @@ def test_task_failure_and_dead_letter_routing(fake_redis):
     assert status["status"] == "RETRYING"
     assert status["retries"] == 1
     assert task_id in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
+    assert fake_redis._pipeline_transactions[-1] is True
 
     # 2nd failure -> retry 2
     mark_task_failed(task_id, "Connection timeout 2")
@@ -241,6 +244,8 @@ def test_task_failure_and_dead_letter_routing(fake_redis):
     status = get_task_status(task_id)
     assert status["status"] == "FAILED"
     assert task_id in fake_redis._lists.get(KEY_DEAD_LETTER, [])
+    assert fake_redis._pipeline_transactions[-1] is True
+    assert (f"{KEY_TASK_PREFIX}{task_id}", 86400) in fake_redis._expirations
 
 
 def test_worker_burst_execution(fake_redis, monkeypatch):
