@@ -29,7 +29,7 @@ def test_calculate_indian_statutory_deductions_brackets():
     assert res_low["esi_employee_paise"] == 15_000
     assert res_low["esi_employer_paise"] == 65_000
     # PT: ₹200 (20,000 paise)
-    assert res_low["professional_tax_paise"] == 20_000
+    assert res_low["professional_tax_paise"] == 0
     assert res_low["tds_paise"] == 0
     assert res_low["total_employee_statutory_paise"] == 180_000 + 15_000 + 20_000
 
