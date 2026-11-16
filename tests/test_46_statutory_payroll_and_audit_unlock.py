@@ -116,7 +116,7 @@ def test_statutory_payroll_api_workflow_and_payslip(
         "include_statutory_deductions": True,
         "pf_opt_out": False,
         "custom_tds_paise": 50_000,
-        "pt_state": "KA",
+        "pt_state": " ka ",
     }
     line_resp = client.post(
         f"/v1/api/workforce/payroll-periods/{period_id}/lines",
