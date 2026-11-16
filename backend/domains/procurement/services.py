@@ -371,6 +371,11 @@ def process_purchase_return(
 
     validated_items = []
     total_credit_paise = 0
+    requested_by_grn_item = {}
+    for item in return_items:
+        requested_by_grn_item[item.grn_item_id] = (
+            requested_by_grn_item.get(item.grn_item_id, 0) + item.return_quantity
+        )
     for item in return_items:
         grn_item = db.execute(
             select(GoodsReceiptItem)
@@ -386,7 +391,10 @@ def process_purchase_return(
             select(func.coalesce(func.sum(PurchaseReturnItem.return_quantity), 0))
             .where(PurchaseReturnItem.grn_item_id == grn_item.id)
         ).scalar_one()
-        if already_returned + item.return_quantity > grn_item.accepted_quantity:
+        if (
+            already_returned + requested_by_grn_item[grn_item.id]
+            > grn_item.accepted_quantity
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="Return quantity exceeds the remaining accepted quantity for this GRN item.",
