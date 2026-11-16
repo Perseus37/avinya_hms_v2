@@ -162,11 +162,11 @@ def get_task_status(task_id: str) -> Optional[dict[str, Any]]:
 
 
 _PROMOTE_SCHEDULED_TASK_LUA = """
--- Expired or legacy task hashes must not be recreated as partial QUEUED tasks.
--- Lua makes the existence check, schedule removal, and promotion one transition.
-local task_exists = redis.call("EXISTS", KEYS[3])
+-- Only scheduled/retrying tasks may be promoted. Do not recreate missing
+-- metadata or re-enqueue terminal/otherwise transitioned tasks from stale IDs.
+local status = redis.call("HGET", KEYS[3], "status")
 local removed = redis.call("ZREM", KEYS[1], ARGV[1])
-if removed == 1 and task_exists == 1 then
+if removed == 1 and (status == "SCHEDULED" or status == "RETRYING") then
     redis.call("RPUSH", KEYS[2], ARGV[1])
     redis.call("HSET", KEYS[3], "status", "QUEUED")
     return 1
