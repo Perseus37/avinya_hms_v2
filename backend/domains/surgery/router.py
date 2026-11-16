@@ -103,14 +103,25 @@ def schedule_surgery(
     # Use the refreshed, locked ORM instance for the new schedule and conflict text.
     theatre = locked_theatre
 
-    locked_surgeon = db.execute(
-        select(User)
-        .where(User.id == payload.lead_surgeon_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one_or_none()
-    if locked_surgeon is None:
-        raise HTTPException(status_code=404, detail="Lead surgeon not found.")
+    # Lock all assigned clinicians in ascending user-id order. This prevents
+    # overlapping bookings for either the lead surgeon or anesthetist and keeps
+    # lock acquisition deterministic when two clinicians are swapped between cases.
+    clinician_ids = sorted({
+        user_id for user_id in (payload.lead_surgeon_id, payload.anesthetist_id)
+        if user_id is not None
+    })
+    locked_clinicians = {}
+    for clinician_id in clinician_ids:
+        clinician = db.execute(
+            select(User)
+            .where(User.id == clinician_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if clinician is None:
+            role = "Lead surgeon" if clinician_id == payload.lead_surgeon_id else "Anesthetist"
+            raise HTTPException(status_code=404, detail=f"{role} not found.")
+        locked_clinicians[clinician_id] = clinician
 
     # The resource locks above close the empty-result race; this query checks
     # the protected interval against bookings committed by the prior lock holder.
@@ -121,6 +132,10 @@ def schedule_surgery(
             or_(
                 SurgicalSchedule.theatre_id == payload.theatre_id,
                 SurgicalSchedule.lead_surgeon_id == payload.lead_surgeon_id,
+                *(
+                    [SurgicalSchedule.anesthetist_id == payload.anesthetist_id]
+                    if payload.anesthetist_id is not None else []
+                ),
             ),
             and_(
                 SurgicalSchedule.scheduled_start_time < end_utc,
@@ -139,6 +154,14 @@ def schedule_surgery(
             raise HTTPException(
                 status_code=409,
                 detail="Surgeon Scheduling Conflict: Lead surgeon is already booked for another surgery during this window.",
+            )
+        if (
+            payload.anesthetist_id is not None
+            and overlap_conflict.anesthetist_id == payload.anesthetist_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Anesthetist Scheduling Conflict: Anesthetist is already booked for another surgery during this window.",
             )
 
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
