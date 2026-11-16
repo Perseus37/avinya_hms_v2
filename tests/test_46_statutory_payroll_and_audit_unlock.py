@@ -155,6 +155,10 @@ def test_statutory_payroll_api_workflow_and_payslip(
     history_items = history_resp.json()["items"]
     assert len(history_items) == 1
     assert json.loads(history_items[0]["input_snapshot"])["pt_state"] == "KA"
+    output_snapshot = json.loads(history_items[0]["output_snapshot"])
+    assert output_snapshot["professional_tax_paise"] == 0
+    assert output_snapshot["statutory_details"]["state"] == "KA"
+    assert output_snapshot["statutory_details"]["payroll_period"] == "2026-01"
 
     # 4. Fetch Structured Payslip
     payslip_resp = client.get(
