@@ -677,6 +677,54 @@ def test_federation_pointer_sync_propagates_control_plane_commit_failure():
     control_db.rollback.assert_called_once()
 
 
+def test_federation_pointer_sync_removes_stale_critical_allergy_pointer(monkeypatch):
+    """A cleared critical allergy must not remain discoverable via a stale pointer."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import backend.domains.federation.router as federation_router
+    from backend.domains.federation.router import sync_patient_pointer
+    from backend.domains.policies.models import FederationPolicyEnum
+
+    pointer = SimpleNamespace(has_critical_allergies=True)
+    control_db = MagicMock()
+    control_db.execute.return_value.scalar_one_or_none.return_value = pointer
+    tenant_db = MagicMock()
+    patient = SimpleNamespace(
+        id=78,
+        mrn="ALLERGY-CLEARED-001",
+        phone_number="9876501234",
+        abha_number=None,
+        allow_network_sharing=True,
+        date_of_birth=None,
+    )
+    monkeypatch.setattr(
+        federation_router,
+        "evaluate_tenant_data_use",
+        lambda *args, **kwargs: SimpleNamespace(allowed=True),
+    )
+    monkeypatch.setattr(
+        federation_router,
+        "_get_branch_policy",
+        lambda _db: SimpleNamespace(
+            federation_sharing_mode=FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY
+        ),
+    )
+
+    assert sync_patient_pointer(
+        control_db=control_db,
+        branch_code="AUDIT-BRANCH",
+        subdomain_slug="audit",
+        patient=patient,
+        has_critical_allergies=False,
+        tenant_db=tenant_db,
+    ) is True
+
+    control_db.delete.assert_called_once_with(pointer)
+    control_db.commit.assert_called_once()
+    assert pointer.has_critical_allergies is True
+
+
 def test_retention_hard_delete_respects_immutable_federation_transfer_logs():
     """AUD-001: transfer-log references prevent patient hard deletion."""
     from types import SimpleNamespace
