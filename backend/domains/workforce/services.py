@@ -12,8 +12,9 @@ from typing import Any, Optional
 # Indian Statutory Constants
 STATUTORY_PF_WAGE_CEILING_PAISE = 1_500_000  # ₹15,000 per month
 STATUTORY_ESI_GROSS_THRESHOLD_PAISE = 2_100_000  # ₹21,000 per month
-STANDARD_PROFESSIONAL_TAX_PAISE = 20_000  # ₹200 per month
-PROFESSIONAL_TAX_MIN_GROSS_PAISE = 1_500_000  # ₹15,000 per month
+# PT schedules are deliberately allow-listed. Add a state only after its
+# current statutory schedule and effective dates have been reviewed.
+SUPPORTED_PROFESSIONAL_TAX_STATES = {"KA"}
 
 EPF_EMPLOYEE_RATE = Decimal("0.12")
 EPF_EMPLOYER_RATE = Decimal("0.12")
@@ -32,6 +33,7 @@ def calculate_indian_statutory_deductions(
     uncapped_pf: bool = False,
     custom_tds_paise: int = 0,
     state: str = "KA",
+    payroll_period: str = "2026-01",
 ) -> dict[str, Any]:
     """
     Computes statutory deductions and employer contributions under Indian labour law.
@@ -89,9 +91,29 @@ def calculate_indian_statutory_deductions(
         esi_employer = 0
 
     # 3. Professional Tax (PT)
-    if gross_paise >= PROFESSIONAL_TAX_MIN_GROSS_PAISE:
-        pt_paise = STANDARD_PROFESSIONAL_TAX_PAISE
+    # Karnataka's current schedule (effective 2025-04): ₹25,000 monthly
+    # salary threshold; ₹200/month except ₹300 in February. Before the
+    # amendment, the threshold was ₹15,000 and the monthly amount ₹200.
+    normalized_state = state.strip().upper()
+    if normalized_state not in SUPPORTED_PROFESSIONAL_TAX_STATES:
+        raise ValueError(
+            f"Professional Tax schedule for state '{normalized_state}' is not configured; "
+            "payroll calculation is blocked rather than applying another state's rate."
+        )
+    try:
+        period_year, period_month = (int(part) for part in payroll_period.split("-"))
+        if len(payroll_period) != 7 or not (1 <= period_month <= 12):
+            raise ValueError
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("payroll_period must use YYYY-MM format.") from exc
+
+    if (period_year, period_month) >= (2025, 4):
+        pt_threshold_paise = 2_500_000  # ₹25,000
+        pt_paise = 30_000 if period_month == 2 else 20_000
     else:
+        pt_threshold_paise = 1_500_000  # ₹15,000
+        pt_paise = 20_000
+    if gross_paise < pt_threshold_paise:
         pt_paise = 0
 
     # 4. Tax Deducted at Source (TDS)
@@ -113,7 +135,8 @@ def calculate_indian_statutory_deductions(
         "tds_paise": tds_paise,
         "total_employee_statutory_paise": total_employee_statutory,
         "total_employer_statutory_paise": total_employer_statutory,
-        "state": state.upper(),
+        "state": normalized_state,
+        "payroll_period": payroll_period,
         "regime": "IN_STATUTORY_2026",
     }
 
