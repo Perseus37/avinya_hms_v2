@@ -2036,3 +2036,58 @@ def test_supplier_credit_allocation_fully_settles_invoice_and_ap_entry():
     assert expense.receipt_reference == "SUPPLIER-CREDIT-91"
     assert expense.updated_by_id == 18
 
+def test_supplier_credit_cannot_be_allocated_to_another_vendor_invoice():
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.models import (
+        SupplierCreditNote,
+        VendorMaster,
+        VendorInvoice,
+    )
+    from backend.domains.procurement.router import allocate_supplier_credit
+    from backend.domains.procurement.schemas import SupplierCreditAllocationCreate
+
+    credit = SimpleNamespace(id=51, vendor_id=7, amount_paise=5000)
+    vendor = SimpleNamespace(id=7)
+    invoice = SimpleNamespace(id=52, vendor_id=8)
+    queried = []
+
+    class Query:
+        def __init__(self, entity):
+            self.entity = entity
+        def filter(self, *_args):
+            return self
+        def with_for_update(self):
+            return self
+        def one_or_none(self):
+            queried.append(self.entity)
+            return {
+                SupplierCreditNote: credit,
+                VendorMaster: vendor,
+                VendorInvoice: invoice,
+            }[self.entity]
+
+    class FakeDb:
+        def query(self, entity):
+            return Query(entity)
+        def add(self, _value):
+            pytest.fail("Cross-vendor allocation must not write a ledger row.")
+        def commit(self):
+            pytest.fail("Cross-vendor allocation must not commit.")
+
+    with pytest.raises(HTTPException) as error:
+        allocate_supplier_credit(
+            51,
+            SupplierCreditAllocationCreate.model_validate({
+                "invoice_id": 52,
+                "amount_paise": 1000,
+                "reason": "Wrong supplier invoice",
+            }),
+            FakeDb(),
+            SimpleNamespace(id=9),
+        )
+
+    assert error.value.status_code == 422
+    assert queried == [SupplierCreditNote, VendorMaster, VendorInvoice]
+
