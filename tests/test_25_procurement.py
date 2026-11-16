@@ -1653,3 +1653,104 @@ def test_billing_role_can_read_supplier_credit_ledger(client, billing_headers):
     )
     assert response.status_code == 200, response.text
     assert {"items", "total", "page", "page_size"} <= set(response.json())
+
+
+def test_supplier_credit_allocation_respects_credit_and_invoice_balances():
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.procurement.models import (
+        SupplierCreditNote,
+        SupplierCreditAllocation,
+        VendorMaster,
+        VendorInvoice,
+        VendorInvoiceStatusEnum,
+    )
+    from backend.domains.procurement.router import allocate_supplier_credit
+    from backend.domains.procurement.schemas import SupplierCreditAllocationCreate
+
+    def make_db():
+        credit = SimpleNamespace(id=7, vendor_id=3, amount_paise=5000)
+        vendor = SimpleNamespace(id=3)
+        invoice = SimpleNamespace(
+            id=11,
+            vendor_id=3,
+            status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            linked_expense_id=19,
+            total_amount_paise=10000,
+        )
+        expense = SimpleNamespace(
+            id=19,
+            status=ExpenseStatusEnum.APPROVED,
+            amount_paise=10000,
+            receipt_reference=None,
+            updated_by_id=None,
+        )
+
+        class Query:
+            def __init__(self, row=None, scalar_value=None):
+                self.row = row
+                self.scalar_value = scalar_value
+            def filter(self, *_args):
+                return self
+            def with_for_update(self):
+                return self
+            def one_or_none(self):
+                return self.row
+            def scalar(self):
+                return self.scalar_value
+
+        class FakeDb:
+            def __init__(self):
+                self.rows = {
+                    SupplierCreditNote: credit,
+                    VendorMaster: vendor,
+                    VendorInvoice: invoice,
+                    ExpenseRecord: expense,
+                }
+                # Existing credit-note allocations, invoice payments,
+                # invoice credits, and outstanding payment-request reservations.
+                self.aggregates = iter([1000, 2000, 1000, 3000])
+                self.added = []
+                self.committed = False
+            def query(self, entity):
+                if entity in self.rows:
+                    return Query(row=self.rows[entity])
+                return Query(scalar_value=next(self.aggregates))
+            def add(self, value):
+                self.added.append(value)
+            def flush(self):
+                pass
+            def commit(self):
+                self.committed = True
+
+        return FakeDb(), credit, invoice, expense
+
+    db, credit, invoice, expense = make_db()
+    payload = SupplierCreditAllocationCreate.model_validate({
+        "invoice_id": 11,
+        "amount_paise": 2500,
+        "reason": "Credit for returned stock",
+    })
+    result = allocate_supplier_credit(7, payload, db, SimpleNamespace(id=22))
+    assert result["remaining_credit_paise"] == 1500
+    assert result["invoice_outstanding_paise"] == 4500
+    assert isinstance(db.added[0], SupplierCreditAllocation)
+    assert db.added[0].amount_paise == 2500
+    assert invoice.status == VendorInvoiceStatusEnum.MATCHED_APPROVED
+    assert expense.status == ExpenseStatusEnum.APPROVED
+    assert db.committed is True
+
+    db, _credit, _invoice, _expense = make_db()
+    excessive = SupplierCreditAllocationCreate.model_validate({
+        "invoice_id": 11,
+        "amount_paise": 5000,
+        "reason": "Credit exceeds available balance",
+    })
+    with pytest.raises(HTTPException) as error:
+        allocate_supplier_credit(7, excessive, db, SimpleNamespace(id=22))
+    assert error.value.status_code == 409
+    assert error.value.detail["available_paise"] == 4000
+    assert db.added == []
+    assert db.committed is False
