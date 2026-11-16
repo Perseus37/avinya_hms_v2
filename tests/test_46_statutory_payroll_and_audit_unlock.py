@@ -15,7 +15,7 @@ from backend.domains.workforce.services import calculate_indian_statutory_deduct
 
 
 def test_calculate_indian_statutory_deductions_brackets():
-    # 1. Low salary: Gross <= ₹21,000 (ESI applies, PF on basic, PT applies if >= ₹15,000)
+    # 1. Low salary: Gross ₹20,000 (ESI applies; Karnataka PT exempt below ₹25,000)
     # Salary = ₹20,000 (2,000,000 paise)
     res_low = calculate_indian_statutory_deductions(
         gross_paise=2_000_000,
@@ -28,10 +28,10 @@ def test_calculate_indian_statutory_deductions_brackets():
     # ESI: 0.75% of 2,000,000 = 15,000 paise
     assert res_low["esi_employee_paise"] == 15_000
     assert res_low["esi_employer_paise"] == 65_000
-    # PT: ₹200 (20,000 paise)
+    # Karnataka PT: exempt below ₹25,000 under the current schedule.
     assert res_low["professional_tax_paise"] == 0
     assert res_low["tds_paise"] == 0
-    assert res_low["total_employee_statutory_paise"] == 180_000 + 15_000 + 20_000
+    assert res_low["total_employee_statutory_paise"] == 180_000 + 15_000
 
     # 2. High salary: Gross > ₹21,000 (ESI exempt, PF capped at ceiling, custom TDS)
     # Salary = ₹50,000 (5,000,000 paise)
