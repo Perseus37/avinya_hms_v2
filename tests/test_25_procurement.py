@@ -2091,3 +2091,19 @@ def test_supplier_credit_cannot_be_allocated_to_another_vendor_invoice():
     assert error.value.status_code == 422
     assert queried == [SupplierCreditNote, VendorMaster, VendorInvoice]
 
+def test_supplier_credit_ledger_sqlite_metadata_installs_immutable_triggers(multi_tenant_env):
+    from sqlalchemy import text
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    with engine.connect() as connection:
+        trigger_names = set(connection.execute(text(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+        )).scalars())
+
+    assert {
+        "trg_procurement_supplier_credit_notes_immutable_update",
+        "trg_procurement_supplier_credit_notes_immutable_delete",
+        "trg_procurement_supplier_credit_allocations_immutable_update",
+        "trg_procurement_supplier_credit_allocations_immutable_delete",
+    }.issubset(trigger_names)
+
