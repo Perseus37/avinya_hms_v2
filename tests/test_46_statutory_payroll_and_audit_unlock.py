@@ -127,6 +127,15 @@ def test_statutory_payroll_api_workflow_and_payslip(
     line_data = line_resp.json()
     line_id = line_data["id"]
 
+    # Unsupported state schedules must fail closed at the API boundary.
+    unsupported_state_resp = client.post(
+        f"/v1/api/workforce/payroll-periods/{period_id}/lines",
+        headers=superuser_headers,
+        json={**line_payload, "pt_state": "AP"},
+    )
+    assert unsupported_state_resp.status_code == 422
+    assert "not configured" in unsupported_state_resp.json()["detail"]
+
     assert line_data["prorated_fixed_paise"] == 3_000_000
     assert line_data["gross_paise"] == 3_000_000
     assert line_data["pf_employee_paise"] == 180_000
