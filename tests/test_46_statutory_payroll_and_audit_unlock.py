@@ -145,6 +145,17 @@ def test_statutory_payroll_api_workflow_and_payslip(
     # Net: 3,000,000 - (180,000 + 20,000 + 50,000) = 2,750,000
     assert line_data["net_paise"] == 2_750_000
 
+    # The immutable calculation event must retain the canonical state code
+    # used to select the statutory schedule, not the raw request spelling.
+    history_resp = client.get(
+        f"/v1/api/workforce/payroll-lines/{line_id}/history",
+        headers=superuser_headers,
+    )
+    assert history_resp.status_code == 200, history_resp.text
+    history_items = history_resp.json()["items"]
+    assert len(history_items) == 1
+    assert json.loads(history_items[0]["input_snapshot"])["pt_state"] == "KA"
+
     # 4. Fetch Structured Payslip
     payslip_resp = client.get(
         f"/v1/api/workforce/payroll-lines/{line_id}/payslip",
