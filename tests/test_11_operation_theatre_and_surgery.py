@@ -272,3 +272,79 @@ def test_03_completing_surgery_auto_bills_procedure_ot_room_and_implants_and_pri
     assert "SURGICAL &amp; ANESTHESIA OPERATIVE RECORD" in print_res.text
     assert "ZIMMER-TI-2026-99" in print_res.text
     assert "Severe osteoarthritic changes" in print_res.text
+
+def test_surgery_booking_refreshes_locked_theatre_and_surgeon_rows():
+    from types import SimpleNamespace
+    from backend.domains.encounters.models import EncounterStatusEnum, PatientEncounter
+    from backend.domains.diagnostics.models import ServiceCatalog
+    from backend.domains.identity.models import User
+    from backend.domains.surgery.models import OperationTheatre
+    from backend.domains.surgery.router import schedule_surgery
+    from backend.domains.surgery.schemas import SurgicalScheduleCreate
+
+    encounter = SimpleNamespace(
+        id=31, patient_id=41, status=EncounterStatusEnum.ACTIVE
+    )
+    initially_loaded_theatre = SimpleNamespace(id=51, is_active=True, code="OT-OLD")
+    locked_theatre = SimpleNamespace(id=51, is_active=True, code="OT-REFRESHED")
+    procedure = SimpleNamespace(id=61, is_active=True)
+    surgeon = SimpleNamespace(id=2)
+
+    class Result:
+        def __init__(self, row=None):
+            self.row = row
+        def scalar_one_or_none(self):
+            return self.row
+        def scalars(self):
+            return self
+        def first(self):
+            return None
+
+    class FakeDb:
+        def __init__(self):
+            self.lock_statements = []
+            self.added = None
+            self.committed = False
+        def get(self, model, _identity):
+            if model is PatientEncounter:
+                return encounter
+            if model is OperationTheatre:
+                return initially_loaded_theatre
+            if model is ServiceCatalog:
+                return procedure
+            raise AssertionError(f"Unexpected model lookup: {model}")
+        def execute(self, statement):
+            self.lock_statements.append(statement)
+            if len(self.lock_statements) == 1:
+                return Result(locked_theatre)
+            if len(self.lock_statements) == 2:
+                return Result(surgeon)
+            if len(self.lock_statements) == 3:
+                return Result()
+            raise AssertionError("Unexpected extra SQL statement")
+        def add(self, value):
+            self.added = value
+        def commit(self):
+            self.committed = True
+        def refresh(self, _value):
+            pass
+
+    db = FakeDb()
+    payload = SurgicalScheduleCreate.model_validate({
+        "encounter_id": 31,
+        "theatre_id": 51,
+        "procedure_service_id": 61,
+        "lead_surgeon_id": 2,
+        "scheduled_start_time": "2026-12-10T10:00:00Z",
+        "scheduled_end_time": "2026-12-10T11:00:00Z",
+    })
+
+    result = schedule_surgery(payload, db, SimpleNamespace(id=1))
+
+    assert len(db.lock_statements) == 3
+    for statement in db.lock_statements[:2]:
+        assert statement._for_update_arg is not None
+        assert statement.get_execution_options()["populate_existing"] is True
+    assert result.theatre_id == locked_theatre.id
+    assert db.added is result
+    assert db.committed is True
