@@ -370,3 +370,46 @@ def test_scheduled_promotion_executes_atomically_on_real_redis():
     finally:
         client.delete(scheduled_key, pending_key, task_key, orphan_task_key, completed_task_key)
         client.close()
+
+def test_retry_and_dead_letter_transitions_execute_on_real_redis(monkeypatch):
+    """Opt-in proof that retry and terminal failure pipelines work with Redis."""
+    import os
+    import uuid
+    import redis
+    import backend.core.queue as queue
+
+    redis_url = os.getenv("TEST_REDIS_URL")
+    if not redis_url:
+        pytest.skip("TEST_REDIS_URL is not configured")
+
+    client = redis.Redis.from_url(redis_url, decode_responses=True)
+    task_id = f"failure-{uuid.uuid4().hex}"
+    task_key = f"{KEY_TASK_PREFIX}{task_id}"
+    monkeypatch.setattr(queue, "get_redis", lambda: client)
+    try:
+        client.hset(task_key, mapping={
+            "task_name": "integration.failure",
+            "status": "PROCESSING",
+            "retries": "0",
+            "max_retries": "1",
+        })
+
+        mark_task_failed(task_id, "first failure")
+        retry_state = client.hgetall(task_key)
+        assert retry_state["status"] == "RETRYING"
+        assert retry_state["retries"] == "1"
+        assert client.zscore(KEY_SCHEDULED_TASKS, task_id) is not None
+        assert task_id not in client.lrange(KEY_DEAD_LETTER, 0, -1)
+
+        mark_task_failed(task_id, "terminal failure")
+        failed_state = client.hgetall(task_key)
+        assert failed_state["status"] == "FAILED"
+        assert failed_state["retries"] == "2"
+        assert task_id in client.lrange(KEY_DEAD_LETTER, 0, -1)
+        assert client.zscore(KEY_SCHEDULED_TASKS, task_id) is None
+        assert 0 < client.ttl(task_key) <= 86400
+    finally:
+        client.zrem(KEY_SCHEDULED_TASKS, task_id)
+        client.lrem(KEY_DEAD_LETTER, 0, task_id)
+        client.delete(task_key)
+        client.close()
