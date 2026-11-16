@@ -1754,3 +1754,47 @@ def test_supplier_credit_allocation_respects_credit_and_invoice_balances():
     assert error.value.detail["available_paise"] == 3500
     assert db.added == []
     assert db.committed is False
+
+
+def test_existing_tenant_seed_grants_new_finance_read_to_billing_role():
+    from types import SimpleNamespace
+    from backend.core.seed import GRANULAR_PERMISSIONS, seed_universal_hospital_data
+    from backend.domains.identity.models import Permission, Role, User
+
+    permissions = [SimpleNamespace(code=code) for code, _desc, _module in GRANULAR_PERMISSIONS]
+    admin_role = SimpleNamespace(permissions=[])
+    billing_role = SimpleNamespace(permissions=[])
+    role_results = iter([admin_role, billing_role])
+
+    class Query:
+        def __init__(self, entity):
+            self.entity = entity
+        def all(self):
+            return permissions
+        def first(self):
+            if self.entity is User:
+                return SimpleNamespace(id=1)
+            if self.entity is Role:
+                return next(role_results)
+            return None
+        def filter(self, *_args):
+            return self
+
+    class FakeDb:
+        committed = False
+        def query(self, entity):
+            return Query(entity)
+        def flush(self):
+            pass
+        def commit(self):
+            self.committed = True
+
+    db = FakeDb()
+    assert seed_universal_hospital_data(
+        db, "Existing Hospital", "EXIST-01", "admin@example.test", "unused"
+    ) is False
+
+    permission_map = {permission.code: permission for permission in permissions}
+    assert permission_map["config:write"] in admin_role.permissions
+    assert permission_map["finance:read"] in billing_role.permissions
+    assert db.committed is True
