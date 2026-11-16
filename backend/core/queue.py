@@ -272,7 +272,11 @@ def mark_task_failed(task_id: str, error_message: str) -> None:
         if retries <= max_retries:
             backoff_delay = 5 * (2 ** (retries - 1))  # 5s, 10s, 20s
             next_run = time.time() + backoff_delay
-            r.hset(
+            # Keep retry metadata and its scheduled-set member in one Redis
+            # transaction. Otherwise a worker/process crash between HSET and
+            # ZADD can strand a task permanently in RETRYING state.
+            pipe = r.pipeline(transaction=True)
+            pipe.hset(
                 f"{KEY_TASK_PREFIX}{task_id}",
                 mapping={
                     "status": "RETRYING",
@@ -280,7 +284,8 @@ def mark_task_failed(task_id: str, error_message: str) -> None:
                     "error": str(error_message)[:1000],
                 },
             )
-            r.zadd(KEY_SCHEDULED_TASKS, {task_id: next_run})
+            pipe.zadd(KEY_SCHEDULED_TASKS, {task_id: next_run})
+            pipe.execute()
             QUEUE_JOBS_TOTAL.labels(job_name=task_name, status="retried").inc()
             logger.warning(
                 "Task %s (%s) failed (attempt %d/%d): %s. Retrying in %ds.",
@@ -292,7 +297,11 @@ def mark_task_failed(task_id: str, error_message: str) -> None:
                 backoff_delay,
             )
         else:
-            r.hset(
+            # Terminal metadata, dead-letter routing, and retention must
+            # commit together so a crash cannot leave a FAILED task outside
+            # the dead-letter queue or retain its payload indefinitely.
+            pipe = r.pipeline(transaction=True)
+            pipe.hset(
                 f"{KEY_TASK_PREFIX}{task_id}",
                 mapping={
                     "status": "FAILED",
@@ -301,9 +310,10 @@ def mark_task_failed(task_id: str, error_message: str) -> None:
                     "failed_at": str(time.time()),
                 },
             )
-            r.rpush(KEY_DEAD_LETTER, task_id)
+            pipe.rpush(KEY_DEAD_LETTER, task_id)
             # N-22: Expire dead-letter payload after 24 hours to prevent stale secret retention
-            r.expire(f"{KEY_TASK_PREFIX}{task_id}", 86400)
+            pipe.expire(f"{KEY_TASK_PREFIX}{task_id}", 86400)
+            pipe.execute()
             QUEUE_JOBS_TOTAL.labels(job_name=task_name, status="failed").inc()
             logger.error(
                 "Task %s (%s) exceeded max retries (%d). Moved to dead-letter queue. Error: %s",
