@@ -419,3 +419,19 @@ def test_overlapping_surgeries_cannot_reuse_anesthetist(
     )
     assert conflict.status_code == 409
     assert "anesthetist" in conflict.json()["message"].lower()
+
+    # A clinician cannot be double-booked by assigning them under the other role.
+    cross_role_conflict = client.post(
+        "/v1/api/ot/surgeries",
+        headers=doctor_headers,
+        json={
+            "encounter_id": second_enc["id"],
+            "theatre_id": second_theatre["id"],
+            "procedure_service_id": proc["id"],
+            "lead_surgeon_id": 1,
+            "scheduled_start_time": "2026-12-20T10:30:00Z",
+            "scheduled_end_time": "2026-12-20T11:30:00Z",
+        },
+    )
+    assert cross_role_conflict.status_code == 409
+    assert "surgeon" in cross_role_conflict.json()["message"].lower()
