@@ -696,7 +696,7 @@ def test_federation_pointer_sync_removes_stale_critical_allergy_pointer(monkeypa
         phone_number="9876501234",
         abha_number=None,
         allow_network_sharing=True,
-        date_of_birth=None,
+        date_of_birth=datetime(1980, 1, 1, tzinfo=timezone.utc),
     )
     monkeypatch.setattr(
         federation_router,
