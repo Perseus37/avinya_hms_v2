@@ -115,7 +115,15 @@ class PayrollLineCreate(BaseModel):
     pf_opt_out: bool = False
     uncapped_pf: bool = False
     custom_tds_paise: int = Field(default=0, ge=0, le=2_000_000_000)
-    pt_state: str = Field(default="KA", max_length=10)
+    pt_state: str = Field(default="KA", min_length=2, max_length=10)
+
+    @field_validator("pt_state")
+    @classmethod
+    def normalize_pt_state(cls, value: str):
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("pt_state cannot be blank.")
+        return normalized
 
     @field_validator("calculation_note")
     @classmethod
