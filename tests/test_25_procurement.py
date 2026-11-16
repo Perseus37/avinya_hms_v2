@@ -1852,3 +1852,41 @@ def test_purchase_return_service_rejects_duplicate_grn_item_ids_before_database_
 
     assert error.value.status_code == 422
     assert "Each GRN item may appear only once" in error.value.detail
+
+
+def test_negative_purchase_return_expense_cannot_be_marked_paid():
+    import pytest
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+    from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.finance.router import mark_expense_paid
+
+    credit_adjustment = SimpleNamespace(
+        id=31,
+        amount_paise=-1250,
+        status=ExpenseStatusEnum.APPROVED,
+    )
+
+    class Query:
+        def filter(self, *_args):
+            return self
+        def with_for_update(self):
+            return self
+        def one_or_none(self):
+            return credit_adjustment
+
+    class FakeDb:
+        def query(self, entity):
+            assert entity is ExpenseRecord
+            return Query()
+
+    with pytest.raises(HTTPException) as error:
+        mark_expense_paid(
+            31,
+            "RETURN-CREDIT-31",
+            FakeDb(),
+            SimpleNamespace(id=8),
+        )
+
+    assert error.value.status_code == 409
+    assert "positive-value expenses" in error.value.detail
