@@ -51,6 +51,9 @@ class FakeRedis:
     def hgetall(self, key):
         return dict(self._hashes.get(key, {}))
 
+    def hget(self, key, field):
+        return self._hashes.get(key, {}).get(field)
+
     def expire(self, key, seconds):
         self._expirations.append((key, seconds))
         return self
@@ -106,9 +109,9 @@ class FakeRedis:
         # operation so unit tests exercise its remove/enqueue/status contract.
         scheduled_key, pending_key, task_key = args[:3]
         task_id = args[3]
-        task_exists = bool(self.hgetall(task_key))
+        status = self.hget(task_key, "status")
         removed = self.zrem(scheduled_key, task_id)
-        if removed and task_exists:
+        if removed and status in ("SCHEDULED", "RETRYING"):
             self.rpush(pending_key, task_id)
             self.hset(task_key, "status", "QUEUED")
             return 1
@@ -182,6 +185,21 @@ def test_scheduled_promotion_discards_orphaned_task_ids(fake_redis):
     assert orphan_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
     assert orphan_id not in fake_redis._lists.get(KEY_PENDING_TASKS, [])
     assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{orphan_id}") == {}
+
+
+def test_scheduled_promotion_discards_stale_terminal_task_ids(fake_redis):
+    completed_id = "completed-task-stale-schedule-member"
+    fake_redis.hset(f"{KEY_TASK_PREFIX}{completed_id}", mapping={
+        "id": completed_id,
+        "task_name": "sample.task",
+        "status": "COMPLETED",
+    })
+    fake_redis.zadd(KEY_SCHEDULED_TASKS, {completed_id: time.time() - 1})
+
+    assert promote_scheduled_tasks(fake_redis) == 0
+    assert completed_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
+    assert completed_id not in fake_redis._lists.get(KEY_PENDING_TASKS, [])
+    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{completed_id}")["status"] == "COMPLETED"
 
 
 def test_dequeue_and_completion_lifecycle(fake_redis):
@@ -289,12 +307,16 @@ def test_scheduled_promotion_executes_atomically_on_real_redis():
     task_id = f"task-{suffix}"
     orphan_id = f"orphan-{suffix}"
     orphan_task_key = f"{task_key}:missing"
+    completed_id = f"completed-{suffix}"
+    completed_task_key = f"{task_key}:completed"
     try:
         client.zadd(scheduled_key, {
             task_id: time.time() - 1,
             orphan_id: time.time() - 1,
+            completed_id: time.time() - 1,
         })
         client.hset(task_key, mapping={"status": "SCHEDULED"})
+        client.hset(completed_task_key, mapping={"status": "COMPLETED"})
 
         orphan_result = client.eval(
             _PROMOTE_SCHEDULED_TASK_LUA,
@@ -303,6 +325,14 @@ def test_scheduled_promotion_executes_atomically_on_real_redis():
             pending_key,
             orphan_task_key,
             orphan_id,
+        )
+        completed_result = client.eval(
+            _PROMOTE_SCHEDULED_TASK_LUA,
+            3,
+            scheduled_key,
+            pending_key,
+            completed_task_key,
+            completed_id,
         )
         first = client.eval(
             _PROMOTE_SCHEDULED_TASK_LUA,
@@ -322,13 +352,16 @@ def test_scheduled_promotion_executes_atomically_on_real_redis():
         )
 
         assert orphan_result == 0
+        assert completed_result == 0
         assert first == 1
         assert second == 0
         assert client.lrange(pending_key, 0, -1) == [task_id]
         assert client.hget(task_key, "status") == "QUEUED"
+        assert client.hget(completed_task_key, "status") == "COMPLETED"
         assert client.zscore(scheduled_key, task_id) is None
         assert client.zscore(scheduled_key, orphan_id) is None
+        assert client.zscore(scheduled_key, completed_id) is None
         assert client.exists(orphan_task_key) == 0
     finally:
-        client.delete(scheduled_key, pending_key, task_key, orphan_task_key)
+        client.delete(scheduled_key, pending_key, task_key, orphan_task_key, completed_task_key)
         client.close()
