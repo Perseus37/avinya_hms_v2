@@ -244,6 +244,7 @@ def test_task_failure_and_dead_letter_routing(fake_redis):
     status = get_task_status(task_id)
     assert status["status"] == "FAILED"
     assert task_id in fake_redis._lists.get(KEY_DEAD_LETTER, [])
+    assert task_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
     assert fake_redis._pipeline_transactions[-1] is True
     assert (f"{KEY_TASK_PREFIX}{task_id}", 86400) in fake_redis._expirations
 
