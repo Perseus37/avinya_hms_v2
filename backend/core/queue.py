@@ -311,6 +311,8 @@ def mark_task_failed(task_id: str, error_message: str) -> None:
                 },
             )
             pipe.rpush(KEY_DEAD_LETTER, task_id)
+            # A terminal task must not remain eligible for scheduled promotion.
+            pipe.zrem(KEY_SCHEDULED_TASKS, task_id)
             # N-22: Expire dead-letter payload after 24 hours to prevent stale secret retention
             pipe.expire(f"{KEY_TASK_PREFIX}{task_id}", 86400)
             pipe.execute()
