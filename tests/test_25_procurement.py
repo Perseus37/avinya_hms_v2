@@ -1641,7 +1641,7 @@ def test_supplier_payment_request_rejects_amount_above_balance_after_credits():
         )
     assert error.value.status_code == 409
     assert error.value.detail["allocated_credit_paise"] == 2000
-    assert error.value.detail["available_paise"] == 4000
+    assert error.value.detail["available_paise"] == 3500
 
 
 
@@ -1711,7 +1711,7 @@ def test_supplier_credit_allocation_respects_credit_and_invoice_balances():
                 }
                 # Existing credit-note allocations, invoice payments,
                 # invoice credits, and outstanding payment-request reservations.
-                self.aggregates = iter([1000, 2000, 1000, 3000])
+                self.aggregates = iter([1000, 2000, 1000, 3500])
                 self.added = []
                 self.committed = False
             def query(self, entity):
@@ -1745,7 +1745,7 @@ def test_supplier_credit_allocation_respects_credit_and_invoice_balances():
     db, _credit, _invoice, _expense = make_db()
     excessive = SupplierCreditAllocationCreate.model_validate({
         "invoice_id": 11,
-        "amount_paise": 5000,
+        "amount_paise": 4000,
         "reason": "Credit exceeds available balance",
     })
     with pytest.raises(HTTPException) as error:
