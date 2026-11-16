@@ -55,6 +55,15 @@ class FakeRedis:
         self._expirations.append((key, seconds))
         return self
 
+    def hdel(self, key, *fields):
+        values = self._hashes.get(key, {})
+        removed = 0
+        for field in fields:
+            if field in values:
+                del values[field]
+                removed += 1
+        return removed
+
     def rpush(self, key, *values):
         if key not in self._lists:
             self._lists[key] = []
