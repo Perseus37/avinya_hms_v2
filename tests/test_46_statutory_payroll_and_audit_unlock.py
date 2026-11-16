@@ -131,7 +131,7 @@ def test_statutory_payroll_api_workflow_and_payslip(
     unsupported_state_resp = client.post(
         f"/v1/api/workforce/payroll-periods/{period_id}/lines",
         headers=superuser_headers,
-        json={**line_payload, "pt_state": "AP"},
+        json={**line_payload, "pt_state": " ap "},
     )
     assert unsupported_state_resp.status_code == 422
     assert "not configured" in unsupported_state_resp.json()["detail"]
