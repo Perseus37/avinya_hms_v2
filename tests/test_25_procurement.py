@@ -1824,3 +1824,31 @@ def test_purchase_return_rejects_duplicate_grn_item_lines(client, superuser_head
 
     assert response.status_code == 422
     assert "Each GRN item may appear only once" in response.text
+
+
+def test_purchase_return_service_rejects_duplicate_grn_item_ids_before_database_work():
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.services import process_purchase_return
+
+    class NoQueryDb:
+        def query(self, *_args, **_kwargs):
+            raise AssertionError("duplicate lines must be rejected before database access")
+
+    duplicate_items = [
+        SimpleNamespace(grn_item_id=41, return_quantity=2),
+        SimpleNamespace(grn_item_id=41, return_quantity=3),
+    ]
+
+    with pytest.raises(HTTPException) as error:
+        process_purchase_return(
+            NoQueryDb(),
+            vendor_id=9,
+            grn_id=17,
+            return_items=duplicate_items,
+            current_user_id=5,
+        )
+
+    assert error.value.status_code == 422
+    assert "Each GRN item may appear only once" in error.value.detail
