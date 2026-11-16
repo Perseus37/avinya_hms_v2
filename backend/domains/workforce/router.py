@@ -363,14 +363,18 @@ def calculate_payroll_line(
     gross = prorated + payload.additional_earnings_paise
 
     if payload.include_statutory_deductions:
-        stat = calculate_indian_statutory_deductions(
-            gross_paise=gross,
-            prorated_fixed_paise=prorated,
-            pf_opt_out=payload.pf_opt_out,
-            uncapped_pf=payload.uncapped_pf,
-            custom_tds_paise=payload.custom_tds_paise,
-            state=payload.pt_state,
-        )
+        try:
+            stat = calculate_indian_statutory_deductions(
+                gross_paise=gross,
+                prorated_fixed_paise=prorated,
+                pf_opt_out=payload.pf_opt_out,
+                uncapped_pf=payload.uncapped_pf,
+                custom_tds_paise=payload.custom_tds_paise,
+                state=payload.pt_state,
+                payroll_period=period.period_key,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         stat_deductions = stat["total_employee_statutory_paise"]
         pf_employee = stat["pf_employee_paise"]
         pf_employer = stat["pf_employer_paise"]
