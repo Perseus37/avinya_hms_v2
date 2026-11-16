@@ -1204,13 +1204,6 @@ def execute_supplier_payment_request(
         payload.payment_date, request_row.scheduled_date, now
     )
 
-    reference_key = request_row.payment_reference.strip().upper()
-    if db.query(SupplierPayment.id).filter(
-        SupplierPayment.vendor_id == request_row.vendor_id,
-        func.upper(func.trim(SupplierPayment.payment_reference)) == reference_key,
-    ).first():
-        raise HTTPException(status_code=409, detail="The supplier payment reference has already been recorded.")
-
     vendor = db.query(VendorMaster).filter(
         VendorMaster.id == request_row.vendor_id
     ).with_for_update().one_or_none()
@@ -1218,6 +1211,16 @@ def execute_supplier_payment_request(
         raise HTTPException(status_code=404, detail="Supplier not found.")
     if not vendor.is_active:
         raise HTTPException(status_code=409, detail="Inactive suppliers cannot receive payment execution.")
+
+    # Serialize reference checks with payment-request creation and any other
+    # execution for this supplier. The vendor row is the shared lock used by
+    # those workflows; checking before acquiring it leaves a check/insert race.
+    reference_key = request_row.payment_reference.strip().upper()
+    if db.query(SupplierPayment.id).filter(
+        SupplierPayment.vendor_id == vendor.id,
+        func.upper(func.trim(SupplierPayment.payment_reference)) == reference_key,
+    ).first():
+        raise HTTPException(status_code=409, detail="The supplier payment reference has already been recorded.")
     invoice_ids = sorted(row.invoice_id for row in request_row.allocations)
     invoices = db.query(VendorInvoice).filter(
         VendorInvoice.id.in_(invoice_ids)
