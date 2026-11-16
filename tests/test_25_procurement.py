@@ -1615,7 +1615,7 @@ def test_supplier_payment_request_rejects_amount_above_balance_after_credits():
 
     class FakeDb:
         def __init__(self):
-            self.aggregate_values = iter([1000, 2000, 3000])
+            self.aggregate_values = iter([1000, 2000, 3500])
         def query(self, entity):
             if entity is VendorMaster:
                 return Query(row=vendor)
