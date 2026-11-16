@@ -256,3 +256,51 @@ def test_completed_task_gets_bounded_terminal_retention(fake_redis):
 
     assert (f"{KEY_TASK_PREFIX}{task_id}", 3600) in fake_redis._expirations
     assert "payload" not in fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")
+
+
+def test_scheduled_promotion_executes_atomically_on_real_redis():
+    """Opt-in integration proof for the Lua transition against Redis itself."""
+    import os
+    import uuid
+    import redis
+    from backend.core.queue import _PROMOTE_SCHEDULED_TASK_LUA
+
+    redis_url = os.getenv("TEST_REDIS_URL")
+    if not redis_url:
+        pytest.skip("TEST_REDIS_URL is not configured")
+
+    client = redis.Redis.from_url(redis_url, decode_responses=True)
+    suffix = uuid.uuid4().hex
+    scheduled_key = f"avinya:test:{suffix}:scheduled"
+    pending_key = f"avinya:test:{suffix}:pending"
+    task_key = f"avinya:test:{suffix}:task"
+    task_id = f"task-{suffix}"
+    try:
+        client.zadd(scheduled_key, {task_id: time.time() - 1})
+        client.hset(task_key, mapping={"status": "SCHEDULED"})
+
+        first = client.eval(
+            _PROMOTE_SCHEDULED_TASK_LUA,
+            3,
+            scheduled_key,
+            pending_key,
+            task_key,
+            task_id,
+        )
+        second = client.eval(
+            _PROMOTE_SCHEDULED_TASK_LUA,
+            3,
+            scheduled_key,
+            pending_key,
+            task_key,
+            task_id,
+        )
+
+        assert first == 1
+        assert second == 0
+        assert client.lrange(pending_key, 0, -1) == [task_id]
+        assert client.hget(task_key, "status") == "QUEUED"
+        assert client.zscore(scheduled_key, task_id) is None
+    finally:
+        client.delete(scheduled_key, pending_key, task_key)
+        client.close()
