@@ -272,6 +272,33 @@ class SupplierCreditAllocation(Base):
     allocated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
 
 
+# Keep metadata-created SQLite databases append-only as well; Alembic installs
+# equivalent SQLite and PostgreSQL triggers for deployed databases.
+for _supplier_credit_table in (SupplierCreditNote.__table__, SupplierCreditAllocation.__table__):
+    event.listen(
+        _supplier_credit_table,
+        "after_create",
+        DDL(
+            f"""
+            CREATE TRIGGER trg_{_supplier_credit_table.name}_immutable_update
+            BEFORE UPDATE ON {_supplier_credit_table.name}
+            BEGIN SELECT RAISE(ABORT, 'Supplier credit ledger records are append-only'); END
+            """
+        ).execute_if(dialect="sqlite"),
+    )
+    event.listen(
+        _supplier_credit_table,
+        "after_create",
+        DDL(
+            f"""
+            CREATE TRIGGER trg_{_supplier_credit_table.name}_immutable_delete
+            BEFORE DELETE ON {_supplier_credit_table.name}
+            BEGIN SELECT RAISE(ABORT, 'Supplier credit ledger records are append-only'); END
+            """
+        ).execute_if(dialect="sqlite"),
+    )
+
+
 class StoreIndent(AuditMixin, Base):
     """Ward or Department request for consumables/medicines from the Central Pharmacy/Store either for ward stock or a specific patient."""
     __tablename__ = "procurement_indents"
