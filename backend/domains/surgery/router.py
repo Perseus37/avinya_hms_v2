@@ -131,11 +131,8 @@ def schedule_surgery(
             SurgicalSchedule.status != SurgeryStatusEnum.CANCELLED,
             or_(
                 SurgicalSchedule.theatre_id == payload.theatre_id,
-                SurgicalSchedule.lead_surgeon_id == payload.lead_surgeon_id,
-                *(
-                    [SurgicalSchedule.anesthetist_id == payload.anesthetist_id]
-                    if payload.anesthetist_id is not None else []
-                ),
+                SurgicalSchedule.lead_surgeon_id.in_(clinician_ids),
+                SurgicalSchedule.anesthetist_id.in_(clinician_ids),
             ),
             and_(
                 SurgicalSchedule.scheduled_start_time < end_utc,
@@ -150,18 +147,22 @@ def schedule_surgery(
                 status_code=409,
                 detail=f"OT Scheduling Conflict: Theatre '{theatre.code}' is already booked during this window.",
             )
-        if overlap_conflict.lead_surgeon_id == payload.lead_surgeon_id:
-            raise HTTPException(
-                status_code=409,
-                detail="Surgeon Scheduling Conflict: Lead surgeon is already booked for another surgery during this window.",
-            )
+        conflicting_clinicians = {
+            overlap_conflict.lead_surgeon_id,
+            overlap_conflict.anesthetist_id,
+        }
         if (
             payload.anesthetist_id is not None
-            and overlap_conflict.anesthetist_id == payload.anesthetist_id
+            and payload.anesthetist_id in conflicting_clinicians
         ):
             raise HTTPException(
                 status_code=409,
                 detail="Anesthetist Scheduling Conflict: Anesthetist is already booked for another surgery during this window.",
+            )
+        if payload.lead_surgeon_id in conflicting_clinicians:
+            raise HTTPException(
+                status_code=409,
+                detail="Surgeon Scheduling Conflict: Lead surgeon is already booked for another surgery during this window.",
             )
 
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
