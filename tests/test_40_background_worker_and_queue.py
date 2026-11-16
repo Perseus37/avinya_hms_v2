@@ -106,11 +106,13 @@ class FakeRedis:
         # operation so unit tests exercise its remove/enqueue/status contract.
         scheduled_key, pending_key, task_key = args[:3]
         task_id = args[3]
+        task_exists = bool(self.hgetall(task_key))
         removed = self.zrem(scheduled_key, task_id)
-        if removed:
+        if removed and task_exists:
             self.rpush(pending_key, task_id)
             self.hset(task_key, "status", "QUEUED")
-        return removed
+            return 1
+        return 0
 
     def set(self, key, value, ex=None):
         self._strings[key] = value
@@ -170,6 +172,16 @@ def test_scheduled_promotion_is_atomic_and_idempotent(fake_redis):
     assert fake_redis._lists[KEY_PENDING_TASKS].count(task_id) == 1
     assert task_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
     assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")["status"] == "QUEUED"
+
+
+def test_scheduled_promotion_discards_orphaned_task_ids(fake_redis):
+    orphan_id = "orphaned-task-without-metadata"
+    fake_redis.zadd(KEY_SCHEDULED_TASKS, {orphan_id: time.time() - 1})
+
+    assert promote_scheduled_tasks(fake_redis) == 0
+    assert orphan_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
+    assert orphan_id not in fake_redis._lists.get(KEY_PENDING_TASKS, [])
+    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{orphan_id}") == {}
 
 
 def test_dequeue_and_completion_lifecycle(fake_redis):
@@ -275,10 +287,23 @@ def test_scheduled_promotion_executes_atomically_on_real_redis():
     pending_key = f"avinya:test:{suffix}:pending"
     task_key = f"avinya:test:{suffix}:task"
     task_id = f"task-{suffix}"
+    orphan_id = f"orphan-{suffix}"
+    orphan_task_key = f"{task_key}:missing"
     try:
-        client.zadd(scheduled_key, {task_id: time.time() - 1})
+        client.zadd(scheduled_key, {
+            task_id: time.time() - 1,
+            orphan_id: time.time() - 1,
+        })
         client.hset(task_key, mapping={"status": "SCHEDULED"})
 
+        orphan_result = client.eval(
+            _PROMOTE_SCHEDULED_TASK_LUA,
+            3,
+            scheduled_key,
+            pending_key,
+            orphan_task_key,
+            orphan_id,
+        )
         first = client.eval(
             _PROMOTE_SCHEDULED_TASK_LUA,
             3,
@@ -296,11 +321,14 @@ def test_scheduled_promotion_executes_atomically_on_real_redis():
             task_id,
         )
 
+        assert orphan_result == 0
         assert first == 1
         assert second == 0
         assert client.lrange(pending_key, 0, -1) == [task_id]
         assert client.hget(task_key, "status") == "QUEUED"
         assert client.zscore(scheduled_key, task_id) is None
+        assert client.zscore(scheduled_key, orphan_id) is None
+        assert client.exists(orphan_task_key) == 0
     finally:
-        client.delete(scheduled_key, pending_key, task_key)
+        client.delete(scheduled_key, pending_key, task_key, orphan_task_key)
         client.close()
