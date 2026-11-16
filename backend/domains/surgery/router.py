@@ -96,14 +96,18 @@ def schedule_surgery(
         select(OperationTheatre)
         .where(OperationTheatre.id == payload.theatre_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if locked_theatre is None or not locked_theatre.is_active:
         raise HTTPException(status_code=404, detail="Active operation theatre not found.")
+    # Use the refreshed, locked ORM instance for the new schedule and conflict text.
+    theatre = locked_theatre
 
     locked_surgeon = db.execute(
         select(User)
         .where(User.id == payload.lead_surgeon_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if locked_surgeon is None:
         raise HTTPException(status_code=404, detail="Lead surgeon not found.")
