@@ -314,14 +314,18 @@ def test_scheduled_promotion_executes_atomically_on_real_redis():
     orphan_task_key = f"{task_key}:missing"
     completed_id = f"completed-{suffix}"
     completed_task_key = f"{task_key}:completed"
+    failed_id = f"failed-{suffix}"
+    failed_task_key = f"{task_key}:failed"
     try:
         client.zadd(scheduled_key, {
             task_id: time.time() - 1,
             orphan_id: time.time() - 1,
             completed_id: time.time() - 1,
+            failed_id: time.time() - 1,
         })
         client.hset(task_key, mapping={"status": "SCHEDULED"})
         client.hset(completed_task_key, mapping={"status": "COMPLETED"})
+        client.hset(failed_task_key, mapping={"status": "FAILED"})
 
         orphan_result = client.eval(
             _PROMOTE_SCHEDULED_TASK_LUA,
@@ -338,6 +342,14 @@ def test_scheduled_promotion_executes_atomically_on_real_redis():
             pending_key,
             completed_task_key,
             completed_id,
+        )
+        failed_result = client.eval(
+            _PROMOTE_SCHEDULED_TASK_LUA,
+            3,
+            scheduled_key,
+            pending_key,
+            failed_task_key,
+            failed_id,
         )
         first = client.eval(
             _PROMOTE_SCHEDULED_TASK_LUA,
@@ -358,6 +370,7 @@ def test_scheduled_promotion_executes_atomically_on_real_redis():
 
         assert orphan_result == 0
         assert completed_result == 0
+        assert failed_result == 0
         assert first == 1
         assert second == 0
         assert client.lrange(pending_key, 0, -1) == [task_id]
@@ -366,9 +379,14 @@ def test_scheduled_promotion_executes_atomically_on_real_redis():
         assert client.zscore(scheduled_key, task_id) is None
         assert client.zscore(scheduled_key, orphan_id) is None
         assert client.zscore(scheduled_key, completed_id) is None
+        assert client.zscore(scheduled_key, failed_id) is None
+        assert client.hget(failed_task_key, "status") == "FAILED"
         assert client.exists(orphan_task_key) == 0
     finally:
-        client.delete(scheduled_key, pending_key, task_key, orphan_task_key, completed_task_key)
+        client.delete(
+            scheduled_key, pending_key, task_key, orphan_task_key,
+            completed_task_key, failed_task_key,
+        )
         client.close()
 
 def test_retry_and_dead_letter_transitions_execute_on_real_redis(monkeypatch):
