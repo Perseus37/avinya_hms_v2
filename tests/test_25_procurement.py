@@ -1956,3 +1956,83 @@ def test_supplier_payment_reference_is_checked_after_vendor_lock():
     assert error.value.status_code == 409
     assert events == ["request_lock", "vendor_lock", "payment_reference_check"]
 
+def test_supplier_credit_allocation_fully_settles_invoice_and_ap_entry():
+    from types import SimpleNamespace
+    from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.procurement.models import (
+        SupplierCreditNote,
+        VendorMaster,
+        VendorInvoice,
+        VendorInvoiceStatusEnum,
+    )
+    from backend.domains.procurement.router import allocate_supplier_credit
+    from backend.domains.procurement.schemas import SupplierCreditAllocationCreate
+
+    credit = SimpleNamespace(id=91, vendor_id=4, amount_paise=10000)
+    vendor = SimpleNamespace(id=4)
+    invoice = SimpleNamespace(
+        id=92,
+        vendor_id=4,
+        status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+        linked_expense_id=93,
+        total_amount_paise=10000,
+    )
+    expense = SimpleNamespace(
+        id=93,
+        status=ExpenseStatusEnum.APPROVED,
+        amount_paise=10000,
+        receipt_reference=None,
+        updated_by_id=None,
+    )
+
+    class Query:
+        def __init__(self, row=None, scalar_value=0):
+            self.row = row
+            self.scalar_value = scalar_value
+        def filter(self, *_args):
+            return self
+        def with_for_update(self):
+            return self
+        def one_or_none(self):
+            return self.row
+        def scalar(self):
+            return self.scalar_value
+
+    class FakeDb:
+        def __init__(self):
+            self.rows = {
+                SupplierCreditNote: credit,
+                VendorMaster: vendor,
+                VendorInvoice: invoice,
+                ExpenseRecord: expense,
+            }
+            self.aggregates = iter([0, 0, 0, 0])
+            self.added = []
+        def query(self, entity):
+            if entity in self.rows:
+                return Query(row=self.rows[entity])
+            return Query(scalar_value=next(self.aggregates))
+        def add(self, value):
+            self.added.append(value)
+        def flush(self):
+            pass
+        def commit(self):
+            pass
+
+    result = allocate_supplier_credit(
+        91,
+        SupplierCreditAllocationCreate.model_validate({
+            "invoice_id": 92,
+            "amount_paise": 10000,
+            "reason": "Full settlement using supplier credit",
+        }),
+        FakeDb(),
+        SimpleNamespace(id=18),
+    )
+
+    assert result["invoice_outstanding_paise"] == 0
+    assert invoice.status == VendorInvoiceStatusEnum.PAID
+    assert expense.status == ExpenseStatusEnum.PAID
+    assert expense.receipt_reference == "SUPPLIER-CREDIT-91"
+    assert expense.updated_by_id == 18
+
