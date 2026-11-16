@@ -47,6 +47,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["invoice_id"], ["procurement_vendor_invoices.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(["allocated_by_id"], ["users.id"], ondelete="RESTRICT"),
     )
+    op.create_index("ix_supplier_credit_allocation_credit_note", ALLOCATION_TABLE, ["credit_note_id"])
     op.create_index("ix_supplier_credit_allocation_invoice", ALLOCATION_TABLE, ["invoice_id"])
 
     if op.get_bind().dialect.name == "postgresql":
@@ -88,6 +89,7 @@ def downgrade() -> None:
             op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_immutable_update")
             op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_immutable_delete")
     op.drop_index("ix_supplier_credit_allocation_invoice", table_name=ALLOCATION_TABLE)
+    op.drop_index("ix_supplier_credit_allocation_credit_note", table_name=ALLOCATION_TABLE)
     op.drop_table(ALLOCATION_TABLE)
     op.drop_index("ix_supplier_credit_vendor_created", table_name=CREDIT_TABLE)
     op.drop_table(CREDIT_TABLE)
