@@ -1890,3 +1890,69 @@ def test_negative_purchase_return_expense_cannot_be_marked_paid():
 
     assert error.value.status_code == 409
     assert "positive-value expenses" in error.value.detail
+
+def test_supplier_payment_reference_is_checked_after_vendor_lock():
+    from datetime import date, datetime, timezone
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.models import (
+        SupplierPayment,
+        SupplierPaymentRequest,
+        VendorMaster,
+    )
+    from backend.domains.procurement.router import execute_supplier_payment_request
+
+    events = []
+    request_row = SimpleNamespace(
+        id=77,
+        status="APPROVED",
+        scheduled_date=date.today(),
+        payment_date=None,
+        payment_reference="BANK-REF-RACE",
+        vendor_id=12,
+        allocations=[],
+        amount_paise=100,
+    )
+    vendor = SimpleNamespace(id=12, is_active=True)
+
+    class Query:
+        def __init__(self, entity):
+            self.entity = entity
+        def options(self, *_args):
+            return self
+        def filter(self, *_args):
+            return self
+        def with_for_update(self):
+            if self.entity is SupplierPaymentRequest:
+                events.append("request_lock")
+            elif self.entity is VendorMaster:
+                events.append("vendor_lock")
+            return self
+        def one_or_none(self):
+            if self.entity is SupplierPaymentRequest:
+                return request_row
+            if self.entity is VendorMaster:
+                return vendor
+            return None
+        def first(self):
+            if self.entity is SupplierPayment:
+                events.append("payment_reference_check")
+                return (999,)
+            return None
+
+    class FakeDb:
+        def query(self, entity):
+            return Query(entity)
+
+    with pytest.raises(HTTPException) as error:
+        execute_supplier_payment_request(
+            77,
+            SimpleNamespace(payment_date=datetime.now(timezone.utc)),
+            FakeDb(),
+            SimpleNamespace(id=8),
+        )
+
+    assert error.value.status_code == 409
+    assert events == ["request_lock", "vendor_lock", "payment_reference_check"]
+
