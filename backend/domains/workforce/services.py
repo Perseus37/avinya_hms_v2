@@ -34,7 +34,7 @@ def calculate_indian_statutory_deductions(
     uncapped_pf: bool = False,
     custom_tds_paise: int = 0,
     state: str = "KA",
-    payroll_period: str = "2026-01",
+    payroll_period: str,
 ) -> dict[str, Any]:
     """
     Computes statutory deductions and employer contributions under Indian labour law.
