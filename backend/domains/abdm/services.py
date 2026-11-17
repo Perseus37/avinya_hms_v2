@@ -291,6 +291,40 @@ def generate_abdm_fhir_health_data(
     if artefact.expiry_time.astimezone(timezone.utc) < now:
         raise HTTPException(status_code=403, detail="Consent artefact has expired.")
 
+    # The caller may request a subset of the granted HI types, never a broader
+    # set. Malformed stored consent scope fails closed rather than exporting data.
+    try:
+        consented_hi_types = json.loads(artefact.hi_types or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        consented_hi_types = None
+    if (
+        not isinstance(consented_hi_types, list)
+        or any(not isinstance(item, str) or not item.strip() for item in consented_hi_types)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Consent artefact has an invalid health-information scope.",
+        )
+
+    requested_hi_types = {
+        item.strip() for item in hi_types if isinstance(item, str) and item.strip()
+    }
+    if not requested_hi_types:
+        raise HTTPException(
+            status_code=422,
+            detail="At least one health-information type must be requested.",
+        )
+    granted_hi_types = {item.strip() for item in consented_hi_types}
+    if not requested_hi_types.issubset(granted_hi_types):
+        denied_types = sorted(requested_hi_types - granted_hi_types)
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": "Requested health-information types exceed the granted consent scope.",
+                "denied_hi_types": denied_types,
+            },
+        )
+
     patient = session.get(Patient, artefact.patient_id)
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found.")
@@ -353,7 +387,7 @@ def generate_abdm_fhir_health_data(
     to_dt_buffered = to_dt + timedelta(minutes=5)
 
     # 3. Prescriptions / Medications (N-46: filter strictly by consented date range)
-    if "Prescription" in hi_types:
+    if "Prescription" in requested_hi_types:
         raw_rx_items = (
             session.query(PrescriptionItem)
             .join(Prescription, PrescriptionItem.prescription_id == Prescription.id)
@@ -391,7 +425,7 @@ def generate_abdm_fhir_health_data(
             entries.append(med_req)
 
     # 4. Diagnostic Reports / Tasks (N-46: filter strictly by consented date range)
-    if "DiagnosticReport" in hi_types:
+    if "DiagnosticReport" in requested_hi_types:
         from backend.domains.diagnostics.models import DiagnosticOrder
         raw_diag_tasks = (
             session.query(DiagnosticTask)
