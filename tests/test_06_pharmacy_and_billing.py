@@ -72,7 +72,7 @@ def test_02_receiving_expired_or_zero_stock_batch_returns_400(client, pharmacist
     ).status_code == 400
 
 
-def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_headers):
+def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_headers, superuser_headers):
     """Scenario 3: Stock adjustment updates quantity; adjustment resulting in < 0 stock is blocked with 400."""
     _, batch = _setup_med_and_batch(client, pharmacist_headers)
 
@@ -115,6 +115,64 @@ def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_hea
     )
     assert ledger_after_rejection.json()["total"] == 1
     assert len(ledger_after_rejection.json()["items"]) == 1
+
+    # Voiding a non-empty batch is also a stock correction and must be audited.
+    voided = client.delete(
+        f"/v1/api/pharmacy/inventory/batches/{batch['id']}",
+        headers=superuser_headers,
+    )
+    assert voided.status_code == 200, voided.text
+
+    batches = client.get(
+        f"/v1/api/pharmacy/inventory/batches?medication_id={batch['medication_id']}&include_depleted=true",
+        headers=pharmacist_headers,
+    )
+    assert batches.status_code == 200
+    voided_batch = next(item for item in batches.json()["items"] if item["id"] == batch["id"])
+    assert voided_batch["stock_quantity"] == 0
+
+    void_ledger = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=1&page_size=10",
+        headers=pharmacist_headers,
+    )
+    assert void_ledger.status_code == 200
+    assert void_ledger.json()["total"] == 2
+    void_movement = next(
+        item for item in void_ledger.json()["items"]
+        if item["reason"] == "Batch voided for recall"
+    )
+    assert void_movement["quantity_adjustment"] == -80
+    assert void_movement["quantity_before"] == 80
+    assert void_movement["quantity_after"] == 0
+    assert void_movement["actor_id"] > 0
+
+    # The append-only history remains bounded and navigable across pages.
+    page_one = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=1&page_size=1",
+        headers=pharmacist_headers,
+    )
+    page_two = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=2&page_size=1",
+        headers=pharmacist_headers,
+    )
+    assert page_one.status_code == 200
+    assert page_two.status_code == 200
+    assert page_one.json()["total"] == page_two.json()["total"] == 2
+    assert len(page_one.json()["items"]) == len(page_two.json()["items"]) == 1
+    assert page_one.json()["items"][0]["reason"] == "Batch voided for recall"
+    assert page_two.json()["items"][0]["reason"] == "Physical stock count correction"
+
+    # Re-voiding an already empty batch must not create a zero-delta ledger row.
+    repeat_void = client.delete(
+        f"/v1/api/pharmacy/inventory/batches/{batch['id']}",
+        headers=superuser_headers,
+    )
+    assert repeat_void.status_code == 200
+    unchanged_ledger = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert unchanged_ledger.json()["total"] == 2
 
 
 def test_04_erx_prescription_enforces_cpoe_allergy_hard_stop(client, doctor_headers, pharmacist_headers):
@@ -444,3 +502,78 @@ def test_07_fefo_with_multiple_older_batches_returns_controlled_conflict(
     assert response.status_code == 409, response.text
     assert "FEFO Violation" in response.text
     assert older_batches[0]["batch_number"] in response.text
+
+
+
+def test_fefo_rejects_higher_id_batch_when_expiry_dates_tie(
+    client, doctor_headers, pharmacist_headers
+):
+    """When expiry dates tie, FEFO uses the lower batch ID as the deterministic first batch."""
+    med, first_batch = _setup_med_and_batch(client, pharmacist_headers)
+
+    tied_batch_response = client.post(
+        "/v1/api/pharmacy/inventory/batches",
+        headers=pharmacist_headers,
+        json={
+            "medication_id": med["id"],
+            "batch_number": "BATCH-FEFO-TIED-LATER-ID",
+            "expiry_date": first_batch["expiry_date"],
+            "stock_quantity": 25,
+            "unit_price_paise": 1500,
+        },
+    )
+    assert tied_batch_response.status_code == 201, tied_batch_response.text
+    later_id_batch = tied_batch_response.json()
+    assert first_batch["id"] < later_id_batch["id"]
+
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={
+            "full_name": "FEFO Equal Expiry Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+        },
+    ).json()
+    encounter = client.post(
+        "/v1/api/adt/encounters",
+        headers=doctor_headers,
+        json={
+            "patient_id": patient["id"],
+            "encounter_type": "OPD",
+            "primary_doctor_id": 2,
+            "department_id": 1,
+        },
+    ).json()
+    prescription = client.post(
+        "/v1/api/pharmacy/prescriptions",
+        headers=doctor_headers,
+        json={
+            "encounter_id": encounter["id"],
+            "items": [
+                {
+                    "medication_id": med["id"],
+                    "dosage_instruction": "1-0-1",
+                    "requested_quantity": 5,
+                }
+            ],
+        },
+    ).json()
+
+    response = client.post(
+        f"/v1/api/pharmacy/prescriptions/{prescription['id']}/dispense",
+        headers=pharmacist_headers,
+        json={
+            "items": [
+                {
+                    "prescription_item_id": prescription["items"][0]["id"],
+                    "batch_id": later_id_batch["id"],
+                    "quantity_to_dispense": 5,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "FEFO Violation" in response.text
+    assert first_batch["batch_number"] in response.text
