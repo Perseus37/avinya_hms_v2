@@ -1,3 +1,5 @@
+import pytest
+
 from datetime import datetime, timedelta, timezone
 
 
@@ -423,6 +425,11 @@ def test_14_room_bed_capacity_blocks_overflow_and_unsafe_reduction(
 def test_15_concurrent_bed_creation_cannot_exceed_room_capacity(
     client, superuser_headers
 ):
+    from backend.core.database import tenant_engine_pool
+
+    if tenant_engine_pool.get_engine("hms_default").dialect.name != "postgresql":
+        pytest.skip("SELECT FOR UPDATE concurrency guarantee requires PostgreSQL; SQLite ignores row locks.")
+
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
