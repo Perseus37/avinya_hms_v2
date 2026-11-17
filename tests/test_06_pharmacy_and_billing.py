@@ -124,7 +124,7 @@ def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_hea
     assert voided.status_code == 200, voided.text
 
     batches = client.get(
-        f"/v1/api/pharmacy/inventory/batches?medication_id={batch['medication_id']}",
+        f"/v1/api/pharmacy/inventory/batches?medication_id={batch['medication_id']}&include_depleted=true",
         headers=pharmacist_headers,
     )
     assert batches.status_code == 200
