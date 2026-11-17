@@ -488,7 +488,9 @@ def cancel_diagnostic_order(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("diagnostics:verify", "diagnostics:write")),
 ):
-    order = db.query(DiagnosticOrder).options(joinedload(DiagnosticOrder.tasks)).filter(DiagnosticOrder.id == order_id).first()
+    order = db.execute(
+        select(DiagnosticOrder).where(DiagnosticOrder.id == order_id).with_for_update()
+    ).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
     if order.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
@@ -497,8 +499,16 @@ def cancel_diagnostic_order(
             detail=f"Cannot cancel a diagnostic order in '{order.status.value}' state.",
         )
 
+    # Lock child tasks in deterministic order after the parent order.
+    tasks = db.execute(
+        select(DiagnosticTask)
+        .where(DiagnosticTask.order_id == order_id)
+        .order_by(DiagnosticTask.id.asc())
+        .with_for_update()
+    ).scalars().all()
+
     order.status = OrderStatusEnum.CANCELLED
-    for task in order.tasks:
+    for task in tasks:
         if task.status in [TaskStatusEnum.PENDING, TaskStatusEnum.SAMPLE_COLLECTED, TaskStatusEnum.IN_PROGRESS]:
             task.status = TaskStatusEnum.CANCELLED
 
@@ -636,6 +646,22 @@ def submit_task_result(
 ):
     """H8 FIX: Enforces task lifecycle, checks action-specific permission, and prevents self-verification."""
     
+    # Resolve the immutable parent id, then serialize task lifecycle writers
+    # on the parent order before locking the individual task.
+    order_id_for_lock = db.execute(
+        select(DiagnosticTask.order_id).where(DiagnosticTask.id == task_id)
+    ).scalar_one_or_none()
+    if order_id_for_lock is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    locked_order = db.execute(
+        select(DiagnosticOrder).where(DiagnosticOrder.id == order_id_for_lock).with_for_update()
+    ).scalar_one_or_none()
+    if not locked_order:
+        raise HTTPException(status_code=404, detail="Task order not found.")
+    db.execute(
+        select(DiagnosticTask.id).where(DiagnosticTask.id == task_id).with_for_update()
+    ).scalar_one_or_none()
+
     task = (
         db.query(DiagnosticTask)
         .options(
@@ -643,6 +669,7 @@ def submit_task_result(
             joinedload(DiagnosticTask.order).joinedload(DiagnosticOrder.tasks),
         )
         .filter(DiagnosticTask.id == task_id)
+        .populate_existing()
         .first()
     )
     if not task:
