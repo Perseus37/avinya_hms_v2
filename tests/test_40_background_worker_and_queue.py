@@ -32,7 +32,7 @@ class FakeRedis:
         self._strings = {}
         self._expirations = []
 
-    def pipeline(self):
+    def pipeline(self, transaction=False):
         return self
 
     def hset(self, key, *args, mapping=None, **kwargs):
@@ -100,6 +100,23 @@ class FakeRedis:
                 del z[m]
                 removed += 1
         return removed
+
+    def eval(self, script, numkeys, *args):
+        # Model the atomic scheduled-task promotion Lua script used by Redis.
+        keys = args[:numkeys]
+        argv = args[numkeys:]
+        scheduled_key, pending_key, metadata_key = keys
+        task_id, now = argv
+        score = self._zsets.get(scheduled_key, {}).get(task_id)
+        if score is None or float(score) > float(now):
+            return 0
+        status = self._hashes.get(metadata_key, {}).get("status")
+        removed = self.zrem(scheduled_key, task_id)
+        if removed == 1 and status in {"SCHEDULED", "RETRYING"}:
+            self.rpush(pending_key, task_id)
+            self.hset(metadata_key, "status", "QUEUED")
+            return 1
+        return 0
 
     def set(self, key, value, ex=None):
         self._strings[key] = value
@@ -203,6 +220,29 @@ def test_worker_burst_execution(fake_redis, monkeypatch):
     assert exit_code == 0
     assert executed == ["job 1", "job 2"]
 
+
+
+def test_scheduled_promotion_discards_missing_or_terminal_metadata(fake_redis):
+    missing_id = "missing-metadata"
+    terminal_id = "already-completed"
+    fake_redis.zadd(KEY_SCHEDULED_TASKS, {missing_id: time.time() - 10, terminal_id: time.time() - 10})
+    fake_redis.hset(f"{KEY_TASK_PREFIX}{terminal_id}", "status", "COMPLETED")
+
+    promoted = promote_scheduled_tasks(fake_redis)
+
+    assert promoted == 0
+    assert missing_id not in fake_redis._zsets[KEY_SCHEDULED_TASKS]
+    assert terminal_id not in fake_redis._zsets[KEY_SCHEDULED_TASKS]
+    assert fake_redis._lists.get(KEY_PENDING_TASKS, []) == []
+
+
+def test_scheduled_promotion_keeps_rescheduled_future_task(fake_redis):
+    task_id = enqueue_task("sample.task", {"data": 1}, delay_seconds=3600, sync_fallback=False)
+    future_now = time.time()
+
+    assert promote_scheduled_tasks(fake_redis) == 0
+    assert task_id in fake_redis._zsets[KEY_SCHEDULED_TASKS]
+    assert fake_redis._lists.get(KEY_PENDING_TASKS, []) == []
 
 
 def test_queued_and_scheduled_email_tasks_do_not_expire_before_dispatch(fake_redis):
