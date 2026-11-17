@@ -346,3 +346,153 @@ def test_13_pharmacy_queue_includes_patient_identity_after_privacy_gate(client, 
     row = next(item for item in queue.json()["items"] if item["id"] == prescription["id"])
     assert row["patient_name"] == patient["full_name"]
     assert row["patient_mrn"] == patient["mrn"]
+
+
+def test_07_fefo_with_multiple_older_batches_returns_controlled_conflict(
+    client, doctor_headers, pharmacist_headers
+):
+    """Multiple older batches must produce a FEFO conflict, not a multiple-results exception."""
+    med, selected_batch = _setup_med_and_batch(client, pharmacist_headers)
+
+    older_batches = []
+    for suffix, days in (("EARLIER-A", 90), ("EARLIER-B", 180)):
+        response = client.post(
+            "/v1/api/pharmacy/inventory/batches",
+            headers=pharmacist_headers,
+            json={
+                "medication_id": med["id"],
+                "batch_number": f"BATCH-{suffix}",
+                "expiry_date": (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(),
+                "stock_quantity": 25,
+                "unit_price_paise": 1500,
+            },
+        )
+        assert response.status_code == 201, response.text
+        older_batches.append(response.json())
+
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={
+            "full_name": "FEFO Multiple Batch Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+        },
+    ).json()
+    encounter = client.post(
+        "/v1/api/adt/encounters",
+        headers=doctor_headers,
+        json={
+            "patient_id": patient["id"],
+            "encounter_type": "OPD",
+            "primary_doctor_id": 2,
+            "department_id": 1,
+        },
+    ).json()
+    prescription = client.post(
+        "/v1/api/pharmacy/prescriptions",
+        headers=doctor_headers,
+        json={
+            "encounter_id": encounter["id"],
+            "items": [
+                {
+                    "medication_id": med["id"],
+                    "dosage_instruction": "1-0-1",
+                    "requested_quantity": 5,
+                }
+            ],
+        },
+    ).json()
+
+    response = client.post(
+        f"/v1/api/pharmacy/prescriptions/{prescription['id']}/dispense",
+        headers=pharmacist_headers,
+        json={
+            "items": [
+                {
+                    "prescription_item_id": prescription["items"][0]["id"],
+                    "batch_id": selected_batch["id"],
+                    "quantity_to_dispense": 5,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "FEFO Violation" in response.text
+    assert older_batches[0]["batch_number"] in response.text
+
+
+
+def test_fefo_rejects_higher_id_batch_when_expiry_dates_tie(
+    client, doctor_headers, pharmacist_headers
+):
+    """When expiry dates tie, FEFO uses the lower batch ID as the deterministic first batch."""
+    med, first_batch = _setup_med_and_batch(client, pharmacist_headers)
+
+    tied_batch_response = client.post(
+        "/v1/api/pharmacy/inventory/batches",
+        headers=pharmacist_headers,
+        json={
+            "medication_id": med["id"],
+            "batch_number": "BATCH-FEFO-TIED-LATER-ID",
+            "expiry_date": first_batch["expiry_date"],
+            "stock_quantity": 25,
+            "unit_price_paise": 1500,
+        },
+    )
+    assert tied_batch_response.status_code == 201, tied_batch_response.text
+    later_id_batch = tied_batch_response.json()
+    assert first_batch["id"] < later_id_batch["id"]
+
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={
+            "full_name": "FEFO Equal Expiry Patient",
+            "date_of_birth": "1990-01-01T00:00:00Z",
+            "gender": "FEMALE",
+        },
+    ).json()
+    encounter = client.post(
+        "/v1/api/adt/encounters",
+        headers=doctor_headers,
+        json={
+            "patient_id": patient["id"],
+            "encounter_type": "OPD",
+            "primary_doctor_id": 2,
+            "department_id": 1,
+        },
+    ).json()
+    prescription = client.post(
+        "/v1/api/pharmacy/prescriptions",
+        headers=doctor_headers,
+        json={
+            "encounter_id": encounter["id"],
+            "items": [
+                {
+                    "medication_id": med["id"],
+                    "dosage_instruction": "1-0-1",
+                    "requested_quantity": 5,
+                }
+            ],
+        },
+    ).json()
+
+    response = client.post(
+        f"/v1/api/pharmacy/prescriptions/{prescription['id']}/dispense",
+        headers=pharmacist_headers,
+        json={
+            "items": [
+                {
+                    "prescription_item_id": prescription["items"][0]["id"],
+                    "batch_id": later_id_batch["id"],
+                    "quantity_to_dispense": 5,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "FEFO Violation" in response.text
+    assert first_batch["batch_number"] in response.text

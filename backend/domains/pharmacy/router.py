@@ -3,7 +3,7 @@ from typing import Optional
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, joinedload
 
@@ -616,9 +616,16 @@ def dispense_medication(
                     InventoryBatch.medication_id == rx_item.medication_id,
                     InventoryBatch.stock_quantity > 0,
                     InventoryBatch.expiry_date > datetime.now(timezone.utc),
-                    InventoryBatch.expiry_date < batch.expiry_date,
-                    InventoryBatch.id != batch.id
+                    or_(
+                        InventoryBatch.expiry_date < batch.expiry_date,
+                        and_(
+                            InventoryBatch.expiry_date == batch.expiry_date,
+                            InventoryBatch.id < batch.id,
+                        ),
+                    ),
                 )
+                .order_by(InventoryBatch.expiry_date.asc(), InventoryBatch.id.asc())
+                .limit(1)
             ).scalar_one_or_none()
             
             if older_unexpired_batch and not getattr(disp_item, "override_fefo", False):
