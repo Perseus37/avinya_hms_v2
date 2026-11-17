@@ -189,6 +189,14 @@ def test_abdm_m2_consent_and_m3_fhir_health_data_transfer(client, superuser_head
         },
     )
 
+    # Empty/whitespace-only scopes must not silently produce a patient-only export.
+    empty_xfer = client.post(
+        "/v1/api/abdm/m3/health-information/request",
+        headers=superuser_headers,
+        json={"consent_id": consent_id, "hi_types": ["  "]},
+    )
+    assert empty_xfer.status_code == 422, empty_xfer.text
+
     # A request that broadens the granted HI types must be denied.
     denied_xfer = client.post(
         "/v1/api/abdm/m3/health-information/request",
