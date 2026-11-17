@@ -210,7 +210,7 @@ def test_04_lis_hemolyzed_sample_rejection_recollection_and_critical_panic_value
     panic_list = client.get("/v1/api/diagnostics/tasks/panic-alerts", headers=doctor_headers).json()
     assert any(t["id"] == task_id and t["result_value"] == "6.9 mEq/L" for t in panic_list)
 
-def test_05_pharmacy_return_reconciles_partial_invoice_and_refunds_excess_payment(
+def test_05_pharmacy_return_reconciles_partial_invoice_without_self_approving_refund(
     client, doctor_headers, pharmacist_headers, billing_headers
 ):
     med = client.post(
@@ -266,5 +266,21 @@ def test_05_pharmacy_return_reconciles_partial_invoice_and_refunds_excess_paymen
     assert returned.status_code == 201, returned.text
     final_invoice = client.get(f"/v1/api/billing/invoices/{invoice['id']}", headers=billing_headers).json()
     assert final_invoice["total_amount_paise"] == 3000
-    assert final_invoice["amount_paid_paise"] == 3000
+    # Actual payment history is preserved; the ₹20 return credit lowers the
+    # invoice to ₹30, leaving ₹10 for finance to review through its own workflow.
+    assert final_invoice["amount_paid_paise"] == 4000
     assert final_invoice["status"] == "PAID"
+
+    refunds = client.get(f"/v1/api/billing/patients/{patient['id']}/refunds", headers=billing_headers)
+    assert refunds.status_code == 200, refunds.text
+    assert refunds.json() == []
+
+    from backend.domains.pharmacy.models import PharmacyReturnLog
+    from backend.core.database import tenant_engine_pool
+    from sqlalchemy.orm import Session
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(engine) as session:
+        credit = session.query(PharmacyReturnLog).filter_by(
+            prescription_id=prescription["id"], prescription_item_id=item_id
+        ).one()
+        assert credit.credit_amount_paise == 2000
