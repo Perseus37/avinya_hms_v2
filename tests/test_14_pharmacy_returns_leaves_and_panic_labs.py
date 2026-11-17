@@ -209,3 +209,78 @@ def test_04_lis_hemolyzed_sample_rejection_recollection_and_critical_panic_value
 
     panic_list = client.get("/v1/api/diagnostics/tasks/panic-alerts", headers=doctor_headers).json()
     assert any(t["id"] == task_id and t["result_value"] == "6.9 mEq/L" for t in panic_list)
+
+def test_05_pharmacy_return_reconciles_partial_invoice_without_self_approving_refund(
+    client, doctor_headers, pharmacist_headers, billing_headers
+):
+    med = client.post(
+        "/v1/api/pharmacy/medications", headers=pharmacist_headers,
+        json={"code": "TAB_PART_RET", "brand_name": "Partial Return", "generic_name": "Paracetamol", "form": "TABLET", "strength": "500mg"},
+    ).json()
+    batch = client.post(
+        "/v1/api/pharmacy/inventory/batches", headers=pharmacist_headers,
+        json={"medication_id": med["id"], "batch_number": "BATCH-PART-RET",
+              "expiry_date": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(),
+              "stock_quantity": 100, "unit_price_paise": 500},
+    ).json()
+    patient = client.post(
+        "/v1/api/patients", headers=doctor_headers,
+        json={"full_name": "Partial Return Patient", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"},
+    ).json()
+    encounter = client.post(
+        "/v1/api/adt/encounters", headers=doctor_headers,
+        json={"patient_id": patient["id"], "encounter_type": "IPD", "primary_doctor_id": 2, "department_id": 1},
+    ).json()
+    prescription = client.post(
+        "/v1/api/pharmacy/prescriptions", headers=doctor_headers,
+        json={"encounter_id": encounter["id"], "items": [
+            {"medication_id": med["id"], "dosage_instruction": "1-0-1", "requested_quantity": 10}
+        ]},
+    ).json()
+    item_id = prescription["items"][0]["id"]
+    dispensed = client.post(
+        f"/v1/api/pharmacy/prescriptions/{prescription['id']}/dispense",
+        headers=pharmacist_headers,
+        json={"items": [{"prescription_item_id": item_id, "batch_id": batch["id"], "quantity_to_dispense": 10}]},
+    )
+    assert dispensed.status_code == 200, dispensed.text
+
+    invoice = client.get(
+        f"/v1/api/billing/invoices?patient_id={patient['id']}", headers=billing_headers
+    ).json()["items"][0]
+    finalized = client.patch(f"/v1/api/billing/invoices/{invoice['id']}/finalize", headers=billing_headers)
+    assert finalized.status_code == 200, finalized.text
+    payment = client.post(
+        f"/v1/api/billing/invoices/{invoice['id']}/payments",
+        headers={**billing_headers, "Idempotency-Key": "PHARMACY-RETURN-PARTIAL-001"},
+        json={"amount_paid_paise": 4000, "payment_method": "UPI"},
+    )
+    assert payment.status_code == 201, payment.text
+
+    returned = client.post(
+        f"/v1/api/pharmacy/prescriptions/{prescription['id']}/return",
+        headers=pharmacist_headers,
+        json={"items": [{"prescription_item_id": item_id, "batch_id": batch["id"],
+                         "quantity_to_return": 4, "return_reason": "Sealed unused stock"}]},
+    )
+    assert returned.status_code == 201, returned.text
+    final_invoice = client.get(f"/v1/api/billing/invoices/{invoice['id']}", headers=billing_headers).json()
+    assert final_invoice["total_amount_paise"] == 3000
+    # Actual payment history is preserved; the ₹20 return credit lowers the
+    # invoice to ₹30, leaving ₹10 for finance to review through its own workflow.
+    assert final_invoice["amount_paid_paise"] == 4000
+    assert final_invoice["status"] == "PAID"
+
+    refunds = client.get(f"/v1/api/billing/patients/{patient['id']}/refunds", headers=billing_headers)
+    assert refunds.status_code == 200, refunds.text
+    assert refunds.json() == []
+
+    from backend.domains.pharmacy.models import PharmacyReturnLog
+    from backend.core.database import tenant_engine_pool
+    from sqlalchemy.orm import Session
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(engine) as session:
+        credit = session.query(PharmacyReturnLog).filter_by(
+            prescription_id=prescription["id"], prescription_item_id=item_id
+        ).one()
+        assert credit.credit_amount_paise == 2000

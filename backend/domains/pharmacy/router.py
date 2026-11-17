@@ -753,32 +753,43 @@ def return_dispensed_medication(
 
         # 2. Adjust DRAFT invoice line item if invoice is still open
         # FIN-003: Rely on strict embedded RxItem tracking instead of fragile name matching
-        if invoice and invoice.status == InvoiceStatusEnum.DRAFT and med:
+        if invoice and invoice.status in {
+            InvoiceStatusEnum.DRAFT,
+            InvoiceStatusEnum.UNPAID,
+            InvoiceStatusEnum.PARTIAL,
+        } and med:
             exact_tag = f"[RxItem:{rx_item.id}]"
             matching_line = next(
-                (
-                    li
-                    for li in invoice.line_items
-                    if exact_tag in li.description
-                ),
+                (li for li in invoice.line_items if exact_tag in li.description),
                 None,
             )
             if matching_line:
                 if matching_line.quantity <= ret.quantity_to_return:
-                    if matching_line in invoice.line_items:
-                        invoice.line_items.remove(matching_line)
+                    invoice.line_items.remove(matching_line)
                     db.delete(matching_line)
                 else:
                     matching_line.quantity -= ret.quantity_to_return
                     matching_line.total_price_paise = matching_line.quantity * matching_line.unit_price_paise
-                    if matching_line.gst_rate_percent and matching_line.gst_rate_percent > 0:
-                        matching_line.tax_amount_paise = round(
-                            (matching_line.total_price_paise * matching_line.gst_rate_percent) / 100
-                        )
+                    matching_line.tax_amount_paise = round(
+                        matching_line.total_price_paise * (matching_line.gst_rate_percent or 0) / 100
+                    )
                 db.flush()
                 recalculate_invoice_totals(invoice)
                 if invoice.discount_amount_paise and invoice.discount_amount_paise > invoice.total_amount_paise:
                     invoice.discount_amount_paise = invoice.total_amount_paise
+
+                # Preserve the actual cash/UPI receipts. The return log records
+                # the credit; only the finance refund workflow may approve and
+                # disburse any excess payment. Pharmacy staff must not populate
+                # RefundVoucher.approved_by_id.
+                revised_net = invoice.net_amount_paise
+                if invoice.status != InvoiceStatusEnum.DRAFT:
+                    if revised_net > 0 and invoice.amount_paid_paise >= revised_net:
+                        invoice.status = InvoiceStatusEnum.PAID
+                    elif invoice.amount_paid_paise > 0:
+                        invoice.status = InvoiceStatusEnum.PARTIAL
+                    else:
+                        invoice.status = InvoiceStatusEnum.UNPAID
 
         log = PharmacyReturnLog(
             prescription_id=rx.id,
@@ -792,22 +803,9 @@ def return_dispensed_medication(
         db.add(log)
         return_logs.append(log)
 
-    # If the invoice was already PAID, automatically issue an auditable RefundVoucher
-    if invoice and invoice.status == InvoiceStatusEnum.PAID and total_credit_paise > 0:
-        date_prefix = datetime.now(timezone.utc).strftime("%Y%m%d")
-        voucher = RefundVoucher(
-            voucher_number=f"RFND-PHM-{date_prefix}-{secrets.token_hex(6).upper()}",
-            patient_id=invoice.patient_id,
-            deposit_id=None,
-            invoice_id=invoice.id,
-            refund_amount_paise=total_credit_paise,
-            refund_method=PaymentMethodEnum.CASH,
-            transaction_reference=f"RX-RET-{rx.id}",
-            reason="Pharmacy dispensed stock return credit on paid invoice",
-            approved_by_id=current_user.id,
-        )
-        db.add(voucher)
-
+    # Pharmacy return logs are the auditable credit record. RefundVoucher is
+    # intentionally not created here: this endpoint is pharmacy-authorized,
+    # whereas voucher approval/disbursement belongs to the finance workflow.
     db.flush()
     all_items = db.query(PrescriptionItem).filter(PrescriptionItem.prescription_id == rx.id).all()
     if all(i.dispensed_quantity == 0 for i in all_items):

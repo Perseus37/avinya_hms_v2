@@ -498,6 +498,17 @@ def execute_bcma_administration(
     Executes full BCMA validation and atomically creates eMAR and BCMA audit log records.
     Hard-stops on Patient, Medication, Dose, or Route mismatch. Enforces documentation for Time Window overrides.
     """
+    # Serialize administration attempts for this prescription item. The item
+    # row exists before the first dose, unlike an administration-log row, so it
+    # provides a stable lock target even when no dose has yet been recorded.
+    locked_rx_item = session.execute(
+        select(PrescriptionItem)
+        .where(PrescriptionItem.id == prescription_item_id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if locked_rx_item is None:
+        raise HTTPException(status_code=404, detail=f"Prescription item {prescription_item_id} not found.")
+
     eval_result = evaluate_bcma_five_rights(
         session=session,
         encounter_id=encounter_id,
