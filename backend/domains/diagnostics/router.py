@@ -467,7 +467,12 @@ def update_diagnostic_order(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("diagnostics:write")),
 ):
-    order = db.get(DiagnosticOrder, order_id)
+    # Serialize order-level edits with task result submission and cancellation.
+    order = db.execute(
+        select(DiagnosticOrder)
+        .where(DiagnosticOrder.id == order_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
     if order.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
@@ -488,9 +493,16 @@ def cancel_diagnostic_order(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("diagnostics:verify", "diagnostics:write")),
 ):
-    order = db.query(DiagnosticOrder).options(joinedload(DiagnosticOrder.tasks)).filter(DiagnosticOrder.id == order_id).first()
+    # Lock the parent before loading/updating child tasks. Result submission
+    # uses the same parent->child order to avoid lock-order inversion.
+    order = db.execute(
+        select(DiagnosticOrder)
+        .where(DiagnosticOrder.id == order_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
+    order.tasks
     if order.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
         raise HTTPException(
             status_code=400,
