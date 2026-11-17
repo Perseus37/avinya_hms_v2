@@ -12,7 +12,7 @@ import re
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from backend.domains.billing.models import Invoice, PaymentReceipt
+from backend.domains.billing.models import Invoice, InvoiceStatusEnum, PaymentReceipt
 
 
 def _create_patient(client, headers, name="ABDM Track Patient", dob="1987-11-20T00:00:00Z"):
@@ -370,8 +370,33 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(
         assert invoice.amount_paid_paise == 0
         assert db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).count() == 0
 
-    # 6. A separate SETTLED callback posts the insurer receipt to the invoice ledger.
+    # A VOID invoice must not be revived by a late insurer settlement callback.
+    with TenantSession() as db:
+        invoice = db.get(Invoice, invoice_id)
+        invoice.status = InvoiceStatusEnum.VOID
+        db.commit()
+
     settlement_payload = {
+        "transaction_id": txn_id,
+        "adjudication_status": "SETTLED",
+        "settled_amount_paise": 450000,
+        "settlement_utr": "UTR-HDFC-2026-990011",
+    }
+    void_settlement = client.post(
+        "/v1/api/nhcx/claims/adjudication-callback",
+        headers=billing_headers,
+        json=settlement_payload,
+    )
+    assert void_settlement.status_code == 409, void_settlement.text
+    with TenantSession() as db:
+        invoice = db.get(Invoice, invoice_id)
+        assert invoice.status == InvoiceStatusEnum.VOID
+        assert db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).count() == 0
+        invoice.status = InvoiceStatusEnum.UNPAID
+        db.commit()
+
+    # 6. A separate SETTLED callback posts the insurer receipt to the invoice ledger.
+
         "transaction_id": txn_id,
         "adjudication_status": "SETTLED",
         "settled_amount_paise": 450000,  # actual remittance is below the 480,000 adjudication
