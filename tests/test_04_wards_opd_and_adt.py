@@ -1,3 +1,5 @@
+import pytest
+
 from datetime import datetime, timedelta, timezone
 
 
@@ -495,6 +497,10 @@ def test_16_moving_bed_into_full_room_is_rejected(client, superuser_headers):
 
 def test_17_concurrent_same_type_encounter_creation_is_serialized(client, doctor_headers):
     """Two simultaneous creates for one patient/type must not both become active."""
+    from backend.core.database import tenant_engine_pool
+
+    if tenant_engine_pool.get_engine("hms_default").dialect.name != "postgresql":
+        pytest.skip("SELECT FOR UPDATE concurrency guarantee requires PostgreSQL; SQLite ignores row locks.")
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
