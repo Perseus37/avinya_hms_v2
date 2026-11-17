@@ -5,6 +5,7 @@ Employees' State Insurance (ESI), Professional Tax (PT), and Tax Deducted at Sou
 and employer matching contributions.
 """
 
+import re
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 
@@ -101,19 +102,15 @@ def calculate_indian_statutory_deductions(
             "payroll calculation is blocked rather than applying another state's rate."
         )
     try:
-        if (
-            not isinstance(payroll_period, str)
-            or len(payroll_period) != 7
-            or payroll_period[4] != "-"
-            or not payroll_period[:4].isdigit()
-            or not payroll_period[5:].isdigit()
-        ):
+        if not isinstance(payroll_period, str) or re.fullmatch(
+            r"[0-9]{4}-(0[1-9]|1[0-2])", payroll_period
+        ) is None:
             raise ValueError
         period_year = int(payroll_period[:4])
         period_month = int(payroll_period[5:])
-        if period_year < 1 or not (1 <= period_month <= 12):
+        if period_year < 1:
             raise ValueError
-    except (AttributeError, TypeError, ValueError) as exc:
+    except (TypeError, ValueError) as exc:
         raise ValueError("payroll_period must use YYYY-MM format with a valid positive year and month.") from exc
 
     if (period_year, period_month) >= (2025, 4):
