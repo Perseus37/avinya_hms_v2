@@ -341,3 +341,56 @@ def test_surgery_status_transition_query_locks_only_parent_schedule_row():
     sql = str(statement.compile(dialect=postgresql.dialect()))
 
     assert "FOR UPDATE OF surgical_schedules" in sql
+
+
+def test_checklist_and_implant_writes_are_blocked_after_surgery_terminal_state(
+    client, superuser_headers, doctor_headers, nurse_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.surgery.models import SurgicalSchedule, SurgeryStatusEnum
+
+    engine = tenant_engine_pool.get_engine("hms_default")
+    checklist_payload = {
+        "patient_identity_confirmed": True, "site_marked": True,
+        "consent_signed": True, "pulse_oximeter_functioning": True,
+        "allergy_checked": True, "antibiotic_prophylaxis_given": True,
+        "sponge_instrument_count_verified": True,
+    }
+    implant_payload = {
+        "implant_name": "Titanium implant", "manufacturer": "Test",
+        "serial_or_batch_number": "TERM-LOCK-001", "quantity": 1,
+        "unit_price_paise": 100000,
+    }
+
+    for index, terminal_state in enumerate(
+        [SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED], start=1
+    ):
+        _, enc, ot, proc = _setup_ipd_surgical_case(
+            client, superuser_headers, doctor_headers,
+            ot_code=f"OT_AUX_TERM_{index}",
+        )
+        surgery = client.post(
+            "/v1/api/ot/surgeries", headers=doctor_headers,
+            json={
+                "encounter_id": enc["id"], "theatre_id": ot["id"],
+                "procedure_service_id": proc["id"], "lead_surgeon_id": 2,
+                "scheduled_start_time": f"2026-12-{20 + index:02d}T08:00:00Z",
+                "scheduled_end_time": f"2026-12-{20 + index:02d}T09:00:00Z",
+            },
+        ).json()
+        with Session(engine) as session:
+            row = session.get(SurgicalSchedule, surgery["id"])
+            row.status = terminal_state
+            session.commit()
+
+        checklist_response = client.put(
+            f"/v1/api/ot/surgeries/{surgery['id']}/checklist",
+            headers=nurse_headers, json=checklist_payload,
+        )
+        implant_response = client.post(
+            f"/v1/api/ot/surgeries/{surgery['id']}/implants",
+            headers=nurse_headers, json=implant_payload,
+        )
+        assert checklist_response.status_code == 409
+        assert implant_response.status_code == 409
