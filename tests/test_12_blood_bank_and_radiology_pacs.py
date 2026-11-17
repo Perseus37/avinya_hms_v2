@@ -240,3 +240,75 @@ def test_04_expired_blood_bag_issue_rejected_with_409(client, superuser_headers,
     )
     assert issue_res.status_code == 409
     assert "expired" in issue_res.json()["message"].lower()
+
+
+
+def test_05_future_collection_date_rejected_on_receipt_cross_match_and_issue(
+    client, superuser_headers, doctor_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.bloodbank.models import BloodBagInventory
+
+    now = datetime.now(timezone.utc)
+    future_payload = {
+        "component_type": "PRBC",
+        "blood_group": "O+",
+        "volume_ml": 350,
+        "collection_date": (now + timedelta(days=1)).isoformat(),
+        "expiry_date": (now + timedelta(days=30)).isoformat(),
+        "processing_fee_paise": 0,
+    }
+    rejected = client.post(
+        "/v1/api/blood-bank/bags",
+        headers=superuser_headers,
+        json={"bag_number": "BAG-FUTURE-COLLECTION-01", **future_payload},
+    )
+    assert rejected.status_code == 400
+    assert "collection date cannot be in the future" in rejected.json()["message"].lower()
+
+    valid = client.post(
+        "/v1/api/blood-bank/bags",
+        headers=superuser_headers,
+        json={
+            **future_payload,
+            "bag_number": "BAG-FUTURE-COLLECTION-02",
+            "collection_date": (now - timedelta(days=1)).isoformat(),
+        },
+    ).json()
+    _, enc = _create_patient_with_blood_group(client, doctor_headers, blood_group="O+")
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(engine) as session:
+        db_bag = session.get(BloodBagInventory, valid["id"])
+        db_bag.collection_date = now + timedelta(days=1)
+        session.commit()
+
+    cross_match = client.post(
+        "/v1/api/blood-bank/cross-match",
+        headers=superuser_headers,
+        json={"encounter_id": enc["id"], "blood_bag_id": valid["id"], "ordered_by_doctor_id": 2},
+    )
+    assert cross_match.status_code == 409
+    assert "collection date cannot be in the future" in cross_match.json()["message"].lower()
+
+    # Create a valid cross-match, then simulate a corrupted/future-dated legacy row
+    # to ensure issue-time validation independently enforces the same safety rule.
+    with Session(engine) as session:
+        db_bag = session.get(BloodBagInventory, valid["id"])
+        db_bag.collection_date = now - timedelta(days=1)
+        session.commit()
+    cm = client.post(
+        "/v1/api/blood-bank/cross-match",
+        headers=superuser_headers,
+        json={"encounter_id": enc["id"], "blood_bag_id": valid["id"], "ordered_by_doctor_id": 2},
+    ).json()
+    with Session(engine) as session:
+        db_bag = session.get(BloodBagInventory, valid["id"])
+        db_bag.collection_date = now + timedelta(days=1)
+        session.commit()
+    issue = client.patch(
+        f"/v1/api/blood-bank/cross-match/{cm['id']}/issue",
+        headers=superuser_headers,
+    )
+    assert issue.status_code == 409
+    assert "future collection date" in issue.json()["message"].lower()

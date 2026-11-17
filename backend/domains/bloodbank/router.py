@@ -24,6 +24,14 @@ def _to_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
+def _validate_collection_not_future(collection_date: datetime) -> None:
+    if _to_utc(collection_date) > datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=400,
+            detail="Blood collection date cannot be in the future.",
+        )
+
+
 # Biological Red Cell (PRBC / Whole Blood) Donor-to-Recipient Compatibility Matrix
 # Key = Recipient Blood Group -> Value = Set of Compatible Donor Blood Groups
 PRBC_COMPATIBILITY_MATRIX: Dict[BloodGroupEnum, Set[BloodGroupEnum]] = {
@@ -61,6 +69,7 @@ def receive_blood_bag(
     if dup:
         raise HTTPException(status_code=409, detail=f"Blood bag '{payload.bag_number}' already exists in inventory.")
 
+    _validate_collection_not_future(payload.collection_date)
     now_utc = datetime.now(timezone.utc)
     if _to_utc(payload.expiry_date) <= now_utc:
         raise HTTPException(status_code=400, detail="Cannot receive an already expired blood bag into inventory.")
@@ -172,6 +181,10 @@ def cross_match_and_reserve_blood_bag(
         raise HTTPException(status_code=404, detail="Blood bag not found.")
     if bag.status != BloodBagStatusEnum.AVAILABLE:
         raise HTTPException(status_code=409, detail=f"Blood bag '{bag.bag_number}' is currently {bag.status.value}.")
+    try:
+        _validate_collection_not_future(bag.collection_date)
+    except HTTPException as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     if _to_utc(bag.expiry_date) <= datetime.now(timezone.utc):
         raise HTTPException(status_code=409, detail=f"Blood bag '{bag.bag_number}' has expired and cannot be cross-matched.")
 
@@ -254,6 +267,14 @@ def issue_blood_bag_for_transfusion(
             status_code=400,
             detail=f"Blood bag must be in CROSS_MATCHED state to issue (current: {cm.blood_bag.status.value}).",
         )
+
+    try:
+        _validate_collection_not_future(cm.blood_bag.collection_date)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Blood bag '{cm.blood_bag.bag_number}' has a future collection date and cannot be issued.",
+        ) from exc
 
     bag_expiry_utc = cm.blood_bag.expiry_date if cm.blood_bag.expiry_date.tzinfo else cm.blood_bag.expiry_date.replace(tzinfo=timezone.utc)
     if bag_expiry_utc <= datetime.now(timezone.utc):
