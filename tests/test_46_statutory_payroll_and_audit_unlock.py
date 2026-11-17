@@ -21,6 +21,7 @@ def test_calculate_indian_statutory_deductions_brackets():
         gross_paise=2_000_000,
         prorated_fixed_paise=2_000_000,
         pf_opt_out=False,
+        payroll_period="2026-01",
     )
     # PF capped at ₹15,000 (1,500,000 paise) = 180,000 paise
     assert res_low["pf_employee_paise"] == 180_000
@@ -40,6 +41,7 @@ def test_calculate_indian_statutory_deductions_brackets():
         prorated_fixed_paise=5_000_000,
         pf_opt_out=False,
         custom_tds_paise=250_000,
+        payroll_period="2026-01",
     )
     assert res_high["pf_employee_paise"] == 180_000
     assert res_high["esi_employee_paise"] == 0
@@ -53,6 +55,7 @@ def test_calculate_indian_statutory_deductions_brackets():
         gross_paise=5_000_000,
         prorated_fixed_paise=5_000_000,
         pf_opt_out=True,
+        payroll_period="2026-01",
     )
     assert res_opt_out["pf_employee_paise"] == 0
     assert res_opt_out["pf_employer_paise"] == 0
@@ -62,6 +65,7 @@ def test_calculate_indian_statutory_deductions_brackets():
         gross_paise=3_000_000,
         prorated_fixed_paise=3_000_000,
         uncapped_pf=True,
+        payroll_period="2026-01",
     )
     assert res_uncapped["pf_employee_paise"] == int(3_000_000 * 0.12)
 
