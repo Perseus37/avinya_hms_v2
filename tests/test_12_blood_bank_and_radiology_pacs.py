@@ -145,7 +145,7 @@ def test_02_universal_donor_o_neg_cross_match_issue_auto_billing_and_reaction_qu
     clear_res = client.patch(
         f"/v1/api/blood-bank/cross-match/{cm_id}/reaction",
         headers=nurse_headers,
-        json={"reaction_type": "NONE", "reaction_notes": None},
+        json={"reaction_type": "NONE", "reaction_notes": "Attempt to clear the existing report"},
     )
     assert clear_res.status_code == 409
     assert clear_res.json()["message"] == overwrite_res.json()["message"]
