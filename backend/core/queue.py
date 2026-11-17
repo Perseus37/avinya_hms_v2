@@ -162,6 +162,13 @@ def get_task_status(task_id: str) -> Optional[dict[str, Any]]:
 
 
 _PROMOTE_SCHEDULED_TASK_LUA = """
+-- Recheck the live score inside this script: the caller's ZRANGEBYSCORE
+-- result is only a snapshot and a concurrent reschedule may move this task
+-- into the future before this script executes.
+local score = redis.call("ZSCORE", KEYS[1], ARGV[1])
+if not score or tonumber(score) > tonumber(ARGV[2]) then
+    return 0
+end
 -- Only scheduled/retrying tasks may be promoted. Do not recreate missing
 -- metadata or re-enqueue terminal/otherwise transitioned tasks from stale IDs.
 local status = redis.call("HGET", KEYS[3], "status")
@@ -195,6 +202,7 @@ def promote_scheduled_tasks(r: redis.Redis) -> int:
                 KEY_PENDING_TASKS,
                 f"{KEY_TASK_PREFIX}{task_id}",
                 task_id,
+                now,
             )
         )
 
