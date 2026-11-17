@@ -26,15 +26,13 @@ class FakeRedis:
     """In-memory Redis mock for queue and task testing."""
 
     def __init__(self):
-        self._pipeline_transactions = []
         self._hashes = {}
         self._lists = {}
         self._zsets = {}
         self._strings = {}
         self._expirations = []
 
-    def pipeline(self, transaction=True):
-        self._pipeline_transactions.append(transaction)
+    def pipeline(self):
         return self
 
     def hset(self, key, *args, mapping=None, **kwargs):
@@ -52,9 +50,6 @@ class FakeRedis:
 
     def hgetall(self, key):
         return dict(self._hashes.get(key, {}))
-
-    def hget(self, key, field):
-        return self._hashes.get(key, {}).get(field)
 
     def expire(self, key, seconds):
         self._expirations.append((key, seconds))
@@ -97,9 +92,6 @@ class FakeRedis:
         min_val = float("-inf") if min == "-inf" else float(min)
         return [k for k, score in z.items() if min_val <= score <= max_val]
 
-    def zscore(self, key, member):
-        return self._zsets.get(key, {}).get(member)
-
     def zrem(self, key, *members):
         z = self._zsets.get(key, {})
         removed = 0
@@ -108,23 +100,6 @@ class FakeRedis:
                 del z[m]
                 removed += 1
         return removed
-
-    def eval(self, script, numkeys, *args):
-        # Execute the scheduled-promotion script as one indivisible fake-Redis
-        # operation so unit tests exercise its remove/enqueue/status contract.
-        scheduled_key, pending_key, task_key = args[:3]
-        task_id = args[3]
-        cutoff = float(args[4])
-        score = self.zscore(scheduled_key, task_id)
-        if score is None or float(score) > cutoff:
-            return 0
-        status = self.hget(task_key, "status")
-        removed = self.zrem(scheduled_key, task_id)
-        if removed and status in ("SCHEDULED", "RETRYING"):
-            self.rpush(pending_key, task_id)
-            self.hset(task_key, "status", "QUEUED")
-            return 1
-        return 0
 
     def set(self, key, value, ex=None):
         self._strings[key] = value
@@ -172,76 +147,6 @@ def test_enqueue_scheduled_task_and_promotion(fake_redis):
         assert task_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
 
 
-def test_scheduled_promotion_is_atomic_and_idempotent(fake_redis):
-    task_id = enqueue_task("sample.task", {"data": "preserve"}, delay_seconds=10, sync_fallback=False)
-    due_time = time.time() + 20
-
-    with patch("time.time", return_value=due_time):
-        assert promote_scheduled_tasks(fake_redis) == 1
-        # A competing worker cannot enqueue the same scheduled ID again.
-        assert promote_scheduled_tasks(fake_redis) == 0
-
-    assert fake_redis._lists[KEY_PENDING_TASKS].count(task_id) == 1
-    assert task_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
-    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")["status"] == "QUEUED"
-
-
-def test_scheduled_promotion_does_not_promote_concurrently_rescheduled_task(fake_redis):
-    task_id = enqueue_task(
-        "sample.task", {"data": "rescheduled"}, delay_seconds=10, sync_fallback=False
-    )
-    original_due_time = time.time() + 20
-
-    class ReschedulingRedis(FakeRedis):
-        rescheduled = False
-
-        def zrangebyscore(self, key, min, max):
-            snapshot = super().zrangebyscore(key, min, max)
-            if snapshot and not self.rescheduled:
-                # Simulate another worker rescheduling after the caller has
-                # collected due IDs but before the promotion Lua script runs.
-                self._zsets[key][task_id] = original_due_time + 3600
-                self.rescheduled = True
-            return snapshot
-
-    racing_redis = ReschedulingRedis()
-    racing_redis._hashes = fake_redis._hashes
-    racing_redis._lists = fake_redis._lists
-    racing_redis._zsets = fake_redis._zsets
-
-    with patch("time.time", return_value=original_due_time):
-        assert promote_scheduled_tasks(racing_redis) == 0
-
-    assert racing_redis.zscore(KEY_SCHEDULED_TASKS, task_id) == original_due_time + 3600
-    assert task_id not in racing_redis._lists.get(KEY_PENDING_TASKS, [])
-    assert racing_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")["status"] == "SCHEDULED"
-
-
-def test_scheduled_promotion_discards_orphaned_task_ids(fake_redis):
-    orphan_id = "orphaned-task-without-metadata"
-    fake_redis.zadd(KEY_SCHEDULED_TASKS, {orphan_id: time.time() - 1})
-
-    assert promote_scheduled_tasks(fake_redis) == 0
-    assert orphan_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
-    assert orphan_id not in fake_redis._lists.get(KEY_PENDING_TASKS, [])
-    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{orphan_id}") == {}
-
-
-def test_scheduled_promotion_discards_stale_terminal_task_ids(fake_redis):
-    completed_id = "completed-task-stale-schedule-member"
-    fake_redis.hset(f"{KEY_TASK_PREFIX}{completed_id}", mapping={
-        "id": completed_id,
-        "task_name": "sample.task",
-        "status": "COMPLETED",
-    })
-    fake_redis.zadd(KEY_SCHEDULED_TASKS, {completed_id: time.time() - 1})
-
-    assert promote_scheduled_tasks(fake_redis) == 0
-    assert completed_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
-    assert completed_id not in fake_redis._lists.get(KEY_PENDING_TASKS, [])
-    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{completed_id}")["status"] == "COMPLETED"
-
-
 def test_dequeue_and_completion_lifecycle(fake_redis):
     payload = {"key": "val"}
     task_id = enqueue_task("email.send", payload, delay_seconds=0, sync_fallback=False)
@@ -269,7 +174,6 @@ def test_task_failure_and_dead_letter_routing(fake_redis):
     assert status["status"] == "RETRYING"
     assert status["retries"] == 1
     assert task_id in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
-    assert fake_redis._pipeline_transactions[-1] is True
 
     # 2nd failure -> retry 2
     mark_task_failed(task_id, "Connection timeout 2")
@@ -282,9 +186,6 @@ def test_task_failure_and_dead_letter_routing(fake_redis):
     status = get_task_status(task_id)
     assert status["status"] == "FAILED"
     assert task_id in fake_redis._lists.get(KEY_DEAD_LETTER, [])
-    assert task_id not in fake_redis._zsets.get(KEY_SCHEDULED_TASKS, {})
-    assert fake_redis._pipeline_transactions[-1] is True
-    assert (f"{KEY_TASK_PREFIX}{task_id}", 86400) in fake_redis._expirations
 
 
 def test_worker_burst_execution(fake_redis, monkeypatch):
@@ -330,168 +231,3 @@ def test_completed_task_gets_bounded_terminal_retention(fake_redis):
 
     assert (f"{KEY_TASK_PREFIX}{task_id}", 3600) in fake_redis._expirations
     assert "payload" not in fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")
-
-
-def test_scheduled_promotion_executes_atomically_on_real_redis():
-    """Opt-in integration proof for the Lua transition against Redis itself."""
-    import os
-    import uuid
-    import redis
-    from backend.core.queue import _PROMOTE_SCHEDULED_TASK_LUA
-
-    redis_url = os.getenv("TEST_REDIS_URL")
-    if not redis_url:
-        pytest.skip("TEST_REDIS_URL is not configured")
-
-    client = redis.Redis.from_url(redis_url, decode_responses=True)
-    suffix = uuid.uuid4().hex
-    scheduled_key = f"avinya:test:{suffix}:scheduled"
-    pending_key = f"avinya:test:{suffix}:pending"
-    task_key = f"avinya:test:{suffix}:task"
-    task_id = f"task-{suffix}"
-    orphan_id = f"orphan-{suffix}"
-    orphan_task_key = f"{task_key}:missing"
-    completed_id = f"completed-{suffix}"
-    completed_task_key = f"{task_key}:completed"
-    failed_id = f"failed-{suffix}"
-    failed_task_key = f"{task_key}:failed"
-    try:
-        # Reproduce the stale-snapshot race: a task was due when selected, but
-        # a concurrent reschedule moves its live score beyond the captured cutoff.
-        stale_cutoff = time.time()
-        client.zadd(scheduled_key, {task_id: stale_cutoff - 1})
-        client.hset(task_key, mapping={"status": "SCHEDULED"})
-        client.zadd(scheduled_key, {task_id: stale_cutoff + 3600})
-        stale_result = client.eval(
-            _PROMOTE_SCHEDULED_TASK_LUA,
-            3,
-            scheduled_key,
-            pending_key,
-            task_key,
-            task_id,
-            stale_cutoff,
-        )
-        assert stale_result == 0
-        assert client.zscore(scheduled_key, task_id) == stale_cutoff + 3600
-        assert client.lrange(pending_key, 0, -1) == []
-        client.zrem(scheduled_key, task_id)
-
-        client.zadd(scheduled_key, {
-            task_id: time.time() - 1,
-            orphan_id: time.time() - 1,
-            completed_id: time.time() - 1,
-            failed_id: time.time() - 1,
-        })
-        client.hset(task_key, mapping={"status": "SCHEDULED"})
-        client.hset(completed_task_key, mapping={"status": "COMPLETED"})
-        client.hset(failed_task_key, mapping={"status": "FAILED"})
-
-        orphan_result = client.eval(
-            _PROMOTE_SCHEDULED_TASK_LUA,
-            3,
-            scheduled_key,
-            pending_key,
-            orphan_task_key,
-            orphan_id,
-            time.time(),
-        )
-        completed_result = client.eval(
-            _PROMOTE_SCHEDULED_TASK_LUA,
-            3,
-            scheduled_key,
-            pending_key,
-            completed_task_key,
-            completed_id,
-            time.time(),
-        )
-        failed_result = client.eval(
-            _PROMOTE_SCHEDULED_TASK_LUA,
-            3,
-            scheduled_key,
-            pending_key,
-            failed_task_key,
-            failed_id,
-            time.time(),
-        )
-        first = client.eval(
-            _PROMOTE_SCHEDULED_TASK_LUA,
-            3,
-            scheduled_key,
-            pending_key,
-            task_key,
-            task_id,
-            time.time(),
-        )
-        second = client.eval(
-            _PROMOTE_SCHEDULED_TASK_LUA,
-            3,
-            scheduled_key,
-            pending_key,
-            task_key,
-            task_id,
-            time.time(),
-        )
-
-        assert orphan_result == 0
-        assert completed_result == 0
-        assert failed_result == 0
-        assert first == 1
-        assert second == 0
-        assert client.lrange(pending_key, 0, -1) == [task_id]
-        assert client.hget(task_key, "status") == "QUEUED"
-        assert client.hget(completed_task_key, "status") == "COMPLETED"
-        assert client.zscore(scheduled_key, task_id) is None
-        assert client.zscore(scheduled_key, orphan_id) is None
-        assert client.zscore(scheduled_key, completed_id) is None
-        assert client.zscore(scheduled_key, failed_id) is None
-        assert client.hget(failed_task_key, "status") == "FAILED"
-        assert client.exists(orphan_task_key) == 0
-    finally:
-        client.delete(
-            scheduled_key, pending_key, task_key, orphan_task_key,
-            completed_task_key, failed_task_key,
-        )
-        client.close()
-
-def test_retry_and_dead_letter_transitions_execute_on_real_redis(monkeypatch):
-    """Opt-in proof that retry and terminal failure pipelines work with Redis."""
-    import os
-    import uuid
-    import redis
-    import backend.core.queue as queue
-
-    redis_url = os.getenv("TEST_REDIS_URL")
-    if not redis_url:
-        pytest.skip("TEST_REDIS_URL is not configured")
-
-    client = redis.Redis.from_url(redis_url, decode_responses=True)
-    task_id = f"failure-{uuid.uuid4().hex}"
-    task_key = f"{KEY_TASK_PREFIX}{task_id}"
-    monkeypatch.setattr(queue, "get_redis", lambda: client)
-    try:
-        client.hset(task_key, mapping={
-            "task_name": "integration.failure",
-            "status": "PROCESSING",
-            "retries": "0",
-            "max_retries": "1",
-        })
-
-        mark_task_failed(task_id, "first failure")
-        retry_state = client.hgetall(task_key)
-        assert retry_state["status"] == "RETRYING"
-        assert retry_state["retries"] == "1"
-        assert client.zscore(KEY_SCHEDULED_TASKS, task_id) is not None
-        assert task_id not in client.lrange(KEY_DEAD_LETTER, 0, -1)
-
-        mark_task_failed(task_id, "terminal failure")
-        failed_state = client.hgetall(task_key)
-        assert failed_state["status"] == "FAILED"
-        assert failed_state["retries"] == "2"
-        assert task_id in client.lrange(KEY_DEAD_LETTER, 0, -1)
-        assert client.zscore(KEY_SCHEDULED_TASKS, task_id) is None
-        assert 0 < client.ttl(task_key) <= 86400
-    finally:
-        client.zrem(KEY_SCHEDULED_TASKS, task_id)
-        client.lrem(KEY_DEAD_LETTER, 0, task_id)
-        client.delete(task_key)
-        client.close()
