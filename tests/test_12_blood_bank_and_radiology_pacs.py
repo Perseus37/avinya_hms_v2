@@ -1,4 +1,7 @@
 from datetime import datetime, timedelta, timezone
+from sqlalchemy.orm import sessionmaker
+
+from backend.domains.bloodbank.models import BloodCrossMatchOrder
 
 
 def _create_patient_with_blood_group(client, doctor_headers, blood_group="O+"):
@@ -78,7 +81,7 @@ def test_01_blood_bank_blocks_incompatible_abo_rh_cross_match_with_409_hard_stop
 
 
 def test_02_universal_donor_o_neg_cross_match_issue_auto_billing_and_reaction_quarantine(
-    client, superuser_headers, doctor_headers, nurse_headers, billing_headers
+    client, superuser_headers, doctor_headers, nurse_headers, billing_headers, multi_tenant_env
 ):
     """
     Scenario 2:
@@ -122,6 +125,14 @@ def test_02_universal_donor_o_neg_cross_match_issue_auto_billing_and_reaction_qu
     assert inv["total_amount_paise"] == 220000
     assert "BLOOD BANK [Bag #BAG-ONEG-UNIV-01]" in inv["line_items"][0]["description"]
 
+    # NONE is not an adverse reaction and must not consume the immutable report slot.
+    none_first_res = client.patch(
+        f"/v1/api/blood-bank/cross-match/{cm_id}/reaction",
+        headers=nurse_headers,
+        json={"reaction_type": "NONE", "reaction_notes": "No adverse reaction observed"},
+    )
+    assert none_first_res.status_code == 400
+
     # 3. Report adverse transfusion reaction -> Quarantines bag as REACTION_HALTED
     rxn_res = client.patch(
         f"/v1/api/blood-bank/cross-match/{cm_id}/reaction",
@@ -149,6 +160,14 @@ def test_02_universal_donor_o_neg_cross_match_issue_auto_billing_and_reaction_qu
     )
     assert clear_res.status_code == 409
     assert clear_res.json()["message"] == overwrite_res.json()["message"]
+
+    # Verify both rejected updates left the original clinical record unchanged.
+    TestSession = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with TestSession() as db:
+        persisted = db.get(BloodCrossMatchOrder, cm_id)
+        assert persisted is not None
+        assert persisted.reaction_type.value == rxn_res.json()["reaction_type"]
+        assert persisted.reaction_notes == rxn_res.json()["reaction_notes"]
 
 
 def test_03_pacs_dicom_study_attaches_to_radiology_task_and_blocks_lab_tasks(
