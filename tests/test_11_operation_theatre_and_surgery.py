@@ -327,3 +327,17 @@ def test_09_operative_record_cannot_be_replaced_after_surgery_terminal_state(
                 surgery_id=surgery["id"]
             ).one()
             assert record.operative_findings == original["operative_findings"]
+
+def test_surgery_status_transition_query_locks_only_parent_schedule_row():
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+    from backend.domains.surgery.models import SurgicalSchedule
+
+    statement = (
+        select(SurgicalSchedule)
+        .where(SurgicalSchedule.id == 1)
+        .with_for_update(of=SurgicalSchedule)
+    )
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "FOR UPDATE OF surgical_schedules" in sql
