@@ -1,3 +1,5 @@
+import pytest
+
 from datetime import datetime, timedelta, timezone
 
 
@@ -315,3 +317,85 @@ def test_12_clinical_discharge_releases_bed_and_closes_encounter(client, superus
     enc_after = client.get(f"/v1/api/adt/encounters/{ipd_enc['id']}", headers=doctor_headers).json()
     assert enc_after["status"] == "DISCHARGED"
     assert client.put(f"/v1/api/adt/admissions/{adm['id']}", headers=doctor_headers, json={"admission_type": "EMERGENCY"}).status_code == 400
+
+
+def test_13_concurrent_transfers_for_one_admission_commit_only_one_destination(
+    client, superuser_headers, doctor_headers
+):
+    from backend.core.database import tenant_engine_pool
+
+    if tenant_engine_pool.get_engine("hms_default").dialect.name != "postgresql":
+        pytest.skip("SELECT FOR UPDATE NOWAIT concurrency guarantee requires PostgreSQL; SQLite ignores row locks.")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    ids = _setup_ward_and_two_beds(client, superuser_headers)
+    third_bed = client.post(
+        "/v1/api/ip/beds",
+        headers=superuser_headers,
+        json={
+            "room_id": ids["room_id"],
+            "bed_number": "101-C",
+            "bed_type": "ICU",
+            "base_daily_rate_paise": 500000,
+        },
+    ).json()["bed_id"]
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={"full_name": "Concurrent Transfer", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"},
+    ).json()
+    encounter = client.post(
+        "/v1/api/adt/encounters",
+        headers=doctor_headers,
+        json={"patient_id": patient["id"], "encounter_type": "IPD", "primary_doctor_id": 2, "department_id": 1},
+    ).json()
+    admission = client.post(
+        "/v1/api/adt/admissions",
+        headers=doctor_headers,
+        json={
+            "encounter_id": encounter["id"],
+            "admission_type": "ROUTINE",
+            "admitting_doctor_id": 2,
+            "assigned_bed_id": ids["bed1_id"],
+        },
+    ).json()
+
+    start = Barrier(2)
+
+    def transfer(destination_bed_id, reason):
+        start.wait()
+        return client.post(
+            "/v1/api/adt/transfers",
+            headers=doctor_headers,
+            json={
+                "admission_id": admission["id"],
+                "new_bed_id": destination_bed_id,
+                "transfer_reason": reason,
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(transfer, ids["bed2_id"], "Concurrent transfer A")
+        second = pool.submit(transfer, third_bed, "Concurrent transfer B")
+        responses = [first.result(), second.result()]
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    final_admission = client.get(
+        f"/v1/api/adt/admissions/{admission['id']}", headers=doctor_headers
+    )
+    assert final_admission.status_code == 200
+    current_bed_id = final_admission.json()["current_bed_id"]
+    assert current_bed_id in (ids["bed2_id"], third_bed)
+
+    ward_map = client.get("/v1/api/ip/beds/map-view", headers=doctor_headers).json()
+    bed_states = {
+        bed["id"]: bed["status"]
+        for room in ward_map[0]["rooms"]
+        for bed in room["beds"]
+    }
+    assert bed_states[ids["bed1_id"]] == "HOUSEKEEPING"
+    assert bed_states[current_bed_id] == "OCCUPIED"
+    other_destination = third_bed if current_bed_id == ids["bed2_id"] else ids["bed2_id"]
+    assert bed_states[other_destination] == "AVAILABLE"
