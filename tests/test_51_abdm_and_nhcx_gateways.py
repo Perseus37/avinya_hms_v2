@@ -12,7 +12,7 @@ import re
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from backend.domains.billing.models import Invoice, InvoiceStatusEnum, PaymentReceipt
+from backend.domains.billing.models import Invoice, InvoiceStatusEnum, PaymentMethodEnum, PaymentReceipt
 
 
 def _create_patient(client, headers, name="ABDM Track Patient", dob="1987-11-20T00:00:00Z"):
@@ -417,7 +417,25 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(
         assert receipts[0].payment_method.value == "INSURANCE"
         assert receipts[0].transaction_reference == "UTR-HDFC-2026-990011"
 
-    # Re-delivery of the same settlement callback is idempotent.
+    # A later front-desk payment can close the remaining invoice balance.
+    # The original NHCX callback must remain idempotent after invoice closure.
+    with TenantSession() as db:
+        invoice = db.get(Invoice, invoice_id)
+        remaining = invoice.net_amount_paise - invoice.amount_paid_paise
+        db.add(
+            PaymentReceipt(
+                invoice_id=invoice.id,
+                receipt_number="REC-TEST-CASH-CLEAR",
+                amount_paid_paise=remaining,
+                payment_method=PaymentMethodEnum.CASH,
+                transaction_reference="CASH-TEST-CLEAR",
+            )
+        )
+        invoice.amount_paid_paise += remaining
+        invoice.status = InvoiceStatusEnum.PAID
+        db.commit()
+
+    # Re-delivery of the same settlement callback is idempotent even on a PAID invoice.
     retry_res = client.post(
         "/v1/api/nhcx/claims/adjudication-callback",
         headers=billing_headers,
@@ -426,8 +444,10 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(
     assert retry_res.status_code == 200, retry_res.text
     assert retry_res.json() == settlement_data
     with TenantSession() as db:
-        assert db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).count() == 1
-        assert db.get(Invoice, invoice_id).amount_paid_paise == 450000
+        receipts = db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).all()
+        assert len(receipts) == 2
+        assert sum(r.payment_method == PaymentMethodEnum.INSURANCE for r in receipts) == 1
+        assert db.get(Invoice, invoice_id).amount_paid_paise == db.get(Invoice, invoice_id).net_amount_paise
 
     # A conflicting callback for an already settled claim must not post a second receipt.
     conflicting_payload = {
