@@ -10,6 +10,9 @@ from datetime import datetime, timedelta, timezone
 import json
 import re
 import pytest
+from sqlalchemy.orm import sessionmaker
+
+from backend.domains.billing.models import Invoice, InvoiceStatusEnum, PaymentMethodEnum, PaymentReceipt
 
 
 def _create_patient(client, headers, name="ABDM Track Patient", dob="1987-11-20T00:00:00Z"):
@@ -217,7 +220,9 @@ def test_abdm_m2_consent_and_m3_fhir_health_data_transfer(client, superuser_head
 # 3. NHCX: National Health Claims Exchange Connector
 # =============================================================================
 
-def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuser_headers, billing_headers):
+def test_nhcx_claim_bundle_submission_and_adjudication_callback(
+    client, superuser_headers, billing_headers, multi_tenant_env
+):
     """
     Scenario 4: Compiles an internal insurance claim into a standardized NHCX FHIR R4
     Claim Bundle, submits it to the exchange, and receives digital insurer adjudication.
@@ -342,25 +347,128 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuse
     assert any(e["resource"]["resourceType"] == "Claim" for e in bundle["entry"])
     assert any(e["resource"]["resourceType"] == "Coverage" for e in bundle["entry"])
 
-    # 5. Receive NHCX Insurer Adjudication Callback
+    # 5. Adjudication approval is not a financial settlement.
     callback_res = client.post(
         "/v1/api/nhcx/claims/adjudication-callback",
         headers=billing_headers,
         json={
             "transaction_id": txn_id,
             "adjudication_status": "APPROVED",
-            "settled_amount_paise": 480000,  # 4800 INR settled (200 INR deduction)
-            "settlement_utr": "UTR-HDFC-2026-990011",
+            "settled_amount_paise": 480000,  # legacy field carries adjudicated amount here
             "adjudication_bundle": {"adjudicationReason": "Adjudicated under Optima Secure standard terms"},
         },
     )
     assert callback_res.status_code == 200, callback_res.text
     callback_data = callback_res.json()
-    assert callback_data["claim_status"] == "SETTLED"
-    assert callback_data["settled_amount_paise"] == 480000
-    assert callback_data["settlement_utr_reference"] == "UTR-HDFC-2026-990011"
+    assert callback_data["claim_status"] == "APPROVED"
+    assert callback_data["settled_amount_paise"] == 0
+    assert callback_data["settlement_utr_reference"] is None
 
-    # 6. Verify Transaction Log Retrieval
+    TenantSession = sessionmaker(bind=multi_tenant_env["tenant_engines"]["hms_default"])
+    with TenantSession() as db:
+        invoice = db.get(Invoice, invoice_id)
+        assert invoice.amount_paid_paise == 0
+        assert db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).count() == 0
+
+    # A VOID invoice must not be revived by a late insurer settlement callback.
+    with TenantSession() as db:
+        invoice = db.get(Invoice, invoice_id)
+        invoice.status = InvoiceStatusEnum.VOID
+        db.commit()
+
+    settlement_payload = {
+        "transaction_id": txn_id,
+        "adjudication_status": "SETTLED",
+        "settled_amount_paise": 450000,
+        "settlement_utr": "UTR-HDFC-2026-990011",
+    }
+    void_settlement = client.post(
+        "/v1/api/nhcx/claims/adjudication-callback",
+        headers=billing_headers,
+        json=settlement_payload,
+    )
+    assert void_settlement.status_code == 409, void_settlement.text
+    with TenantSession() as db:
+        invoice = db.get(Invoice, invoice_id)
+        assert invoice.status == InvoiceStatusEnum.VOID
+        assert db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).count() == 0
+        invoice.status = InvoiceStatusEnum.UNPAID
+        db.commit()
+
+    # 6. A separate SETTLED callback posts the insurer receipt to the invoice ledger.
+    settlement_res = client.post(
+        "/v1/api/nhcx/claims/adjudication-callback",
+        headers=billing_headers,
+        json=settlement_payload,
+    )
+    assert settlement_res.status_code == 200, settlement_res.text
+    settlement_data = settlement_res.json()
+    assert settlement_data["claim_status"] == "SETTLED"
+    assert settlement_data["settled_amount_paise"] == 450000
+    assert settlement_data["settlement_utr_reference"] == "UTR-HDFC-2026-990011"
+
+    with TenantSession() as db:
+        invoice = db.get(Invoice, invoice_id)
+        assert invoice.amount_paid_paise == 450000
+        assert invoice.status.value == "PARTIAL"
+        receipts = db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).all()
+        assert len(receipts) == 1
+        assert receipts[0].amount_paid_paise == 450000
+        assert receipts[0].payment_method.value == "INSURANCE"
+        assert receipts[0].transaction_reference == "UTR-HDFC-2026-990011"
+
+    # A later front-desk payment can close the remaining invoice balance.
+    # The original NHCX callback must remain idempotent after invoice closure.
+    with TenantSession() as db:
+        invoice = db.get(Invoice, invoice_id)
+        remaining = invoice.net_amount_paise - invoice.amount_paid_paise
+        db.add(
+            PaymentReceipt(
+                invoice_id=invoice.id,
+                receipt_number="REC-TEST-CASH-CLEAR",
+                amount_paid_paise=remaining,
+                payment_method=PaymentMethodEnum.CASH,
+                transaction_reference="CASH-TEST-CLEAR",
+            )
+        )
+        invoice.amount_paid_paise += remaining
+        invoice.status = InvoiceStatusEnum.PAID
+        db.commit()
+
+    # Re-delivery of the same settlement callback is idempotent even on a PAID invoice.
+    retry_res = client.post(
+        "/v1/api/nhcx/claims/adjudication-callback",
+        headers=billing_headers,
+        json=settlement_payload,
+    )
+    assert retry_res.status_code == 200, retry_res.text
+    assert retry_res.json() == settlement_data
+    with TenantSession() as db:
+        receipts = db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).all()
+        assert len(receipts) == 2
+        assert sum(r.payment_method == PaymentMethodEnum.INSURANCE for r in receipts) == 1
+        assert db.get(Invoice, invoice_id).amount_paid_paise == db.get(Invoice, invoice_id).net_amount_paise
+
+    # A conflicting callback for an already settled claim must not post a second receipt.
+    conflicting_payload = {
+        **settlement_payload,
+        "settled_amount_paise": 440000,
+        "settlement_utr": "UTR-HDFC-CONFLICT-01",
+    }
+    conflict_res = client.post(
+        "/v1/api/nhcx/claims/adjudication-callback",
+        headers=billing_headers,
+        json=conflicting_payload,
+    )
+    assert conflict_res.status_code == 409, conflict_res.text
+    with TenantSession() as db:
+        receipts = db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).all()
+        assert len(receipts) == 2
+        assert sum(r.payment_method == PaymentMethodEnum.INSURANCE for r in receipts) == 1
+        invoice = db.get(Invoice, invoice_id)
+        assert invoice.amount_paid_paise == invoice.net_amount_paise
+
+    # 7. Verify Transaction Log Retrieval
     log_res = client.get(
         f"/v1/api/nhcx/transactions/{txn_id}",
         headers=billing_headers,
@@ -368,5 +476,5 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(client, superuse
     assert log_res.status_code == 200, log_res.text
     log_data = log_res.json()
     assert log_data["transaction_id"] == txn_id
-    assert log_data["nhcx_status"] == "APPROVED"
+    assert log_data["nhcx_status"] == "SETTLED"
     assert log_data["adjudicated_amount_paise"] == 480000
