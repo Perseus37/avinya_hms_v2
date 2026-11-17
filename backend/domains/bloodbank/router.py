@@ -320,6 +320,11 @@ def report_transfusion_reaction(
             status_code=status.HTTP_409_CONFLICT,
             detail="A transfusion reaction report already exists and cannot be overwritten. Record follow-up observations through the clinical event workflow.",
         )
+    if payload.reaction_type == TransfusionReactionTypeEnum.NONE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A transfusion reaction report must identify an adverse reaction type.",
+        )
 
     cm.reaction_type = payload.reaction_type
     cm.reaction_notes = payload.reaction_notes
