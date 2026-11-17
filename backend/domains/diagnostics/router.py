@@ -467,7 +467,12 @@ def update_diagnostic_order(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("diagnostics:write")),
 ):
-    order = db.get(DiagnosticOrder, order_id)
+    # Serialize order-level edits with task result submission and cancellation.
+    order = db.execute(
+        select(DiagnosticOrder)
+        .where(DiagnosticOrder.id == order_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
     if order.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
@@ -488,9 +493,16 @@ def cancel_diagnostic_order(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("diagnostics:verify", "diagnostics:write")),
 ):
-    order = db.query(DiagnosticOrder).options(joinedload(DiagnosticOrder.tasks)).filter(DiagnosticOrder.id == order_id).first()
+    # Lock the parent before loading/updating child tasks. Result submission
+    # uses the same parent->child order to avoid lock-order inversion.
+    order = db.execute(
+        select(DiagnosticOrder)
+        .where(DiagnosticOrder.id == order_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
+    order.tasks
     if order.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
         raise HTTPException(
             status_code=400,
@@ -636,19 +648,20 @@ def submit_task_result(
 ):
     """H8 FIX: Enforces task lifecycle, checks action-specific permission, and prevents self-verification."""
     
-    task = db.execute(
-        select(DiagnosticTask)
+    # Resolve the parent ID first, then lock parent order before task. Order
+    # cancellation updates the parent and then its child tasks; matching that
+    # lock order avoids a task->order / order->task deadlock.
+    order_id = db.execute(
+        select(DiagnosticTask.order_id)
         .where(DiagnosticTask.id == task_id)
-        .with_for_update()
     ).scalar_one_or_none()
-    if not task:
+    if order_id is None:
         raise HTTPException(status_code=404, detail="Task not found.")
 
-    # Lock the parent order as well: task result entry must not race order
-    # cancellation or completion, and completed orders are immutable.
+    # The order lock serializes result entry with cancellation/completion.
     order = db.execute(
         select(DiagnosticOrder)
-        .where(DiagnosticOrder.id == task.order_id)
+        .where(DiagnosticOrder.id == order_id)
         .with_for_update()
     ).scalar_one_or_none()
     if not order or order.status in {OrderStatusEnum.CANCELLED, OrderStatusEnum.COMPLETED}:
@@ -657,6 +670,16 @@ def submit_task_result(
             status_code=409,
             detail=f"Cannot submit results for a {state.lower()} diagnostic order.",
         )
+    # Lock the task only after its parent order, using the same parent->child
+    # ordering as order cancellation.
+    task = db.execute(
+        select(DiagnosticTask)
+        .where(DiagnosticTask.id == task_id, DiagnosticTask.order_id == order.id)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+
     task.service
     order.tasks
     if task.status in [TaskStatusEnum.VERIFIED, TaskStatusEnum.CANCELLED]:
