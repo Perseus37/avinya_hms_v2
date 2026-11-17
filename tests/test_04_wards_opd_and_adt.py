@@ -1,3 +1,5 @@
+import pytest
+
 from datetime import datetime, timedelta, timezone
 
 
@@ -320,6 +322,11 @@ def test_12_clinical_discharge_releases_bed_and_closes_encounter(client, superus
 def test_13_concurrent_transfers_for_one_admission_commit_only_one_destination(
     client, superuser_headers, doctor_headers
 ):
+    from backend.core.database import tenant_engine_pool
+
+    if tenant_engine_pool.get_engine("hms_default").dialect.name != "postgresql":
+        pytest.skip("SELECT FOR UPDATE NOWAIT concurrency guarantee requires PostgreSQL; SQLite ignores row locks.")
+
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
