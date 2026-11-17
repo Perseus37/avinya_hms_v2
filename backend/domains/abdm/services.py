@@ -387,7 +387,7 @@ def generate_abdm_fhir_health_data(
     to_dt_buffered = to_dt + timedelta(minutes=5)
 
     # 3. Prescriptions / Medications (N-46: filter strictly by consented date range)
-    if "Prescription" in hi_types:
+    if "Prescription" in requested_hi_types:
         raw_rx_items = (
             session.query(PrescriptionItem)
             .join(Prescription, PrescriptionItem.prescription_id == Prescription.id)
@@ -425,7 +425,7 @@ def generate_abdm_fhir_health_data(
             entries.append(med_req)
 
     # 4. Diagnostic Reports / Tasks (N-46: filter strictly by consented date range)
-    if "DiagnosticReport" in hi_types:
+    if "DiagnosticReport" in requested_hi_types:
         from backend.domains.diagnostics.models import DiagnosticOrder
         raw_diag_tasks = (
             session.query(DiagnosticTask)
