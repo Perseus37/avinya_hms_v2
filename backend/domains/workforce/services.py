@@ -1,7 +1,7 @@
 """Statutory Indian Payroll Deduction & Compliance Engine for Avinya HMS (M-05).
 
 Calculates Indian statutory deductions (Employees' Provident Fund [EPF],
-Employees' State Insurance [ESI], Professional Tax [PT], and Tax Deducted at Source [TDS])
+Employees' State Insurance (ESI), Professional Tax (PT), and Tax Deducted at Source [TDS])
 and employer matching contributions.
 """
 
@@ -101,11 +101,20 @@ def calculate_indian_statutory_deductions(
             "payroll calculation is blocked rather than applying another state's rate."
         )
     try:
-        period_year, period_month = (int(part) for part in payroll_period.split("-"))
-        if len(payroll_period) != 7 or not (1 <= period_month <= 12):
+        if (
+            not isinstance(payroll_period, str)
+            or len(payroll_period) != 7
+            or payroll_period[4] != "-"
+            or not payroll_period[:4].isdigit()
+            or not payroll_period[5:].isdigit()
+        ):
+            raise ValueError
+        period_year = int(payroll_period[:4])
+        period_month = int(payroll_period[5:])
+        if period_year < 1 or not (1 <= period_month <= 12):
             raise ValueError
     except (AttributeError, TypeError, ValueError) as exc:
-        raise ValueError("payroll_period must use YYYY-MM format.") from exc
+        raise ValueError("payroll_period must use YYYY-MM format with a valid positive year and month.") from exc
 
     if (period_year, period_month) >= (2025, 4):
         pt_threshold_paise = 2_500_000  # ₹25,000
@@ -142,4 +151,3 @@ def calculate_indian_statutory_deductions(
         "payroll_period": payroll_period,
         "regime": "IN_STATUTORY_2026",
     }
-
