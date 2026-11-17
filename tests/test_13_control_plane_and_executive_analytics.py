@@ -245,6 +245,9 @@ def test_06_clinical_quality_pharmacy_fefo_doctor_productivity_and_inventory_rad
     assert pharm_res.status_code == 200
     assert "dispensing_fill_rate_pct" in pharm_res.json()["prescription_funnel"]
     assert "fefo_inventory_risk_valuation_paise" in pharm_res.json()
+    expiry_risk = pharm_res.json()["fefo_inventory_risk_valuation_paise"]
+    assert "expired_stock_paise" in expiry_risk
+    assert "expiring_0_to_30_days_paise" in expiry_risk
 
     prod_res = client.get("/v1/api/analytics/doctor-and-department-productivity", headers=superuser_headers)
     assert prod_res.status_code == 200
