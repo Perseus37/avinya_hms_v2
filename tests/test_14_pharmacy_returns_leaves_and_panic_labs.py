@@ -268,3 +268,8 @@ def test_05_pharmacy_return_reconciles_partial_invoice_and_refunds_excess_paymen
     assert final_invoice["total_amount_paise"] == 3000
     assert final_invoice["amount_paid_paise"] == 3000
     assert final_invoice["status"] == "PAID"
+
+    refunds = client.get(f"/v1/api/billing/patients/{patient['id']}/refunds", headers=billing_headers)
+    assert refunds.status_code == 200, refunds.text
+    assert len(refunds.json()) == 1
+    assert refunds.json()[0]["refund_amount_paise"] == 1000
