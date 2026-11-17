@@ -72,7 +72,7 @@ def test_02_receiving_expired_or_zero_stock_batch_returns_400(client, pharmacist
     ).status_code == 400
 
 
-def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_headers):
+def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_headers, superuser_headers):
     """Scenario 3: Stock adjustment updates quantity; adjustment resulting in < 0 stock is blocked with 400."""
     _, batch = _setup_med_and_batch(client, pharmacist_headers)
 
@@ -115,6 +115,48 @@ def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_hea
     )
     assert ledger_after_rejection.json()["total"] == 1
     assert len(ledger_after_rejection.json()["items"]) == 1
+
+    # Voiding a non-empty batch is also a stock correction and must be audited.
+    voided = client.delete(
+        f"/v1/api/pharmacy/inventory/batches/{batch['id']}",
+        headers=superuser_headers,
+    )
+    assert voided.status_code == 200, voided.text
+
+    batches = client.get(
+        f"/v1/api/pharmacy/inventory/batches?medication_id={batch['medication_id']}",
+        headers=pharmacist_headers,
+    )
+    assert batches.status_code == 200
+    voided_batch = next(item for item in batches.json()["items"] if item["id"] == batch["id"])
+    assert voided_batch["stock_quantity"] == 0
+
+    void_ledger = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=1&page_size=10",
+        headers=pharmacist_headers,
+    )
+    assert void_ledger.status_code == 200
+    assert void_ledger.json()["total"] == 2
+    void_movement = next(
+        item for item in void_ledger.json()["items"]
+        if item["reason"] == "Batch voided for recall"
+    )
+    assert void_movement["quantity_adjustment"] == -80
+    assert void_movement["quantity_before"] == 80
+    assert void_movement["quantity_after"] == 0
+    assert void_movement["actor_id"] > 0
+
+    # Re-voiding an already empty batch must not create a zero-delta ledger row.
+    repeat_void = client.delete(
+        f"/v1/api/pharmacy/inventory/batches/{batch['id']}",
+        headers=superuser_headers,
+    )
+    assert repeat_void.status_code == 200
+    unchanged_ledger = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert unchanged_ledger.json()["total"] == 2
 
 
 def test_04_erx_prescription_enforces_cpoe_allergy_hard_stop(client, doctor_headers, pharmacist_headers):
