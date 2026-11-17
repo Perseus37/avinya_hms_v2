@@ -146,6 +146,22 @@ def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_hea
     assert void_movement["quantity_after"] == 0
     assert void_movement["actor_id"] > 0
 
+    # The append-only history remains bounded and navigable across pages.
+    page_one = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=1&page_size=1",
+        headers=pharmacist_headers,
+    )
+    page_two = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=2&page_size=1",
+        headers=pharmacist_headers,
+    )
+    assert page_one.status_code == 200
+    assert page_two.status_code == 200
+    assert page_one.json()["total"] == page_two.json()["total"] == 2
+    assert len(page_one.json()["items"]) == len(page_two.json()["items"]) == 1
+    assert page_one.json()["items"][0]["reason"] == "Batch voided for recall"
+    assert page_two.json()["items"][0]["reason"] == "Physical stock count correction"
+
     # Re-voiding an already empty batch must not create a zero-delta ledger row.
     repeat_void = client.delete(
         f"/v1/api/pharmacy/inventory/batches/{batch['id']}",
