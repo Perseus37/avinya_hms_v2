@@ -1,3 +1,5 @@
+import pytest
+
 from datetime import datetime, timezone
 
 
@@ -764,6 +766,11 @@ def test_report_template_branding_catalog_uses_neutral_tenant_samples():
 def test_09_concurrent_clinical_note_edit_and_sign_preserves_signed_lock(
     client, doctor_headers
 ):
+    from backend.core.database import tenant_engine_pool
+
+    if tenant_engine_pool.get_engine("hms_default").dialect.name != "postgresql":
+        pytest.skip("SELECT FOR UPDATE concurrency guarantee requires PostgreSQL; SQLite ignores row locks.")
+
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
 
