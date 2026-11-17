@@ -330,32 +330,56 @@ def test_05_future_collection_date_rejected_on_receipt_cross_match_and_issue(
     assert "future collection date" in issue.json()["message"].lower()
 
 
-def test_06_ffp_uses_abo_plasma_compatibility_and_ignores_rh(
+def test_06_ffp_uses_full_abo_plasma_compatibility_matrix_and_ignores_rh(
     client, superuser_headers, doctor_headers
 ):
+    """Exercise all donor/recipient ABO groups; Rh(D) does not restrict FFP."""
     now = datetime.now(timezone.utc)
-    bag = client.post(
-        "/v1/api/blood-bank/bags",
-        headers=superuser_headers,
-        json={
-            "bag_number": "BAG-FFP-A-POS-TO-O-NEG",
-            "component_type": "FFP",
-            "blood_group": "A+",
-            "volume_ml": 250,
-            "collection_date": (now - timedelta(days=1)).isoformat(),
-            "expiry_date": (now + timedelta(days=20)).isoformat(),
-            "processing_fee_paise": 0,
-        },
-    ).json()
-    _, encounter = _create_patient_with_blood_group(client, doctor_headers, blood_group="O-")
-    response = client.post(
-        "/v1/api/blood-bank/cross-match",
-        headers=superuser_headers,
-        json={
-            "encounter_id": encounter["id"],
-            "blood_bag_id": bag["id"],
-            "ordered_by_doctor_id": 2,
-        },
-    )
-    assert response.status_code == 201
-    assert response.json()["blood_bag"]["status"] == "CROSS_MATCHED"
+    blood_groups = ("O-", "O+", "A-", "A+", "B-", "B+", "AB-", "AB+")
+    compatible_donors = {
+        "O-": set(blood_groups),
+        "O+": set(blood_groups),
+        "A-": {"A-", "A+", "AB-", "AB+"},
+        "A+": {"A-", "A+", "AB-", "AB+"},
+        "B-": {"B-", "B+", "AB-", "AB+"},
+        "B+": {"B-", "B+", "AB-", "AB+"},
+        "AB-": {"AB-", "AB+"},
+        "AB+": {"AB-", "AB+"},
+    }
+
+    for recipient_group in blood_groups:
+        _, encounter = _create_patient_with_blood_group(
+            client, doctor_headers, blood_group=recipient_group
+        )
+        for donor_group in blood_groups:
+            bag_response = client.post(
+                "/v1/api/blood-bank/bags",
+                headers=superuser_headers,
+                json={
+                    "bag_number": f"FFP-{recipient_group.replace('+', 'P').replace('-', 'N')}-{donor_group.replace('+', 'P').replace('-', 'N')}",
+                    "component_type": "FFP",
+                    "blood_group": donor_group,
+                    "volume_ml": 250,
+                    "collection_date": (now - timedelta(days=1)).isoformat(),
+                    "expiry_date": (now + timedelta(days=20)).isoformat(),
+                    "processing_fee_paise": 0,
+                },
+            )
+            assert bag_response.status_code == 201, bag_response.text
+
+            response = client.post(
+                "/v1/api/blood-bank/cross-match",
+                headers=superuser_headers,
+                json={
+                    "encounter_id": encounter["id"],
+                    "blood_bag_id": bag_response.json()["id"],
+                    "ordered_by_doctor_id": 2,
+                },
+            )
+            expected_status = 201 if donor_group in compatible_donors[recipient_group] else 409
+            assert response.status_code == expected_status, (
+                f"FFP donor {donor_group} to recipient {recipient_group}: "
+                f"expected {expected_status}, got {response.status_code}: {response.text}"
+            )
+            if expected_status == 201:
+                assert response.json()["blood_bag"]["status"] == "CROSS_MATCHED"
