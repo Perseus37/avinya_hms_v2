@@ -368,6 +368,10 @@ def update_surgery_status(
             joinedload(SurgicalSchedule.implants),
         )
         .where(SurgicalSchedule.id == surgery_id)
+        # Use the same parent-row lock as operative-record writes. Restrict
+        # FOR UPDATE to the schedule row because eager-loaded relationships
+        # include outer joins and are not part of the lifecycle lock order.
+        .with_for_update(of=SurgicalSchedule)
     )
     surgery = db.execute(stmt).unique().scalar_one_or_none()
     if not surgery:
