@@ -396,12 +396,6 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(
         db.commit()
 
     # 6. A separate SETTLED callback posts the insurer receipt to the invoice ledger.
-
-        "transaction_id": txn_id,
-        "adjudication_status": "SETTLED",
-        "settled_amount_paise": 450000,  # actual remittance is below the 480,000 adjudication
-        "settlement_utr": "UTR-HDFC-2026-990011",
-    }
     settlement_res = client.post(
         "/v1/api/nhcx/claims/adjudication-callback",
         headers=billing_headers,
