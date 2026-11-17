@@ -45,7 +45,10 @@ def test_professional_tax_fails_closed_for_unconfigured_state():
 
 @pytest.mark.parametrize(
     "period",
-    ["2026-1", "2026-13", "not-a-period", "0000-01", "-001-01", "2026-00", "2026/01"],
+    [
+        "2026-1", "2026-13", "not-a-period", "0000-01", "-001-01",
+        "2026-00", "2026/01", "２０２６-０１", "٢٠٢٦-٠١",
+    ],
 )
 def test_professional_tax_rejects_invalid_payroll_period(period):
     with pytest.raises(ValueError, match="YYYY-MM"):
