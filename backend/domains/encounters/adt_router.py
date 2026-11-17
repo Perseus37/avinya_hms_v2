@@ -13,6 +13,7 @@ from backend.domains.billing.models import Invoice, InvoiceStatusEnum
 from backend.domains.encounters.models import AdmissionTypeEnum, BedTransferLog, EncounterStatusEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter, DischargeDispositionEnum
 from backend.domains.facility.models import Bed, BedStatusEnum, PhysicalRoom
 from backend.domains.identity.models import User
+from backend.domains.patients.models import Patient
 from backend.domains.insurance.models import InsurancePreAuth, PreAuthStatusEnum
 from backend.schemas.common import PaginatedResponse
 from backend.domains.encounters.schemas import BedTransferRequest, BedTransferResponse, ClinicalDischargeRequest, InpatientAdmissionCreate, InpatientAdmissionResponse, InpatientAdmissionUpdate, PatientEncounterCreate, PatientEncounterResponse, PatientEncounterUpdate
@@ -33,6 +34,14 @@ def create_encounter(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("adt:write")),
 ):
+    # Serialize encounter creation for the same patient. Locking the patient
+    # row works even when no active encounter row exists yet.
+    patient = db.execute(
+        select(Patient).where(Patient.id == payload.patient_id).with_for_update()
+    ).scalar_one_or_none()
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+
     active_encounter = (
         db.query(PatientEncounter)
         .filter(
