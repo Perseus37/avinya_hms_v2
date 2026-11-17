@@ -210,7 +210,7 @@ def test_04_lis_hemolyzed_sample_rejection_recollection_and_critical_panic_value
     panic_list = client.get("/v1/api/diagnostics/tasks/panic-alerts", headers=doctor_headers).json()
     assert any(t["id"] == task_id and t["result_value"] == "6.9 mEq/L" for t in panic_list)
 
-def test_05_pharmacy_return_reconciles_partial_invoice_and_refunds_excess_payment(
+def test_05_pharmacy_return_reconciles_partial_invoice_without_self_approving_refund(
     client, doctor_headers, pharmacist_headers, billing_headers
 ):
     med = client.post(
