@@ -88,14 +88,51 @@ def schedule_surgery(
     if end_utc <= start_utc:
         raise HTTPException(status_code=400, detail="scheduled_end_time must be after scheduled_start_time.")
 
-    # ARCH-004: Push overlap evaluation down to PostgreSQL to prevent OOM and race conditions
+    # Serialize competing bookings on stable resource rows. Lock order is always
+    # theatre first, then lead surgeon, so requests sharing either resource
+    # contend even when no overlapping SurgicalSchedule row exists yet.
+    # These locks remain held until the schedule transaction commits.
+    locked_theatre = db.execute(
+        select(OperationTheatre)
+        .where(OperationTheatre.id == payload.theatre_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if locked_theatre is None or not locked_theatre.is_active:
+        raise HTTPException(status_code=404, detail="Active operation theatre not found.")
+    # Use the refreshed, locked ORM instance for the new schedule and conflict text.
+    theatre = locked_theatre
+
+    # Lock all assigned clinicians in ascending user-id order. This prevents
+    # overlapping bookings for either the lead surgeon or anesthetist and keeps
+    # lock acquisition deterministic when two clinicians are swapped between cases.
+    clinician_ids = sorted({
+        user_id for user_id in (payload.lead_surgeon_id, payload.anesthetist_id)
+        if user_id is not None
+    })
+    locked_clinicians = {}
+    for clinician_id in clinician_ids:
+        clinician = db.execute(
+            select(User)
+            .where(User.id == clinician_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if clinician is None:
+            role = "Lead surgeon" if clinician_id == payload.lead_surgeon_id else "Anesthetist"
+            raise HTTPException(status_code=404, detail=f"{role} not found.")
+        locked_clinicians[clinician_id] = clinician
+
+    # The resource locks above close the empty-result race; this query checks
+    # the protected interval against bookings committed by the prior lock holder.
     from sqlalchemy import or_, and_
     overlap_conflict = db.execute(
         select(SurgicalSchedule).where(
             SurgicalSchedule.status != SurgeryStatusEnum.CANCELLED,
             or_(
                 SurgicalSchedule.theatre_id == payload.theatre_id,
-                SurgicalSchedule.lead_surgeon_id == payload.lead_surgeon_id,
+                SurgicalSchedule.lead_surgeon_id.in_(clinician_ids),
+                SurgicalSchedule.anesthetist_id.in_(clinician_ids),
             ),
             and_(
                 SurgicalSchedule.scheduled_start_time < end_utc,
@@ -110,7 +147,19 @@ def schedule_surgery(
                 status_code=409,
                 detail=f"OT Scheduling Conflict: Theatre '{theatre.code}' is already booked during this window.",
             )
-        if overlap_conflict.lead_surgeon_id == payload.lead_surgeon_id:
+        conflicting_clinicians = {
+            overlap_conflict.lead_surgeon_id,
+            overlap_conflict.anesthetist_id,
+        }
+        if (
+            payload.anesthetist_id is not None
+            and payload.anesthetist_id in conflicting_clinicians
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Anesthetist Scheduling Conflict: Anesthetist is already booked for another surgery during this window.",
+            )
+        if payload.lead_surgeon_id in conflicting_clinicians:
             raise HTTPException(
                 status_code=409,
                 detail="Surgeon Scheduling Conflict: Lead surgeon is already booked for another surgery during this window.",
