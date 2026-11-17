@@ -1,3 +1,4 @@
+import pytest
 """
 Tests for Enterprise Track 2:
 - Bedside Barcode Medication Administration (BCMA) 5-Rights Verification
@@ -543,6 +544,13 @@ def test_bcma_concurrent_duplicate_dose_attempts_are_serialized(client, superuse
     """Two simultaneous scans for one scheduled dose must create only one eMAR record."""
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
+    from backend.core.database import tenant_engine_pool
+
+    # SQLite does not implement SELECT FOR UPDATE; it cannot prove this
+    # PostgreSQL row-locking guarantee and can produce misleading race results.
+    engine = tenant_engine_pool.get_engine("hms_default")
+    if engine.dialect.name != "postgresql":
+        pytest.skip("BCMA concurrency guarantee requires PostgreSQL row-level locking")
 
     patient = _create_patient(client, superuser_headers, name="BCMA Concurrent Patient")
     encounter = _create_encounter(client, superuser_headers, patient["id"])
