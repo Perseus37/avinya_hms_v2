@@ -3,7 +3,7 @@ from typing import Optional
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, joinedload
 
@@ -616,8 +616,13 @@ def dispense_medication(
                     InventoryBatch.medication_id == rx_item.medication_id,
                     InventoryBatch.stock_quantity > 0,
                     InventoryBatch.expiry_date > datetime.now(timezone.utc),
-                    InventoryBatch.expiry_date < batch.expiry_date,
-                    InventoryBatch.id != batch.id,
+                    or_(
+                        InventoryBatch.expiry_date < batch.expiry_date,
+                        and_(
+                            InventoryBatch.expiry_date == batch.expiry_date,
+                            InventoryBatch.id < batch.id,
+                        ),
+                    ),
                 )
                 .order_by(InventoryBatch.expiry_date.asc(), InventoryBatch.id.asc())
                 .limit(1)
@@ -773,24 +778,11 @@ def return_dispensed_medication(
                 if invoice.discount_amount_paise and invoice.discount_amount_paise > invoice.total_amount_paise:
                     invoice.discount_amount_paise = invoice.total_amount_paise
 
-                # A partial payment can exceed the revised invoice balance after
-                # the returned item is credited. Refund only that excess and
-                # keep the invoice's paid amount within its new net total.
+                # Preserve the actual cash/UPI receipts. The return log records
+                # the credit; only the finance refund workflow may approve and
+                # disburse any excess payment. Pharmacy staff must not populate
+                # RefundVoucher.approved_by_id.
                 revised_net = invoice.net_amount_paise
-                excess_paid = max(0, invoice.amount_paid_paise - revised_net)
-                if excess_paid:
-                    invoice.amount_paid_paise = revised_net
-                    db.add(RefundVoucher(
-                        voucher_number=f"RFND-PHM-{datetime.now(timezone.utc):%Y%m%d}-{secrets.token_hex(6).upper()}",
-                        patient_id=invoice.patient_id,
-                        deposit_id=None,
-                        invoice_id=invoice.id,
-                        refund_amount_paise=excess_paid,
-                        refund_method=PaymentMethodEnum.CASH,
-                        transaction_reference=f"RX-RET-{rx.id}-{secrets.token_hex(4).upper()}",
-                        reason="Pharmacy return credit exceeded the remaining unpaid invoice balance",
-                        approved_by_id=current_user.id,
-                    ))
                 if invoice.status != InvoiceStatusEnum.DRAFT:
                     if revised_net > 0 and invoice.amount_paid_paise >= revised_net:
                         invoice.status = InvoiceStatusEnum.PAID
@@ -811,22 +803,9 @@ def return_dispensed_medication(
         db.add(log)
         return_logs.append(log)
 
-    # If the invoice was already PAID, automatically issue an auditable RefundVoucher
-    if invoice and invoice.status == InvoiceStatusEnum.PAID and total_credit_paise > 0:
-        date_prefix = datetime.now(timezone.utc).strftime("%Y%m%d")
-        voucher = RefundVoucher(
-            voucher_number=f"RFND-PHM-{date_prefix}-{secrets.token_hex(6).upper()}",
-            patient_id=invoice.patient_id,
-            deposit_id=None,
-            invoice_id=invoice.id,
-            refund_amount_paise=total_credit_paise,
-            refund_method=PaymentMethodEnum.CASH,
-            transaction_reference=f"RX-RET-{rx.id}",
-            reason="Pharmacy dispensed stock return credit on paid invoice",
-            approved_by_id=current_user.id,
-        )
-        db.add(voucher)
-
+    # Pharmacy return logs are the auditable credit record. RefundVoucher is
+    # intentionally not created here: this endpoint is pharmacy-authorized,
+    # whereas voucher approval/disbursement belongs to the finance workflow.
     db.flush()
     all_items = db.query(PrescriptionItem).filter(PrescriptionItem.prescription_id == rx.id).all()
     if all(i.dispensed_quantity == 0 for i in all_items):
