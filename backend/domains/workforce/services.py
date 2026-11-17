@@ -91,9 +91,9 @@ def calculate_indian_statutory_deductions(
         esi_employer = 0
 
     # 3. Professional Tax (PT)
-    # Karnataka's current schedule (effective 2025-04): ₹25,000 monthly
-    # salary threshold; ₹200/month except ₹300 in February. Before the
-    # amendment, the threshold was ₹15,000 and the monthly amount ₹200.
+    # Karnataka raised the salary threshold from ₹15,000 to ₹25,000
+    # effective 2023-04. The 2025-04 amendment retained that threshold and
+    # changed February's deduction from ₹200 to ₹300.
     normalized_state = state.strip().upper()
     if normalized_state not in SUPPORTED_PROFESSIONAL_TAX_STATES:
         raise ValueError(
@@ -110,8 +110,11 @@ def calculate_indian_statutory_deductions(
     if (period_year, period_month) >= (2025, 4):
         pt_threshold_paise = 2_500_000  # ₹25,000
         pt_paise = 30_000 if period_month == 2 else 20_000
+    elif (period_year, period_month) >= (2023, 4):
+        pt_threshold_paise = 2_500_000  # ₹25,000 from 2023-04
+        pt_paise = 20_000
     else:
-        pt_threshold_paise = 1_500_000  # ₹15,000
+        pt_threshold_paise = 1_500_000  # ₹15,000 before 2023-04
         pt_paise = 20_000
     if gross_paise < pt_threshold_paise:
         pt_paise = 0
