@@ -472,6 +472,7 @@ def update_diagnostic_order(
         select(DiagnosticOrder)
         .where(DiagnosticOrder.id == order_id)
         .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
@@ -493,24 +494,27 @@ def cancel_diagnostic_order(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("diagnostics:verify", "diagnostics:write")),
 ):
-    # Lock the parent before loading/updating child tasks. Result submission
-    # uses the same parent->child order to avoid lock-order inversion.
     order = db.execute(
-        select(DiagnosticOrder)
-        .where(DiagnosticOrder.id == order_id)
-        .with_for_update()
+        select(DiagnosticOrder).where(DiagnosticOrder.id == order_id).with_for_update()
     ).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
-    order.tasks
     if order.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot cancel a diagnostic order in '{order.status.value}' state.",
         )
 
+    # Lock child tasks in deterministic order after the parent order.
+    tasks = db.execute(
+        select(DiagnosticTask)
+        .where(DiagnosticTask.order_id == order_id)
+        .order_by(DiagnosticTask.id.asc())
+        .with_for_update()
+    ).scalars().all()
+
     order.status = OrderStatusEnum.CANCELLED
-    for task in order.tasks:
+    for task in tasks:
         if task.status in [TaskStatusEnum.PENDING, TaskStatusEnum.SAMPLE_COLLECTED, TaskStatusEnum.IN_PROGRESS]:
             task.status = TaskStatusEnum.CANCELLED
 
@@ -648,40 +652,44 @@ def submit_task_result(
 ):
     """H8 FIX: Enforces task lifecycle, checks action-specific permission, and prevents self-verification."""
     
-    # Resolve the parent ID first, then lock parent order before task. Order
-    # cancellation updates the parent and then its child tasks; matching that
-    # lock order avoids a task->order / order->task deadlock.
-    order_id = db.execute(
-        select(DiagnosticTask.order_id)
-        .where(DiagnosticTask.id == task_id)
+    # Resolve the immutable parent id, then serialize task lifecycle writers
+    # on the parent order before locking the individual task.
+    order_id_for_lock = db.execute(
+        select(DiagnosticTask.order_id).where(DiagnosticTask.id == task_id)
     ).scalar_one_or_none()
-    if order_id is None:
+    if order_id_for_lock is None:
         raise HTTPException(status_code=404, detail="Task not found.")
-
-    # The order lock serializes result entry with cancellation/completion.
-    order = db.execute(
+    locked_order = db.execute(
         select(DiagnosticOrder)
-        .where(DiagnosticOrder.id == order_id)
+        .where(DiagnosticOrder.id == order_id_for_lock)
         .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
-    if not order or order.status in {OrderStatusEnum.CANCELLED, OrderStatusEnum.COMPLETED}:
-        state = order.status.value if order else "MISSING"
+    if not locked_order:
+        raise HTTPException(status_code=404, detail="Task order not found.")
+    if locked_order.status in {OrderStatusEnum.CANCELLED, OrderStatusEnum.COMPLETED}:
         raise HTTPException(
             status_code=409,
-            detail=f"Cannot submit results for a {state.lower()} diagnostic order.",
+            detail=f"Cannot submit results for a {locked_order.status.value.lower()} diagnostic order.",
         )
-    # Lock the task only after its parent order, using the same parent->child
-    # ordering as order cancellation.
-    task = db.execute(
-        select(DiagnosticTask)
-        .where(DiagnosticTask.id == task_id, DiagnosticTask.order_id == order.id)
-        .with_for_update()
+    db.execute(
+        select(DiagnosticTask.id).where(DiagnosticTask.id == task_id).with_for_update()
     ).scalar_one_or_none()
-    if task is None:
-        raise HTTPException(status_code=404, detail="Task not found.")
 
-    task.service
-    order.tasks
+    task = (
+        db.query(DiagnosticTask)
+        .options(
+            joinedload(DiagnosticTask.service),
+            joinedload(DiagnosticTask.order).joinedload(DiagnosticOrder.tasks),
+        )
+        .filter(DiagnosticTask.id == task_id)
+        .populate_existing()
+        .first()
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if not task.order or task.order.status == OrderStatusEnum.CANCELLED:
+        raise HTTPException(status_code=400, detail="Cannot submit results for a cancelled order.")
     if task.status in [TaskStatusEnum.VERIFIED, TaskStatusEnum.CANCELLED]:
         raise HTTPException(
             status_code=409,
