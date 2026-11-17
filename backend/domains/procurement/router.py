@@ -402,7 +402,19 @@ def review_vendor_invoice(
         raise HTTPException(status_code=409, detail="Invoice is not available for review.")
 
     vendor = db.get(VendorMaster, invoice.vendor_id)
-    purchase_order = db.get(PurchaseOrder, payload.po_id) if payload.po_id else None
+    # Lock both the old and proposed PO in deterministic order. This shares
+    # the same serialization barrier used by three-way reconciliation.
+    po_ids_to_lock = sorted(
+        {po_id for po_id in (invoice.po_id, payload.po_id) if po_id is not None}
+    )
+    locked_purchase_orders = db.execute(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id.in_(po_ids_to_lock))
+        .order_by(PurchaseOrder.id)
+        .with_for_update()
+    ).scalars().all() if po_ids_to_lock else []
+    purchase_orders_by_id = {po.id: po for po in locked_purchase_orders}
+    purchase_order = purchase_orders_by_id.get(payload.po_id) if payload.po_id else None
     if payload.po_id and (
         purchase_order is None or purchase_order.vendor_id != invoice.vendor_id
     ):
