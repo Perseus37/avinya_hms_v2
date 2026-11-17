@@ -1138,14 +1138,20 @@ def evaluate_encounter_news2(
     consciousness = payload.consciousness or "ALERT"
 
     # Hydrate from EncounterVital if vital_id provided and fields were omitted
-    if payload.vital_id:
+    if payload.vital_id is not None:
         vital = db.get(EncounterVital, payload.vital_id)
-        if vital and vital.encounter_id == encounter_id:
-            if rr is None: rr = vital.respiratory_rate
-            if spo2 is None: spo2 = vital.spo2_percent
-            if sbp is None: sbp = vital.bp_systolic
-            if pulse is None: pulse = vital.pulse_bpm
-            if temp is None: temp = vital.temperature_f
+        if vital is None:
+            raise HTTPException(status_code=404, detail="Encounter vital record not found.")
+        if vital.encounter_id != encounter_id:
+            raise HTTPException(
+                status_code=409,
+                detail="The supplied vital record does not belong to this encounter.",
+            )
+        if rr is None: rr = vital.respiratory_rate
+        if spo2 is None: spo2 = vital.spo2_percent
+        if sbp is None: sbp = vital.bp_systolic
+        if pulse is None: pulse = vital.pulse_bpm
+        if temp is None: temp = vital.temperature_f
 
     try:
         news_result = calculate_news2_score(
