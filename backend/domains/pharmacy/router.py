@@ -714,6 +714,7 @@ def return_dispensed_medication(
         .with_for_update()
     )
     invoice = db.execute(inv_stmt).unique().scalars().first()
+    invoice_was_paid_before_return = bool(invoice and invoice.status == InvoiceStatusEnum.PAID)
 
     for ret in payload.items:
         rx_item = db.execute(
@@ -811,8 +812,10 @@ def return_dispensed_medication(
         db.add(log)
         return_logs.append(log)
 
-    # If the invoice was already PAID, automatically issue an auditable RefundVoucher
-    if invoice and invoice.status == InvoiceStatusEnum.PAID and total_credit_paise > 0:
+    # A full return credit applies only when the invoice was PAID before this
+    # transaction. A PARTIAL invoice may become PAID after reconciliation; in
+    # that case the excess-payment voucher above is the only refund due.
+    if invoice_was_paid_before_return and total_credit_paise > 0:
         date_prefix = datetime.now(timezone.utc).strftime("%Y%m%d")
         voucher = RefundVoucher(
             voucher_number=f"RFND-PHM-{date_prefix}-{secrets.token_hex(6).upper()}",
