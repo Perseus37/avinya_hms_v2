@@ -331,7 +331,7 @@ def list_inventory_stock_adjustments(
 def void_inventory_batch(
     batch_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:void")),
+    current_user: User = Depends(RequirePermission("pharmacy:void")),
 ):
     try:
         stmt = select(InventoryBatch).where(InventoryBatch.id == batch_id).with_for_update(nowait=True)
@@ -339,7 +339,19 @@ def void_inventory_batch(
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found.")
 
-        batch.stock_quantity = 0
+        quantity_before = batch.stock_quantity
+        if quantity_before > 0:
+            batch.stock_quantity = 0
+            db.add(
+                InventoryStockAdjustmentLog(
+                    batch_id=batch.id,
+                    quantity_adjustment=-quantity_before,
+                    quantity_before=quantity_before,
+                    quantity_after=0,
+                    reason="Batch voided for recall",
+                    actor_id=current_user.id,
+                )
+            )
         db.commit()
         return {"status": "success", "message": f"Batch {batch_id} voided (stock zeroed for recall traceability)."}
     except OperationalError:
