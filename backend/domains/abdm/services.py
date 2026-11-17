@@ -713,6 +713,11 @@ def process_nhcx_adjudication_callback(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Settlement amount exceeds the insurer-payable claim amount.",
             )
+        if invoice.status not in {InvoiceStatusEnum.UNPAID, InvoiceStatusEnum.PARTIAL}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot post an insurer settlement to an invoice in {invoice.status.value} state.",
+            )
         if claim.status == ClaimStatusEnum.SETTLED:
             # Exact delivery retries are idempotent; conflicting settlement
             # payloads must be investigated rather than posting a second receipt.
