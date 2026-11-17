@@ -249,12 +249,23 @@ def upsert_who_safety_checklist(
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("adt:write", "opd:write")),
 ):
-    surgery = db.get(SurgicalSchedule, surgery_id)
+    surgery = db.execute(
+        select(SurgicalSchedule)
+        .where(SurgicalSchedule.id == surgery_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not surgery:
         raise HTTPException(status_code=404, detail="Surgical schedule not found.")
+    if surgery.status in {SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot modify surgical safety checklist for a {surgery.status.value} surgery.",
+        )
 
     checklist = db.execute(
-        select(WHOSurgicalSafetyChecklist).where(WHOSurgicalSafetyChecklist.surgery_id == surgery_id)
+        select(WHOSurgicalSafetyChecklist)
+        .where(WHOSurgicalSafetyChecklist.surgery_id == surgery_id)
+        .with_for_update()
     ).scalar_one_or_none()
 
     if checklist:
@@ -335,11 +346,18 @@ def log_surgical_implant(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("adt:write", "opd:write")),
 ):
-    surgery = db.get(SurgicalSchedule, surgery_id)
+    surgery = db.execute(
+        select(SurgicalSchedule)
+        .where(SurgicalSchedule.id == surgery_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not surgery:
         raise HTTPException(status_code=404, detail="Surgical schedule not found.")
-    if surgery.status in [SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED]:
-        raise HTTPException(status_code=400, detail=f"Cannot add implants to a {surgery.status.value} surgery.")
+    if surgery.status in {SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot add implants to a {surgery.status.value} surgery.",
+        )
 
     imp = SurgicalImplantLog(surgery_id=surgery_id, **payload.model_dump())
     db.add(imp)
