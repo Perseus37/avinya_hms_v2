@@ -308,17 +308,23 @@ def adjust_inventory_stock(
 @router.get("/inventory/adjustments")
 def list_inventory_stock_adjustments(
     batch_id: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 50,
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("pharmacy:read")),
 ):
-    """Read the append-only stock correction history, newest first."""
-    stmt = select(InventoryStockAdjustmentLog).order_by(
+    """Read a bounded page of append-only stock correction history, newest first."""
+    page, page_size = validate_pagination(page, page_size)
+    query = db.query(InventoryStockAdjustmentLog)
+    if batch_id is not None:
+        query = query.filter(InventoryStockAdjustmentLog.batch_id == batch_id)
+    query = query.order_by(
         InventoryStockAdjustmentLog.created_at.desc(),
         InventoryStockAdjustmentLog.id.desc(),
     )
-    if batch_id is not None:
-        stmt = stmt.where(InventoryStockAdjustmentLog.batch_id == batch_id)
-    return list(db.execute(stmt).scalars().all())
+    total = query.count()
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.delete("/inventory/batches/{batch_id}", status_code=200)

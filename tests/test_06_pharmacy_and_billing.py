@@ -86,12 +86,15 @@ def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_hea
     assert adj_ok.json()["stock_quantity"] == 80
 
     ledger = client.get(
-        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=1&page_size=10",
         headers=pharmacist_headers,
     )
     assert ledger.status_code == 200
-    assert len(ledger.json()) == 1
-    movement = ledger.json()[0]
+    assert ledger.json()["total"] == 1
+    assert ledger.json()["page"] == 1
+    assert ledger.json()["page_size"] == 10
+    assert len(ledger.json()["items"]) == 1
+    movement = ledger.json()["items"][0]
     assert movement["quantity_adjustment"] == -20
     assert movement["quantity_before"] == 100
     assert movement["quantity_after"] == 80
@@ -110,7 +113,8 @@ def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_hea
         f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
         headers=pharmacist_headers,
     )
-    assert len(ledger_after_rejection.json()) == 1
+    assert ledger_after_rejection.json()["total"] == 1
+    assert len(ledger_after_rejection.json()["items"]) == 1
 
 
 def test_04_erx_prescription_enforces_cpoe_allergy_hard_stop(client, doctor_headers, pharmacist_headers):
