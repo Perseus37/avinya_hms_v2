@@ -52,20 +52,28 @@ def check_schedule_overlap(
     duration: int,
     exclude_appointment_id: Optional[int] = None,
 ) -> bool:
-    """Helper to detect scheduling conflicts, optionally excluding the appointment being rescheduled."""
-    time_lower_bound = appointment_time - timedelta(minutes=duration)
-    time_upper_bound = appointment_time + timedelta(minutes=duration)
+    """Detect true interval overlap using each appointment's persisted duration."""
+    requested_start = _to_utc(appointment_time)
+    requested_end = requested_start + timedelta(minutes=max(duration, 5))
 
     query = db.query(Appointment).filter(
         Appointment.doctor_id == doctor_id,
         Appointment.status.in_([AppointmentStatusEnum.SCHEDULED, AppointmentStatusEnum.ARRIVED]),
-        Appointment.appointment_time > time_lower_bound,
-        Appointment.appointment_time < time_upper_bound,
+        Appointment.appointment_time < requested_end,
     )
     if exclude_appointment_id is not None:
         query = query.filter(Appointment.id != exclude_appointment_id)
 
-    return query.first() is not None
+    # Duration is stored per appointment and can differ when a doctor's slot
+    # configuration changes. Evaluate the persisted interval rather than using
+    # the incoming appointment's duration as a symmetric time buffer.
+    for existing in query.all():
+        existing_start = _to_utc(existing.appointment_time)
+        existing_duration = max(existing.planned_duration_minutes or duration, 5)
+        existing_end = existing_start + timedelta(minutes=existing_duration)
+        if existing_start < requested_end and existing_end > requested_start:
+            return True
+    return False
 
 
 def _compute_next_daily_token(db: Session, doctor_id: int, appointment_time: datetime) -> int:
