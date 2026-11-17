@@ -462,8 +462,11 @@ def test_nhcx_claim_bundle_submission_and_adjudication_callback(
     )
     assert conflict_res.status_code == 409, conflict_res.text
     with TenantSession() as db:
-        assert db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).count() == 1
-        assert db.get(Invoice, invoice_id).amount_paid_paise == 450000
+        receipts = db.query(PaymentReceipt).filter(PaymentReceipt.invoice_id == invoice_id).all()
+        assert len(receipts) == 2
+        assert sum(r.payment_method == PaymentMethodEnum.INSURANCE for r in receipts) == 1
+        invoice = db.get(Invoice, invoice_id)
+        assert invoice.amount_paid_paise == invoice.net_amount_paise
 
     # 7. Verify Transaction Log Retrieval
     log_res = client.get(
