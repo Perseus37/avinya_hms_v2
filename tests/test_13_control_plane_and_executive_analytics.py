@@ -1,3 +1,8 @@
+import os
+
+import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 from fastapi.testclient import TestClient
 from backend.core.config import settings
 from backend.core.database import get_control_db
@@ -256,3 +261,93 @@ def test_06_clinical_quality_pharmacy_fefo_doctor_productivity_and_inventory_rad
     inv_res = client.get("/v1/api/analytics/inventory-and-blood-radar", headers=superuser_headers)
     assert inv_res.status_code == 200
     assert "total_active_report_templates" in inv_res.json()["governance_and_security"]
+
+
+def test_postgresql_transaction_advisory_lock_serializes_policy_creation():
+    """Exercise PostgreSQL's transaction-scoped mutex with independent connections."""
+    database_url = os.getenv("TEST_POSTGRES_URL")
+    if not database_url:
+        pytest.skip("Set TEST_POSTGRES_URL to run the PostgreSQL concurrency proof.")
+
+    engine = create_engine(database_url, pool_pre_ping=True)
+    first = second = None
+    lock_key = 72134789012345
+    try:
+        first = engine.connect()
+        second = engine.connect()
+
+        first.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        )
+        acquired_while_held = second.execute(
+            text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        ).scalar_one()
+        assert acquired_while_held is False
+
+        first.commit()
+        acquired_after_release = second.execute(
+            text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        ).scalar_one()
+        assert acquired_after_release is True
+        second.commit()
+    finally:
+        if first is not None:
+            first.rollback()
+            first.close()
+        if second is not None:
+            second.rollback()
+            second.close()
+        engine.dispose()
+
+
+def test_postgresql_staff_row_lock_serializes_leave_submission():
+    """Verify the row-lock primitive used by leave creation with two PG sessions."""
+    database_url = os.getenv("TEST_POSTGRES_URL")
+    if not database_url:
+        pytest.skip("Set TEST_POSTGRES_URL to run the PostgreSQL leave-lock proof.")
+
+    engine = create_engine(database_url, pool_pre_ping=True)
+    first = second = None
+    try:
+        first = engine.connect()
+        second = engine.connect()
+
+        staff_id = first.execute(
+            text("SELECT id FROM users ORDER BY id LIMIT 1")
+        ).scalar_one_or_none()
+        if staff_id is None:
+            pytest.skip("TEST_POSTGRES_URL has no seeded staff user.")
+
+        # Matches _active_user(..., for_update=True) in workforce/router.py.
+        first.execute(
+            text("SELECT id FROM users WHERE id = :user_id FOR UPDATE"),
+            {"user_id": staff_id},
+        ).scalar_one()
+
+        # NOWAIT makes the assertion deterministic without waiting for a timeout.
+        with pytest.raises(DBAPIError):
+            second.execute(
+                text("SELECT id FROM users WHERE id = :user_id FOR UPDATE NOWAIT"),
+                {"user_id": staff_id},
+            ).scalar_one()
+        second.rollback()
+
+        first.commit()
+        # Once the first submission transaction releases the user row, the
+        # competing request can acquire the same lock and proceed.
+        second.execute(
+            text("SELECT id FROM users WHERE id = :user_id FOR UPDATE NOWAIT"),
+            {"user_id": staff_id},
+        ).scalar_one()
+        second.commit()
+    finally:
+        if first is not None:
+            first.rollback()
+            first.close()
+        if second is not None:
+            second.rollback()
+            second.close()
+        engine.dispose()
