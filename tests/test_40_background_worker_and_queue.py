@@ -256,7 +256,7 @@ def test_scheduled_promotion_rechecks_score_after_concurrent_reschedule(fake_red
     assert eval_calls == [task_id]
     assert fake_redis._zsets[KEY_SCHEDULED_TASKS][task_id] == rescheduled_score
     assert task_id not in fake_redis._lists.get(KEY_PENDING_TASKS, [])
-    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")["status"] == "QUEUED"
+    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")["status"] == "SCHEDULED"
 
 
 def test_queued_and_scheduled_email_tasks_do_not_expire_before_dispatch(fake_redis):
