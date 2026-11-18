@@ -237,7 +237,7 @@ def test_scheduled_promotion_discards_missing_or_terminal_metadata(fake_redis):
 
 
 def test_scheduled_promotion_rechecks_score_after_concurrent_reschedule(fake_redis, monkeypatch):
-    task_id = enqueue_task("sample.task", {"data": 1}, delay_seconds=0, sync_fallback=False)
+    task_id = enqueue_task("sample.task", {"data": 1}, delay_seconds=3600, sync_fallback=False)
     # Model the race: the ID is selected from the due snapshot, then another
     # scheduler moves its live sorted-set score into the future before Lua runs.
     fake_redis.zadd(KEY_SCHEDULED_TASKS, {task_id: time.time() - 10})
