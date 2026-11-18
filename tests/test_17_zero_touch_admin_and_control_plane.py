@@ -1,6 +1,11 @@
 import io
 import json
+from datetime import date
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
+from backend.domains.policies.models import HospitalPolicySetting
+from backend.domains.policies.router import get_or_create_policy
 from backend.core.config import settings
 from backend.core.database import get_control_db
 from backend.control_plane.app import app as control_plane_app
@@ -547,3 +552,94 @@ def test_09_control_plane_bed_and_user_quota_enforcement(client, apollo_admin_he
         ).status_code
         == 201
     )
+
+
+def test_policy_settings_creation_takes_postgresql_transaction_advisory_lock():
+    """The empty-table check must be serialized before inserting the singleton row."""
+    class FakeResult:
+        def scalars(self):
+            return self
+
+        def first(self):
+            return None
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+            self.added = []
+
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+            return FakeResult()
+
+        def add(self, value):
+            self.added.append(value)
+
+        def flush(self):
+            return None
+
+    db = FakeSession()
+    setting = get_or_create_policy(db)
+
+    assert isinstance(setting, HospitalPolicySetting)
+    assert db.added == [setting]
+    assert len(db.calls) == 2
+    assert "pg_advisory_xact_lock" in db.calls[0][0]
+    assert db.calls[0][1] == {"lock_key": 72134789012345}
+    assert "hospital_policy_settings" in db.calls[1][0]
+
+def test_leave_creation_locks_staff_user_before_overlap_lookup():
+    """The stable user-row lock must precede the empty-range overlap check."""
+    from types import SimpleNamespace
+
+    from backend.domains.identity.models import User, UserStatusEnum
+    from backend.domains.workforce.models import LeaveRequest
+    from backend.domains.workforce.router import LeaveRequestCreate, create_leave_request
+
+    staff = SimpleNamespace(id=41, status=UserStatusEnum.ACTIVE)
+
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class FakeSession:
+        def __init__(self):
+            self.statements = []
+            self.added = []
+            self.committed = False
+
+        def execute(self, statement):
+            self.statements.append(statement)
+            return FakeResult(staff if len(self.statements) == 1 else None)
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            self.committed = True
+
+        def refresh(self, _value):
+            return None
+
+    db = FakeSession()
+    payload = LeaveRequestCreate(
+        user_id=41,
+        leave_type="CASUAL",
+        start_date=date(2026, 12, 1),
+        end_date=date(2026, 12, 2),
+        reason="Personal leave",
+    )
+
+    created = create_leave_request(payload, db, SimpleNamespace(id=7))
+
+    assert db.statements[0].column_descriptions[0]["entity"] is User
+    assert db.statements[0]._for_update_arg is not None
+    assert db.statements[1].column_descriptions[0]["entity"] is LeaveRequest
+    assert db.added == [created]
+    assert db.committed is True
