@@ -479,6 +479,15 @@ def update_diagnostic_order(
     if order.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
         raise HTTPException(status_code=400, detail="Cannot modify a completed or cancelled diagnostic order.")
 
+    # Terminal transitions have dedicated lifecycle paths: task verification
+    # completes an order, while DELETE performs cancellation and billing reversal.
+    # Do not let this general-purpose edit endpoint bypass those invariants.
+    if payload.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
+        raise HTTPException(
+            status_code=400,
+            detail="Diagnostic orders can only be completed through task verification or cancelled through the cancellation endpoint.",
+        )
+
     if payload.clinical_notes is not None:
         order.clinical_notes = payload.clinical_notes
     if payload.status is not None:
