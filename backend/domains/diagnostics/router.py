@@ -467,11 +467,26 @@ def update_diagnostic_order(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("diagnostics:write")),
 ):
-    order = db.get(DiagnosticOrder, order_id)
+    # Serialize order-level edits with task result submission and cancellation.
+    order = db.execute(
+        select(DiagnosticOrder)
+        .where(DiagnosticOrder.id == order_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Diagnostic order not found.")
     if order.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
         raise HTTPException(status_code=400, detail="Cannot modify a completed or cancelled diagnostic order.")
+
+    # Terminal transitions have dedicated lifecycle paths: task verification
+    # completes an order, while DELETE performs cancellation and billing reversal.
+    # Do not let this general-purpose edit endpoint bypass those invariants.
+    if payload.status in [OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED]:
+        raise HTTPException(
+            status_code=400,
+            detail="Diagnostic orders can only be completed through task verification or cancelled through the cancellation endpoint.",
+        )
 
     if payload.clinical_notes is not None:
         order.clinical_notes = payload.clinical_notes
@@ -654,10 +669,18 @@ def submit_task_result(
     if order_id_for_lock is None:
         raise HTTPException(status_code=404, detail="Task not found.")
     locked_order = db.execute(
-        select(DiagnosticOrder).where(DiagnosticOrder.id == order_id_for_lock).with_for_update()
+        select(DiagnosticOrder)
+        .where(DiagnosticOrder.id == order_id_for_lock)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if not locked_order:
         raise HTTPException(status_code=404, detail="Task order not found.")
+    if locked_order.status in {OrderStatusEnum.CANCELLED, OrderStatusEnum.COMPLETED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot submit results for a {locked_order.status.value.lower()} diagnostic order.",
+        )
     db.execute(
         select(DiagnosticTask.id).where(DiagnosticTask.id == task_id).with_for_update()
     ).scalar_one_or_none()
