@@ -602,6 +602,24 @@ def test_14_stock_adjustment_ledger_rejects_direct_mutation(
     assert ledger.status_code == 200
     log_id = ledger.json()["items"][0]["id"]
     engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    # The shared API fixture uses metadata.create_all rather than Alembic. Install
+    # the SQLite migration's trigger DDL here so this test exercises the database
+    # enforcement behavior; actual Alembic upgrade execution remains a separate gate.
+    with engine.begin() as connection:
+        connection.exec_driver_sql("""
+            CREATE TRIGGER trg_inventory_stock_adjustment_logs_immutable_update
+            BEFORE UPDATE ON inventory_stock_adjustment_logs
+            BEGIN
+                SELECT RAISE(ABORT, 'Pharmacy stock adjustment history is immutable');
+            END
+        """)
+        connection.exec_driver_sql("""
+            CREATE TRIGGER trg_inventory_stock_adjustment_logs_immutable_delete
+            BEFORE DELETE ON inventory_stock_adjustment_logs
+            BEGIN
+                SELECT RAISE(ABORT, 'Pharmacy stock adjustment history is immutable');
+            END
+        """)
 
     for statement in (
         text("UPDATE inventory_stock_adjustment_logs SET reason = 'tampered' WHERE id = :id"),
