@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+
 
 def _setup_med_and_batch(client, pharmacist_headers):
     """Helper to register a medication and receive an active inventory batch of 100 units at Rs 15.00 (1500 paise)."""
@@ -577,3 +580,40 @@ def test_fefo_rejects_higher_id_batch_when_expiry_dates_tie(
     assert response.status_code == 409, response.text
     assert "FEFO Violation" in response.text
     assert first_batch["batch_number"] in response.text
+
+def test_14_stock_adjustment_ledger_rejects_direct_mutation(
+    client, pharmacist_headers, multi_tenant_env
+):
+    """The database must reject UPDATE and DELETE against the append-only ledger."""
+    _, batch = _setup_med_and_batch(client, pharmacist_headers)
+    adjusted = client.patch(
+        f"/v1/api/pharmacy/inventory/batches/{batch['id']}/adjust",
+        headers=pharmacist_headers,
+        json={"quantity_adjustment": -1, "reason": "Physical count correction"},
+    )
+    assert adjusted.status_code == 200, adjusted.text
+
+    ledger = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert ledger.status_code == 200
+    log_id = ledger.json()["items"][0]["id"]
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+
+    for statement in (
+        text("UPDATE inventory_stock_adjustment_logs SET reason = 'tampered' WHERE id = :id"),
+        text("DELETE FROM inventory_stock_adjustment_logs WHERE id = :id"),
+    ):
+        with engine.connect() as connection:
+            with pytest.raises(IntegrityError):
+                with connection.begin():
+                    connection.execute(statement, {"id": log_id})
+
+    unchanged = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert unchanged.status_code == 200
+    assert unchanged.json()["total"] == 1
+    assert unchanged.json()["items"][0]["reason"] == "Physical count correction"
