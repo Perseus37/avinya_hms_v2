@@ -161,6 +161,21 @@ def test_02_who_surgical_safety_checklist_hard_stop_before_incision_and_before_c
     assert start_res.status_code == 200
     assert start_res.json()["status"] == "IN_PROGRESS"
 
+    # Status updates cannot bypass the checklist workflow or move the case backwards.
+    for invalid_status in ["SCHEDULED", "PRE_OP_CLEARED"]:
+        invalid_transition = client.patch(
+            f"/v1/api/ot/surgeries/{surg['id']}/status",
+            headers=doctor_headers,
+            json={"status": invalid_status},
+        )
+        assert invalid_transition.status_code == 400
+        assert invalid_transition.json()["message"]
+    current = client.get(
+        "/v1/api/ot/surgeries?status=IN_PROGRESS", headers=doctor_headers
+    )
+    assert current.status_code == 200
+    assert any(item["id"] == surg["id"] for item in current.json()["items"])
+
     # 4. Attempt to mark COMPLETED while sponge_instrument_count_verified is False -> Blocked with 400!
     assert client.patch(
         f"/v1/api/ot/surgeries/{surg['id']}/status",
