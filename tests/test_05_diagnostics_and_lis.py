@@ -446,7 +446,7 @@ def test_diagnostic_csv_export_is_blocked_when_patient_privacy_denies(
 def test_order_update_cannot_bypass_terminal_lifecycle(client, superuser_headers, doctor_headers):
     import pytest
 
-        for terminal_status in ["COMPLETED", "CANCELLED"]:
+    for terminal_status in ["COMPLETED", "CANCELLED"]:
         items = _setup_cbc_bundle(client, superuser_headers)
         patient = client.post(
             "/v1/api/patients",
