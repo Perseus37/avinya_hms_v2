@@ -261,8 +261,12 @@ def test_postgresql_pacs_write_serializes_with_terminal_task_transition():
     """A PACS writer waiting behind verification/cancellation must observe terminal task state."""
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
+    import time
 
-    engine = create_engine(os.environ["POSTGRES17_TEST_URL"], pool_size=4)
+    engine_url = make_url(os.environ["POSTGRES17_TEST_URL"]).set(
+        drivername="postgresql+psycopg2"
+    )
+    engine = create_engine(engine_url, pool_size=4)
     suffix = uuid.uuid4().hex[:12]
     orders = f"pacs_lock_orders_{suffix}"
     tasks = f"pacs_lock_tasks_{suffix}"
@@ -290,7 +294,9 @@ def test_postgresql_pacs_write_serializes_with_terminal_task_transition():
 
         def exercise_terminal_race(order_id: int, task_id: int, terminal_status: str):
             order_locked = Event()
+            pacs_attempting_lock = Event()
             allow_terminal_commit = Event()
+            pacs_backend_pid = []
 
             def terminal_transition():
                 with engine.begin() as connection:
@@ -308,6 +314,10 @@ def test_postgresql_pacs_write_serializes_with_terminal_task_transition():
             def pacs_write():
                 assert order_locked.wait(timeout=10), "terminal transaction did not acquire order lock"
                 with engine.begin() as connection:
+                    pacs_backend_pid.append(
+                        connection.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                    )
+                    pacs_attempting_lock.set()
                     connection.execute(
                         text(f'SELECT id FROM "{orders}" WHERE id = :id FOR UPDATE'),
                         {"id": order_id},
@@ -326,7 +336,20 @@ def test_postgresql_pacs_write_serializes_with_terminal_task_transition():
             with ThreadPoolExecutor(max_workers=2) as executor:
                 terminal_future = executor.submit(terminal_transition)
                 pacs_future = executor.submit(pacs_write)
+                assert pacs_attempting_lock.wait(timeout=10), "PACS writer did not attempt its parent lock"
+                deadline = time.monotonic() + 5
+                was_blocked_by_terminal_writer = False
+                while time.monotonic() < deadline:
+                    with engine.connect() as monitor:
+                        was_blocked_by_terminal_writer = monitor.execute(
+                            text("SELECT cardinality(pg_blocking_pids(:pid)) > 0"),
+                            {"pid": pacs_backend_pid[0]},
+                        ).scalar_one()
+                    if was_blocked_by_terminal_writer:
+                        break
+                    time.sleep(0.01)
                 allow_terminal_commit.set()
+                assert was_blocked_by_terminal_writer, "PACS transaction was not observed waiting on the terminal-state lock"
                 terminal_future.result(timeout=15)
                 observed_status = pacs_future.result(timeout=15)
 
