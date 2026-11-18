@@ -256,3 +256,98 @@ def test_postgresql_17_encrypted_custom_dump_restores_into_isolated_database():
                     text(f'DROP DATABASE IF EXISTS "{database_name}"')
                 )
         admin_engine.dispose()
+
+def test_postgresql_pacs_write_serializes_with_terminal_task_transition():
+    """A PACS writer waiting behind verification/cancellation must observe terminal task state."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    engine = create_engine(os.environ["POSTGRES17_TEST_URL"], pool_size=4)
+    suffix = uuid.uuid4().hex[:12]
+    orders = f"pacs_lock_orders_{suffix}"
+    tasks = f"pacs_lock_tasks_{suffix}"
+    metadata = f"pacs_lock_metadata_{suffix}"
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(
+                f'CREATE TABLE "{orders}" (id bigint PRIMARY KEY, status text NOT NULL)'
+            ))
+            connection.execute(text(
+                f'CREATE TABLE "{tasks}" (id bigint PRIMARY KEY, order_id bigint NOT NULL '
+                f'REFERENCES "{orders}"(id), status text NOT NULL)'
+            ))
+            connection.execute(text(
+                f'CREATE TABLE "{metadata}" (task_id bigint PRIMARY KEY '
+                f'REFERENCES "{tasks}"(id), impression text)'
+            ))
+            connection.execute(
+                text(f'INSERT INTO "{orders}" (id, status) VALUES (1, \'ACTIVE\'), (2, \'ACTIVE\')')
+            )
+            connection.execute(
+                text(f'INSERT INTO "{tasks}" (id, order_id, status) VALUES (11, 1, \'PENDING\'), (22, 2, \'PENDING\')')
+            )
+
+        def exercise_terminal_race(order_id: int, task_id: int, terminal_status: str):
+            order_locked = Event()
+            allow_terminal_commit = Event()
+
+            def terminal_transition():
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(f'SELECT id FROM "{orders}" WHERE id = :id FOR UPDATE'),
+                        {"id": order_id},
+                    ).one()
+                    order_locked.set()
+                    assert allow_terminal_commit.wait(timeout=10), "PACS race did not start"
+                    connection.execute(
+                        text(f'UPDATE "{tasks}" SET status = :status WHERE id = :id'),
+                        {"status": terminal_status, "id": task_id},
+                    )
+
+            def pacs_write():
+                assert order_locked.wait(timeout=10), "terminal transaction did not acquire order lock"
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(f'SELECT id FROM "{orders}" WHERE id = :id FOR UPDATE'),
+                        {"id": order_id},
+                    ).one()
+                    task_status = connection.execute(
+                        text(f'SELECT status FROM "{tasks}" WHERE id = :id FOR UPDATE'),
+                        {"id": task_id},
+                    ).scalar_one()
+                    if task_status not in {"VERIFIED", "CANCELLED"}:
+                        connection.execute(
+                            text(f'INSERT INTO "{metadata}" (task_id, impression) VALUES (:id, \'PACS result\')'),
+                            {"id": task_id},
+                        )
+                    return task_status
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                terminal_future = executor.submit(terminal_transition)
+                pacs_future = executor.submit(pacs_write)
+                allow_terminal_commit.set()
+                terminal_future.result(timeout=15)
+                observed_status = pacs_future.result(timeout=15)
+
+            assert observed_status == terminal_status
+            with engine.connect() as connection:
+                persisted_status = connection.execute(
+                    text(f'SELECT status FROM "{tasks}" WHERE id = :id'),
+                    {"id": task_id},
+                ).scalar_one()
+                metadata_count = connection.execute(
+                    text(f'SELECT count(*) FROM "{metadata}" WHERE task_id = :id'),
+                    {"id": task_id},
+                ).scalar_one()
+            assert persisted_status == terminal_status
+            assert metadata_count == 0
+
+        exercise_terminal_race(1, 11, "VERIFIED")
+        exercise_terminal_race(2, 22, "CANCELLED")
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{metadata}"'))
+            connection.execute(text(f'DROP TABLE IF EXISTS "{tasks}"'))
+            connection.execute(text(f'DROP TABLE IF EXISTS "{orders}"'))
+        engine.dispose()
