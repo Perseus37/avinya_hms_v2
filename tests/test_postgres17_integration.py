@@ -486,3 +486,122 @@ def test_postgresql_operative_record_write_serializes_with_terminal_surgery_tran
             connection.execute(text(f'DROP TABLE IF EXISTS "{records}"'))
             connection.execute(text(f'DROP TABLE IF EXISTS "{schedules}"'))
         engine.dispose()
+
+def test_postgresql_diagnostic_result_write_serializes_with_terminal_order_transition():
+    """Diagnostic result writers must observe a completed/cancelled parent order."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    import time
+
+    engine_url = make_url(os.environ["POSTGRES17_TEST_URL"]).set(
+        drivername="postgresql+psycopg2"
+    )
+    engine = create_engine(engine_url, pool_size=4)
+    suffix = uuid.uuid4().hex[:12]
+    orders = f"diagnostic_lock_orders_{suffix}"
+    tasks = f"diagnostic_lock_tasks_{suffix}"
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(
+                f'CREATE TABLE "{orders}" (id bigint PRIMARY KEY, status text NOT NULL)'
+            ))
+            connection.execute(text(
+                f'CREATE TABLE "{tasks}" (id bigint PRIMARY KEY, order_id bigint NOT NULL '
+                f'REFERENCES "{orders}"(id), status text NOT NULL, result_value text)'
+            ))
+            connection.execute(
+                text(f'INSERT INTO "{orders}" (id, status) VALUES (1, \'ACTIVE\'), (2, \'ACTIVE\')')
+            )
+            connection.execute(
+                text(f'INSERT INTO "{tasks}" (id, order_id, status, result_value) '
+                     f'VALUES (11, 1, \'IN_PROGRESS\', NULL), (22, 2, \'IN_PROGRESS\', NULL)')
+            )
+
+        def exercise_terminal_race(order_id: int, task_id: int, terminal_status: str):
+            order_locked = Event()
+            result_attempting_lock = Event()
+            allow_terminal_commit = Event()
+            result_backend_pid = []
+
+            def terminal_transition():
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(f'SELECT id FROM "{orders}" WHERE id = :id FOR UPDATE'),
+                        {"id": order_id},
+                    ).one()
+                    connection.execute(
+                        text(f'SELECT id FROM "{tasks}" WHERE id = :id FOR UPDATE'),
+                        {"id": task_id},
+                    ).one()
+                    order_locked.set()
+                    assert allow_terminal_commit.wait(timeout=10), "result writer did not start"
+                    connection.execute(
+                        text(f'UPDATE "{tasks}" SET status = :status WHERE id = :id'),
+                        {"status": "CANCELLED" if terminal_status == "CANCELLED" else "VERIFIED",
+                         "id": task_id},
+                    )
+                    connection.execute(
+                        text(f'UPDATE "{orders}" SET status = :status WHERE id = :id'),
+                        {"status": terminal_status, "id": order_id},
+                    )
+
+            def result_write():
+                assert order_locked.wait(timeout=10), "terminal transition did not acquire parent/task locks"
+                with engine.begin() as connection:
+                    result_backend_pid.append(
+                        connection.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                    )
+                    result_attempting_lock.set()
+                    order_status = connection.execute(
+                        text(f'SELECT status FROM "{orders}" WHERE id = :id FOR UPDATE'),
+                        {"id": order_id},
+                    ).scalar_one()
+                    task_status = connection.execute(
+                        text(f'SELECT status FROM "{tasks}" WHERE id = :id FOR UPDATE'),
+                        {"id": task_id},
+                    ).scalar_one()
+                    if order_status not in {"COMPLETED", "CANCELLED"} and task_status != "CANCELLED":
+                        connection.execute(
+                            text(f'UPDATE "{tasks}" SET result_value = \'Late result\' WHERE id = :id'),
+                            {"id": task_id},
+                        )
+                    return order_status, task_status
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                terminal_future = executor.submit(terminal_transition)
+                result_future = executor.submit(result_write)
+                assert result_attempting_lock.wait(timeout=10), "result writer did not attempt parent lock"
+                deadline = time.monotonic() + 5
+                was_blocked = False
+                while time.monotonic() < deadline:
+                    with engine.connect() as monitor:
+                        was_blocked = monitor.execute(
+                            text("SELECT cardinality(pg_blocking_pids(:pid)) > 0"),
+                            {"pid": result_backend_pid[0]},
+                        ).scalar_one()
+                    if was_blocked:
+                        break
+                    time.sleep(0.01)
+                allow_terminal_commit.set()
+                assert was_blocked, "result writer was not observed waiting on the parent-order lock"
+                terminal_future.result(timeout=15)
+                observed_order, observed_task = result_future.result(timeout=15)
+
+            expected_task = "CANCELLED" if terminal_status == "CANCELLED" else "VERIFIED"
+            assert observed_order == terminal_status
+            assert observed_task == expected_task
+            with engine.connect() as connection:
+                result_value = connection.execute(
+                    text(f'SELECT result_value FROM "{tasks}" WHERE id = :id'),
+                    {"id": task_id},
+                ).scalar_one()
+            assert result_value is None
+
+        exercise_terminal_race(1, 11, "COMPLETED")
+        exercise_terminal_race(2, 22, "CANCELLED")
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{tasks}"'))
+            connection.execute(text(f'DROP TABLE IF EXISTS "{orders}"'))
+        engine.dispose()
