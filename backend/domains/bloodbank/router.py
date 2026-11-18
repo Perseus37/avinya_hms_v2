@@ -383,6 +383,12 @@ def attach_pacs_dicom_study_metadata(
     if not task:
         raise HTTPException(status_code=404, detail="Diagnostic task not found.")
 
+    if locked_order.status in {OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot modify PACS metadata for a {locked_order.status.value.lower()} diagnostic order.",
+        )
+
     if task.status in {TaskStatusEnum.VERIFIED, TaskStatusEnum.CANCELLED}:
         raise HTTPException(
             status_code=409,
