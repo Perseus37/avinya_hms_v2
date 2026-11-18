@@ -170,9 +170,11 @@ def test_02_who_surgical_safety_checklist_hard_stop_before_incision_and_before_c
         )
         assert invalid_transition.status_code == 400
         assert invalid_transition.json()["message"]
-    current = client.get(f"/v1/api/ot/surgeries/{surg['id']}", headers=doctor_headers)
+    current = client.get(
+        "/v1/api/ot/surgeries?status=IN_PROGRESS", headers=doctor_headers
+    )
     assert current.status_code == 200
-    assert current.json()["status"] == "IN_PROGRESS"
+    assert any(item["id"] == surg["id"] for item in current.json()["items"])
 
     # 4. Attempt to mark COMPLETED while sponge_instrument_count_verified is False -> Blocked with 400!
     assert client.patch(
