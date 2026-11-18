@@ -356,14 +356,14 @@ def test_06_ffp_uses_full_abo_plasma_compatibility_matrix_and_ignores_rh(
     now = datetime.now(timezone.utc)
     blood_groups = ("O-", "O+", "A-", "A+", "B-", "B+", "AB-", "AB+")
     compatible_donors = {
-        "O-": set(blood_groups),
-        "O+": set(blood_groups),
+        "O-": {"O-", "O+"},
+        "O+": {"O-", "O+"},
         "A-": {"A-", "A+", "AB-", "AB+"},
         "A+": {"A-", "A+", "AB-", "AB+"},
         "B-": {"B-", "B+", "AB-", "AB+"},
         "B+": {"B-", "B+", "AB-", "AB+"},
-        "AB-": {"AB-", "AB+"},
-        "AB+": {"AB-", "AB+"},
+        "AB-": set(blood_groups),
+        "AB+": set(blood_groups),
     }
 
     for recipient_group in blood_groups:
