@@ -249,12 +249,23 @@ def upsert_who_safety_checklist(
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("adt:write", "opd:write")),
 ):
-    surgery = db.get(SurgicalSchedule, surgery_id)
+    surgery = db.execute(
+        select(SurgicalSchedule)
+        .where(SurgicalSchedule.id == surgery_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not surgery:
         raise HTTPException(status_code=404, detail="Surgical schedule not found.")
+    if surgery.status in {SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot modify surgical safety checklist for a {surgery.status.value} surgery.",
+        )
 
     checklist = db.execute(
-        select(WHOSurgicalSafetyChecklist).where(WHOSurgicalSafetyChecklist.surgery_id == surgery_id)
+        select(WHOSurgicalSafetyChecklist)
+        .where(WHOSurgicalSafetyChecklist.surgery_id == surgery_id)
+        .with_for_update()
     ).scalar_one_or_none()
 
     if checklist:
@@ -293,12 +304,23 @@ def upsert_operative_anesthesia_record(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("opd:write")),
 ):
-    surgery = db.get(SurgicalSchedule, surgery_id)
+    surgery = db.execute(
+        select(SurgicalSchedule)
+        .where(SurgicalSchedule.id == surgery_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not surgery:
         raise HTTPException(status_code=404, detail="Surgical schedule not found.")
+    if surgery.status in {SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot modify operative record for a {surgery.status.value} surgery.",
+        )
 
     rec = db.execute(
-        select(OperativeAnesthesiaRecord).where(OperativeAnesthesiaRecord.surgery_id == surgery_id)
+        select(OperativeAnesthesiaRecord)
+        .where(OperativeAnesthesiaRecord.surgery_id == surgery_id)
+        .with_for_update()
     ).scalar_one_or_none()
 
     if rec:
@@ -324,11 +346,18 @@ def log_surgical_implant(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("adt:write", "opd:write")),
 ):
-    surgery = db.get(SurgicalSchedule, surgery_id)
+    surgery = db.execute(
+        select(SurgicalSchedule)
+        .where(SurgicalSchedule.id == surgery_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not surgery:
         raise HTTPException(status_code=404, detail="Surgical schedule not found.")
-    if surgery.status in [SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED]:
-        raise HTTPException(status_code=400, detail=f"Cannot add implants to a {surgery.status.value} surgery.")
+    if surgery.status in {SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot add implants to a {surgery.status.value} surgery.",
+        )
 
     imp = SurgicalImplantLog(surgery_id=surgery_id, **payload.model_dump())
     db.add(imp)
@@ -357,6 +386,10 @@ def update_surgery_status(
             joinedload(SurgicalSchedule.implants),
         )
         .where(SurgicalSchedule.id == surgery_id)
+        # Use the same parent-row lock as operative-record writes. Restrict
+        # FOR UPDATE to the schedule row because eager-loaded relationships
+        # include outer joins and are not part of the lifecycle lock order.
+        .with_for_update(of=SurgicalSchedule)
     )
     surgery = db.execute(stmt).unique().scalar_one_or_none()
     if not surgery:
@@ -366,6 +399,21 @@ def update_surgery_status(
         raise HTTPException(
             status_code=400,
             detail=f"Cannot transition surgery from terminal state '{surgery.status.value}'.",
+        )
+
+    if payload.status not in {
+        SurgeryStatusEnum.IN_PROGRESS,
+        SurgeryStatusEnum.COMPLETED,
+        SurgeryStatusEnum.CANCELLED,
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="Surgery status can only advance through the checklist, start, completion, or cancellation workflows.",
+        )
+    if payload.status == SurgeryStatusEnum.IN_PROGRESS and surgery.status != SurgeryStatusEnum.PRE_OP_CLEARED:
+        raise HTTPException(
+            status_code=400,
+            detail="Surgery must be PRE_OP_CLEARED before it can start.",
         )
 
     chk = surgery.safety_checklist
