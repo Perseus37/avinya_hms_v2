@@ -12,7 +12,7 @@ from backend.core.export import stream_csv_response
 from backend.domains.bloodbank.models import BloodBagInventory, BloodBagStatusEnum, BloodComponentTypeEnum, BloodCrossMatchOrder, RadiologyStudyMetadata, TransfusionReactionTypeEnum
 from backend.domains.encounters.models import EncounterStatusEnum, PatientEncounter
 from backend.domains.identity.models import BloodGroupEnum, User
-from backend.domains.diagnostics.models import DiagnosticOrder, DiagnosticTask, ServiceTypeEnum, TaskStatusEnum
+from backend.domains.diagnostics.models import DiagnosticOrder, DiagnosticTask, OrderStatusEnum, ServiceTypeEnum, TaskStatusEnum
 from backend.domains.bloodbank.schemas import BloodBagCreate, BloodBagResponse, BloodCrossMatchCreate, BloodCrossMatchResponse, RadiologyStudyResponse, RadiologyStudyUpsert, TransfusionReactionRequest
 from backend.domains.billing.services import auto_bill_blood_transfusion_issue
 from backend.domains.privacy.runtime import evaluate_tenant_patient_data_uses
