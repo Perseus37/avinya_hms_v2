@@ -497,3 +497,47 @@ def test_08_pacs_metadata_cannot_be_attached_to_cancelled_task(
         headers=doctor_headers, json=payload,
     )
     assert response.status_code == 409
+
+
+
+def test_pacs_metadata_cannot_be_attached_to_completed_order(
+    client, superuser_headers, doctor_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.diagnostics.models import DiagnosticOrder, OrderStatusEnum
+
+    cat = client.post(
+        "/v1/api/diagnostics/categories", headers=superuser_headers,
+        json={"department_id": 1, "code": "CAT_PACS_ORDER_DONE", "name": "PACS Order Done"},
+    ).json()
+    svc = client.post(
+        "/v1/api/diagnostics/catalog", headers=superuser_headers,
+        json={"category_id": cat["id"], "code": "RAD_PACS_ORDER_DONE", "name": "CT Chest",
+              "service_type": "RADIOLOGY", "base_price_paise": 100000, "is_order_set": False},
+    ).json()
+    patient, _ = _create_patient_with_blood_group(client, doctor_headers)
+    order = client.post(
+        "/v1/api/diagnostics/orders", headers=doctor_headers,
+        json={"patient_id": patient["id"], "ordered_service_ids": [svc["id"]]},
+    ).json()
+    task_id = order["tasks"][0]["id"]
+
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(engine) as session:
+        db_order = session.get(DiagnosticOrder, order["id"])
+        db_order.status = OrderStatusEnum.COMPLETED
+        session.commit()
+
+    payload = {
+        "study_instance_uid": "1.2.840.10008.5.1.4.1.1.2.202611150003",
+        "accession_number": "ACC-PACS-ORDER-DONE-001", "modality": "CT",
+        "pacs_viewer_url": "https://pacs.example.test/study/003",
+        "radiation_dose_mgy": 2.8, "radiologist_impression": "Should not be attached.",
+    }
+    response = client.put(
+        f"/v1/api/diagnostics/tasks/{task_id}/dicom-study",
+        headers=doctor_headers, json=payload,
+    )
+    assert response.status_code == 409
+    assert "completed diagnostic order" in response.json()["message"].lower()
