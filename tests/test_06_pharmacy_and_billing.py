@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+import pytest
+
 
 def _setup_med_and_batch(client, pharmacist_headers):
     """Helper to register a medication and receive an active inventory batch of 100 units at Rs 15.00 (1500 paise)."""
