@@ -443,6 +443,32 @@ def test_diagnostic_csv_export_is_blocked_when_patient_privacy_denies(
     assert "privacy policy" in detail.lower()
 
 
+@pytest.mark.parametrize("terminal_status", ["COMPLETED", "CANCELLED"])
+def test_order_update_cannot_bypass_terminal_lifecycle(client, superuser_headers, doctor_headers, terminal_status):
+    items = _setup_cbc_bundle(client, superuser_headers)
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={"full_name": "Terminal Update Guard", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "OTHER"},
+    ).json()
+    order = client.post(
+        "/v1/api/diagnostics/orders",
+        headers=doctor_headers,
+        json={"patient_id": patient["id"], "ordered_service_ids": [items["rbc"]["id"]]},
+    ).json()
+
+    response = client.put(
+        f"/v1/api/diagnostics/orders/{order['id']}",
+        headers=doctor_headers,
+        json={"status": terminal_status},
+    )
+
+    assert response.status_code == 400
+    assert "only be completed through task verification" in response.json()["message"].lower()
+    current = client.get(f"/v1/api/diagnostics/orders/{order['id']}", headers=doctor_headers).json()
+    assert current["status"] == "ACTIVE"
+
+
 def test_result_entry_rejected_for_completed_parent_order(client, superuser_headers, doctor_headers):
     from sqlalchemy.orm import Session
     from backend.core.database import tenant_engine_pool
