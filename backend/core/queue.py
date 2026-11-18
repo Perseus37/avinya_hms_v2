@@ -99,9 +99,8 @@ def enqueue_task(
         r = get_redis()
         pipe = r.pipeline()
         pipe.hset(f"{KEY_TASK_PREFIX}{task_id}", mapping=task_data)
-        # N-22: Secrets in queue: sensitive email and auth payloads expire in 1 hour; standard tasks in 24 hours
-        task_ttl = 3600 if task_name == "email.send" else 86400
-        pipe.expire(f"{KEY_TASK_PREFIX}{task_id}", task_ttl)
+        # Do not expire task metadata while its ID is queued or scheduled.
+        # Terminal handlers apply bounded retention after processing/dead-lettering.
 
         if delay_seconds > 0:
             pipe.zadd(KEY_SCHEDULED_TASKS, {task_id: scheduled_time})

@@ -30,6 +30,7 @@ class FakeRedis:
         self._lists = {}
         self._zsets = {}
         self._strings = {}
+        self._expirations = []
 
     def pipeline(self):
         return self
@@ -51,7 +52,17 @@ class FakeRedis:
         return dict(self._hashes.get(key, {}))
 
     def expire(self, key, seconds):
+        self._expirations.append((key, seconds))
         return self
+
+    def hdel(self, key, *fields):
+        values = self._hashes.get(key, {})
+        removed = 0
+        for field in fields:
+            if field in values:
+                del values[field]
+                removed += 1
+        return removed
 
     def rpush(self, key, *values):
         if key not in self._lists:
@@ -192,3 +203,31 @@ def test_worker_burst_execution(fake_redis, monkeypatch):
     assert exit_code == 0
     assert executed == ["job 1", "job 2"]
 
+
+
+def test_queued_and_scheduled_email_tasks_do_not_expire_before_dispatch(fake_redis):
+    immediate_id = enqueue_task(
+        "email.send",
+        {"recipient": "doctor@apollo.test", "subject": "Immediate", "text_body": "Hello"},
+        sync_fallback=False,
+    )
+    scheduled_id = enqueue_task(
+        "email.send",
+        {"recipient": "doctor@apollo.test", "subject": "Later", "text_body": "Hello"},
+        delay_seconds=7200,
+        sync_fallback=False,
+    )
+
+    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{immediate_id}")["payload"]
+    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{scheduled_id}")["payload"]
+    assert fake_redis._expirations == []
+
+
+def test_completed_task_gets_bounded_terminal_retention(fake_redis):
+    task_id = enqueue_task("email.send", {"recipient": "doctor@apollo.test"}, sync_fallback=False)
+    assert fake_redis._expirations == []
+
+    mark_task_completed(task_id)
+
+    assert (f"{KEY_TASK_PREFIX}{task_id}", 3600) in fake_redis._expirations
+    assert "payload" not in fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")
