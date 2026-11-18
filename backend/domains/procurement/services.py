@@ -21,6 +21,7 @@ from backend.domains.procurement.models import (
     GRNStatusEnum,
     PurchaseReturnRecord,
     PurchaseReturnItem,
+    SupplierCreditNote,
     VendorInvoice,
     VendorInvoiceItem,
     VendorInvoiceStatusEnum,
@@ -370,6 +371,15 @@ def process_purchase_return(
 
     validated_items = []
     total_credit_paise = 0
+    requested_grn_item_ids = [item.grn_item_id for item in return_items]
+    if len(requested_grn_item_ids) != len(set(requested_grn_item_ids)):
+        raise HTTPException(
+            status_code=422,
+            detail="Each GRN item may appear only once in a purchase return.",
+        )
+    requested_by_grn_item = {
+        item.grn_item_id: item.return_quantity for item in return_items
+    }
     for item in return_items:
         grn_item = db.execute(
             select(GoodsReceiptItem)
@@ -385,7 +395,10 @@ def process_purchase_return(
             select(func.coalesce(func.sum(PurchaseReturnItem.return_quantity), 0))
             .where(PurchaseReturnItem.grn_item_id == grn_item.id)
         ).scalar_one()
-        if already_returned + item.return_quantity > grn_item.accepted_quantity:
+        if (
+            already_returned + requested_by_grn_item[grn_item.id]
+            > grn_item.accepted_quantity
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="Return quantity exceeds the remaining accepted quantity for this GRN item.",
@@ -430,6 +443,13 @@ def process_purchase_return(
             return_reason=item.return_reason,
             created_by_id=current_user_id,
         ))
+
+    db.add(SupplierCreditNote(
+        purchase_return_id=return_record.id,
+        vendor_id=vendor_id,
+        amount_paise=total_credit_paise,
+        created_by_id=current_user_id,
+    ))
 
     db.add(ExpenseRecord(
         category=ExpenseCategoryEnum.PHARMACY_STOCK,
