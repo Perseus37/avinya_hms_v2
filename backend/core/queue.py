@@ -161,8 +161,29 @@ def get_task_status(task_id: str) -> Optional[dict[str, Any]]:
         return None
 
 
+_PROMOTE_SCHEDULED_TASK_LUA = """
+-- Recheck the live score inside this script: the caller's ZRANGEBYSCORE
+-- result is only a snapshot and a concurrent reschedule may move this task
+-- into the future before this script executes.
+local score = redis.call("ZSCORE", KEYS[1], ARGV[1])
+if not score or tonumber(score) > tonumber(ARGV[2]) then
+    return 0
+end
+-- Only scheduled/retrying tasks may be promoted. Do not recreate missing
+-- metadata or re-enqueue terminal/otherwise transitioned tasks from stale IDs.
+local status = redis.call("HGET", KEYS[3], "status")
+local removed = redis.call("ZREM", KEYS[1], ARGV[1])
+if removed == 1 and (status == "SCHEDULED" or status == "RETRYING") then
+    redis.call("RPUSH", KEYS[2], ARGV[1])
+    redis.call("HSET", KEYS[3], "status", "QUEUED")
+    return 1
+end
+return 0
+"""
+
+
 def promote_scheduled_tasks(r: redis.Redis) -> int:
-    """Moves scheduled tasks that are now due from the sorted set to the pending queue."""
+    """Atomically moves due scheduled task IDs to the pending queue."""
     now = time.time()
     due_tasks = r.zrangebyscore(KEY_SCHEDULED_TASKS, min="-inf", max=now)
     if not due_tasks:
@@ -170,11 +191,20 @@ def promote_scheduled_tasks(r: redis.Redis) -> int:
 
     promoted = 0
     for task_id in due_tasks:
-        # Atomic remove and push
-        if r.zrem(KEY_SCHEDULED_TASKS, task_id):
-            r.rpush(KEY_PENDING_TASKS, task_id)
-            r.hset(f"{KEY_TASK_PREFIX}{task_id}", "status", "QUEUED")
-            promoted += 1
+        # One Lua invocation prevents a crash between ZREM and RPUSH and makes
+        # competing workers idempotent: only the worker that removes the member
+        # can enqueue it and transition its metadata to QUEUED.
+        promoted += int(
+            r.eval(
+                _PROMOTE_SCHEDULED_TASK_LUA,
+                3,
+                KEY_SCHEDULED_TASKS,
+                KEY_PENDING_TASKS,
+                f"{KEY_TASK_PREFIX}{task_id}",
+                task_id,
+                now,
+            )
+        )
 
     if promoted:
         logger.info("Promoted %d scheduled tasks to pending queue.", promoted)
@@ -250,7 +280,11 @@ def mark_task_failed(task_id: str, error_message: str) -> None:
         if retries <= max_retries:
             backoff_delay = 5 * (2 ** (retries - 1))  # 5s, 10s, 20s
             next_run = time.time() + backoff_delay
-            r.hset(
+            # Keep retry metadata and its scheduled-set member in one Redis
+            # transaction. Otherwise a worker/process crash between HSET and
+            # ZADD can strand a task permanently in RETRYING state.
+            pipe = r.pipeline(transaction=True)
+            pipe.hset(
                 f"{KEY_TASK_PREFIX}{task_id}",
                 mapping={
                     "status": "RETRYING",
@@ -258,7 +292,8 @@ def mark_task_failed(task_id: str, error_message: str) -> None:
                     "error": str(error_message)[:1000],
                 },
             )
-            r.zadd(KEY_SCHEDULED_TASKS, {task_id: next_run})
+            pipe.zadd(KEY_SCHEDULED_TASKS, {task_id: next_run})
+            pipe.execute()
             QUEUE_JOBS_TOTAL.labels(job_name=task_name, status="retried").inc()
             logger.warning(
                 "Task %s (%s) failed (attempt %d/%d): %s. Retrying in %ds.",
@@ -270,7 +305,11 @@ def mark_task_failed(task_id: str, error_message: str) -> None:
                 backoff_delay,
             )
         else:
-            r.hset(
+            # Terminal metadata, dead-letter routing, and retention must
+            # commit together so a crash cannot leave a FAILED task outside
+            # the dead-letter queue or retain its payload indefinitely.
+            pipe = r.pipeline(transaction=True)
+            pipe.hset(
                 f"{KEY_TASK_PREFIX}{task_id}",
                 mapping={
                     "status": "FAILED",
@@ -279,9 +318,12 @@ def mark_task_failed(task_id: str, error_message: str) -> None:
                     "failed_at": str(time.time()),
                 },
             )
-            r.rpush(KEY_DEAD_LETTER, task_id)
+            pipe.rpush(KEY_DEAD_LETTER, task_id)
+            # A terminal task must not remain eligible for scheduled promotion.
+            pipe.zrem(KEY_SCHEDULED_TASKS, task_id)
             # N-22: Expire dead-letter payload after 24 hours to prevent stale secret retention
-            r.expire(f"{KEY_TASK_PREFIX}{task_id}", 86400)
+            pipe.expire(f"{KEY_TASK_PREFIX}{task_id}", 86400)
+            pipe.execute()
             QUEUE_JOBS_TOTAL.labels(job_name=task_name, status="failed").inc()
             logger.error(
                 "Task %s (%s) exceeded max retries (%d). Moved to dead-letter queue. Error: %s",
