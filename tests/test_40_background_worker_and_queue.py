@@ -236,13 +236,27 @@ def test_scheduled_promotion_discards_missing_or_terminal_metadata(fake_redis):
     assert fake_redis._lists.get(KEY_PENDING_TASKS, []) == []
 
 
-def test_scheduled_promotion_keeps_rescheduled_future_task(fake_redis):
-    task_id = enqueue_task("sample.task", {"data": 1}, delay_seconds=3600, sync_fallback=False)
-    future_now = time.time()
+def test_scheduled_promotion_rechecks_score_after_concurrent_reschedule(fake_redis, monkeypatch):
+    task_id = enqueue_task("sample.task", {"data": 1}, delay_seconds=0, sync_fallback=False)
+    # Model the race: the ID is selected from the due snapshot, then another
+    # scheduler moves its live sorted-set score into the future before Lua runs.
+    fake_redis.zadd(KEY_SCHEDULED_TASKS, {task_id: time.time() - 10})
+    original_eval = fake_redis.eval
+    rescheduled_score = time.time() + 3600
+    eval_calls = []
+
+    def reschedule_before_lua(script, numkeys, *args):
+        eval_calls.append(task_id)
+        fake_redis.zadd(KEY_SCHEDULED_TASKS, {task_id: rescheduled_score})
+        return original_eval(script, numkeys, *args)
+
+    monkeypatch.setattr(fake_redis, "eval", reschedule_before_lua)
 
     assert promote_scheduled_tasks(fake_redis) == 0
-    assert task_id in fake_redis._zsets[KEY_SCHEDULED_TASKS]
-    assert fake_redis._lists.get(KEY_PENDING_TASKS, []) == []
+    assert eval_calls == [task_id]
+    assert fake_redis._zsets[KEY_SCHEDULED_TASKS][task_id] == rescheduled_score
+    assert task_id not in fake_redis._lists.get(KEY_PENDING_TASKS, [])
+    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")["status"] == "QUEUED"
 
 
 def test_queued_and_scheduled_email_tasks_do_not_expire_before_dispatch(fake_redis):
