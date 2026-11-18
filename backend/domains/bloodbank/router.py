@@ -59,14 +59,15 @@ PRBC_COMPATIBILITY_MATRIX: Dict[BloodGroupEnum, Set[BloodGroupEnum]] = {
 # Rh(D) is not used to restrict FFP compatibility.
 FFP_COMPATIBILITY_MATRIX: Dict[BloodGroupEnum, Set[BloodGroupEnum]] = {
     # Recipient group -> compatible donor plasma groups; Rh(D) is ignored.
-    BloodGroupEnum.O_NEG: {BloodGroupEnum.O_NEG, BloodGroupEnum.O_POS},
-    BloodGroupEnum.O_POS: {BloodGroupEnum.O_NEG, BloodGroupEnum.O_POS},
+    # Group O red cells have neither A nor B antigens, so any ABO plasma is compatible.
+    BloodGroupEnum.O_NEG: {BloodGroupEnum.O_NEG, BloodGroupEnum.O_POS, BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+    BloodGroupEnum.O_POS: {BloodGroupEnum.O_NEG, BloodGroupEnum.O_POS, BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
     BloodGroupEnum.A_NEG: {BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
     BloodGroupEnum.A_POS: {BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
     BloodGroupEnum.B_NEG: {BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
     BloodGroupEnum.B_POS: {BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
-    BloodGroupEnum.AB_NEG: {BloodGroupEnum.O_NEG, BloodGroupEnum.O_POS, BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
-    BloodGroupEnum.AB_POS: {BloodGroupEnum.O_NEG, BloodGroupEnum.O_POS, BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+    BloodGroupEnum.AB_NEG: {BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
+    BloodGroupEnum.AB_POS: {BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
 }
 
 
