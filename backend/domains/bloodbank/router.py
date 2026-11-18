@@ -12,7 +12,7 @@ from backend.core.export import stream_csv_response
 from backend.domains.bloodbank.models import BloodBagInventory, BloodBagStatusEnum, BloodComponentTypeEnum, BloodCrossMatchOrder, RadiologyStudyMetadata, TransfusionReactionTypeEnum
 from backend.domains.encounters.models import EncounterStatusEnum, PatientEncounter
 from backend.domains.identity.models import BloodGroupEnum, User
-from backend.domains.diagnostics.models import DiagnosticTask, ServiceTypeEnum
+from backend.domains.diagnostics.models import DiagnosticOrder, DiagnosticTask, OrderStatusEnum, ServiceTypeEnum, TaskStatusEnum
 from backend.domains.bloodbank.schemas import BloodBagCreate, BloodBagResponse, BloodCrossMatchCreate, BloodCrossMatchResponse, RadiologyStudyResponse, RadiologyStudyUpsert, TransfusionReactionRequest
 from backend.domains.billing.services import auto_bill_blood_transfusion_issue
 from backend.domains.privacy.runtime import evaluate_tenant_patient_data_uses
@@ -367,14 +367,40 @@ def attach_pacs_dicom_study_metadata(
     _: User = Depends(RequirePermission("diagnostics:write", "diagnostics:verify")),
 ):
     """Attaches PACS DICOM Study UID, viewer URL, and radiation dose to a RADIOLOGY diagnostic task."""
+    order_id_for_lock = db.execute(
+        select(DiagnosticTask.order_id).where(DiagnosticTask.id == task_id)
+    ).scalar_one_or_none()
+    if order_id_for_lock is None:
+        raise HTTPException(status_code=404, detail="Diagnostic task not found.")
+
+    locked_order = db.execute(
+        select(DiagnosticOrder).where(DiagnosticOrder.id == order_id_for_lock).with_for_update()
+    ).scalar_one_or_none()
+    if not locked_order:
+        raise HTTPException(status_code=404, detail="Diagnostic task order not found.")
+
     stmt = (
         select(DiagnosticTask)
         .options(joinedload(DiagnosticTask.service))
         .where(DiagnosticTask.id == task_id)
+        .with_for_update(of=DiagnosticTask)
+        .execution_options(populate_existing=True)
     )
     task = db.execute(stmt).scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Diagnostic task not found.")
+
+    if locked_order.status in {OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot modify PACS metadata for a {locked_order.status.value.lower()} diagnostic order.",
+        )
+
+    if task.status in {TaskStatusEnum.VERIFIED, TaskStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot modify PACS metadata for a {task.status.value} diagnostic task.",
+        )
 
     if task.service.service_type != ServiceTypeEnum.RADIOLOGY:
         raise HTTPException(
