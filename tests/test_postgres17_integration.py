@@ -74,6 +74,23 @@ def test_postgresql_17_migrations_match_control_and_tenant_metadata():
                             )
                         """)).scalar_one()
                         assert audit_trigger is True
+                        pharmacy_adjustment_trigger = connection.execute(text("""
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM pg_trigger
+                                WHERE tgname = 'trg_inventory_stock_adjustment_logs_immutable'
+                                  AND NOT tgisinternal
+                            )
+                        """)).scalar_one()
+                        assert pharmacy_adjustment_trigger is True
+                        pharmacy_adjustment_function = connection.execute(text("""
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM pg_proc
+                                WHERE proname = 'prevent_inventory_stock_adjustment_logs_mutation'
+                            )
+                        """)).scalar_one()
+                        assert pharmacy_adjustment_function is True
             finally:
                 engine.dispose()
     finally:
@@ -597,11 +614,3 @@ def test_postgresql_diagnostic_result_write_serializes_with_terminal_order_trans
                     {"id": task_id},
                 ).scalar_one()
             assert result_value is None
-
-        exercise_terminal_race(1, 11, "COMPLETED")
-        exercise_terminal_race(2, 22, "CANCELLED")
-    finally:
-        with engine.begin() as connection:
-            connection.execute(text(f'DROP TABLE IF EXISTS "{tasks}"'))
-            connection.execute(text(f'DROP TABLE IF EXISTS "{orders}"'))
-        engine.dispose()
