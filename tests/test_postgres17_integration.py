@@ -74,6 +74,23 @@ def test_postgresql_17_migrations_match_control_and_tenant_metadata():
                             )
                         """)).scalar_one()
                         assert audit_trigger is True
+                        pharmacy_adjustment_trigger = connection.execute(text("""
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM pg_trigger
+                                WHERE tgname = 'trg_inventory_stock_adjustment_logs_immutable'
+                                  AND NOT tgisinternal
+                            )
+                        """)).scalar_one()
+                        assert pharmacy_adjustment_trigger is True
+                        pharmacy_adjustment_function = connection.execute(text("""
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM pg_proc
+                                WHERE proname = 'prevent_inventory_stock_adjustment_logs_mutation'
+                            )
+                        """)).scalar_one()
+                        assert pharmacy_adjustment_function is True
             finally:
                 engine.dispose()
     finally:
