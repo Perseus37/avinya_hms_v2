@@ -328,11 +328,21 @@ def test_postgresql_staff_row_lock_serializes_leave_submission():
         ).scalar_one()
 
         # NOWAIT makes the assertion deterministic without waiting for a timeout.
-        with pytest.raises(DBAPIError):
+        # PostgreSQL SQLSTATE 55P03 is lock_not_available; reject unrelated DB errors.
+        with pytest.raises(DBAPIError) as exc_info:
             second.execute(
                 text("SELECT id FROM users WHERE id = :user_id FOR UPDATE NOWAIT"),
                 {"user_id": staff_id},
             ).scalar_one()
+        original_error = exc_info.value.orig
+        sqlstate = (
+            getattr(original_error, "sqlstate", None)
+            or getattr(original_error, "pgcode", None)
+        )
+        assert sqlstate == "55P03", (
+            "Expected PostgreSQL lock_not_available (55P03), "
+            f"received SQLSTATE {sqlstate!r}: {original_error}"
+        )
         second.rollback()
 
         first.commit()
