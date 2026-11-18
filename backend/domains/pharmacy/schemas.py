@@ -68,6 +68,7 @@ class InventoryBatchResponse(BaseModel):
 
 class InventoryStockAdjustment(BaseModel):
     quantity_adjustment: int = Field(default=..., description="Must not be zero")
+    reason: str = Field(min_length=5, max_length=255, description="Reason for the stock correction")
 
 class PrescriptionItemCreate(BaseModel):
     medication_id: int

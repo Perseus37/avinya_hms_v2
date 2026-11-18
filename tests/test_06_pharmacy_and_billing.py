@@ -1,5 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+
+import pytest
+
 
 def _setup_med_and_batch(client, pharmacist_headers):
     """Helper to register a medication and receive an active inventory batch of 100 units at Rs 15.00 (1500 paise)."""
@@ -72,7 +77,7 @@ def test_02_receiving_expired_or_zero_stock_batch_returns_400(client, pharmacist
     ).status_code == 400
 
 
-def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_headers):
+def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_headers, superuser_headers):
     """Scenario 3: Stock adjustment updates quantity; adjustment resulting in < 0 stock is blocked with 400."""
     _, batch = _setup_med_and_batch(client, pharmacist_headers)
 
@@ -80,18 +85,99 @@ def test_03_stock_adjustment_and_negative_inventory_guard(client, pharmacist_hea
     adj_ok = client.patch(
         f"/v1/api/pharmacy/inventory/batches/{batch['id']}/adjust",
         headers=pharmacist_headers,
-        json={"quantity_adjustment": -20},
+        json={"quantity_adjustment": -20, "reason": "Physical stock count correction"},
     )
     assert adj_ok.status_code == 200
     assert adj_ok.json()["stock_quantity"] == 80
+
+    ledger = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=1&page_size=10",
+        headers=pharmacist_headers,
+    )
+    assert ledger.status_code == 200
+    assert ledger.json()["total"] == 1
+    assert ledger.json()["page"] == 1
+    assert ledger.json()["page_size"] == 10
+    assert len(ledger.json()["items"]) == 1
+    movement = ledger.json()["items"][0]
+    assert movement["quantity_adjustment"] == -20
+    assert movement["quantity_before"] == 100
+    assert movement["quantity_after"] == 80
+    assert movement["reason"] == "Physical stock count correction"
+    assert movement["actor_id"] > 0
 
     # Deduct 100 units from 80 -> 400 Bad Request
     adj_fail = client.patch(
         f"/v1/api/pharmacy/inventory/batches/{batch['id']}/adjust",
         headers=pharmacist_headers,
-        json={"quantity_adjustment": -100},
+        json={"quantity_adjustment": -100, "reason": "Counted stock discrepancy"},
     )
     assert adj_fail.status_code == 400
+    # Rejected corrections must not create ledger entries.
+    ledger_after_rejection = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert ledger_after_rejection.json()["total"] == 1
+    assert len(ledger_after_rejection.json()["items"]) == 1
+
+    # Voiding a non-empty batch is also a stock correction and must be audited.
+    voided = client.delete(
+        f"/v1/api/pharmacy/inventory/batches/{batch['id']}",
+        headers=superuser_headers,
+    )
+    assert voided.status_code == 200, voided.text
+
+    batches = client.get(
+        f"/v1/api/pharmacy/inventory/batches?medication_id={batch['medication_id']}&include_depleted=true",
+        headers=pharmacist_headers,
+    )
+    assert batches.status_code == 200
+    voided_batch = next(item for item in batches.json()["items"] if item["id"] == batch["id"])
+    assert voided_batch["stock_quantity"] == 0
+
+    void_ledger = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=1&page_size=10",
+        headers=pharmacist_headers,
+    )
+    assert void_ledger.status_code == 200
+    assert void_ledger.json()["total"] == 2
+    void_movement = next(
+        item for item in void_ledger.json()["items"]
+        if item["reason"] == "Batch voided for recall"
+    )
+    assert void_movement["quantity_adjustment"] == -80
+    assert void_movement["quantity_before"] == 80
+    assert void_movement["quantity_after"] == 0
+    assert void_movement["actor_id"] > 0
+
+    # The append-only history remains bounded and navigable across pages.
+    page_one = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=1&page_size=1",
+        headers=pharmacist_headers,
+    )
+    page_two = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}&page=2&page_size=1",
+        headers=pharmacist_headers,
+    )
+    assert page_one.status_code == 200
+    assert page_two.status_code == 200
+    assert page_one.json()["total"] == page_two.json()["total"] == 2
+    assert len(page_one.json()["items"]) == len(page_two.json()["items"]) == 1
+    assert page_one.json()["items"][0]["reason"] == "Batch voided for recall"
+    assert page_two.json()["items"][0]["reason"] == "Physical stock count correction"
+
+    # Re-voiding an already empty batch must not create a zero-delta ledger row.
+    repeat_void = client.delete(
+        f"/v1/api/pharmacy/inventory/batches/{batch['id']}",
+        headers=superuser_headers,
+    )
+    assert repeat_void.status_code == 200
+    unchanged_ledger = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert unchanged_ledger.json()["total"] == 2
 
 
 def test_04_erx_prescription_enforces_cpoe_allergy_hard_stop(client, doctor_headers, pharmacist_headers):
@@ -496,3 +582,58 @@ def test_fefo_rejects_higher_id_batch_when_expiry_dates_tie(
     assert response.status_code == 409, response.text
     assert "FEFO Violation" in response.text
     assert first_batch["batch_number"] in response.text
+
+def test_14_stock_adjustment_ledger_rejects_direct_mutation(
+    client, pharmacist_headers, multi_tenant_env
+):
+    """The database must reject UPDATE and DELETE against the append-only ledger."""
+    _, batch = _setup_med_and_batch(client, pharmacist_headers)
+    adjusted = client.patch(
+        f"/v1/api/pharmacy/inventory/batches/{batch['id']}/adjust",
+        headers=pharmacist_headers,
+        json={"quantity_adjustment": -1, "reason": "Physical count correction"},
+    )
+    assert adjusted.status_code == 200, adjusted.text
+
+    ledger = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert ledger.status_code == 200
+    log_id = ledger.json()["items"][0]["id"]
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    # The shared API fixture uses metadata.create_all rather than Alembic. Install
+    # the SQLite migration's trigger DDL here so this test exercises the database
+    # enforcement behavior; actual Alembic upgrade execution remains a separate gate.
+    with engine.begin() as connection:
+        connection.exec_driver_sql("""
+            CREATE TRIGGER trg_inventory_stock_adjustment_logs_immutable_update
+            BEFORE UPDATE ON inventory_stock_adjustment_logs
+            BEGIN
+                SELECT RAISE(ABORT, 'Pharmacy stock adjustment history is immutable');
+            END
+        """)
+        connection.exec_driver_sql("""
+            CREATE TRIGGER trg_inventory_stock_adjustment_logs_immutable_delete
+            BEFORE DELETE ON inventory_stock_adjustment_logs
+            BEGIN
+                SELECT RAISE(ABORT, 'Pharmacy stock adjustment history is immutable');
+            END
+        """)
+
+    for statement in (
+        text("UPDATE inventory_stock_adjustment_logs SET reason = 'tampered' WHERE id = :id"),
+        text("DELETE FROM inventory_stock_adjustment_logs WHERE id = :id"),
+    ):
+        with engine.connect() as connection:
+            with pytest.raises(IntegrityError):
+                with connection.begin():
+                    connection.execute(statement, {"id": log_id})
+
+    unchanged = client.get(
+        f"/v1/api/pharmacy/inventory/adjustments?batch_id={batch['id']}",
+        headers=pharmacist_headers,
+    )
+    assert unchanged.status_code == 200
+    assert unchanged.json()["total"] == 1
+    assert unchanged.json()["items"][0]["reason"] == "Physical count correction"

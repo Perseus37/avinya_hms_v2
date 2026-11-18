@@ -21,6 +21,7 @@ from backend.domains.pharmacy.models import (
     ControlledSubstanceMovementLog,
     ControlledSubstanceVault,
     InventoryBatch,
+    InventoryStockAdjustmentLog,
     MedicationMaster,
     PharmacyReturnLog,
     Prescription,
@@ -264,7 +265,7 @@ def adjust_inventory_stock(
     batch_id: int,
     payload: InventoryStockAdjustment,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:write")),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
 ):
     if payload.quantity_adjustment == 0:
         raise HTTPException(status_code=400, detail="Quantity adjustment cannot be zero.")
@@ -275,10 +276,27 @@ def adjust_inventory_stock(
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found.")
 
-        if batch.stock_quantity + payload.quantity_adjustment < 0:
+        reason = payload.reason.strip()
+        if len(reason) < 5:
+            raise HTTPException(status_code=400, detail="Stock adjustment reason must contain at least 5 non-whitespace characters.")
+
+        quantity_before = batch.stock_quantity
+        quantity_after = quantity_before + payload.quantity_adjustment
+        if quantity_after < 0:
             raise HTTPException(status_code=400, detail="Stock adjustment cannot result in negative inventory.")
 
-        batch.stock_quantity += payload.quantity_adjustment
+        # Persist the stock balance and its immutable provenance in one transaction.
+        batch.stock_quantity = quantity_after
+        db.add(
+            InventoryStockAdjustmentLog(
+                batch_id=batch.id,
+                quantity_adjustment=payload.quantity_adjustment,
+                quantity_before=quantity_before,
+                quantity_after=quantity_after,
+                reason=reason,
+                actor_id=current_user.id,
+            )
+        )
         db.commit()
         db.refresh(batch)
         return batch
@@ -287,11 +305,33 @@ def adjust_inventory_stock(
         raise HTTPException(status_code=409, detail="Inventory batch is locked by another transaction.")
 
 
+@router.get("/inventory/adjustments")
+def list_inventory_stock_adjustments(
+    batch_id: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("pharmacy:read")),
+):
+    """Read a bounded page of append-only stock correction history, newest first."""
+    page, page_size = validate_pagination(page, page_size)
+    query = db.query(InventoryStockAdjustmentLog)
+    if batch_id is not None:
+        query = query.filter(InventoryStockAdjustmentLog.batch_id == batch_id)
+    query = query.order_by(
+        InventoryStockAdjustmentLog.created_at.desc(),
+        InventoryStockAdjustmentLog.id.desc(),
+    )
+    total = query.count()
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
 @router.delete("/inventory/batches/{batch_id}", status_code=200)
 def void_inventory_batch(
     batch_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:void")),
+    current_user: User = Depends(RequirePermission("pharmacy:void")),
 ):
     try:
         stmt = select(InventoryBatch).where(InventoryBatch.id == batch_id).with_for_update(nowait=True)
@@ -299,7 +339,19 @@ def void_inventory_batch(
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found.")
 
-        batch.stock_quantity = 0
+        quantity_before = batch.stock_quantity
+        if quantity_before > 0:
+            batch.stock_quantity = 0
+            db.add(
+                InventoryStockAdjustmentLog(
+                    batch_id=batch.id,
+                    quantity_adjustment=-quantity_before,
+                    quantity_before=quantity_before,
+                    quantity_after=0,
+                    reason="Batch voided for recall",
+                    actor_id=current_user.id,
+                )
+            )
         db.commit()
         return {"status": "success", "message": f"Batch {batch_id} voided (stock zeroed for recall traceability)."}
     except OperationalError:
