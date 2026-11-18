@@ -389,7 +389,7 @@ A further targeted pass found the control-plane UI console renders pointer count
 
 Repository-wide writer inventory remains incomplete. The direct patient-deactivation deletion and `sync_patient_pointer` paths remain the known mutation paths from the earlier review.
 
-## 9. Cross-document recovery invariant
+### 12.10 Cross-document recovery invariant
 
 This design and any stacked/follow-up federation design must preserve one receipt-expiry rule: an opaque operation ID, prior receipt-consumption record, or destination authorization alone never authorizes recovery after the discovery receipt expires. Recovery requires a fresh, fully validated discovery receipt bound to the same destination branch, source pointer identity and generation, source branch identity, and protocol/identity version; the unchanged canonical idempotency key is then used to load the existing operation before fresh source authorization/policy checks and any new disclosure. Without that receipt, or on any identity/generation mismatch, no new source read, destination write, pointer publication, or second operation is permitted; only non-PHI `RECONCILIATION_REQUIRED` and governed operator reconciliation are allowed. Any future document or implementation change that weakens this invariant must fail independent review and must not be treated as implementation-ready.
 
