@@ -315,6 +315,16 @@ def report_transfusion_reaction(
         raise HTTPException(status_code=404, detail="Cross-match order not found.")
     if cm.issued_at is None:
         raise HTTPException(status_code=400, detail="Cannot report a transfusion reaction on an unissued blood bag.")
+    if cm.reaction_type != TransfusionReactionTypeEnum.NONE or cm.reaction_notes is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A transfusion reaction report already exists and cannot be overwritten. Record follow-up observations through the clinical event workflow.",
+        )
+    if payload.reaction_type == TransfusionReactionTypeEnum.NONE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A transfusion reaction report must identify an adverse reaction type.",
+        )
 
     cm.reaction_type = payload.reaction_type
     cm.reaction_notes = payload.reaction_notes
