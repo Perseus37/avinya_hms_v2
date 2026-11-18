@@ -285,3 +285,59 @@ def test_completed_task_gets_bounded_terminal_retention(fake_redis):
 
     assert (f"{KEY_TASK_PREFIX}{task_id}", 3600) in fake_redis._expirations
     assert "payload" not in fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")
+
+
+def test_real_redis_scheduled_promotion_is_atomic_and_idempotent(monkeypatch):
+    """Exercise the production Lua script against Redis when TEST_REDIS_URL is set."""
+    import os
+    import uuid
+    from concurrent.futures import ThreadPoolExecutor
+
+    redis_url = os.getenv("TEST_REDIS_URL")
+    if not redis_url:
+        pytest.skip("Set TEST_REDIS_URL to run real Redis queue integration coverage")
+
+    import redis
+    import backend.core.queue as queue_module
+
+    client = redis.Redis.from_url(redis_url, decode_responses=True)
+    namespace = f"avinya:test:scheduled-promotion:{uuid.uuid4().hex}"
+    scheduled_key = f"{namespace}:scheduled"
+    pending_key = f"{namespace}:pending"
+    dead_letter_key = f"{namespace}:dead-letter"
+    task_prefix = f"{namespace}:task:"
+    monkeypatch.setattr(queue_module, "KEY_SCHEDULED_TASKS", scheduled_key)
+    monkeypatch.setattr(queue_module, "KEY_PENDING_TASKS", pending_key)
+    monkeypatch.setattr(queue_module, "KEY_DEAD_LETTER", dead_letter_key)
+    monkeypatch.setattr(queue_module, "KEY_TASK_PREFIX", task_prefix)
+
+    task_id = str(uuid.uuid4())
+    orphan_id = str(uuid.uuid4())
+    terminal_id = str(uuid.uuid4())
+    keys = [scheduled_key, pending_key, dead_letter_key,
+            f"{task_prefix}{task_id}", f"{task_prefix}{terminal_id}",
+            f"{task_prefix}{orphan_id}"]
+    try:
+        client.ping()
+        due = time.time() - 5
+        client.hset(f"{task_prefix}{task_id}", mapping={"id": task_id, "status": "SCHEDULED"})
+        client.zadd(scheduled_key, {task_id: due})
+        client.hset(f"{task_prefix}{terminal_id}", mapping={"id": terminal_id, "status": "COMPLETED"})
+        client.zadd(scheduled_key, {terminal_id: due, orphan_id: due})
+
+        # Two independent callers race using the real Redis Lua script.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: queue_module.promote_scheduled_tasks(client), range(2)))
+
+        assert sum(results) == 1
+        assert client.lrange(pending_key, 0, -1) == [task_id]
+        assert client.zscore(scheduled_key, task_id) is None
+        assert client.hget(f"{task_prefix}{task_id}", "status") == "QUEUED"
+
+        # Orphaned and terminal members are removed but never re-enqueued.
+        assert client.zscore(scheduled_key, orphan_id) is None
+        assert client.zscore(scheduled_key, terminal_id) is None
+        assert client.lrange(pending_key, 0, -1) == [task_id]
+    finally:
+        client.delete(*keys)
+        client.close()
