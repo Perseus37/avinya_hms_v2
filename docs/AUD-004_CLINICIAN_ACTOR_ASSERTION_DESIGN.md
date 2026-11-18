@@ -154,6 +154,7 @@ No emergency grant ID, request header, role label, or caller-supplied boolean ca
 ### Time and replay
 - expired, future-dated, not-yet-valid assertion; excessive clock skew;
 - replay of same jti, challenge, or signed assertion;
+- exact discovery retry after authorization/response emission returns status/receipt metadata only and never cached PHI; a fresh challenge and assertion are required for any later payload disclosure;
 - concurrent replay race across workers/processes;
 - expired/revoked challenge and challenge bound to another node.
 
@@ -300,7 +301,7 @@ Implementation invariants:
 - A challenge is bound to one node, destination branch, action, purpose, scope, and selector fingerprint or exact source pointer.
 - Challenge claim and assertion jti consumption must be atomic and protected by database uniqueness constraints. Concurrent requests across workers/processes must produce at most one successful claim.
 - A challenge cannot be rebound, reset to ISSUED, or reused for another action or resource.
-- Discovery retries must use a documented idempotency key and must not permit a second disclosure. A retry may retrieve only the same already-authorized result under a bounded policy; it must not repeat authorization under a changed actor, selector, destination, or scope.
+- Discovery retries may use an idempotency key only to retrieve operation status/receipt metadata. They MUST NOT retrieve, replay, or reconstruct the cached patient summary or any other protected payload, even when the actor, selector, destination, and scope are unchanged. Any subsequent disclosure requires a new source-issued challenge and a new clinician assertion. This is the sole normative discovery-retry rule; Section 21.1 governs over any older/general retry wording elsewhere in this document.
 - Import idempotency must be keyed to the exact source pointer, destination, and approved operation. It must not make a new actor assertion reusable for a different import.
 - Failure to persist challenge state, replay state, authorization decision, or required audit means deny/no protected response.
 
@@ -588,7 +589,7 @@ No node-only fallback, stale-positive cache fallback, permissive circuit-breaker
 
 ## 23. Main-branch implementation gap assessment (read-only review)
 
-**Review basis:** read-only inspection of the repository `main` branch at the time this section was prepared. Files inspected: `backend/domains/federation/router.py`, `backend/core/dependencies.py`, `backend/domains/identity/models.py`, `backend/control_plane/models.py`, `backend/domains/federation/schemas.py`, and `docs/FEDERATION_SECURITY.md`.
+**Review basis:** read-only inspection of repository `main` at commit `78dc4428581fdfa53199707eef1efdd9b1db343c` (after PR #19 merged). Files inspected: `backend/domains/federation/router.py`, `backend/core/dependencies.py`, `backend/domains/identity/models.py`, `backend/control_plane/models.py`, `backend/domains/federation/schemas.py`, and `docs/FEDERATION_SECURITY.md`.
 
 This is a source-code gap assessment, not a penetration test, runtime test, or claim that every possible call path has been exhaustively searched. The findings below describe the inspected implementation and must be revalidated against the exact merge base before any implementation PR is opened.
 
@@ -598,7 +599,7 @@ This is a source-code gap assessment, not a penetration test, runtime test, or c
 |---|---|---|---|
 | GAP-01 | **High — AUD-004 core** | `get_federated_node` authenticates an active `FederatedNode` using `X-Federation-API-Key`. The discovery route depends on this node dependency and has no signed clinician actor assertion dependency. | Add source-side verification of a challenge-bound assertion and independent clinician mapping/authorization before any patient-existence signal or protected summary. Negative tests must prove node key alone is insufficient. |
 | GAP-02 | **High — AUD-004 core** | Discovery accepts a free-form `purpose: str` query parameter (length-limited only). The route explicitly blocks a list of emergency strings, but other values remain accepted and are passed into source transfer logging. | Replace free-form purpose with a versioned allow-listed enum and source policy mapping. Unknown values must be rejected; no string-based emergency deny-list as the primary authorization control. |
-| GAP-03 | **High — patient enumeration** | The discovery route queries central pointers before any human actor verification and returns a distinct 404 when no pointer exists. When pointers exist, it proceeds to source reads and may return a demographic/allergy summary. | Do not return match/no-match information until actor verification and source authorization. Challenge creation must have indistinguishable external behavior for matching and non-matching selectors; add timing/response-shape and enumeration tests. |
+| GAP-03 | **High — patient enumeration** | The discovery route queries central pointers before any human actor verification. It returns 404 when no pointer exists; when indexed pointers exist but one or more source branches cannot be verified, the post-#19 implementation can return 503 with source outcome counts/branch identifiers. Successful source reads can produce a demographic/allergy summary and a discovery receipt. These response distinctions still occur before any signed human-actor verification. | Do not return match/no-match or source-topology information until actor verification and source authorization. Challenge creation must have indistinguishable external behavior for matching and non-matching selectors; add timing/response-shape and enumeration tests. Ensure failure metadata is not exposed to an unverified caller. |
 | GAP-04 | **High — import actor provenance** | The local import route authenticates `current_user` with `RequirePermission("patients:write")`, but the source tenant audit writes `FederationTransferLog` with destination branch and `actor_user_id=None` in the source privacy decision. A destination-local integer user ID cannot be attributed as a source-local user. | Decide D-11 scope. If local import is covered, send a source-verifiable actor assertion for the authenticated destination user and record issuer-scoped subject separately from local user foreign keys. If excluded, document and approve the scope exception. |
 | GAP-05 | **High — trust lifecycle** | The inspected `FederatedNode` control-plane model stores one API-key hash/prefix and an active flag. The inspected models do not provide issuer signing keys, issuer trust versions, key status/rotation history, or an external clinician subject mapping. | Implement an independently reviewed trust registry and key lifecycle before actor assertions can be accepted. Partner onboarding and revocation must be dual-controlled and audited. |
 | GAP-06 | **Medium — dependency degradation** | `RateLimiter._check` fails open for non-authentication scopes when Redis is absent or errors. Federation discovery uses scope `fed_discover`, which does not match the fail-closed authentication prefixes. | Decide and implement an explicit policy for federation abuse-control dependency outages. At minimum, discovery must not silently lose its configured abuse limit; use a bounded local emergency limiter only if its distributed guarantees are documented, otherwise return 503. This is defense-in-depth, not a substitute for actor authorization. |
@@ -612,6 +613,8 @@ The inspected implementation also contains controls that must not be weakened du
 - `get_current_user` validates tenant and branch claims, active local user status, and a live non-revoked `AuthSession`.
 - Remote emergency discovery purposes are explicitly denied; `EMERGENCY_ALLERGIES_ONLY` sources do not return demographic discovery data.
 - Source discovery re-reads patient data and evaluates source privacy/data-use policy with the source tenant's patient identity.
+- The post-#19 mainline reports source completeness (`source_count`, success/failure counts, `is_partial`, and failed source branches) and returns 503 when source failures prevent a trustworthy result; it does not silently represent failed source reads as complete.
+- Complete discovery responses carry a short-lived server-side discovery receipt. Import validates that receipt and rechecks the current source summary; the receipt is an import-integrity control, not a clinician identity assertion or authorization credential.
 - Import re-reads source patient/policy, compares the submitted summary with current source demographics, copies clinical data from the source database, and writes a source-side request log before destination commit.
 - Import uses the authenticated local destination user for destination-side patient/allergy creation audit fields.
 - Control-plane tenant registry resolution is used to locate source databases; do not replace this with assertion- or request-supplied schema routing.
@@ -640,7 +643,7 @@ These controls are useful but do not satisfy AUD-004 because they do not indepen
 
 ## 24. Federation access-surface inventory and route coverage
 
-**Review basis:** read-only inspection of `main` for `backend/domains/federation/router.py`, `backend/domains/patients/router.py`, `backend/domains/federation/models.py`, `backend/domains/federation/schemas.py`, `backend/control_plane/models.py`, and `backend/main.py`. This section records the route and call paths found in those files; it is not a repository-wide static-analysis certificate.
+**Review basis:** read-only inspection of `main` at commit `8ee52e179c31a1b14a1cc0da2ef0f5402554a77f` for `backend/domains/federation/router.py`, `backend/domains/patients/router.py`, `backend/domains/federation/models.py`, `backend/domains/federation/schemas.py`, `backend/control_plane/models.py`, and `backend/main.py`. This section records the route and call paths found in those files; it is not a repository-wide static-analysis certificate.
 
 ### 24.1 Federation router surface
 
@@ -653,7 +656,7 @@ The federation router is mounted on both the root FastAPI application and the mo
 | Revoke partner | `DELETE /api/federation/clients/{client_id}` | Tenant-local `RequirePermission("iam:delete")`; disables local client and corresponding node when present. | Preserve immediate node revocation; extend to issuer/key/clinician trust status and ensure failure between the two database commits is reconciled. |
 | Publish local patient pointer | `POST /api/federation/patients/{patient_id}/publish-pointer` | Tenant-local `RequirePermission("patients:write")`; reads a patient in the caller's own tenant and calls `sync_patient_pointer`. | Not a remote patient disclosure path and does not itself require a foreign clinician assertion. Preserve local actor attribution and privacy policy. Its administrative ability to affect global discoverability still needs authorization/audit controls. |
 | Discover remote patient | `GET /api/federation/patients/discover` | `get_federated_node` validates the node API key; no human actor assertion. Pointer lookup and 404 behavior precede human verification. | **Direct AUD-004 protected operation.** Require source-verified challenge-bound actor assertion before selector-match disclosure or patient reads. |
-| Import remote patient | `POST /api/federation/patients/import` | Tenant-local `RequirePermission("patients:write")`; resolves a source pointer from submitted source MRN and reads the source tenant database. No node-key or clinician assertion is verified by the source in this route. | **Direct AUD-004 protected operation.** Must use a distinct import challenge/assertion bound to source pointer, destination branch, action, purpose, scope and transfer ID. |
+| Import remote patient | `POST /api/federation/patients/import` | Tenant-local `RequirePermission("patients:write")`; requires a short-lived discovery receipt bound to the calling node, destination branch, selector, pointer snapshot and summary hash; rechecks current source pointer/policy before reading source data. It does not verify a clinician assertion or independently authenticate a node key on this route. | **Direct AUD-004 protected operation.** Preserve receipt integrity checks and add a distinct source-verifiable import challenge/assertion bound to source pointer, destination branch, action, purpose, scope and transfer ID. |
 
 The root and V1 route aliases are not separate authorization models; they are the same router mounted twice. Tests must exercise both URL prefixes to prevent a security dependency being applied to only one alias.
 
@@ -667,7 +670,7 @@ The inspected patient router calls `sync_patient_pointer` during:
 
 Patient deactivation directly deletes the matching `GlobalPatientPointer` from the control-plane database. Allergy deactivation currently changes the local `PatientAllergy.is_active` state but does not call `sync_patient_pointer`. This can leave the pointer's coarse `has_critical_allergies` metadata stale until another synchronization. Treat this as a pointer-integrity follow-up, not as evidence of unauthorized remote disclosure; source discovery still reads current source policy and allergy rows.
 
-The inspected `sync_patient_pointer` implementation also catches broad exceptions, rolls back, and returns without propagating the failure. This overlaps the separately tracked AUD-002 remediation in PR #19. Do not duplicate or silently alter that remediation in the AUD-004 implementation; reconcile against the final PR #19 merged code before implementing pointer-related changes.
+The merged `sync_patient_pointer` implementation now rolls back and re-raises control-plane write failures rather than silently swallowing them. This is part of the AUD-002 remediation merged in PR #19. Preserve that fail-visible behavior; do not duplicate or regress it in AUD-004 pointer-related work.
 
 ### 24.3 Model and data-boundary observations
 
@@ -696,7 +699,7 @@ The inspected federation router exposes six operations, of which discovery and i
 
 The highest-risk gap is not limited to the discovery route: **the import route independently reads source-tenant patient data and currently has no source-verified clinician assertion**. Discovery and import therefore require separate source authorization checks and separate challenge/action bindings.
 
-PR #19 is still an unmerged remediation branch and contains the newer discovery-receipt integrity work. The source-code observations in Sections 23–24 describe the inspected `main` baseline, not the unmerged PR #19 implementation. Before AUD-004 runtime work starts, rebase/review the combined implementation against the final merged PR #19 code and preserve its receipt validation. Do not implement actor authorization against a stale version of the discovery/import flow.
+PR #19 has been merged into `main`. The current discovery/import implementation includes source-completeness reporting, short-lived destination- and node-bound discovery receipts, pointer-snapshot and summary-hash validation, partial-result import rejection, and source-policy rechecks. These receipt controls protect import integrity but do not authenticate an individual clinician or authorize source disclosure. AUD-004 runtime work must preserve these merged controls and add source-verified actor authorization without weakening their checks.
 
 No application code, migrations, configuration, or runtime behavior was changed by this route inventory. D-01 through D-14 remain pending; AUD-004 remains release-blocking.
 
@@ -839,7 +842,7 @@ Each runtime PR must be small enough to review independently, contain migrations
 - No change to current patient privacy defaults or data-sharing scope is implied.
 - No new trust relationship is created merely by registering a federation node or API key.
 - Do not use this contract to bypass D-01..D-14. If an implementation detail requires an unresolved decision, stop and obtain the named approval before coding it.
-- PR #19 must be reviewed/merged under its own approval process before AUD-004 runtime work is rebased onto the resulting mainline. Preserve the discovery receipt safeguards; do not build against the older main baseline.
+- PR #19 is already merged. Preserve its discovery-receipt safeguards in every AUD-004 implementation; do not reintroduce the pre-receipt discovery/import flow.
 - AUD-004 remains release-blocking until implementation, adversarial validation, operational evidence and explicit release authorization are complete.
 
 No runtime code, migration, configuration, or application behavior is changed by this proposed contract.
