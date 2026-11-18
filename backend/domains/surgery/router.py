@@ -401,6 +401,21 @@ def update_surgery_status(
             detail=f"Cannot transition surgery from terminal state '{surgery.status.value}'.",
         )
 
+    if payload.status not in {
+        SurgeryStatusEnum.IN_PROGRESS,
+        SurgeryStatusEnum.COMPLETED,
+        SurgeryStatusEnum.CANCELLED,
+    }:
+        raise HTTPException(
+            status_code=400,
+            detail="Surgery status can only advance through the checklist, start, completion, or cancellation workflows.",
+        )
+    if payload.status == SurgeryStatusEnum.IN_PROGRESS and surgery.status != SurgeryStatusEnum.PRE_OP_CLEARED:
+        raise HTTPException(
+            status_code=400,
+            detail="Surgery must be PRE_OP_CLEARED before it can start.",
+        )
+
     chk = surgery.safety_checklist
     now_utc = datetime.now(timezone.utc)
 
