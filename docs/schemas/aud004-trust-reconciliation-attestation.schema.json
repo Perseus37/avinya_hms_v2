@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-trust-reconciliation-attestation.schema.json",
+  "title": "AUD-004 Provider Trust Reconciliation Attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "root_digest",
+    "snapshot_digest",
+    "pages_digest",
+    "resources_digest",
+    "edges_digest",
+    "exceptions_digest",
+    "reconciliation_digest",
+    "provider_api_version",
+    "verifier_id",
+    "verifier_build_digest",
+    "trust_root_version",
+    "generation",
+    "previous_checkpoint_digest",
+    "result",
+    "signature_ref"
+  ],
+  "properties": {
+    "root_digest": {
+      "type": "string"
+    },
+    "snapshot_digest": {
+      "type": "string"
+    },
+    "pages_digest": {
+      "type": "string"
+    },
+    "resources_digest": {
+      "type": "string"
+    },
+    "edges_digest": {
+      "type": "string"
+    },
+    "exceptions_digest": {
+      "type": "string"
+    },
+    "reconciliation_digest": {
+      "type": "string"
+    },
+    "provider_api_version": {
+      "type": "string"
+    },
+    "verifier_id": {
+      "type": "string"
+    },
+    "verifier_build_digest": {
+      "type": "string"
+    },
+    "trust_root_version": {
+      "type": "string"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "previous_checkpoint_digest": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "result": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "UNKNOWN"
+      ]
+    },
+    "signature_ref": {
+      "type": "string"
+    }
+  }
+}

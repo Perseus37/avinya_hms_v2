@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-egress-capability-contract.schema.json",
+  "title": "AUD-004 Sole Egress Capability Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "stage_result",
+    "egress_adapter",
+    "milestones",
+    "deployment_evidence",
+    "verification"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "1.0"
+    },
+    "stage_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "status"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "enum": [
+            "STAGED",
+            "ALREADY_STAGED",
+            "CONFLICT",
+            "DENIED",
+            "UNAVAILABLE",
+            "OUTCOME_UNCERTAIN"
+          ]
+        }
+      }
+    },
+    "egress_adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workload_id",
+        "artifact_read_capability",
+        "network_writer_capability",
+        "permit_verifier_id",
+        "sole_payload_emitter"
+      ],
+      "properties": {
+        "workload_id": {
+          "type": "string"
+        },
+        "artifact_read_capability": {
+          "const": "EGRESS_ADAPTER_ONLY"
+        },
+        "network_writer_capability": {
+          "const": "EGRESS_ADAPTER_ONLY"
+        },
+        "permit_verifier_id": {
+          "type": "string"
+        },
+        "sole_payload_emitter": {
+          "const": true
+        }
+      }
+    },
+    "milestones": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "enum": [
+          "EGRESS_ACCEPTED",
+          "TRANSPORT_RELEASE_COMMITTED",
+          "TRANSPORT_WRITE_ATTEMPTED",
+          "LOCAL_SOCKET_ACCEPTED",
+          "REMOTE_RECEIPT",
+          "DELIVERY_CONFIRMED"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "deployment_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "route_inventory_digest",
+        "middleware_inventory_digest",
+        "proxy_inventory_digest",
+        "negative_test_bundle_digest"
+      ],
+      "properties": {
+        "route_inventory_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "middleware_inventory_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proxy_inventory_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "negative_test_bundle_digest": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "verifier_id",
+        "evidence_digest",
+        "signature_ref"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "PASS",
+            "NOT_READY",
+            "FAIL"
+          ]
+        },
+        "verifier_id": {
+          "type": "string"
+        },
+        "evidence_digest": {
+          "type": "string"
+        },
+        "signature_ref": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
