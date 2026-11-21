@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-lifecycle-graph-attestation.schema.json",
+  "title": "AUD-004 Lifecycle Graph Verifier Attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "registry_digest",
+    "schema_version",
+    "policy_generation",
+    "verifier_id",
+    "verifier_build_digest",
+    "trust_root_ref",
+    "result",
+    "error_codes",
+    "signature_ref"
+  ],
+  "properties": {
+    "registry_digest": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "policy_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "verifier_id": {
+      "type": "string"
+    },
+    "verifier_build_digest": {
+      "type": "string"
+    },
+    "trust_root_ref": {
+      "type": "string"
+    },
+    "result": {
+      "enum": [
+        "PASS",
+        "FAIL"
+      ]
+    },
+    "error_codes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "signature_ref": {
+      "type": "string"
+    }
+  }
+}
