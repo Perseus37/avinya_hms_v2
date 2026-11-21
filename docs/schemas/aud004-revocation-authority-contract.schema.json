@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-revocation-authority-contract.schema.json",
+  "title": "AUD-004 Revocation Authority Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "domain",
+    "authority_id",
+    "mode",
+    "sequence",
+    "freshness",
+    "outage_behavior",
+    "owner",
+    "approval"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "1.0"
+    },
+    "domain": {
+      "enum": [
+        "issuer_key",
+        "clinician_registration",
+        "clinician_affiliation",
+        "partner_destination",
+        "purpose_policy",
+        "workload_identity",
+        "credential_session",
+        "audit_authority"
+      ]
+    },
+    "authority_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "mode": {
+      "enum": [
+        "SOURCE_BARRIER_EFFECTIVE",
+        "AUTHORITY_LEASE"
+      ]
+    },
+    "sequence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version_type",
+        "monotonic",
+        "gap_behavior"
+      ],
+      "properties": {
+        "version_type": {
+          "enum": [
+            "integer",
+            "opaque_ordered_token"
+          ]
+        },
+        "monotonic": {
+          "const": true
+        },
+        "gap_behavior": {
+          "const": "FAIL_CLOSED"
+        }
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_age_seconds",
+        "clock_uncertainty_seconds",
+        "checkpoint"
+      ],
+      "properties": {
+        "max_age_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clock_uncertainty_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "checkpoint": {
+          "enum": [
+            "search",
+            "candidate_authorization",
+            "read_commit",
+            "redemption",
+            "release_commit"
+          ]
+        }
+      }
+    },
+    "outage_behavior": {
+      "enum": [
+        "DENY_NEW_AUTHORIZATION",
+        "DENY_AND_QUARANTINE_UNCERTAIN"
+      ]
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "evidence_ref"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "PENDING",
+            "APPROVED",
+            "REJECTED"
+          ]
+        },
+        "evidence_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "lease_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issuer",
+        "audience",
+        "subject_binding",
+        "scope_binding",
+        "max_lifetime_seconds",
+        "revocation_guarantee",
+        "signature_profile_id"
+      ],
+      "properties": {
+        "issuer": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "string"
+        },
+        "subject_binding": {
+          "type": "string"
+        },
+        "scope_binding": {
+          "type": "string"
+        },
+        "max_lifetime_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "revocation_guarantee": {
+          "const": "NO_EFFECTIVE_REVOCATION_DURING_VALID_LEASE"
+        },
+        "signature_profile_id": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "AUTHORITY_LEASE"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "required": [
+          "lease_profile"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "SOURCE_BARRIER_EFFECTIVE"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "lease_profile"
+          ]
+        }
+      }
+    }
+  ]
+}
