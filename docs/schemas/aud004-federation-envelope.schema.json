@@ -1,0 +1,332 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.invalid/schemas/aud004-federation-envelope.schema.json",
+  "title": "Avinya federation envelope structural baseline",
+  "description": "Structural contract only. No cryptographic profile is approved until an immutable signed registry entry exists.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "profile_id",
+    "manifest_encoding",
+    "manifest",
+    "signature",
+    "recipient_key_id",
+    "encryption",
+    "aad",
+    "ciphertext",
+    "content_digest"
+  ],
+  "properties": {
+    "profile_id": {
+      "type": "string",
+      "pattern": "^[A-Z0-9][A-Z0-9._-]{0,63}$"
+    },
+    "manifest_encoding": {
+      "const": "JCS-RFC8785-UTF8"
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "source_id",
+        "destination_workload_id",
+        "destination_tenant_id",
+        "destination_branch_id",
+        "actor_subject_id",
+        "actor_issuer_id",
+        "actor_assertion_digest",
+        "resource_ref",
+        "purpose",
+        "action",
+        "policy_version",
+        "projection",
+        "projection_digest",
+        "operation_id",
+        "candidate_id",
+        "fencing_generation",
+        "source_generation_vector",
+        "content_digest_algorithm",
+        "content_digest",
+        "content_length",
+        "issued_at",
+        "expires_at",
+        "recipient_key_id",
+        "aad_profile_id"
+      ],
+      "properties": {
+        "protocol_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "source_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "destination_workload_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "destination_tenant_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "destination_branch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "actor_subject_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "actor_issuer_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "actor_assertion_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "resource_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "projection": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "projection_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "candidate_id": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_generation_vector": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "content_digest_algorithm": {
+          "const": "SHA-256"
+        },
+        "content_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "content_length": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 67108864
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "recipient_key_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "aad_profile_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm_id",
+        "key_id",
+        "encoding",
+        "value"
+      ],
+      "properties": {
+        "algorithm_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "key_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "encoding": {
+          "enum": [
+            "base64url-unpadded"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      }
+    },
+    "recipient_key_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "encryption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm_id",
+        "nonce",
+        "tag"
+      ],
+      "properties": {
+        "algorithm_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "aad": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "aad_profile_id",
+        "profile_id",
+        "source_id",
+        "destination_workload_id",
+        "destination_tenant_id",
+        "destination_branch_id",
+        "recipient_key_id",
+        "operation_id",
+        "candidate_id",
+        "resource_ref",
+        "purpose",
+        "action",
+        "projection_digest",
+        "content_digest",
+        "fencing_generation",
+        "protocol_version"
+      ],
+      "properties": {
+        "aad_profile_id": {
+          "type": "string"
+        },
+        "profile_id": {
+          "type": "string"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "destination_workload_id": {
+          "type": "string"
+        },
+        "destination_tenant_id": {
+          "type": "string"
+        },
+        "destination_branch_id": {
+          "type": "string"
+        },
+        "recipient_key_id": {
+          "type": "string"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "candidate_id": {
+          "type": "string"
+        },
+        "resource_ref": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "projection_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "content_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "fencing_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "protocol_version": {
+          "type": "string"
+        }
+      }
+    },
+    "ciphertext": {
+      "type": "string",
+      "maxLength": 90000000
+    },
+    "content_digest": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    }
+  }
+}
