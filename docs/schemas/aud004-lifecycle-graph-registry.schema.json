@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-lifecycle-graph-registry.schema.json",
+  "title": "AUD-004 Lifecycle Graph Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "registry_id",
+    "generation",
+    "initial_state_id",
+    "states",
+    "transitions",
+    "verification"
+  ],
+  "properties": {
+    "registry_id": {
+      "type": "string"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "initial_state_id": {
+      "type": "string"
+    },
+    "states": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state_id",
+          "terminal",
+          "externally_entered",
+          "required_evidence"
+        ],
+        "properties": {
+          "state_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "terminal": {
+            "type": "boolean"
+          },
+          "externally_entered": {
+            "type": "boolean"
+          },
+          "required_evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transition_id",
+          "from_state_ids",
+          "to_state_id",
+          "authority",
+          "preconditions",
+          "evidence",
+          "timeout_outcome",
+          "failure_outcome",
+          "retry_class"
+        ],
+        "properties": {
+          "transition_id": {
+            "type": "string"
+          },
+          "from_state_ids": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "to_state_id": {
+            "type": "string"
+          },
+          "authority": {
+            "type": "string"
+          },
+          "preconditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "timeout_outcome": {
+            "type": "string"
+          },
+          "failure_outcome": {
+            "type": "string"
+          },
+          "retry_class": {
+            "enum": [
+              "NEVER",
+              "IDEMPOTENT_STATUS_ONLY",
+              "SAME_OPERATION",
+              "FRESH_AUTH_REQUIRED",
+              "OPERATOR_RECONCILIATION"
+            ]
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_registry_digest",
+        "verifier_id",
+        "verifier_version",
+        "result",
+        "error_codes",
+        "policy_generation",
+        "signature_ref"
+      ],
+      "properties": {
+        "canonical_registry_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "verifier_id": {
+          "type": "string"
+        },
+        "verifier_version": {
+          "type": "string"
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL"
+          ]
+        },
+        "error_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "policy_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "signature_ref": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

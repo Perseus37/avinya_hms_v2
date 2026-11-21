@@ -1,0 +1,377 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-worker-measured-attestation.schema.json",
+  "title": "AUD-004 Measured Worker Attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "platform_profile_id",
+    "desired_policy_digest",
+    "observed_state",
+    "workload",
+    "host",
+    "collection",
+    "verification"
+  ],
+  "properties": {
+    "platform_profile_id": {
+      "type": "string"
+    },
+    "desired_policy_digest": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    },
+    "observed_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uid",
+        "gid",
+        "capabilities",
+        "seccomp",
+        "mac",
+        "namespaces",
+        "mounts",
+        "cgroups",
+        "ptrace",
+        "dump_swap",
+        "network_policy",
+        "crash_handler",
+        "host_actors"
+      ],
+      "properties": {
+        "uid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gid": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "seccomp": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enforced",
+            "profile_digest"
+          ],
+          "properties": {
+            "enforced": {
+              "const": true
+            },
+            "profile_digest": {
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{64}$"
+            }
+          }
+        },
+        "mac": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mechanism",
+            "profile_id",
+            "enforced"
+          ],
+          "properties": {
+            "mechanism": {
+              "enum": [
+                "APPARMOR",
+                "SELINUX",
+                "OTHER_APPROVED"
+              ]
+            },
+            "profile_id": {
+              "type": "string"
+            },
+            "enforced": {
+              "const": true
+            }
+          }
+        },
+        "namespaces": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "pid",
+            "mount",
+            "network",
+            "user"
+          ],
+          "properties": {
+            "pid": {
+              "type": "string"
+            },
+            "mount": {
+              "type": "string"
+            },
+            "network": {
+              "type": "string"
+            },
+            "user": {
+              "type": "string"
+            }
+          }
+        },
+        "mounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mount_id",
+              "source",
+              "target",
+              "read_only"
+            ],
+            "properties": {
+              "mount_id": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "read_only": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "cgroups": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cpu_limit",
+            "memory_limit_bytes",
+            "pids_limit"
+          ],
+          "properties": {
+            "cpu_limit": {
+              "type": "string"
+            },
+            "memory_limit_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "pids_limit": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "ptrace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "restricted",
+            "policy_ref"
+          ],
+          "properties": {
+            "restricted": {
+              "const": true
+            },
+            "policy_ref": {
+              "type": "string"
+            }
+          }
+        },
+        "dump_swap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "core_dumps_disabled",
+            "swap_policy"
+          ],
+          "properties": {
+            "core_dumps_disabled": {
+              "type": "boolean"
+            },
+            "swap_policy": {
+              "enum": [
+                "DISABLED",
+                "ENCRYPTED",
+                "PLATFORM_MANAGED_AT_REST",
+                "UNKNOWN"
+              ]
+            }
+          }
+        },
+        "network_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "policy_digest",
+            "egress_allowlist_digest"
+          ],
+          "properties": {
+            "policy_digest": {
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{64}$"
+            },
+            "egress_allowlist_digest": {
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{64}$"
+            }
+          }
+        },
+        "crash_handler": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "handler_id",
+            "payload_capture_policy"
+          ],
+          "properties": {
+            "handler_id": {
+              "type": "string"
+            },
+            "payload_capture_policy": {
+              "const": "NO_PROTECTED_PAYLOAD"
+            }
+          }
+        },
+        "host_actors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "principal_id",
+              "capability_scope"
+            ],
+            "properties": {
+              "principal_id": {
+                "type": "string"
+              },
+              "capability_scope": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workload_id",
+        "image_digest",
+        "host_id",
+        "boot_measurement"
+      ],
+      "properties": {
+        "workload_id": {
+          "type": "string"
+        },
+        "image_digest": {
+          "type": "string"
+        },
+        "host_id": {
+          "type": "string"
+        },
+        "boot_measurement": {
+          "type": "string"
+        }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os_id",
+        "kernel_version",
+        "runtime_id",
+        "runtime_version"
+      ],
+      "properties": {
+        "os_id": {
+          "type": "string"
+        },
+        "kernel_version": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": "string"
+        },
+        "runtime_version": {
+          "type": "string"
+        }
+      }
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "collector_id",
+        "collector_version",
+        "collected_at",
+        "evidence_digest"
+      ],
+      "properties": {
+        "collector_id": {
+          "type": "string"
+        },
+        "collector_version": {
+          "type": "string"
+        },
+        "collected_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verifier_id",
+        "verifier_version",
+        "result",
+        "policy_digest",
+        "observed_digest",
+        "signature_ref"
+      ],
+      "properties": {
+        "verifier_id": {
+          "type": "string"
+        },
+        "verifier_version": {
+          "type": "string"
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT_READY"
+          ]
+        },
+        "policy_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "observed_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "signature_ref": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
