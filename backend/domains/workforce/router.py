@@ -134,8 +134,16 @@ class PayrollLineCreate(BaseModel):
         return value
 
 
-def _active_user(db: Session, user_id: int) -> User:
-    user = db.get(User, user_id)
+def _active_user(db: Session, user_id: int, *, for_update: bool = False) -> User:
+    if for_update:
+        user = db.execute(
+            select(User)
+            .where(User.id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+    else:
+        user = db.get(User, user_id)
     if not user or user.status != UserStatusEnum.ACTIVE:
         raise HTTPException(status_code=404, detail="Active staff user not found.")
     return user
@@ -197,7 +205,9 @@ def create_leave_request(
     db: Session = Depends(get_db),
     actor: User = Depends(RequirePermission("hr:write")),
 ):
-    _active_user(db, payload.user_id)
+    # Lock the stable users row so concurrent leave requests serialize even
+    # when no existing LeaveRequest row is available to lock.
+    _active_user(db, payload.user_id, for_update=True)
     overlapping = db.execute(
         select(LeaveRequest.id).where(
             LeaveRequest.user_id == payload.user_id,

@@ -547,3 +547,89 @@ def test_09_control_plane_bed_and_user_quota_enforcement(client, apollo_admin_he
         ).status_code
         == 201
     )
+
+
+def test_policy_settings_creation_takes_postgresql_transaction_advisory_lock():
+    from types import SimpleNamespace
+    from backend.domains.policies.models import HospitalPolicySetting
+    from backend.domains.policies.router import get_or_create_policy
+    """The empty-table check must be serialized before inserting the singleton row."""
+    class FakeResult:
+        def scalars(self):
+            return self
+
+        def first(self):
+            return None
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+            self.added = []
+
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+            return FakeResult()
+
+        def add(self, value):
+            self.added.append(value)
+
+        def flush(self):
+            return None
+
+    db = FakeSession()
+    setting = get_or_create_policy(db)
+
+    assert isinstance(setting, HospitalPolicySetting)
+    assert db.added == [setting]
+    assert len(db.calls) == 2
+    assert "pg_advisory_xact_lock" in db.calls[0][0]
+    assert db.calls[0][1] == {"lock_key": 72134789012345}
+    assert "hospital_policy_settings" in db.calls[1][0]
+
+
+def test_postgresql_transaction_advisory_lock_serializes_policy_creation():
+    import os
+    import pytest
+    from sqlalchemy import create_engine, text
+    """Exercise PostgreSQL's transaction-scoped mutex with independent connections."""
+    database_url = os.getenv("TEST_POSTGRES_URL") or os.getenv("POSTGRES17_TEST_URL")
+    if database_url and database_url.startswith("postgresql+psycopg://"):
+        database_url = database_url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
+    if not database_url:
+        pytest.skip("Set POSTGRES17_TEST_URL or TEST_POSTGRES_URL to run the PostgreSQL concurrency proof.")
+
+    engine = create_engine(database_url, pool_pre_ping=True)
+    first = second = None
+    lock_key = 72134789012345
+    try:
+        first = engine.connect()
+        second = engine.connect()
+
+        first.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        )
+        acquired_while_held = second.execute(
+            text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        ).scalar_one()
+        assert acquired_while_held is False
+
+        first.commit()
+        acquired_after_release = second.execute(
+            text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": lock_key},
+        ).scalar_one()
+        assert acquired_after_release is True
+        second.commit()
+    finally:
+        if first is not None:
+            first.rollback()
+            first.close()
+        if second is not None:
+            second.rollback()
+            second.close()
+        engine.dispose()

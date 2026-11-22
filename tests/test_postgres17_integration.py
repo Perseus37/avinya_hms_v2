@@ -265,3 +265,116 @@ def test_postgresql_17_encrypted_custom_dump_restores_into_isolated_database():
                     text(f'DROP DATABASE IF EXISTS "{database_name}"')
                 )
         admin_engine.dispose()
+
+
+def test_postgresql_operative_record_write_serializes_with_terminal_surgery_transition():
+    """Operative-record writers must wait for, then observe, terminal surgery state."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    import time
+
+    engine_url = make_url(os.environ["POSTGRES17_TEST_URL"]).set(
+        drivername="postgresql+psycopg2"
+    )
+    engine = create_engine(engine_url, pool_size=4)
+    suffix = uuid.uuid4().hex[:12]
+    schedules = f"surgery_lock_schedules_{suffix}"
+    records = f"surgery_lock_records_{suffix}"
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(
+                f'CREATE TABLE "{schedules}" (id bigint PRIMARY KEY, status text NOT NULL)'
+            ))
+            connection.execute(text(
+                f'CREATE TABLE "{records}" (surgery_id bigint PRIMARY KEY '
+                f'REFERENCES "{schedules}"(id), findings text NOT NULL)'
+            ))
+            connection.execute(
+                text(f'INSERT INTO "{schedules}" (id, status) VALUES (1, \'IN_PROGRESS\'), (2, \'IN_PROGRESS\')')
+            )
+            connection.execute(
+                text(f'INSERT INTO "{records}" (surgery_id, findings) VALUES (1, \'Original 1\'), (2, \'Original 2\')')
+            )
+
+        def exercise_terminal_race(surgery_id: int, terminal_status: str):
+            schedule_locked = Event()
+            writer_attempting_lock = Event()
+            allow_terminal_commit = Event()
+            writer_backend_pid = []
+
+            def terminal_transition():
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(f'SELECT id FROM "{schedules}" WHERE id = :id FOR UPDATE'),
+                        {"id": surgery_id},
+                    ).one()
+                    schedule_locked.set()
+                    assert allow_terminal_commit.wait(timeout=10), "operative writer did not start"
+                    connection.execute(
+                        text(f'UPDATE "{schedules}" SET status = :status WHERE id = :id'),
+                        {"status": terminal_status, "id": surgery_id},
+                    )
+
+            def operative_record_write():
+                assert schedule_locked.wait(timeout=10), "terminal transition did not acquire schedule lock"
+                with engine.begin() as connection:
+                    writer_backend_pid.append(
+                        connection.execute(text("SELECT pg_backend_pid()")).scalar_one()
+                    )
+                    writer_attempting_lock.set()
+                    schedule = connection.execute(
+                        text(f'SELECT status FROM "{schedules}" WHERE id = :id FOR UPDATE'),
+                        {"id": surgery_id},
+                    ).scalar_one()
+                    connection.execute(
+                        text(f'SELECT surgery_id FROM "{records}" WHERE surgery_id = :id FOR UPDATE'),
+                        {"id": surgery_id},
+                    ).one()
+                    if schedule not in {"COMPLETED", "CANCELLED"}:
+                        connection.execute(
+                            text(f'UPDATE "{records}" SET findings = \'Replacement\' WHERE surgery_id = :id'),
+                            {"id": surgery_id},
+                        )
+                    return schedule
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                terminal_future = executor.submit(terminal_transition)
+                writer_future = executor.submit(operative_record_write)
+                assert writer_attempting_lock.wait(timeout=10), "operative writer did not attempt schedule lock"
+                deadline = time.monotonic() + 5
+                was_blocked = False
+                while time.monotonic() < deadline:
+                    with engine.connect() as monitor:
+                        was_blocked = monitor.execute(
+                            text("SELECT cardinality(pg_blocking_pids(:pid)) > 0"),
+                            {"pid": writer_backend_pid[0]},
+                        ).scalar_one()
+                    if was_blocked:
+                        break
+                    time.sleep(0.01)
+                allow_terminal_commit.set()
+                assert was_blocked, "operative writer was not observed waiting on terminal schedule lock"
+                terminal_future.result(timeout=15)
+                observed_status = writer_future.result(timeout=15)
+
+            assert observed_status == terminal_status
+            with engine.connect() as connection:
+                persisted_status = connection.execute(
+                    text(f'SELECT status FROM "{schedules}" WHERE id = :id'),
+                    {"id": surgery_id},
+                ).scalar_one()
+                findings = connection.execute(
+                    text(f'SELECT findings FROM "{records}" WHERE surgery_id = :id'),
+                    {"id": surgery_id},
+                ).scalar_one()
+            assert persisted_status == terminal_status
+            assert findings == f"Original {surgery_id}"
+
+        exercise_terminal_race(1, "COMPLETED")
+        exercise_terminal_race(2, "CANCELLED")
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'DROP TABLE IF EXISTS "{records}"'))
+            connection.execute(text(f'DROP TABLE IF EXISTS "{schedules}"'))
+        engine.dispose()

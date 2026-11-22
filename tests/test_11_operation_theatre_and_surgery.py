@@ -161,6 +161,21 @@ def test_02_who_surgical_safety_checklist_hard_stop_before_incision_and_before_c
     assert start_res.status_code == 200
     assert start_res.json()["status"] == "IN_PROGRESS"
 
+    # Status updates cannot bypass the checklist workflow or move the case backwards.
+    for invalid_status in ["SCHEDULED", "PRE_OP_CLEARED"]:
+        invalid_transition = client.patch(
+            f"/v1/api/ot/surgeries/{surg['id']}/status",
+            headers=doctor_headers,
+            json={"status": invalid_status},
+        )
+        assert invalid_transition.status_code == 400
+        assert invalid_transition.json()["message"]
+    current = client.get(
+        "/v1/api/ot/surgeries?status=IN_PROGRESS", headers=doctor_headers
+    )
+    assert current.status_code == 200
+    assert any(item["id"] == surg["id"] for item in current.json()["items"])
+
     # 4. Attempt to mark COMPLETED while sponge_instrument_count_verified is False -> Blocked with 400!
     assert client.patch(
         f"/v1/api/ot/surgeries/{surg['id']}/status",
@@ -272,3 +287,125 @@ def test_03_completing_surgery_auto_bills_procedure_ot_room_and_implants_and_pri
     assert "SURGICAL &amp; ANESTHESIA OPERATIVE RECORD" in print_res.text
     assert "ZIMMER-TI-2026-99" in print_res.text
     assert "Severe osteoarthritic changes" in print_res.text
+
+def test_09_operative_record_cannot_be_replaced_after_surgery_terminal_state(
+    client, superuser_headers, doctor_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.surgery.models import (
+        OperativeAnesthesiaRecord, SurgicalSchedule, SurgeryStatusEnum,
+    )
+
+    for index, terminal_state in enumerate(
+        [SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED], start=1
+    ):
+        _, enc, ot, proc = _setup_ipd_surgical_case(
+            client, superuser_headers, doctor_headers, ot_code=f"OT_OPREC_LOCK_{index}"
+        )
+        surgery = client.post(
+            "/v1/api/ot/surgeries", headers=doctor_headers,
+            json={
+                "encounter_id": enc["id"], "theatre_id": ot["id"],
+                "procedure_service_id": proc["id"], "lead_surgeon_id": 2,
+                "scheduled_start_time": f"2026-12-{10 + index:02d}T08:00:00Z",
+                "scheduled_end_time": f"2026-12-{10 + index:02d}T09:00:00Z",
+            },
+        ).json()
+        original = {
+            "anesthesia_type": "SPINAL", "asa_physical_status": 2,
+            "anesthesia_notes": "Initial anesthesia note.",
+            "operative_findings": "Original operative findings.",
+            "post_op_instructions": "Initial post-operative instructions.",
+            "estimated_blood_loss_ml": 150,
+        }
+        created = client.put(
+            f"/v1/api/ot/surgeries/{surgery['id']}/operative-record",
+            headers=doctor_headers, json=original,
+        )
+        assert created.status_code == 200
+
+        engine = tenant_engine_pool.get_engine("hms_default")
+        with Session(engine) as session:
+            db_surgery = session.get(SurgicalSchedule, surgery["id"])
+            db_surgery.status = terminal_state
+            session.commit()
+
+        replacement = {**original, "operative_findings": "Overwritten findings."}
+        response = client.put(
+            f"/v1/api/ot/surgeries/{surgery['id']}/operative-record",
+            headers=doctor_headers, json=replacement,
+        )
+        assert response.status_code == 409
+        with Session(engine) as session:
+            record = session.query(OperativeAnesthesiaRecord).filter_by(
+                surgery_id=surgery["id"]
+            ).one()
+            assert record.operative_findings == original["operative_findings"]
+
+def test_surgery_status_transition_query_locks_only_parent_schedule_row():
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+    from backend.domains.surgery.models import SurgicalSchedule
+
+    statement = (
+        select(SurgicalSchedule)
+        .where(SurgicalSchedule.id == 1)
+        .with_for_update(of=SurgicalSchedule)
+    )
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "FOR UPDATE OF surgical_schedules" in sql
+
+
+def test_checklist_and_implant_writes_are_blocked_after_surgery_terminal_state(
+    client, superuser_headers, doctor_headers, nurse_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.surgery.models import SurgicalSchedule, SurgeryStatusEnum
+
+    engine = tenant_engine_pool.get_engine("hms_default")
+    checklist_payload = {
+        "patient_identity_confirmed": True, "site_marked": True,
+        "consent_signed": True, "pulse_oximeter_functioning": True,
+        "allergy_checked": True, "antibiotic_prophylaxis_given": True,
+        "sponge_instrument_count_verified": True,
+    }
+    implant_payload = {
+        "implant_name": "Titanium implant", "manufacturer": "Test",
+        "serial_or_batch_number": "TERM-LOCK-001", "quantity": 1,
+        "unit_price_paise": 100000,
+    }
+
+    for index, terminal_state in enumerate(
+        [SurgeryStatusEnum.COMPLETED, SurgeryStatusEnum.CANCELLED], start=1
+    ):
+        _, enc, ot, proc = _setup_ipd_surgical_case(
+            client, superuser_headers, doctor_headers,
+            ot_code=f"OT_AUX_TERM_{index}",
+        )
+        surgery = client.post(
+            "/v1/api/ot/surgeries", headers=doctor_headers,
+            json={
+                "encounter_id": enc["id"], "theatre_id": ot["id"],
+                "procedure_service_id": proc["id"], "lead_surgeon_id": 2,
+                "scheduled_start_time": f"2026-12-{20 + index:02d}T08:00:00Z",
+                "scheduled_end_time": f"2026-12-{20 + index:02d}T09:00:00Z",
+            },
+        ).json()
+        with Session(engine) as session:
+            row = session.get(SurgicalSchedule, surgery["id"])
+            row.status = terminal_state
+            session.commit()
+
+        checklist_response = client.put(
+            f"/v1/api/ot/surgeries/{surgery['id']}/checklist",
+            headers=nurse_headers, json=checklist_payload,
+        )
+        implant_response = client.post(
+            f"/v1/api/ot/surgeries/{surgery['id']}/implants",
+            headers=nurse_headers, json=implant_payload,
+        )
+        assert checklist_response.status_code == 409
+        assert implant_response.status_code == 409

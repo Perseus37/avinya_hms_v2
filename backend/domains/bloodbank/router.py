@@ -12,7 +12,7 @@ from backend.core.export import stream_csv_response
 from backend.domains.bloodbank.models import BloodBagInventory, BloodBagStatusEnum, BloodComponentTypeEnum, BloodCrossMatchOrder, RadiologyStudyMetadata, TransfusionReactionTypeEnum
 from backend.domains.encounters.models import EncounterStatusEnum, PatientEncounter
 from backend.domains.identity.models import BloodGroupEnum, User
-from backend.domains.diagnostics.models import DiagnosticTask, ServiceTypeEnum
+from backend.domains.diagnostics.models import DiagnosticOrder, DiagnosticTask, OrderStatusEnum, ServiceTypeEnum, TaskStatusEnum
 from backend.domains.bloodbank.schemas import BloodBagCreate, BloodBagResponse, BloodCrossMatchCreate, BloodCrossMatchResponse, RadiologyStudyResponse, RadiologyStudyUpsert, TransfusionReactionRequest
 from backend.domains.billing.services import auto_bill_blood_transfusion_issue
 from backend.domains.privacy.runtime import evaluate_tenant_patient_data_uses
@@ -22,6 +22,15 @@ router = APIRouter(prefix="/api", tags=["Blood Bank Transfusion Safety & Radiolo
 
 def _to_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _validate_collection_not_future(collection_date: datetime) -> None:
+    if _to_utc(collection_date) > datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=400,
+            detail="Blood collection date cannot be in the future.",
+        )
+
 
 
 # Biological Red Cell (PRBC / Whole Blood) Donor-to-Recipient Compatibility Matrix
@@ -46,20 +55,6 @@ PRBC_COMPATIBILITY_MATRIX: Dict[BloodGroupEnum, Set[BloodGroupEnum]] = {
     },
 }
 
-# Plasma compatibility is the inverse of red-cell compatibility: donor plasma
-# must not contain anti-A/anti-B antibodies against recipient red-cell antigens.
-# Rh(D) is not used to restrict FFP compatibility.
-FFP_COMPATIBILITY_MATRIX: Dict[BloodGroupEnum, Set[BloodGroupEnum]] = {
-    BloodGroupEnum.O_NEG: {BloodGroupEnum.O_NEG, BloodGroupEnum.O_POS, BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
-    BloodGroupEnum.O_POS: {BloodGroupEnum.O_NEG, BloodGroupEnum.O_POS, BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
-    BloodGroupEnum.A_NEG: {BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
-    BloodGroupEnum.A_POS: {BloodGroupEnum.A_NEG, BloodGroupEnum.A_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
-    BloodGroupEnum.B_NEG: {BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
-    BloodGroupEnum.B_POS: {BloodGroupEnum.B_NEG, BloodGroupEnum.B_POS, BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
-    BloodGroupEnum.AB_NEG: {BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
-    BloodGroupEnum.AB_POS: {BloodGroupEnum.AB_NEG, BloodGroupEnum.AB_POS},
-}
-
 
 # =====================================================================
 # 1. BLOOD BANK INVENTORY, ABO/RH CROSS-MATCHING & TRANSFUSION SAFETY
@@ -75,6 +70,7 @@ def receive_blood_bag(
     if dup:
         raise HTTPException(status_code=409, detail=f"Blood bag '{payload.bag_number}' already exists in inventory.")
 
+    _validate_collection_not_future(payload.collection_date)
     now_utc = datetime.now(timezone.utc)
     if _to_utc(payload.expiry_date) <= now_utc:
         raise HTTPException(status_code=400, detail="Cannot receive an already expired blood bag into inventory.")
@@ -186,6 +182,10 @@ def cross_match_and_reserve_blood_bag(
         raise HTTPException(status_code=404, detail="Blood bag not found.")
     if bag.status != BloodBagStatusEnum.AVAILABLE:
         raise HTTPException(status_code=409, detail=f"Blood bag '{bag.bag_number}' is currently {bag.status.value}.")
+    try:
+        _validate_collection_not_future(bag.collection_date)
+    except HTTPException as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     if _to_utc(bag.expiry_date) <= datetime.now(timezone.utc):
         raise HTTPException(status_code=409, detail=f"Blood bag '{bag.bag_number}' has expired and cannot be cross-matched.")
 
@@ -201,8 +201,8 @@ def cross_match_and_reserve_blood_bag(
                 ),
             )
     elif bag.component_type == BloodComponentTypeEnum.FFP:
-        compatible_plasma_donors = FFP_COMPATIBILITY_MATRIX.get(patient.blood_group, set())
-        if bag.blood_group not in compatible_plasma_donors:
+        # For Plasma (FFP), AB is the universal donor; otherwise group must match recipient's compatible plasma
+        if bag.blood_group not in {patient.blood_group, BloodGroupEnum.AB_POS, BloodGroupEnum.AB_NEG}:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -269,6 +269,14 @@ def issue_blood_bag_for_transfusion(
             detail=f"Blood bag must be in CROSS_MATCHED state to issue (current: {cm.blood_bag.status.value}).",
         )
 
+    try:
+        _validate_collection_not_future(cm.blood_bag.collection_date)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Blood bag '{cm.blood_bag.bag_number}' has a future collection date and cannot be issued.",
+        ) from exc
+
     bag_expiry_utc = cm.blood_bag.expiry_date if cm.blood_bag.expiry_date.tzinfo else cm.blood_bag.expiry_date.replace(tzinfo=timezone.utc)
     if bag_expiry_utc <= datetime.now(timezone.utc):
         cm.blood_bag.status = BloodBagStatusEnum.DISCARDED
@@ -308,16 +316,6 @@ def report_transfusion_reaction(
         raise HTTPException(status_code=404, detail="Cross-match order not found.")
     if cm.issued_at is None:
         raise HTTPException(status_code=400, detail="Cannot report a transfusion reaction on an unissued blood bag.")
-    if cm.reaction_type != TransfusionReactionTypeEnum.NONE or cm.reaction_notes is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A transfusion reaction report already exists and cannot be overwritten. Record follow-up observations through the clinical event workflow.",
-        )
-    if payload.reaction_type == TransfusionReactionTypeEnum.NONE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A transfusion reaction report must identify an adverse reaction type.",
-        )
 
     cm.reaction_type = payload.reaction_type
     cm.reaction_notes = payload.reaction_notes
@@ -344,14 +342,40 @@ def attach_pacs_dicom_study_metadata(
     _: User = Depends(RequirePermission("diagnostics:write", "diagnostics:verify")),
 ):
     """Attaches PACS DICOM Study UID, viewer URL, and radiation dose to a RADIOLOGY diagnostic task."""
+    order_id_for_lock = db.execute(
+        select(DiagnosticTask.order_id).where(DiagnosticTask.id == task_id)
+    ).scalar_one_or_none()
+    if order_id_for_lock is None:
+        raise HTTPException(status_code=404, detail="Diagnostic task not found.")
+
+    locked_order = db.execute(
+        select(DiagnosticOrder).where(DiagnosticOrder.id == order_id_for_lock).with_for_update()
+    ).scalar_one_or_none()
+    if not locked_order:
+        raise HTTPException(status_code=404, detail="Diagnostic task order not found.")
+
     stmt = (
         select(DiagnosticTask)
         .options(joinedload(DiagnosticTask.service))
         .where(DiagnosticTask.id == task_id)
+        .with_for_update(of=DiagnosticTask)
+        .execution_options(populate_existing=True)
     )
     task = db.execute(stmt).scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Diagnostic task not found.")
+
+    if locked_order.status in {OrderStatusEnum.COMPLETED, OrderStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot modify PACS metadata for a {locked_order.status.value.lower()} diagnostic order.",
+        )
+
+    if task.status in {TaskStatusEnum.VERIFIED, TaskStatusEnum.CANCELLED}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot modify PACS metadata for a {task.status.value} diagnostic task.",
+        )
 
     if task.service.service_type != ServiceTypeEnum.RADIOLOGY:
         raise HTTPException(
