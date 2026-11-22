@@ -3,7 +3,7 @@ from typing import Optional
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, joinedload
 
@@ -21,6 +21,7 @@ from backend.domains.pharmacy.models import (
     ControlledSubstanceMovementLog,
     ControlledSubstanceVault,
     InventoryBatch,
+    InventoryStockAdjustmentLog,
     MedicationMaster,
     PharmacyReturnLog,
     Prescription,
@@ -264,7 +265,7 @@ def adjust_inventory_stock(
     batch_id: int,
     payload: InventoryStockAdjustment,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:write")),
+    current_user: User = Depends(RequirePermission("pharmacy:write")),
 ):
     if payload.quantity_adjustment == 0:
         raise HTTPException(status_code=400, detail="Quantity adjustment cannot be zero.")
@@ -275,10 +276,27 @@ def adjust_inventory_stock(
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found.")
 
-        if batch.stock_quantity + payload.quantity_adjustment < 0:
+        reason = payload.reason.strip()
+        if len(reason) < 5:
+            raise HTTPException(status_code=400, detail="Stock adjustment reason must contain at least 5 non-whitespace characters.")
+
+        quantity_before = batch.stock_quantity
+        quantity_after = quantity_before + payload.quantity_adjustment
+        if quantity_after < 0:
             raise HTTPException(status_code=400, detail="Stock adjustment cannot result in negative inventory.")
 
-        batch.stock_quantity += payload.quantity_adjustment
+        # Persist the stock balance and its immutable provenance in one transaction.
+        batch.stock_quantity = quantity_after
+        db.add(
+            InventoryStockAdjustmentLog(
+                batch_id=batch.id,
+                quantity_adjustment=payload.quantity_adjustment,
+                quantity_before=quantity_before,
+                quantity_after=quantity_after,
+                reason=reason,
+                actor_id=current_user.id,
+            )
+        )
         db.commit()
         db.refresh(batch)
         return batch
@@ -287,11 +305,33 @@ def adjust_inventory_stock(
         raise HTTPException(status_code=409, detail="Inventory batch is locked by another transaction.")
 
 
+@router.get("/inventory/adjustments")
+def list_inventory_stock_adjustments(
+    batch_id: Optional[int] = None,
+    page: int = 1,
+    page_size: int = 50,
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("pharmacy:read")),
+):
+    """Read a bounded page of append-only stock correction history, newest first."""
+    page, page_size = validate_pagination(page, page_size)
+    query = db.query(InventoryStockAdjustmentLog)
+    if batch_id is not None:
+        query = query.filter(InventoryStockAdjustmentLog.batch_id == batch_id)
+    query = query.order_by(
+        InventoryStockAdjustmentLog.created_at.desc(),
+        InventoryStockAdjustmentLog.id.desc(),
+    )
+    total = query.count()
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
 @router.delete("/inventory/batches/{batch_id}", status_code=200)
 def void_inventory_batch(
     batch_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(RequirePermission("pharmacy:void")),
+    current_user: User = Depends(RequirePermission("pharmacy:void")),
 ):
     try:
         stmt = select(InventoryBatch).where(InventoryBatch.id == batch_id).with_for_update(nowait=True)
@@ -299,7 +339,19 @@ def void_inventory_batch(
         if not batch:
             raise HTTPException(status_code=404, detail="Batch not found.")
 
-        batch.stock_quantity = 0
+        quantity_before = batch.stock_quantity
+        if quantity_before > 0:
+            batch.stock_quantity = 0
+            db.add(
+                InventoryStockAdjustmentLog(
+                    batch_id=batch.id,
+                    quantity_adjustment=-quantity_before,
+                    quantity_before=quantity_before,
+                    quantity_after=0,
+                    reason="Batch voided for recall",
+                    actor_id=current_user.id,
+                )
+            )
         db.commit()
         return {"status": "success", "message": f"Batch {batch_id} voided (stock zeroed for recall traceability)."}
     except OperationalError:
@@ -616,9 +668,16 @@ def dispense_medication(
                     InventoryBatch.medication_id == rx_item.medication_id,
                     InventoryBatch.stock_quantity > 0,
                     InventoryBatch.expiry_date > datetime.now(timezone.utc),
-                    InventoryBatch.expiry_date < batch.expiry_date,
-                    InventoryBatch.id != batch.id
+                    or_(
+                        InventoryBatch.expiry_date < batch.expiry_date,
+                        and_(
+                            InventoryBatch.expiry_date == batch.expiry_date,
+                            InventoryBatch.id < batch.id,
+                        ),
+                    ),
                 )
+                .order_by(InventoryBatch.expiry_date.asc(), InventoryBatch.id.asc())
+                .limit(1)
             ).scalar_one_or_none()
             
             if older_unexpired_batch and not getattr(disp_item, "override_fefo", False):
@@ -746,32 +805,49 @@ def return_dispensed_medication(
 
         # 2. Adjust DRAFT invoice line item if invoice is still open
         # FIN-003: Rely on strict embedded RxItem tracking instead of fragile name matching
-        if invoice and invoice.status == InvoiceStatusEnum.DRAFT and med:
+        if invoice and invoice.status in {
+            InvoiceStatusEnum.DRAFT,
+            InvoiceStatusEnum.UNPAID,
+            InvoiceStatusEnum.PARTIAL,
+        } and med:
             exact_tag = f"[RxItem:{rx_item.id}]"
             matching_line = next(
-                (
-                    li
-                    for li in invoice.line_items
-                    if exact_tag in li.description
-                ),
+                (li for li in invoice.line_items if exact_tag in li.description),
                 None,
             )
             if matching_line:
                 if matching_line.quantity <= ret.quantity_to_return:
-                    if matching_line in invoice.line_items:
-                        invoice.line_items.remove(matching_line)
+                    invoice.line_items.remove(matching_line)
                     db.delete(matching_line)
                 else:
                     matching_line.quantity -= ret.quantity_to_return
                     matching_line.total_price_paise = matching_line.quantity * matching_line.unit_price_paise
-                    if matching_line.gst_rate_percent and matching_line.gst_rate_percent > 0:
-                        matching_line.tax_amount_paise = round(
-                            (matching_line.total_price_paise * matching_line.gst_rate_percent) / 100
-                        )
+                    matching_line.tax_amount_paise = round(
+                        matching_line.total_price_paise * (matching_line.gst_rate_percent or 0) / 100
+                    )
                 db.flush()
                 recalculate_invoice_totals(invoice)
                 if invoice.discount_amount_paise and invoice.discount_amount_paise > invoice.total_amount_paise:
                     invoice.discount_amount_paise = invoice.total_amount_paise
+
+                # Preserve the actual cash/UPI receipts. The return log records
+                # the credit; only the finance refund workflow may approve and
+                # disburse any excess payment. Pharmacy staff must not populate
+                # RefundVoucher.approved_by_id.
+                revised_net = invoice.net_amount_paise
+                if invoice.status != InvoiceStatusEnum.DRAFT:
+                    # amount_paid_paise is the amount applied to the current invoice
+                    # balance, not the immutable cash/UPI receipt total. Preserve
+                    # Payment records and cap applied funds when a return lowers the
+                    # invoice below the amount previously collected. Finance handles
+                    # any resulting refund through its maker-checker workflow.
+                    invoice.amount_paid_paise = min(invoice.amount_paid_paise, revised_net)
+                    if revised_net > 0 and invoice.amount_paid_paise >= revised_net:
+                        invoice.status = InvoiceStatusEnum.PAID
+                    elif invoice.amount_paid_paise > 0:
+                        invoice.status = InvoiceStatusEnum.PARTIAL
+                    else:
+                        invoice.status = InvoiceStatusEnum.UNPAID
 
         log = PharmacyReturnLog(
             prescription_id=rx.id,
@@ -785,22 +861,9 @@ def return_dispensed_medication(
         db.add(log)
         return_logs.append(log)
 
-    # If the invoice was already PAID, automatically issue an auditable RefundVoucher
-    if invoice and invoice.status == InvoiceStatusEnum.PAID and total_credit_paise > 0:
-        date_prefix = datetime.now(timezone.utc).strftime("%Y%m%d")
-        voucher = RefundVoucher(
-            voucher_number=f"RFND-PHM-{date_prefix}-{secrets.token_hex(6).upper()}",
-            patient_id=invoice.patient_id,
-            deposit_id=None,
-            invoice_id=invoice.id,
-            refund_amount_paise=total_credit_paise,
-            refund_method=PaymentMethodEnum.CASH,
-            transaction_reference=f"RX-RET-{rx.id}",
-            reason="Pharmacy dispensed stock return credit on paid invoice",
-            approved_by_id=current_user.id,
-        )
-        db.add(voucher)
-
+    # Pharmacy return logs are the auditable credit record. RefundVoucher is
+    # intentionally not created here: this endpoint is pharmacy-authorized,
+    # whereas voucher approval/disbursement belongs to the finance workflow.
     db.flush()
     all_items = db.query(PrescriptionItem).filter(PrescriptionItem.prescription_id == rx.id).all()
     if all(i.dispensed_quantity == 0 for i in all_items):

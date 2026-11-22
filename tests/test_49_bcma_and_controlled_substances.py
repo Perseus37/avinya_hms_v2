@@ -1,3 +1,4 @@
+import pytest
 """
 Tests for Enterprise Track 2:
 - Bedside Barcode Medication Administration (BCMA) 5-Rights Verification
@@ -537,3 +538,48 @@ def test_bcma_safety_controls_dose_mismatch_generic_rejection_and_duplicates(cli
     assert res_dup.status_code == 409
     assert "Duplicate administration detected" in res_dup.text
 
+
+
+def test_bcma_concurrent_duplicate_dose_attempts_are_serialized(client, superuser_headers, nurse_headers):
+    """Two simultaneous scans for one scheduled dose must create only one eMAR record."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from backend.core.database import tenant_engine_pool
+
+    # SQLite does not implement SELECT FOR UPDATE; it cannot prove this
+    # PostgreSQL row-locking guarantee and can produce misleading race results.
+    engine = tenant_engine_pool.get_engine("hms_default")
+    if engine.dialect.name != "postgresql":
+        pytest.skip("BCMA concurrency guarantee requires PostgreSQL row-level locking")
+
+    patient = _create_patient(client, superuser_headers, name="BCMA Concurrent Patient")
+    encounter = _create_encounter(client, superuser_headers, patient["id"])
+    med = _create_medication(
+        client, superuser_headers, code="MED_BCMA_RACE",
+        brand="BCMA Race Med", generic="Race Med", ndc="BCMA-RACE-001",
+    )
+    rx = _create_prescription(client, superuser_headers, encounter["id"], med["id"])
+    payload = {
+        "encounter_id": encounter["id"],
+        "prescription_item_id": rx["items"][0]["id"],
+        "scanned_patient_barcode": patient["mrn"],
+        "scanned_medication_barcode": "BCMA-RACE-001",
+        "dose_given": "500mg",
+        "route": "ORAL",
+        "scheduled_time": datetime.now(timezone.utc).isoformat(),
+        "override_warning": False,
+    }
+    barrier = Barrier(2)
+
+    def administer():
+        barrier.wait()
+        return client.post(
+            "/v1/api/pharmacy/bcma/verify-and-administer",
+            headers=nurse_headers,
+            json=payload,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: administer(), range(2)))
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
