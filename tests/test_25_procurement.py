@@ -1993,6 +1993,8 @@ def test_supplier_credit_allocation_fully_settles_invoice_and_ap_entry():
             self.scalar_value = scalar_value
         def filter(self, *_args):
             return self
+        def join(self, *_args):
+            return self
         def with_for_update(self):
             return self
         def one_or_none(self):
