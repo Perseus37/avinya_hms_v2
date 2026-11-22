@@ -1869,18 +1869,25 @@ def test_negative_purchase_return_expense_cannot_be_marked_paid():
         status=ExpenseStatusEnum.APPROVED,
     )
 
+    from backend.domains.procurement.models import VendorInvoice
+
     class Query:
+        def __init__(self, entity):
+            self.entity = entity
         def filter(self, *_args):
             return self
         def with_for_update(self):
             return self
         def one_or_none(self):
+            assert self.entity is ExpenseRecord
             return credit_adjustment
+        def first(self):
+            assert self.entity is VendorInvoice.id
+            return None
 
     class FakeDb:
         def query(self, entity):
-            assert entity is ExpenseRecord
-            return Query()
+            return Query(entity)
 
     with pytest.raises(HTTPException) as error:
         mark_expense_paid(

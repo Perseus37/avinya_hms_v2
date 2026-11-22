@@ -124,15 +124,6 @@ def mark_expense_paid(
     if len(normalized_receipt_reference) > 100:
         raise HTTPException(status_code=422, detail="receipt_reference must not exceed 100 characters.")
 
-    supplier_invoice = db.query(VendorInvoice.id).filter(
-        VendorInvoice.linked_expense_id == expense.id
-    ).first()
-    if supplier_invoice:
-        raise HTTPException(
-            status_code=409,
-            detail="Supplier invoice payables must be settled through the supplier payment request approval and execution workflow.",
-        )
-
     expense.status = ExpenseStatusEnum.PAID
     expense.receipt_reference = normalized_receipt_reference
     expense.updated_by_id = current_user.id
