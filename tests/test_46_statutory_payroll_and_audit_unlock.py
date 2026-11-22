@@ -15,12 +15,13 @@ from backend.domains.workforce.services import calculate_indian_statutory_deduct
 
 
 def test_calculate_indian_statutory_deductions_brackets():
-    # 1. Low salary: Gross <= ₹21,000 (ESI applies, PF on basic, PT applies if >= ₹15,000)
+    # 1. Low salary: Gross ₹20,000 (ESI applies; Karnataka PT exempt below ₹25,000)
     # Salary = ₹20,000 (2,000,000 paise)
     res_low = calculate_indian_statutory_deductions(
         gross_paise=2_000_000,
         prorated_fixed_paise=2_000_000,
         pf_opt_out=False,
+        payroll_period="2026-01",
     )
     # PF capped at ₹15,000 (1,500,000 paise) = 180,000 paise
     assert res_low["pf_employee_paise"] == 180_000
@@ -28,10 +29,10 @@ def test_calculate_indian_statutory_deductions_brackets():
     # ESI: 0.75% of 2,000,000 = 15,000 paise
     assert res_low["esi_employee_paise"] == 15_000
     assert res_low["esi_employer_paise"] == 65_000
-    # PT: ₹200 (20,000 paise)
-    assert res_low["professional_tax_paise"] == 20_000
+    # Karnataka PT: exempt below ₹25,000 under the current schedule.
+    assert res_low["professional_tax_paise"] == 0
     assert res_low["tds_paise"] == 0
-    assert res_low["total_employee_statutory_paise"] == 180_000 + 15_000 + 20_000
+    assert res_low["total_employee_statutory_paise"] == 180_000 + 15_000
 
     # 2. High salary: Gross > ₹21,000 (ESI exempt, PF capped at ceiling, custom TDS)
     # Salary = ₹50,000 (5,000,000 paise)
@@ -40,6 +41,7 @@ def test_calculate_indian_statutory_deductions_brackets():
         prorated_fixed_paise=5_000_000,
         pf_opt_out=False,
         custom_tds_paise=250_000,
+        payroll_period="2026-01",
     )
     assert res_high["pf_employee_paise"] == 180_000
     assert res_high["esi_employee_paise"] == 0
@@ -53,6 +55,7 @@ def test_calculate_indian_statutory_deductions_brackets():
         gross_paise=5_000_000,
         prorated_fixed_paise=5_000_000,
         pf_opt_out=True,
+        payroll_period="2026-01",
     )
     assert res_opt_out["pf_employee_paise"] == 0
     assert res_opt_out["pf_employer_paise"] == 0
@@ -62,6 +65,7 @@ def test_calculate_indian_statutory_deductions_brackets():
         gross_paise=3_000_000,
         prorated_fixed_paise=3_000_000,
         uncapped_pf=True,
+        payroll_period="2026-01",
     )
     assert res_uncapped["pf_employee_paise"] == int(3_000_000 * 0.12)
 
@@ -116,7 +120,7 @@ def test_statutory_payroll_api_workflow_and_payslip(
         "include_statutory_deductions": True,
         "pf_opt_out": False,
         "custom_tds_paise": 50_000,
-        "pt_state": "KA",
+        "pt_state": " ka ",
     }
     line_resp = client.post(
         f"/v1/api/workforce/payroll-periods/{period_id}/lines",
@@ -127,6 +131,15 @@ def test_statutory_payroll_api_workflow_and_payslip(
     line_data = line_resp.json()
     line_id = line_data["id"]
 
+    # Unsupported state schedules must fail closed at the API boundary.
+    unsupported_state_resp = client.post(
+        f"/v1/api/workforce/payroll-periods/{period_id}/lines",
+        headers=superuser_headers,
+        json={**line_payload, "pt_state": " ap "},
+    )
+    assert unsupported_state_resp.status_code == 422
+    assert "not configured" in unsupported_state_resp.json()["message"]
+
     assert line_data["prorated_fixed_paise"] == 3_000_000
     assert line_data["gross_paise"] == 3_000_000
     assert line_data["pf_employee_paise"] == 180_000
@@ -135,6 +148,21 @@ def test_statutory_payroll_api_workflow_and_payslip(
     assert line_data["tds_paise"] == 50_000
     # Net: 3,000,000 - (180,000 + 20,000 + 50,000) = 2,750,000
     assert line_data["net_paise"] == 2_750_000
+
+    # The immutable calculation event must retain the canonical state code
+    # used to select the statutory schedule, not the raw request spelling.
+    history_resp = client.get(
+        f"/v1/api/workforce/payroll-lines/{line_id}/history",
+        headers=superuser_headers,
+    )
+    assert history_resp.status_code == 200, history_resp.text
+    history_items = history_resp.json()["items"]
+    assert len(history_items) == 1
+    assert json.loads(history_items[0]["input_snapshot"])["pt_state"] == "KA"
+    output_snapshot = json.loads(history_items[0]["output_snapshot"])
+    assert output_snapshot["professional_tax_paise"] == 20_000
+    assert output_snapshot["statutory_details"]["state"] == "KA"
+    assert output_snapshot["statutory_details"]["payroll_period"] == "2026-11"
 
     # 4. Fetch Structured Payslip
     payslip_resp = client.get(
