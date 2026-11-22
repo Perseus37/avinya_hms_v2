@@ -68,13 +68,13 @@ class RoomCreate(BaseModel):
     ward_id: int
     room_number: str
     room_type: RoomTypeEnum
-    bed_capacity: int
+    bed_capacity: int = Field(ge=1)
 
 class RoomUpdate(BaseModel):
     ward_id: Optional[int] = None
     room_number: Optional[str] = None
     room_type: Optional[RoomTypeEnum] = None
-    bed_capacity: Optional[int] = None
+    bed_capacity: Optional[int] = Field(default=None, ge=1)
     is_active: Optional[bool] = None
 
 class RoomResponse(BaseModel):
