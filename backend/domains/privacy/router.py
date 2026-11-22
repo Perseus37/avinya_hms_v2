@@ -66,6 +66,63 @@ def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
+def _consent_access_summary(consents: list[PatientConsentRecord], now: datetime) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return current grants separately from the immutable consent decision history."""
+    latest_by_scope: dict[tuple[Any, ...], PatientConsentRecord] = {}
+    for consent in consents:
+        # Match policy carry-over semantics: a later decision for the same
+        # purpose and scope supersedes earlier revisions and consent types.
+        key = (
+            consent.purpose,
+            consent.scope_type,
+            consent.scope_key,
+        )
+        if key not in latest_by_scope:
+            latest_by_scope[key] = consent
+
+    active_consents: list[dict[str, Any]] = []
+    history: list[dict[str, Any]] = []
+    for consent in consents:
+        # Match policy carry-over semantics: a later decision for the same
+        # purpose and scope supersedes earlier revisions and consent types.
+        key = (
+            consent.purpose,
+            consent.scope_type,
+            consent.scope_key,
+        )
+        is_latest = latest_by_scope[key].id == consent.id
+        expires_at = _utc(consent.expires_at) if consent.expires_at else None
+        # Preserve the actual terminal decision in history even when a later
+        # decision supersedes the earlier grant for current-access purposes.
+        if consent.decision == "WITHDRAWN":
+            state = "WITHDRAWN"
+        elif consent.decision == "DECLINED":
+            state = "DECLINED"
+        elif consent.decision == "GRANTED" and expires_at is not None and expires_at <= now:
+            state = "EXPIRED"
+        elif is_latest and consent.decision == "GRANTED":
+            state = "ACTIVE"
+        else:
+            state = "SUPERSEDED"
+
+        item = {
+            "id": consent.id,
+            "purpose": consent.purpose,
+            "consent_type": consent.consent_type,
+            "decision": consent.decision,
+            "state": state,
+            "scope_type": consent.scope_type,
+            "scope_key": consent.scope_key,
+            "policy_revision_id": consent.policy_revision_id,
+            "recorded_at": consent.recorded_at.isoformat(),
+            "expires_at": consent.expires_at.isoformat() if consent.expires_at else None,
+        }
+        history.append(item)
+        if state == "ACTIVE":
+            active_consents.append(item)
+    return active_consents, history
+
+
 class ConsentRecordCreate(BaseModel):
     consent_type: ConsentType
     purpose: str = Field(min_length=3, max_length=255)
@@ -1073,7 +1130,7 @@ def get_patient_data_access_summary(
     consents = db.execute(
         select(PatientConsentRecord)
         .where(PatientConsentRecord.patient_id == patient_id)
-        .order_by(PatientConsentRecord.recorded_at.desc())
+        .order_by(PatientConsentRecord.recorded_at.desc(), PatientConsentRecord.id.desc())
     ).scalars().all()
 
     requests = db.execute(
@@ -1081,6 +1138,10 @@ def get_patient_data_access_summary(
         .where(PatientDataRightsRequest.patient_id == patient_id)
         .order_by(PatientDataRightsRequest.created_at.desc())
     ).scalars().all()
+
+    active_consents, consent_history = _consent_access_summary(
+        consents, datetime.now(timezone.utc)
+    )
 
     return {
         "patient_id": patient.id,
@@ -1091,16 +1152,8 @@ def get_patient_data_access_summary(
         "date_of_birth": patient.date_of_birth.isoformat() if getattr(patient, "date_of_birth", None) else None,
         "allow_network_sharing": getattr(patient, "allow_network_sharing", False),
         "is_active": patient.is_active,
-        "active_consents": [
-            {
-                "id": c.id,
-                "purpose": c.purpose,
-                "consent_type": c.consent_type,
-                "decision": c.decision,
-                "recorded_at": c.recorded_at.isoformat(),
-            }
-            for c in consents
-        ],
+        "active_consents": active_consents,
+        "consent_history": consent_history,
         "data_rights_history": [
             {
                 "id": r.id,
