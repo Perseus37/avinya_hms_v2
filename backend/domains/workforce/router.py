@@ -115,7 +115,15 @@ class PayrollLineCreate(BaseModel):
     pf_opt_out: bool = False
     uncapped_pf: bool = False
     custom_tds_paise: int = Field(default=0, ge=0, le=2_000_000_000)
-    pt_state: str = Field(default="KA", max_length=10)
+    pt_state: str = Field(default="KA", min_length=2, max_length=10)
+
+    @field_validator("pt_state")
+    @classmethod
+    def normalize_pt_state(cls, value: str):
+        normalized = value.strip().upper()
+        if not normalized:
+            raise ValueError("pt_state cannot be blank.")
+        return normalized
 
     @field_validator("calculation_note")
     @classmethod
@@ -363,14 +371,18 @@ def calculate_payroll_line(
     gross = prorated + payload.additional_earnings_paise
 
     if payload.include_statutory_deductions:
-        stat = calculate_indian_statutory_deductions(
-            gross_paise=gross,
-            prorated_fixed_paise=prorated,
-            pf_opt_out=payload.pf_opt_out,
-            uncapped_pf=payload.uncapped_pf,
-            custom_tds_paise=payload.custom_tds_paise,
-            state=payload.pt_state,
-        )
+        try:
+            stat = calculate_indian_statutory_deductions(
+                gross_paise=gross,
+                prorated_fixed_paise=prorated,
+                pf_opt_out=payload.pf_opt_out,
+                uncapped_pf=payload.uncapped_pf,
+                custom_tds_paise=payload.custom_tds_paise,
+                state=payload.pt_state,
+                payroll_period=period.period_key,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         stat_deductions = stat["total_employee_statutory_paise"]
         pf_employee = stat["pf_employee_paise"]
         pf_employer = stat["pf_employer_paise"]
@@ -460,6 +472,13 @@ def calculate_payroll_line(
                     "prorated_fixed_paise": prorated,
                     "gross_paise": gross,
                     "net_paise": net,
+                    "pf_employee_paise": pf_employee,
+                    "pf_employer_paise": pf_employer,
+                    "esi_employee_paise": esi_employee,
+                    "esi_employer_paise": esi_employer,
+                    "professional_tax_paise": pt_paise,
+                    "tds_paise": tds_paise,
+                    "statutory_details": stat,
                 },
                 sort_keys=True,
             ),
