@@ -276,7 +276,7 @@ def test_05_pharmacy_return_reconciles_partial_invoice_without_self_approving_re
         f"/v1/api/billing/invoices/{invoice['id']}/payments", headers=billing_headers
     )
     assert payment_history.status_code == 200, payment_history.text
-    assert sum(p["amount_paid_paise"] for p in payment_history.json()["items"]) == 4000
+    assert sum(p["amount_paid_paise"] for p in payment_history.json()) == 4000
 
     refunds = client.get(f"/v1/api/billing/patients/{patient['id']}/refunds", headers=billing_headers)
     assert refunds.status_code == 200, refunds.text
