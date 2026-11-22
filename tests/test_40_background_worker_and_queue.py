@@ -30,8 +30,9 @@ class FakeRedis:
         self._lists = {}
         self._zsets = {}
         self._strings = {}
+        self._expirations = []
 
-    def pipeline(self):
+    def pipeline(self, transaction=False):
         return self
 
     def hset(self, key, *args, mapping=None, **kwargs):
@@ -51,7 +52,17 @@ class FakeRedis:
         return dict(self._hashes.get(key, {}))
 
     def expire(self, key, seconds):
+        self._expirations.append((key, seconds))
         return self
+
+    def hdel(self, key, *fields):
+        values = self._hashes.get(key, {})
+        removed = 0
+        for field in fields:
+            if field in values:
+                del values[field]
+                removed += 1
+        return removed
 
     def rpush(self, key, *values):
         if key not in self._lists:
@@ -89,6 +100,23 @@ class FakeRedis:
                 del z[m]
                 removed += 1
         return removed
+
+    def eval(self, script, numkeys, *args):
+        # Model the atomic scheduled-task promotion Lua script used by Redis.
+        keys = args[:numkeys]
+        argv = args[numkeys:]
+        scheduled_key, pending_key, metadata_key = keys
+        task_id, now = argv
+        score = self._zsets.get(scheduled_key, {}).get(task_id)
+        if score is None or float(score) > float(now):
+            return 0
+        status = self._hashes.get(metadata_key, {}).get("status")
+        removed = self.zrem(scheduled_key, task_id)
+        if removed == 1 and status in {"SCHEDULED", "RETRYING"}:
+            self.rpush(pending_key, task_id)
+            self.hset(metadata_key, "status", "QUEUED")
+            return 1
+        return 0
 
     def set(self, key, value, ex=None):
         self._strings[key] = value
@@ -192,3 +220,124 @@ def test_worker_burst_execution(fake_redis, monkeypatch):
     assert exit_code == 0
     assert executed == ["job 1", "job 2"]
 
+
+
+def test_scheduled_promotion_discards_missing_or_terminal_metadata(fake_redis):
+    missing_id = "missing-metadata"
+    terminal_id = "already-completed"
+    fake_redis.zadd(KEY_SCHEDULED_TASKS, {missing_id: time.time() - 10, terminal_id: time.time() - 10})
+    fake_redis.hset(f"{KEY_TASK_PREFIX}{terminal_id}", "status", "COMPLETED")
+
+    promoted = promote_scheduled_tasks(fake_redis)
+
+    assert promoted == 0
+    assert missing_id not in fake_redis._zsets[KEY_SCHEDULED_TASKS]
+    assert terminal_id not in fake_redis._zsets[KEY_SCHEDULED_TASKS]
+    assert fake_redis._lists.get(KEY_PENDING_TASKS, []) == []
+
+
+def test_scheduled_promotion_rechecks_score_after_concurrent_reschedule(fake_redis, monkeypatch):
+    task_id = enqueue_task("sample.task", {"data": 1}, delay_seconds=3600, sync_fallback=False)
+    # Model the race: the ID is selected from the due snapshot, then another
+    # scheduler moves its live sorted-set score into the future before Lua runs.
+    fake_redis.zadd(KEY_SCHEDULED_TASKS, {task_id: time.time() - 10})
+    original_eval = fake_redis.eval
+    rescheduled_score = time.time() + 3600
+    eval_calls = []
+
+    def reschedule_before_lua(script, numkeys, *args):
+        eval_calls.append(task_id)
+        fake_redis.zadd(KEY_SCHEDULED_TASKS, {task_id: rescheduled_score})
+        return original_eval(script, numkeys, *args)
+
+    monkeypatch.setattr(fake_redis, "eval", reschedule_before_lua)
+
+    assert promote_scheduled_tasks(fake_redis) == 0
+    assert eval_calls == [task_id]
+    assert fake_redis._zsets[KEY_SCHEDULED_TASKS][task_id] == rescheduled_score
+    assert task_id not in fake_redis._lists.get(KEY_PENDING_TASKS, [])
+    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")["status"] == "SCHEDULED"
+
+
+def test_queued_and_scheduled_email_tasks_do_not_expire_before_dispatch(fake_redis):
+    immediate_id = enqueue_task(
+        "email.send",
+        {"recipient": "doctor@apollo.test", "subject": "Immediate", "text_body": "Hello"},
+        sync_fallback=False,
+    )
+    scheduled_id = enqueue_task(
+        "email.send",
+        {"recipient": "doctor@apollo.test", "subject": "Later", "text_body": "Hello"},
+        delay_seconds=7200,
+        sync_fallback=False,
+    )
+
+    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{immediate_id}")["payload"]
+    assert fake_redis.hgetall(f"{KEY_TASK_PREFIX}{scheduled_id}")["payload"]
+    assert fake_redis._expirations == []
+
+
+def test_completed_task_gets_bounded_terminal_retention(fake_redis):
+    task_id = enqueue_task("email.send", {"recipient": "doctor@apollo.test"}, sync_fallback=False)
+    assert fake_redis._expirations == []
+
+    mark_task_completed(task_id)
+
+    assert (f"{KEY_TASK_PREFIX}{task_id}", 3600) in fake_redis._expirations
+    assert "payload" not in fake_redis.hgetall(f"{KEY_TASK_PREFIX}{task_id}")
+
+
+def test_real_redis_scheduled_promotion_is_atomic_and_idempotent(monkeypatch):
+    """Exercise the production Lua script against Redis when TEST_REDIS_URL is set."""
+    import os
+    import uuid
+    from concurrent.futures import ThreadPoolExecutor
+
+    redis_url = os.getenv("TEST_REDIS_URL")
+    if not redis_url:
+        pytest.skip("Set TEST_REDIS_URL to run real Redis queue integration coverage")
+
+    import redis
+    import backend.core.queue as queue_module
+
+    client = redis.Redis.from_url(redis_url, decode_responses=True)
+    namespace = f"avinya:test:scheduled-promotion:{uuid.uuid4().hex}"
+    scheduled_key = f"{namespace}:scheduled"
+    pending_key = f"{namespace}:pending"
+    dead_letter_key = f"{namespace}:dead-letter"
+    task_prefix = f"{namespace}:task:"
+    monkeypatch.setattr(queue_module, "KEY_SCHEDULED_TASKS", scheduled_key)
+    monkeypatch.setattr(queue_module, "KEY_PENDING_TASKS", pending_key)
+    monkeypatch.setattr(queue_module, "KEY_DEAD_LETTER", dead_letter_key)
+    monkeypatch.setattr(queue_module, "KEY_TASK_PREFIX", task_prefix)
+
+    task_id = str(uuid.uuid4())
+    orphan_id = str(uuid.uuid4())
+    terminal_id = str(uuid.uuid4())
+    keys = [scheduled_key, pending_key, dead_letter_key,
+            f"{task_prefix}{task_id}", f"{task_prefix}{terminal_id}",
+            f"{task_prefix}{orphan_id}"]
+    try:
+        client.ping()
+        due = time.time() - 5
+        client.hset(f"{task_prefix}{task_id}", mapping={"id": task_id, "status": "SCHEDULED"})
+        client.zadd(scheduled_key, {task_id: due})
+        client.hset(f"{task_prefix}{terminal_id}", mapping={"id": terminal_id, "status": "COMPLETED"})
+        client.zadd(scheduled_key, {terminal_id: due, orphan_id: due})
+
+        # Two independent callers race using the real Redis Lua script.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: queue_module.promote_scheduled_tasks(client), range(2)))
+
+        assert sum(results) == 1
+        assert client.lrange(pending_key, 0, -1) == [task_id]
+        assert client.zscore(scheduled_key, task_id) is None
+        assert client.hget(f"{task_prefix}{task_id}", "status") == "QUEUED"
+
+        # Orphaned and terminal members are removed but never re-enqueued.
+        assert client.zscore(scheduled_key, orphan_id) is None
+        assert client.zscore(scheduled_key, terminal_id) is None
+        assert client.lrange(pending_key, 0, -1) == [task_id]
+    finally:
+        client.delete(*keys)
+        client.close()
