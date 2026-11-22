@@ -1,3 +1,5 @@
+import pytest
+
 from datetime import datetime, timedelta, timezone
 
 
@@ -315,3 +317,225 @@ def test_12_clinical_discharge_releases_bed_and_closes_encounter(client, superus
     enc_after = client.get(f"/v1/api/adt/encounters/{ipd_enc['id']}", headers=doctor_headers).json()
     assert enc_after["status"] == "DISCHARGED"
     assert client.put(f"/v1/api/adt/admissions/{adm['id']}", headers=doctor_headers, json={"admission_type": "EMERGENCY"}).status_code == 400
+
+
+def test_13_concurrent_transfers_for_one_admission_commit_only_one_destination(
+    client, superuser_headers, doctor_headers
+):
+    from backend.core.database import tenant_engine_pool
+
+    if tenant_engine_pool.get_engine("hms_default").dialect.name != "postgresql":
+        pytest.skip("SELECT FOR UPDATE NOWAIT concurrency guarantee requires PostgreSQL; SQLite ignores row locks.")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    ids = _setup_ward_and_two_beds(client, superuser_headers)
+    third_bed = client.post(
+        "/v1/api/ip/beds",
+        headers=superuser_headers,
+        json={
+            "room_id": ids["room_id"],
+            "bed_number": "101-C",
+            "bed_type": "ICU",
+            "base_daily_rate_paise": 500000,
+        },
+    ).json()["bed_id"]
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={"full_name": "Concurrent Transfer", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"},
+    ).json()
+    encounter = client.post(
+        "/v1/api/adt/encounters",
+        headers=doctor_headers,
+        json={"patient_id": patient["id"], "encounter_type": "IPD", "primary_doctor_id": 2, "department_id": 1},
+    ).json()
+    admission = client.post(
+        "/v1/api/adt/admissions",
+        headers=doctor_headers,
+        json={
+            "encounter_id": encounter["id"],
+            "admission_type": "ROUTINE",
+            "admitting_doctor_id": 2,
+            "assigned_bed_id": ids["bed1_id"],
+        },
+    ).json()
+
+    start = Barrier(2)
+
+    def transfer(destination_bed_id, reason):
+        start.wait()
+        return client.post(
+            "/v1/api/adt/transfers",
+            headers=doctor_headers,
+            json={
+                "admission_id": admission["id"],
+                "new_bed_id": destination_bed_id,
+                "transfer_reason": reason,
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(transfer, ids["bed2_id"], "Concurrent transfer A")
+        second = pool.submit(transfer, third_bed, "Concurrent transfer B")
+        responses = [first.result(), second.result()]
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    final_admission = client.get(
+        f"/v1/api/adt/admissions/{admission['id']}", headers=doctor_headers
+    )
+    assert final_admission.status_code == 200
+    current_bed_id = final_admission.json()["current_bed_id"]
+    assert current_bed_id in (ids["bed2_id"], third_bed)
+
+    ward_map = client.get("/v1/api/ip/beds/map-view", headers=doctor_headers).json()
+    bed_states = {
+        bed["id"]: bed["status"]
+        for room in ward_map[0]["rooms"]
+        for bed in room["beds"]
+    }
+    assert bed_states[ids["bed1_id"]] == "HOUSEKEEPING"
+    assert bed_states[current_bed_id] == "OCCUPIED"
+    other_destination = third_bed if current_bed_id == ids["bed2_id"] else ids["bed2_id"]
+    assert bed_states[other_destination] == "AVAILABLE"
+
+
+def test_17_concurrent_same_type_encounter_creation_is_serialized(client, doctor_headers):
+    """Two simultaneous creates for one patient/type must not both become active."""
+    from backend.core.database import tenant_engine_pool
+
+    if tenant_engine_pool.get_engine("hms_default").dialect.name != "postgresql":
+        pytest.skip("SELECT FOR UPDATE concurrency guarantee requires PostgreSQL; SQLite ignores row locks.")
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={"full_name": "Concurrent Encounter Patient", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"},
+    ).json()
+    barrier = Barrier(2)
+
+    def create_encounter():
+        barrier.wait()
+        return client.post(
+            "/v1/api/adt/encounters",
+            headers=doctor_headers,
+            json={"patient_id": patient["id"], "encounter_type": "OPD", "primary_doctor_id": 2, "department_id": 1},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: create_encounter(), range(2)))
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    active = client.get("/v1/api/adt/encounters/active", headers=doctor_headers)
+    assert active.status_code == 200, active.text
+    matching = [
+        item for item in active.json().get("items", [])
+        if item["patient_id"] == patient["id"] and item["encounter_type"] == "OPD"
+    ]
+    assert len(matching) == 1
+
+
+def test_14_room_bed_capacity_blocks_overflow_and_unsafe_reduction(
+    client, superuser_headers
+):
+    ids = _setup_ward_and_two_beds(client, superuser_headers)
+
+    overflow = client.post(
+        "/v1/api/ip/beds",
+        headers=superuser_headers,
+        json={
+            "room_id": ids["room_id"],
+            "bed_number": "101-C",
+            "bed_type": "ICU",
+            "base_daily_rate_paise": 500000,
+        },
+    )
+    assert overflow.status_code == 409
+
+    reduce_below_configured = client.put(
+        f"/v1/api/ip/rooms/{ids['room_id']}",
+        headers=superuser_headers,
+        json={"bed_capacity": 1},
+    )
+    assert reduce_below_configured.status_code == 409
+
+
+def test_15_concurrent_bed_creation_cannot_exceed_room_capacity(
+    client, superuser_headers
+):
+    from backend.core.database import tenant_engine_pool
+
+    if tenant_engine_pool.get_engine("hms_default").dialect.name != "postgresql":
+        pytest.skip("SELECT FOR UPDATE concurrency guarantee requires PostgreSQL; SQLite ignores row locks.")
+
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    ids = _setup_ward_and_two_beds(client, superuser_headers)
+    capacity_update = client.put(
+        f"/v1/api/ip/rooms/{ids['room_id']}",
+        headers=superuser_headers,
+        json={"bed_capacity": 3},
+    )
+    assert capacity_update.status_code == 200
+    start = Barrier(2)
+
+    def create_bed(number):
+        start.wait()
+        return client.post(
+            "/v1/api/ip/beds",
+            headers=superuser_headers,
+            json={
+                "room_id": ids["room_id"],
+                "bed_number": number,
+                "bed_type": "ICU",
+                "base_daily_rate_paise": 500000,
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(create_bed, "101-C")
+        second = pool.submit(create_bed, "101-D")
+        responses = [first.result(), second.result()]
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    ward_map = client.get("/v1/api/ip/beds/map-view", headers=superuser_headers).json()
+    rooms = [room for ward in ward_map for room in ward["rooms"] if room["id"] == ids["room_id"]]
+    assert len(rooms) == 1
+    assert len(rooms[0]["beds"]) == 3
+
+
+
+def test_16_moving_bed_into_full_room_is_rejected(client, superuser_headers):
+    ids = _setup_ward_and_two_beds(client, superuser_headers)
+    target_room = client.post(
+        "/v1/api/ip/rooms",
+        headers=superuser_headers,
+        json={
+            "ward_id": ids["ward_id"],
+            "room_number": "102",
+            "room_type": "SINGLE",
+            "bed_capacity": 1,
+        },
+    ).json()["room_id"]
+    target_bed = client.post(
+        "/v1/api/ip/beds",
+        headers=superuser_headers,
+        json={
+            "room_id": target_room,
+            "bed_number": "102-A",
+            "bed_type": "ICU",
+            "base_daily_rate_paise": 500000,
+        },
+    )
+    assert target_bed.status_code == 201
+
+    move = client.patch(
+        f"/v1/api/ip/beds/{ids['bed1_id']}",
+        headers=superuser_headers,
+        json={"room_id": target_room},
+    )
+    assert move.status_code == 409

@@ -13,6 +13,7 @@ from backend.domains.billing.models import Invoice, InvoiceStatusEnum
 from backend.domains.encounters.models import AdmissionTypeEnum, BedTransferLog, EncounterStatusEnum, EncounterTypeEnum, InpatientAdmission, PatientEncounter, DischargeDispositionEnum
 from backend.domains.facility.models import Bed, BedStatusEnum, PhysicalRoom
 from backend.domains.identity.models import User
+from backend.domains.patients.models import Patient
 from backend.domains.insurance.models import InsurancePreAuth, PreAuthStatusEnum
 from backend.schemas.common import PaginatedResponse
 from backend.domains.encounters.schemas import BedTransferRequest, BedTransferResponse, ClinicalDischargeRequest, InpatientAdmissionCreate, InpatientAdmissionResponse, InpatientAdmissionUpdate, PatientEncounterCreate, PatientEncounterResponse, PatientEncounterUpdate
@@ -33,6 +34,14 @@ def create_encounter(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("adt:write")),
 ):
+    # Serialize encounter creation for the same patient. Locking the patient
+    # row works even when no active encounter row exists yet.
+    patient = db.execute(
+        select(Patient).where(Patient.id == payload.patient_id).with_for_update()
+    ).scalar_one_or_none()
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found.")
+
     active_encounter = (
         db.query(PatientEncounter)
         .filter(
@@ -382,22 +391,41 @@ def transfer_patient_bed(
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("adt:write")),
 ):
-    admission = db.get(InpatientAdmission, payload.admission_id)
-    if not admission or admission.discharge_time is not None:
-        raise HTTPException(status_code=400, detail="Active admission required for bed transfer.")
-
-    old_bed_id = admission.current_bed_id
-    if old_bed_id == payload.new_bed_id:
-        raise HTTPException(status_code=400, detail="Patient is already in the requested bed.")
-
     try:
-        stmt = select(Bed).where(Bed.id == payload.new_bed_id).with_for_update(nowait=True)
-        new_bed = db.execute(stmt).scalar_one_or_none()
-        if not new_bed or new_bed.status != BedStatusEnum.AVAILABLE:
-            raise HTTPException(status_code=409, detail="Requested destination bed is unavailable.")
+        # Serialize all transfers for this admission before reading its current bed.
+        # Without this parent-row lock, two requests can both act on the same stale
+        # current_bed_id and leave multiple destination beds occupied.
+        admission = db.execute(
+            select(InpatientAdmission)
+            .where(InpatientAdmission.id == payload.admission_id)
+            .with_for_update(nowait=True)
+        ).scalar_one_or_none()
+        if not admission or admission.discharge_time is not None:
+            raise HTTPException(status_code=400, detail="Active admission required for bed transfer.")
 
-        stmt_old = select(Bed).where(Bed.id == old_bed_id).with_for_update(nowait=True)
-        old_bed = db.execute(stmt_old).scalar_one_or_none()
+        old_bed_id = admission.current_bed_id
+        if old_bed_id is None:
+            raise HTTPException(status_code=409, detail="Admission has no current bed to transfer.")
+        if old_bed_id == payload.new_bed_id:
+            raise HTTPException(status_code=400, detail="Patient is already in the requested bed.")
+
+        # Lock both bed resources in a stable order to avoid opposite-direction
+        # transfers deadlocking while preserving the admission-level serialization.
+        bed_ids = sorted({old_bed_id, payload.new_bed_id})
+        locked_beds = db.execute(
+            select(Bed)
+            .where(Bed.id.in_(bed_ids))
+            .order_by(Bed.id.asc())
+            .with_for_update(nowait=True)
+        ).scalars().all()
+        beds_by_id = {bed.id: bed for bed in locked_beds}
+        old_bed = beds_by_id.get(old_bed_id)
+        new_bed = beds_by_id.get(payload.new_bed_id)
+
+        if old_bed is None or old_bed.current_admission_id != admission.id:
+            raise HTTPException(status_code=409, detail="Current bed assignment is inconsistent; reconcile before transfer.")
+        if not new_bed or new_bed.status != BedStatusEnum.AVAILABLE or new_bed.current_admission_id is not None:
+            raise HTTPException(status_code=409, detail="Requested destination bed is unavailable.")
 
         admission.current_bed_id = new_bed.id
         if old_bed:
