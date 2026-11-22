@@ -305,7 +305,10 @@ def adjust_inventory_stock(
         raise HTTPException(status_code=409, detail="Inventory batch is locked by another transaction.")
 
 
-@router.get("/inventory/adjustments")
+@router.get(
+    "/inventory/adjustments",
+    openapi_extra={"x-privacy-data-use-point": "pharmacy.inventory.adjustments.read"},
+)
 def list_inventory_stock_adjustments(
     batch_id: Optional[int] = None,
     page: int = 1,
