@@ -33,9 +33,11 @@ groups:
 
       - alert: HighHttp5xxErrorRate
         expr: >-
-          (sum(rate(avinya_http_requests_total{status=~"5.."}[5m]))
-          /
-          sum(rate(avinya_http_requests_total[5m]))) > 0.05
+          (
+            sum by (endpoint) (rate(avinya_http_requests_total{status=~"5.."}[5m]))
+            /
+            sum by (endpoint) (rate(avinya_http_requests_total[5m]))
+          ) > 0.05
         for: 5m
         labels:
           severity: critical
@@ -63,13 +65,13 @@ groups:
           description: "Queue '{{ $labels.queue_name }}' has more than 250 pending jobs for over 10 minutes."
 
       - alert: HighQueueJobFailureRate
-        expr: sum(rate(avinya_queue_jobs_total{status="failed"}[5m])) > 0.1
+        expr: sum by (job_name) (rate(avinya_queue_jobs_total{status="failed"}[5m])) > 0.1
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "Background worker job failure rate elevated"
-          description: "Worker jobs are failing at a rate exceeding 0.1 failures/sec over 5 minutes."
+          description: "Worker job '{{ $labels.job_name }}' is failing at a rate exceeding 0.1 failures/sec over 5 minutes."
 
   - name: avinya_hms_infrastructure_alerts
     rules:
