@@ -356,6 +356,13 @@ def process_purchase_return(
     remarks: str | None = None,
 ):
     """Process a vendor return with cumulative GRN quantity controls and immutable detail records."""
+    requested_grn_item_ids = [item.grn_item_id for item in return_items]
+    if len(requested_grn_item_ids) != len(set(requested_grn_item_ids)):
+        raise HTTPException(
+            status_code=422,
+            detail="Each GRN item may appear only once in a purchase return.",
+        )
+
     grn = db.query(GoodsReceiptNote).filter(
         GoodsReceiptNote.id == grn_id
     ).with_for_update().one_or_none()
@@ -371,12 +378,6 @@ def process_purchase_return(
 
     validated_items = []
     total_credit_paise = 0
-    requested_grn_item_ids = [item.grn_item_id for item in return_items]
-    if len(requested_grn_item_ids) != len(set(requested_grn_item_ids)):
-        raise HTTPException(
-            status_code=422,
-            detail="Each GRN item may appear only once in a purchase return.",
-        )
     requested_by_grn_item = {
         item.grn_item_id: item.return_quantity for item in return_items
     }

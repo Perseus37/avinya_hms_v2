@@ -1694,6 +1694,8 @@ def test_supplier_credit_allocation_respects_credit_and_invoice_balances():
                 self.scalar_value = scalar_value
             def filter(self, *_args):
                 return self
+            def join(self, *_args):
+                return self
             def with_for_update(self):
                 return self
             def one_or_none(self):
@@ -1936,7 +1938,7 @@ def test_supplier_payment_reference_is_checked_after_vendor_lock():
                 return vendor
             return None
         def first(self):
-            if self.entity is SupplierPayment:
+            if self.entity is SupplierPayment.id:
                 events.append("payment_reference_check")
                 return (999,)
             return None
