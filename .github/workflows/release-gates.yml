@@ -179,6 +179,9 @@ jobs:
       - name: Validate production Compose configuration
         run: |
           cp .env.production.example .env.production
+          mkdir -p .ci/prometheus-secrets
+          printf 'ci-validation-token' > .ci/prometheus-secrets/metrics_scrape_token.txt
+          sed -i 's#^METRICS_SCRAPE_TOKEN_FILE=.*#METRICS_SCRAPE_TOKEN_FILE=.ci/prometheus-secrets/metrics_scrape_token.txt#' .env.production
           docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
 
       - name: Validate Prometheus and Alertmanager configurations
