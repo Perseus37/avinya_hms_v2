@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    DDL,
     Enum,
     Float,
     ForeignKey,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy import event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.core.audit import AuditMixin
@@ -276,3 +278,29 @@ class InventoryStockAdjustmentLog(Base):
 
     batch: Mapped[InventoryBatch] = relationship()
     actor: Mapped["User"] = relationship()
+
+
+# create_all-based SQLite test/development schemas must enforce the same
+# append-only inventory history invariant as Alembic-managed databases.
+event.listen(
+    InventoryStockAdjustmentLog.__table__,
+    "after_create",
+    DDL("""
+        CREATE TRIGGER IF NOT EXISTS trg_inventory_stock_adjustment_logs_immutable_update
+        BEFORE UPDATE ON inventory_stock_adjustment_logs
+        BEGIN
+            SELECT RAISE(ABORT, 'Pharmacy stock adjustment history is immutable');
+        END
+    """).execute_if(dialect="sqlite"),
+)
+event.listen(
+    InventoryStockAdjustmentLog.__table__,
+    "after_create",
+    DDL("""
+        CREATE TRIGGER IF NOT EXISTS trg_inventory_stock_adjustment_logs_immutable_delete
+        BEFORE DELETE ON inventory_stock_adjustment_logs
+        BEGIN
+            SELECT RAISE(ABORT, 'Pharmacy stock adjustment history is immutable');
+        END
+    """).execute_if(dialect="sqlite"),
+)

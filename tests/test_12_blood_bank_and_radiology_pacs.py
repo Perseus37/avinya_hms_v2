@@ -240,3 +240,213 @@ def test_04_expired_blood_bag_issue_rejected_with_409(client, superuser_headers,
     )
     assert issue_res.status_code == 409
     assert "expired" in issue_res.json()["message"].lower()
+
+
+def test_07_pacs_metadata_and_impression_are_immutable_after_verification(
+    client, superuser_headers, doctor_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.diagnostics.models import DiagnosticTask, TaskStatusEnum
+
+    cat = client.post(
+        "/v1/api/diagnostics/categories", headers=superuser_headers,
+        json={"department_id": 1, "code": "CAT_PACS_LOCK", "name": "PACS Lock"},
+    ).json()
+    svc = client.post(
+        "/v1/api/diagnostics/catalog", headers=superuser_headers,
+        json={"category_id": cat["id"], "code": "RAD_PACS_LOCK", "name": "CT Chest",
+              "service_type": "RADIOLOGY", "base_price_paise": 100000, "is_order_set": False},
+    ).json()
+    patient, _ = _create_patient_with_blood_group(client, doctor_headers)
+    order = client.post(
+        "/v1/api/diagnostics/orders", headers=doctor_headers,
+        json={"patient_id": patient["id"], "ordered_service_ids": [svc["id"]]},
+    ).json()
+    task_id = order["tasks"][0]["id"]
+    original = {
+        "study_instance_uid": "1.2.840.10008.5.1.4.1.1.2.202611150001",
+        "accession_number": "ACC-PACS-LOCK-001", "modality": "CT",
+        "pacs_viewer_url": "https://pacs.example.test/study/001",
+        "radiation_dose_mgy": 4.2, "radiologist_impression": "No acute thoracic finding.",
+    }
+    attached = client.put(
+        f"/v1/api/diagnostics/tasks/{task_id}/dicom-study",
+        headers=doctor_headers, json=original,
+    )
+    assert attached.status_code == 200
+
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(engine) as session:
+        task = session.get(DiagnosticTask, task_id)
+        task.status = TaskStatusEnum.VERIFIED
+        session.commit()
+
+    changed = {**original, "radiologist_impression": "Replacement impression."}
+    update = client.put(
+        f"/v1/api/diagnostics/tasks/{task_id}/dicom-study",
+        headers=doctor_headers, json=changed,
+    )
+    assert update.status_code == 409
+    current = client.get(
+        f"/v1/api/diagnostics/tasks/{task_id}/dicom-study", headers=doctor_headers,
+    )
+    assert current.status_code == 200
+    assert current.json()["radiologist_impression"] == original["radiologist_impression"]
+
+
+def test_08_pacs_metadata_cannot_be_attached_to_cancelled_task(
+    client, superuser_headers, doctor_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.diagnostics.models import DiagnosticTask, TaskStatusEnum
+
+    cat = client.post(
+        "/v1/api/diagnostics/categories", headers=superuser_headers,
+        json={"department_id": 1, "code": "CAT_PACS_CANCEL", "name": "PACS Cancel"},
+    ).json()
+    svc = client.post(
+        "/v1/api/diagnostics/catalog", headers=superuser_headers,
+        json={"category_id": cat["id"], "code": "RAD_PACS_CANCEL", "name": "CT Chest",
+              "service_type": "RADIOLOGY", "base_price_paise": 100000, "is_order_set": False},
+    ).json()
+    patient, _ = _create_patient_with_blood_group(client, doctor_headers)
+    order = client.post(
+        "/v1/api/diagnostics/orders", headers=doctor_headers,
+        json={"patient_id": patient["id"], "ordered_service_ids": [svc["id"]]},
+    ).json()
+    task_id = order["tasks"][0]["id"]
+
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(engine) as session:
+        task = session.get(DiagnosticTask, task_id)
+        task.status = TaskStatusEnum.CANCELLED
+        session.commit()
+
+    payload = {
+        "study_instance_uid": "1.2.840.10008.5.1.4.1.1.2.202611150002",
+        "accession_number": "ACC-PACS-CANCEL-001", "modality": "CT",
+        "pacs_viewer_url": "https://pacs.example.test/study/002",
+        "radiation_dose_mgy": 3.1, "radiologist_impression": "Should not be attached.",
+    }
+    response = client.put(
+        f"/v1/api/diagnostics/tasks/{task_id}/dicom-study",
+        headers=doctor_headers, json=payload,
+    )
+    assert response.status_code == 409
+
+
+
+def test_pacs_metadata_cannot_be_attached_to_completed_order(
+    client, superuser_headers, doctor_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.diagnostics.models import DiagnosticOrder, OrderStatusEnum
+
+    cat = client.post(
+        "/v1/api/diagnostics/categories", headers=superuser_headers,
+        json={"department_id": 1, "code": "CAT_PACS_ORDER_DONE", "name": "PACS Order Done"},
+    ).json()
+    svc = client.post(
+        "/v1/api/diagnostics/catalog", headers=superuser_headers,
+        json={"category_id": cat["id"], "code": "RAD_PACS_ORDER_DONE", "name": "CT Chest",
+              "service_type": "RADIOLOGY", "base_price_paise": 100000, "is_order_set": False},
+    ).json()
+    patient, _ = _create_patient_with_blood_group(client, doctor_headers)
+    order = client.post(
+        "/v1/api/diagnostics/orders", headers=doctor_headers,
+        json={"patient_id": patient["id"], "ordered_service_ids": [svc["id"]]},
+    ).json()
+    task_id = order["tasks"][0]["id"]
+
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(engine) as session:
+        db_order = session.get(DiagnosticOrder, order["id"])
+        db_order.status = OrderStatusEnum.COMPLETED
+        session.commit()
+
+    payload = {
+        "study_instance_uid": "1.2.840.10008.5.1.4.1.1.2.202611150003",
+        "accession_number": "ACC-PACS-ORDER-DONE-001", "modality": "CT",
+        "pacs_viewer_url": "https://pacs.example.test/study/003",
+        "radiation_dose_mgy": 2.8, "radiologist_impression": "Should not be attached.",
+    }
+    response = client.put(
+        f"/v1/api/diagnostics/tasks/{task_id}/dicom-study",
+        headers=doctor_headers, json=payload,
+    )
+    assert response.status_code == 409
+    assert "completed diagnostic order" in response.json()["message"].lower()
+
+
+def test_05_future_collection_date_rejected_on_receipt_cross_match_and_issue(
+    client, superuser_headers, doctor_headers
+):
+    from sqlalchemy.orm import Session
+    from backend.core.database import tenant_engine_pool
+    from backend.domains.bloodbank.models import BloodBagInventory
+
+    now = datetime.now(timezone.utc)
+    future_payload = {
+        "component_type": "PRBC",
+        "blood_group": "O+",
+        "volume_ml": 350,
+        "collection_date": (now + timedelta(days=1)).isoformat(),
+        "expiry_date": (now + timedelta(days=30)).isoformat(),
+        "processing_fee_paise": 0,
+    }
+    rejected = client.post(
+        "/v1/api/blood-bank/bags",
+        headers=superuser_headers,
+        json={"bag_number": "BAG-FUTURE-COLLECTION-01", **future_payload},
+    )
+    assert rejected.status_code == 400
+    assert "collection date cannot be in the future" in rejected.json()["message"].lower()
+
+    valid = client.post(
+        "/v1/api/blood-bank/bags",
+        headers=superuser_headers,
+        json={
+            **future_payload,
+            "bag_number": "BAG-FUTURE-COLLECTION-02",
+            "collection_date": (now - timedelta(days=1)).isoformat(),
+        },
+    ).json()
+    _, enc = _create_patient_with_blood_group(client, doctor_headers, blood_group="O+")
+    engine = tenant_engine_pool.get_engine("hms_default")
+    with Session(engine) as session:
+        db_bag = session.get(BloodBagInventory, valid["id"])
+        db_bag.collection_date = now + timedelta(days=1)
+        session.commit()
+
+    cross_match = client.post(
+        "/v1/api/blood-bank/cross-match",
+        headers=superuser_headers,
+        json={"encounter_id": enc["id"], "blood_bag_id": valid["id"], "ordered_by_doctor_id": 2},
+    )
+    assert cross_match.status_code == 409
+    assert "collection date cannot be in the future" in cross_match.json()["message"].lower()
+
+    # Create a valid cross-match, then simulate a corrupted/future-dated legacy row
+    # to ensure issue-time validation independently enforces the same safety rule.
+    with Session(engine) as session:
+        db_bag = session.get(BloodBagInventory, valid["id"])
+        db_bag.collection_date = now - timedelta(days=1)
+        session.commit()
+    cm = client.post(
+        "/v1/api/blood-bank/cross-match",
+        headers=superuser_headers,
+        json={"encounter_id": enc["id"], "blood_bag_id": valid["id"], "ordered_by_doctor_id": 2},
+    ).json()
+    with Session(engine) as session:
+        db_bag = session.get(BloodBagInventory, valid["id"])
+        db_bag.collection_date = now + timedelta(days=1)
+        session.commit()
+    issue = client.patch(
+        f"/v1/api/blood-bank/cross-match/{cm['id']}/issue",
+        headers=superuser_headers,
+    )
+    assert issue.status_code == 409
+    assert "future collection date" in issue.json()["message"].lower()

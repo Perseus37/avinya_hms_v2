@@ -305,7 +305,10 @@ def adjust_inventory_stock(
         raise HTTPException(status_code=409, detail="Inventory batch is locked by another transaction.")
 
 
-@router.get("/inventory/adjustments")
+@router.get(
+    "/inventory/adjustments",
+    openapi_extra={"x-privacy-data-use-point": "pharmacy.inventory.adjustments.read"},
+)
 def list_inventory_stock_adjustments(
     batch_id: Optional[int] = None,
     page: int = 1,
@@ -836,6 +839,12 @@ def return_dispensed_medication(
                 # RefundVoucher.approved_by_id.
                 revised_net = invoice.net_amount_paise
                 if invoice.status != InvoiceStatusEnum.DRAFT:
+                    # amount_paid_paise is the amount applied to the current invoice
+                    # balance, not the immutable cash/UPI receipt total. Preserve
+                    # Payment records and cap applied funds when a return lowers the
+                    # invoice below the amount previously collected. Finance handles
+                    # any resulting refund through its maker-checker workflow.
+                    invoice.amount_paid_paise = min(invoice.amount_paid_paise, revised_net)
                     if revised_net > 0 and invoice.amount_paid_paise >= revised_net:
                         invoice.status = InvoiceStatusEnum.PAID
                     elif invoice.amount_paid_paise > 0:

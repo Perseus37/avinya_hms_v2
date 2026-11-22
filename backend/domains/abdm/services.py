@@ -19,6 +19,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.domains.abdm.models import ABDMConsentArtefact, NHCXClaimExchangeLog
+from backend.domains.billing.models import (
+    Invoice,
+    InvoiceStatusEnum,
+    PaymentMethodEnum,
+    PaymentReceipt,
+)
 from backend.domains.abdm.schemas import ABHAProfileCreate, ConsentArtefactNotifyRequest
 from backend.domains.clinical.models import EncounterDiagnosis
 from backend.domains.diagnostics.models import DiagnosticTask
@@ -285,6 +291,40 @@ def generate_abdm_fhir_health_data(
     if artefact.expiry_time.astimezone(timezone.utc) < now:
         raise HTTPException(status_code=403, detail="Consent artefact has expired.")
 
+    # The caller may request a subset of the granted HI types, never a broader
+    # set. Malformed stored consent scope fails closed rather than exporting data.
+    try:
+        consented_hi_types = json.loads(artefact.hi_types or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        consented_hi_types = None
+    if (
+        not isinstance(consented_hi_types, list)
+        or any(not isinstance(item, str) or not item.strip() for item in consented_hi_types)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Consent artefact has an invalid health-information scope.",
+        )
+
+    requested_hi_types = {
+        item.strip() for item in hi_types if isinstance(item, str) and item.strip()
+    }
+    if not requested_hi_types:
+        raise HTTPException(
+            status_code=422,
+            detail="At least one health-information type must be requested.",
+        )
+    granted_hi_types = {item.strip() for item in consented_hi_types}
+    if not requested_hi_types.issubset(granted_hi_types):
+        denied_types = sorted(requested_hi_types - granted_hi_types)
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": "Requested health-information types exceed the granted consent scope.",
+                "denied_hi_types": denied_types,
+            },
+        )
+
     patient = session.get(Patient, artefact.patient_id)
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found.")
@@ -347,7 +387,7 @@ def generate_abdm_fhir_health_data(
     to_dt_buffered = to_dt + timedelta(minutes=5)
 
     # 3. Prescriptions / Medications (N-46: filter strictly by consented date range)
-    if "Prescription" in hi_types:
+    if "Prescription" in requested_hi_types:
         raw_rx_items = (
             session.query(PrescriptionItem)
             .join(Prescription, PrescriptionItem.prescription_id == Prescription.id)
@@ -385,7 +425,7 @@ def generate_abdm_fhir_health_data(
             entries.append(med_req)
 
     # 4. Diagnostic Reports / Tasks (N-46: filter strictly by consented date range)
-    if "DiagnosticReport" in hi_types:
+    if "DiagnosticReport" in requested_hi_types:
         from backend.domains.diagnostics.models import DiagnosticOrder
         raw_diag_tasks = (
             session.query(DiagnosticTask)
@@ -604,35 +644,158 @@ def process_nhcx_adjudication_callback(
     user_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Receives and processes adjudication callback responses from NHCX Gateway / TPA payer.
-    Updates insurance claim settlement status and records final UTR reference.
-    """
-    log = session.execute(
-        select(NHCXClaimExchangeLog).where(NHCXClaimExchangeLog.transaction_id == transaction_id)
-    ).scalars().first()
+    Process an NHCX adjudication or a distinct settlement notification.
 
+    APPROVED/PARTIAL are adjudication outcomes only. They must not create a
+    payment receipt or mark the invoice paid. SETTLED is the financial event
+    that posts the insurer receipt and updates the invoice ledger.
+    """
+    adj_status_upper = (adjudication_status or "").strip().upper()
+    normalized_settlement_utr = (settlement_utr or "").strip()
+    if adj_status_upper not in {"APPROVED", "PARTIAL", "REJECTED", "SETTLED"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unsupported NHCX status. Expected APPROVED, PARTIAL, REJECTED, or SETTLED.",
+        )
+    if settled_amount_paise < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Adjudicated amount cannot be negative.",
+        )
+    if adj_status_upper == "SETTLED" and (
+        settled_amount_paise <= 0 or not normalized_settlement_utr
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A positive settlement amount and UTR are required for SETTLED callbacks.",
+        )
+
+    log = session.execute(
+        select(NHCXClaimExchangeLog)
+        .where(NHCXClaimExchangeLog.transaction_id == transaction_id)
+        .with_for_update()
+    ).scalars().first()
     if not log:
         raise HTTPException(status_code=404, detail=f"NHCX Transaction '{transaction_id}' not found.")
 
-    claim = log.claim
+    claim = session.execute(
+        select(InsuranceClaim)
+        .where(InsuranceClaim.id == log.claim_id)
+        .with_for_update()
+    ).scalars().first()
     if not claim:
         raise HTTPException(status_code=404, detail="Associated insurance claim record not found.")
 
-    adj_status_upper = adjudication_status.upper()
+    invoice = session.execute(
+        select(Invoice)
+        .where(Invoice.id == claim.invoice_id)
+        .with_for_update()
+    ).scalars().first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Associated invoice record not found.")
+
+    if adj_status_upper in {"APPROVED", "PARTIAL"}:
+        if claim.status in {ClaimStatusEnum.REJECTED, ClaimStatusEnum.SETTLED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot apply {adj_status_upper} adjudication to a {claim.status.value} claim.",
+            )
+        if settled_amount_paise > claim.insurer_payable_paise:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Adjudicated amount exceeds the insurer-payable claim amount.",
+            )
+        claim.status = ClaimStatusEnum.APPROVED
+        claim.remarks = (
+            f"NHCX {adj_status_upper} adjudication. TransID: {transaction_id}. "
+            "Awaiting settlement confirmation."
+        )
+        # The legacy request field is named settled_amount_paise. For
+        # adjudication callbacks it represents the adjudicated amount only.
+        # The exchange log retains it; claim.settled_amount_paise stays unchanged.
+
+    elif adj_status_upper == "REJECTED":
+        if claim.status == ClaimStatusEnum.SETTLED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A settled insurance claim cannot be rejected by a later adjudication callback.",
+            )
+        claim.status = ClaimStatusEnum.REJECTED
+        claim.remarks = f"NHCX Claim Rejected: {rejection_reason or 'No reason provided'}"
+
+    else:  # SETTLED: the only callback outcome that posts money to the invoice.
+        if log.nhcx_status not in {"APPROVED", "PARTIAL", "SETTLED"}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A claim must have an approved NHCX adjudication before settlement.",
+            )
+        if (
+            log.adjudicated_amount_paise is not None
+            and settled_amount_paise > log.adjudicated_amount_paise
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Settlement amount exceeds the amount approved by NHCX adjudication.",
+            )
+        if claim.status == ClaimStatusEnum.REJECTED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A rejected insurance claim cannot be settled.",
+            )
+        if settled_amount_paise > claim.insurer_payable_paise:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Settlement amount exceeds the insurer-payable claim amount.",
+            )
+        if claim.status == ClaimStatusEnum.SETTLED:
+            # Exact delivery retries are idempotent; conflicting settlement
+            # payloads must be investigated rather than posting a second receipt.
+            if (
+                claim.settled_amount_paise != settled_amount_paise
+                or claim.settlement_utr_reference != normalized_settlement_utr
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Conflicting settlement callback for an already settled claim.",
+                )
+        else:
+            if invoice.status not in {InvoiceStatusEnum.UNPAID, InvoiceStatusEnum.PARTIAL}:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Settlement requires an unpaid or partially paid invoice.",
+                )
+            if invoice.amount_paid_paise + settled_amount_paise > invoice.net_amount_paise:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Settlement amount exceeds the remaining invoice balance.",
+                )
+            receipt = PaymentReceipt(
+                invoice_id=invoice.id,
+                receipt_number=(
+                    f"REC-NHCX-{datetime.now(timezone.utc).strftime('%Y%m%d')}-"
+                    f"{secrets.token_hex(6).upper()}"
+                ),
+                amount_paid_paise=settled_amount_paise,
+                payment_method=PaymentMethodEnum.INSURANCE,
+                transaction_reference=normalized_settlement_utr,
+            )
+            session.add(receipt)
+            invoice.amount_paid_paise += settled_amount_paise
+            invoice.status = (
+                InvoiceStatusEnum.PAID
+                if invoice.amount_paid_paise == invoice.net_amount_paise
+                else InvoiceStatusEnum.PARTIAL
+            )
+            claim.status = ClaimStatusEnum.SETTLED
+            claim.settled_amount_paise = settled_amount_paise
+            claim.settlement_utr_reference = normalized_settlement_utr
+            claim.remarks = f"NHCX Digital Settlement. TransID: {transaction_id}"
+
     log.nhcx_status = adj_status_upper
     log.adjudicated_amount_paise = settled_amount_paise
     log.rejection_reason = rejection_reason
     if adjudication_bundle:
         log.response_bundle_json = json.dumps(adjudication_bundle)
-
-    if adj_status_upper in ("APPROVED", "SETTLED"):
-        claim.status = ClaimStatusEnum.SETTLED
-        claim.settled_amount_paise = settled_amount_paise
-        claim.settlement_utr_reference = settlement_utr
-        claim.remarks = f"NHCX Digital Settlement. TransID: {transaction_id}"
-    elif adj_status_upper == "REJECTED":
-        claim.status = ClaimStatusEnum.REJECTED
-        claim.remarks = f"NHCX Claim Rejected: {rejection_reason or 'No reason provided'}"
 
     session.commit()
     session.refresh(claim)

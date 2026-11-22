@@ -52,11 +52,12 @@ def test_02_pharmacy_fefo_enforcement(client, doctor_headers, pharmacist_headers
     assert "FEFO Violation" in fefo_fail.json().get("detail", fefo_fail.json().get("message", ""))
 
     # Simulate Administrative Override by exhausting the older stock (since API schema strips extra Pydantic kwargs)
-    client.patch(
+    stock_adjustment = client.patch(
         f"/v1/api/pharmacy/inventory/batches/{batch_a['id']}/adjust",
         headers=pharmacist_headers,
-        json={"quantity_adjustment": -50}
+        json={"quantity_adjustment": -50, "reason": "Authorized FEFO stock rotation"}
     )
+    assert stock_adjustment.status_code == 200, stock_adjustment.text
 
     # Now dispensing the newer batch succeeds with 200 OK
     fefo_override = client.post(

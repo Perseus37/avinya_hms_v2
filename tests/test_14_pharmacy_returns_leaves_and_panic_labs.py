@@ -268,8 +268,15 @@ def test_05_pharmacy_return_reconciles_partial_invoice_without_self_approving_re
     assert final_invoice["total_amount_paise"] == 3000
     # Actual payment history is preserved; the ₹20 return credit lowers the
     # invoice to ₹30, leaving ₹10 for finance to review through its own workflow.
-    assert final_invoice["amount_paid_paise"] == 4000
+    assert final_invoice["amount_paid_paise"] == 3000
     assert final_invoice["status"] == "PAID"
+    # The original receipt remains immutable; only the invoice-applied amount
+    # is reduced. Any excess is handled by the separate finance refund workflow.
+    payment_history = client.get(
+        f"/v1/api/billing/invoices/{invoice['id']}/payments", headers=billing_headers
+    )
+    assert payment_history.status_code == 200, payment_history.text
+    assert sum(p["amount_paid_paise"] for p in payment_history.json()) == 4000
 
     refunds = client.get(f"/v1/api/billing/patients/{patient['id']}/refunds", headers=billing_headers)
     assert refunds.status_code == 200, refunds.text
