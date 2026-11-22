@@ -32,6 +32,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["created_by_id"], ["users.id"], ondelete="RESTRICT"),
     )
     op.create_index("ix_supplier_credit_vendor_created", CREDIT_TABLE, ["vendor_id", "created_at"])
+    op.create_index("ix_supplier_credit_created_by", CREDIT_TABLE, ["created_by_id"])
 
     op.create_table(
         ALLOCATION_TABLE,
@@ -49,6 +50,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_supplier_credit_allocation_credit_note", ALLOCATION_TABLE, ["credit_note_id"])
     op.create_index("ix_supplier_credit_allocation_invoice", ALLOCATION_TABLE, ["invoice_id"])
+    op.create_index("ix_supplier_credit_allocation_allocated_by", ALLOCATION_TABLE, ["allocated_by_id"])
 
     if op.get_bind().dialect.name == "postgresql":
         op.execute("""
@@ -88,8 +90,10 @@ def downgrade() -> None:
         for table in (CREDIT_TABLE, ALLOCATION_TABLE):
             op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_immutable_update")
             op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_immutable_delete")
+    op.drop_index("ix_supplier_credit_allocation_allocated_by", table_name=ALLOCATION_TABLE)
     op.drop_index("ix_supplier_credit_allocation_invoice", table_name=ALLOCATION_TABLE)
     op.drop_index("ix_supplier_credit_allocation_credit_note", table_name=ALLOCATION_TABLE)
     op.drop_table(ALLOCATION_TABLE)
+    op.drop_index("ix_supplier_credit_created_by", table_name=CREDIT_TABLE)
     op.drop_index("ix_supplier_credit_vendor_created", table_name=CREDIT_TABLE)
     op.drop_table(CREDIT_TABLE)
