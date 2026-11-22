@@ -358,19 +358,34 @@ def cancel_admission(
     db: Session = Depends(get_db),
     _: User = Depends(RequirePermission("adt:discharge")),
 ):
-    admission = db.get(InpatientAdmission, admission_id)
-    if not admission:
-        raise HTTPException(status_code=404, detail="Admission not found.")
-    if admission.discharge_time is not None:
-        raise HTTPException(status_code=400, detail="Cannot cancel an already discharged admission.")
-
     try:
-        if admission.current_bed_id:
-            stmt = select(Bed).where(Bed.id == admission.current_bed_id).with_for_update(nowait=True)
-            bed = db.execute(stmt).scalar_one_or_none()
-            if bed:
-                bed.status = BedStatusEnum.AVAILABLE
-                bed.current_admission_id = None
+        # Use the same admission -> bed lock order as bed transfers. Read the
+        # current_bed_id only after acquiring the admission lock so a concurrent
+        # transfer cannot make cancellation release a stale bed assignment.
+        admission = db.execute(
+            select(InpatientAdmission)
+            .where(InpatientAdmission.id == admission_id)
+            .with_for_update(nowait=True)
+        ).scalar_one_or_none()
+        if not admission:
+            raise HTTPException(status_code=404, detail="Admission not found.")
+        if admission.discharge_time is not None:
+            raise HTTPException(status_code=400, detail="Cannot cancel an already discharged admission.")
+
+        current_bed_id = admission.current_bed_id
+        if current_bed_id is not None:
+            bed = db.execute(
+                select(Bed)
+                .where(Bed.id == current_bed_id)
+                .with_for_update(nowait=True)
+            ).scalar_one_or_none()
+            if bed is None or bed.current_admission_id != admission.id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Current bed assignment is inconsistent; reconcile before cancelling admission.",
+                )
+            bed.status = BedStatusEnum.AVAILABLE
+            bed.current_admission_id = None
             admission.current_bed_id = None
 
         db.delete(admission)
@@ -378,7 +393,7 @@ def cancel_admission(
         return {"status": "success", "message": f"Admission {admission_id} cancelled. Bed released to AVAILABLE."}
     except OperationalError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Failed to release bed due to concurrent lock.")
+        raise HTTPException(status_code=409, detail="Failed to cancel admission due to concurrent lock.")
 
 
 # -----------------------------------------------------------------------------

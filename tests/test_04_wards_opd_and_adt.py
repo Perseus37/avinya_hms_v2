@@ -539,3 +539,88 @@ def test_16_moving_bed_into_full_room_is_rejected(client, superuser_headers):
         json={"room_id": target_room},
     )
     assert move.status_code == 409
+
+
+
+def test_18_concurrent_transfer_and_admission_cancellation_leave_no_orphan_bed(
+    client, superuser_headers, doctor_headers
+):
+    """Transfer and cancellation share admission->bed locking; no bed may outlive its admission."""
+    from backend.core.database import tenant_engine_pool
+
+    if tenant_engine_pool.get_engine("hms_default").dialect.name != "postgresql":
+        pytest.skip("SELECT FOR UPDATE NOWAIT concurrency guarantee requires PostgreSQL; SQLite ignores row locks.")
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    ids = _setup_ward_and_two_beds(client, superuser_headers)
+    patient = client.post(
+        "/v1/api/patients",
+        headers=doctor_headers,
+        json={"full_name": "Transfer Cancel Race", "date_of_birth": "1990-01-01T00:00:00Z", "gender": "MALE"},
+    ).json()
+    encounter = client.post(
+        "/v1/api/adt/encounters",
+        headers=doctor_headers,
+        json={"patient_id": patient["id"], "encounter_type": "IPD", "primary_doctor_id": 2, "department_id": 1},
+    ).json()
+    admission = client.post(
+        "/v1/api/adt/admissions",
+        headers=doctor_headers,
+        json={
+            "encounter_id": encounter["id"],
+            "admission_type": "ROUTINE",
+            "admitting_doctor_id": 2,
+            "assigned_bed_id": ids["bed1_id"],
+        },
+    ).json()
+
+    start = Barrier(2)
+
+    def transfer():
+        start.wait()
+        return client.post(
+            "/v1/api/adt/transfers",
+            headers=doctor_headers,
+            json={
+                "admission_id": admission["id"],
+                "new_bed_id": ids["bed2_id"],
+                "transfer_reason": "Transfer versus cancellation race",
+            },
+        )
+
+    def cancel():
+        start.wait()
+        return client.delete(
+            f"/v1/api/adt/admissions/{admission['id']}",
+            headers=doctor_headers,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        transfer_future = pool.submit(transfer)
+        cancel_future = pool.submit(cancel)
+        transfer_response = transfer_future.result()
+        cancel_response = cancel_future.result()
+
+    assert transfer_response.status_code in (201, 400, 409)
+    assert cancel_response.status_code in (200, 404, 409)
+    final_admission = client.get(
+        f"/v1/api/adt/admissions/{admission['id']}", headers=doctor_headers
+    )
+    ward_map = client.get("/v1/api/ip/beds/map-view", headers=superuser_headers).json()
+    bed_rows = [
+        bed
+        for ward in ward_map
+        for room in ward["rooms"]
+        for bed in room["beds"]
+        if bed["id"] in (ids["bed1_id"], ids["bed2_id"])
+    ]
+
+    if final_admission.status_code == 200:
+        current_bed_id = final_admission.json()["current_bed_id"]
+        assert current_bed_id in (ids["bed1_id"], ids["bed2_id"])
+        occupied = [bed["id"] for bed in bed_rows if bed["status"] == "OCCUPIED"]
+        assert occupied == [current_bed_id]
+    else:
+        assert final_admission.status_code == 404
+        assert all(bed["status"] != "OCCUPIED" for bed in bed_rows)
