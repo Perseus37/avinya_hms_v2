@@ -907,3 +907,23 @@ PR #70 remains the final implementation-readiness and owner-register documentati
 PR #71 remains a separate synthetic characterization harness. Its manual-dispatch reconciliation workflow has not been executed and reviewed in this status record. No successful migration/catalog parity run, catalog artifact, live isolation proof, raw-SQL append-only denial, effective privilege proof, restore parity, or production evidence is claimed. The scope limitations in Sections 31–33 remain in force.
 
 The architecture invariant remains PostgreSQL **database-per-tenant**. No schema-per-tenant migration is proposed. JSON Schema documents are not PostgreSQL schemas or migrations. No runtime implementation, SQL/migration, role/ACL/network/secret change, production or patient-data access, partner onboarding, trust provisioning, federation activation, emergency access, pilot, deployment, or release is authorized by this status update. AUD-004 remains a release blocker pending objective evidence and independent sign-off.
+
+
+### Section 35 — PR #71 corrected-head validation and evidence boundary (2026-11-23)
+
+This section supersedes the PR #71 execution-status statements in earlier sections where they describe the manual workflow as unexecuted. Those statements remain historical snapshots of their dates; they are not the current status.
+
+PR #71 head `9f576744ffc6de7b8a7e2696f2ca6fc5babf3a45` was validated by workflow-dispatch run [45070026856](https://github.com/Perseus37/avinya_hms_v2/actions/runs/45070026856). The workflow completed successfully on that exact commit. The following jobs passed:
+
+- Disposable PostgreSQL workload-isolation proof.
+- Synthetic production role-bootstrap function characterization.
+- Three-database Alembic migration/catalog capture.
+- Reconciliation Python validation: 10 tests passed.
+
+Frontend production builds and Docker Compose configuration validation were skipped because the selected workflow scope was `reconciliation`; they are not passing results and are not claimed here. The preceding run [45069325218](https://github.com/Perseus37/avinya_hms_v2/actions/runs/45069325218) failed on the prior head because its reconciliation command referenced test paths absent from the repository. The command was corrected in place in PR #71 and the corrected head was rerun successfully.
+
+This execution establishes that the selected synthetic harness jobs and reconciliation suite ran successfully on the recorded commit. It does **not** close DBID-01–05 or DBID-R78, certify a complete cluster-wide ACL inventory, prove deployed workload identity or production grants, or establish live tenant isolation. In particular, catalog ACL/default-ACL and membership snapshots remain characterization data unless interpreted and checked against an independent effective-privilege oracle; missing catalog surfaces and provider-specific coverage remain open. Raw-SQL append-only denial, restore parity, secret-provider isolation, egress, source-owned authorization, revocation, connection-pool draining and lifecycle controls remain unproven.
+
+PR #71 remains draft, open and unmerged. Its description now records the corrected-head result and its limits. No production credentials, patient data, production database, runtime routing, tenant registry, production role bootstrap, migration, network, secret or deployment configuration was changed. No partner onboarding, trust provisioning, federation activation, emergency access, pilot, deployment or release is authorized.
+
+The readiness decision is unchanged: AUD-004 remains **NOT READY FOR IMPLEMENTATION OR RELEASE**. Named accountable owners and independent approvers remain unassigned; D-01 through D-14 remain pending; DBID-R74 remains Critical and DBID-R75 through DBID-R81 remain High. PostgreSQL **database-per-tenant** remains invariant; no schema-per-tenant conversion is proposed.
