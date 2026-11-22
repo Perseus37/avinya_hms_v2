@@ -252,6 +252,21 @@ class PurchaseReturnCreate(BaseModel):
         return self
 
 
+
+class SupplierCreditAllocationCreate(BaseModel):
+    invoice_id: int = Field(gt=0)
+    amount_paise: int = Field(gt=0, le=MAX_PAISE_AMOUNT)
+    reason: str = Field(min_length=5, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 5:
+            raise ValueError("reason must contain at least five non-whitespace characters.")
+        return normalized
+
+
 class SupplierPaymentRequestAllocationCreate(BaseModel):
     invoice_id: int = Field(gt=0)
     amount_paise: int = Field(gt=0, le=MAX_PAISE_AMOUNT)

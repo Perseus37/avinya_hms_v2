@@ -103,6 +103,11 @@ def mark_expense_paid(
     ).with_for_update().one_or_none()
     if not expense or expense.status != ExpenseStatusEnum.APPROVED:
         raise HTTPException(status_code=400, detail="Only APPROVED expenses can be paid.")
+    if expense.amount_paise <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Only positive-value expenses can be settled as cash or bank outflows.",
+        )
 
     normalized_receipt_reference = receipt_reference.strip()
     if not normalized_receipt_reference:

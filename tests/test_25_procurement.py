@@ -1462,7 +1462,7 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
     assert cross_grn_return.status_code == 400, cross_grn_return.text
     assert "does not belong" in cross_grn_return.json()["message"].lower()
 
-    from backend.domains.procurement.models import PurchaseReturnRecord, PurchaseReturnItem
+    from backend.domains.procurement.models import PurchaseReturnRecord, PurchaseReturnItem, SupplierCreditNote
     from backend.domains.pharmacy.models import InventoryBatch
 
     accepted_return = client.post(
@@ -1490,6 +1490,11 @@ def test_purchase_return_is_scoped_to_the_supplied_accepted_grn(
         ).one()
         assert return_record.remarks == "Return approved by supplier."
         assert return_record.total_credit_paise == 1000
+        credit_note = db.query(SupplierCreditNote).filter_by(
+            purchase_return_id=return_record.id
+        ).one()
+        assert credit_note.vendor_id == vendor.json()["id"]
+        assert credit_note.amount_paise == return_record.total_credit_paise == 1000
         assert return_line.return_quantity == 2
         assert return_line.return_reason == "Damaged outer packaging"
         batch = db.get(InventoryBatch, return_line.inventory_batch_id)
@@ -1527,3 +1532,581 @@ def test_patient_indent_issue_and_return_contract_rejects_empty_item_lists():
         IndentIssueRequest.model_validate({"items": []})
     with pytest.raises(ValidationError):
         IndentReturnRequest.model_validate({"items": []})
+
+
+def test_supplier_credit_allocation_contract_normalizes_reason_and_rejects_blank_reason():
+    import pytest
+    from pydantic import ValidationError
+    from backend.domains.procurement.schemas import SupplierCreditAllocationCreate
+
+    payload = SupplierCreditAllocationCreate.model_validate({
+        "invoice_id": 15,
+        "amount_paise": 2500,
+        "reason": "  Apply supplier credit to returned stock  ",
+    })
+    assert payload.reason == "Apply supplier credit to returned stock"
+
+    with pytest.raises(ValidationError):
+        SupplierCreditAllocationCreate.model_validate({
+            "invoice_id": 15,
+            "amount_paise": 2500,
+            "reason": "    ",
+        })
+
+
+def test_supplier_invoice_credit_total_is_derived_from_immutable_allocations():
+    from backend.domains.procurement.router import _supplier_invoice_credit_paise
+
+    class Query:
+        def filter(self, *_args):
+            return self
+        def scalar(self):
+            return 3750
+
+    class FakeDb:
+        def query(self, *_args):
+            return Query()
+
+    assert _supplier_invoice_credit_paise(FakeDb(), 44) == 3750
+
+
+
+
+def test_supplier_payment_request_rejects_amount_above_balance_after_credits():
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.models import (
+        VendorMaster, VendorInvoice, VendorInvoiceStatusEnum,
+        SupplierPayment, SupplierPaymentRequest,
+    )
+    from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.procurement.router import create_supplier_payment_request
+    from backend.domains.procurement.schemas import SupplierPaymentRequestCreate
+
+    vendor = SimpleNamespace(id=1, is_active=True)
+    invoice = SimpleNamespace(
+        id=11, vendor_id=1, status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+        linked_expense_id=8, invoice_number="INV-CREDIT-TEST", total_amount_paise=10000,
+    )
+    expense = SimpleNamespace(
+        id=8, status=ExpenseStatusEnum.APPROVED, amount_paise=10000,
+    )
+
+    class Query:
+        def __init__(self, row=None, rows=None, scalar_value=None):
+            self.row, self.rows, self.scalar_value = row, rows, scalar_value
+        def filter(self, *_args):
+            return self
+        def join(self, *_args):
+            return self
+        def order_by(self, *_args):
+            return self
+        def with_for_update(self):
+            return self
+        def one_or_none(self):
+            return self.row
+        def all(self):
+            return self.rows or []
+        def first(self):
+            return None
+        def scalar(self):
+            return self.scalar_value
+
+    class FakeDb:
+        def __init__(self):
+            self.aggregate_values = iter([1000, 2000, 3500])
+        def query(self, entity):
+            if entity is VendorMaster:
+                return Query(row=vendor)
+            if entity is VendorInvoice:
+                return Query(rows=[invoice])
+            if entity is ExpenseRecord:
+                return Query(row=expense)
+            if entity is SupplierPayment.id or entity is SupplierPaymentRequest.id:
+                return Query()
+            return Query(scalar_value=next(self.aggregate_values))
+
+    payload = SupplierPaymentRequestCreate.model_validate({
+        "vendor_id": 1,
+        "payment_reference": "CREDIT-TEST-001",
+        "payment_method": "NEFT",
+        "scheduled_date": "2026-11-15",
+        "amount_paise": 5000,
+        "allocations": [{"invoice_id": 11, "amount_paise": 5000}],
+    })
+    with pytest.raises(HTTPException) as error:
+        create_supplier_payment_request(
+            payload, FakeDb(), SimpleNamespace(id=22)
+        )
+    assert error.value.status_code == 409
+    assert error.value.detail["allocated_credit_paise"] == 2000
+    assert error.value.detail["available_paise"] == 3500
+
+
+
+
+def test_billing_role_can_read_supplier_credit_ledger(client, billing_headers):
+    response = client.get(
+        "/v1/api/procurement/supplier-credits",
+        headers=billing_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert {"items", "total", "page", "page_size"} <= set(response.json())
+
+
+def test_supplier_credit_allocation_respects_credit_and_invoice_balances():
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.procurement.models import (
+        SupplierCreditNote,
+        SupplierCreditAllocation,
+        VendorMaster,
+        VendorInvoice,
+        VendorInvoiceStatusEnum,
+    )
+    from backend.domains.procurement.router import allocate_supplier_credit
+    from backend.domains.procurement.schemas import SupplierCreditAllocationCreate
+
+    def make_db():
+        credit = SimpleNamespace(id=7, vendor_id=3, amount_paise=5000)
+        vendor = SimpleNamespace(id=3)
+        invoice = SimpleNamespace(
+            id=11,
+            vendor_id=3,
+            status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+            linked_expense_id=19,
+            total_amount_paise=10000,
+        )
+        expense = SimpleNamespace(
+            id=19,
+            status=ExpenseStatusEnum.APPROVED,
+            amount_paise=10000,
+            receipt_reference=None,
+            updated_by_id=None,
+        )
+
+        class Query:
+            def __init__(self, row=None, scalar_value=None):
+                self.row = row
+                self.scalar_value = scalar_value
+            def filter(self, *_args):
+                return self
+            def with_for_update(self):
+                return self
+            def one_or_none(self):
+                return self.row
+            def scalar(self):
+                return self.scalar_value
+
+        class FakeDb:
+            def __init__(self):
+                self.rows = {
+                    SupplierCreditNote: credit,
+                    VendorMaster: vendor,
+                    VendorInvoice: invoice,
+                    ExpenseRecord: expense,
+                }
+                # Existing credit-note allocations, invoice payments,
+                # invoice credits, and outstanding payment-request reservations.
+                self.aggregates = iter([1000, 2000, 1000, 3500])
+                self.added = []
+                self.committed = False
+            def query(self, entity):
+                if entity in self.rows:
+                    return Query(row=self.rows[entity])
+                return Query(scalar_value=next(self.aggregates))
+            def add(self, value):
+                self.added.append(value)
+            def flush(self):
+                pass
+            def commit(self):
+                self.committed = True
+
+        return FakeDb(), credit, invoice, expense
+
+    db, credit, invoice, expense = make_db()
+    payload = SupplierCreditAllocationCreate.model_validate({
+        "invoice_id": 11,
+        "amount_paise": 2500,
+        "reason": "Credit for returned stock",
+    })
+    result = allocate_supplier_credit(7, payload, db, SimpleNamespace(id=22))
+    assert result["remaining_credit_paise"] == 1500
+    assert result["invoice_outstanding_paise"] == 4500
+    assert isinstance(db.added[0], SupplierCreditAllocation)
+    assert db.added[0].amount_paise == 2500
+    assert invoice.status == VendorInvoiceStatusEnum.MATCHED_APPROVED
+    assert expense.status == ExpenseStatusEnum.APPROVED
+    assert db.committed is True
+
+    db, _credit, _invoice, _expense = make_db()
+    excessive = SupplierCreditAllocationCreate.model_validate({
+        "invoice_id": 11,
+        "amount_paise": 4000,
+        "reason": "Credit exceeds available balance",
+    })
+    with pytest.raises(HTTPException) as error:
+        allocate_supplier_credit(7, excessive, db, SimpleNamespace(id=22))
+    assert error.value.status_code == 409
+    assert error.value.detail["available_paise"] == 3500
+    assert db.added == []
+    assert db.committed is False
+
+
+def test_existing_tenant_seed_grants_new_finance_read_to_billing_role():
+    from types import SimpleNamespace
+    from backend.core.seed import GRANULAR_PERMISSIONS, seed_universal_hospital_data
+    from backend.domains.identity.models import Permission, Role, User
+
+    permissions = [SimpleNamespace(code=code) for code, _desc, _module in GRANULAR_PERMISSIONS]
+    admin_role = SimpleNamespace(permissions=[])
+    billing_role = SimpleNamespace(permissions=[])
+    role_results = iter([admin_role, billing_role])
+
+    class Query:
+        def __init__(self, entity):
+            self.entity = entity
+        def all(self):
+            return permissions
+        def first(self):
+            if self.entity is User:
+                return SimpleNamespace(id=1)
+            if self.entity is Role:
+                return next(role_results)
+            return None
+        def filter(self, *_args):
+            return self
+
+    class FakeDb:
+        committed = False
+        def query(self, entity):
+            return Query(entity)
+        def flush(self):
+            pass
+        def commit(self):
+            self.committed = True
+
+    db = FakeDb()
+    assert seed_universal_hospital_data(
+        db, "Existing Hospital", "EXIST-01", "admin@example.test", "unused"
+    ) is False
+
+    permission_map = {permission.code: permission for permission in permissions}
+    assert permission_map["config:write"] in admin_role.permissions
+    assert permission_map["finance:read"] in billing_role.permissions
+    assert db.committed is True
+
+
+def test_purchase_return_rejects_duplicate_grn_item_lines(client, superuser_headers):
+    response = client.post(
+        "/v1/api/procurement/returns",
+        headers=superuser_headers,
+        json={
+            "grn_id": 9999,
+            "vendor_id": 9999,
+            "items": [
+                {
+                    "grn_item_id": 9999,
+                    "return_quantity": 1,
+                    "return_reason": "Damaged item",
+                },
+                {
+                    "grn_item_id": 9999,
+                    "return_quantity": 1,
+                    "return_reason": "Damaged item",
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Each GRN item may appear only once" in response.text
+
+
+def test_purchase_return_service_rejects_duplicate_grn_item_ids_before_database_work():
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.services import process_purchase_return
+
+    class NoQueryDb:
+        def query(self, *_args, **_kwargs):
+            raise AssertionError("duplicate lines must be rejected before database access")
+
+    duplicate_items = [
+        SimpleNamespace(grn_item_id=41, return_quantity=2),
+        SimpleNamespace(grn_item_id=41, return_quantity=3),
+    ]
+
+    with pytest.raises(HTTPException) as error:
+        process_purchase_return(
+            NoQueryDb(),
+            vendor_id=9,
+            grn_id=17,
+            return_items=duplicate_items,
+            current_user_id=5,
+        )
+
+    assert error.value.status_code == 422
+    assert "Each GRN item may appear only once" in error.value.detail
+
+
+def test_negative_purchase_return_expense_cannot_be_marked_paid():
+    import pytest
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+    from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.finance.router import mark_expense_paid
+
+    credit_adjustment = SimpleNamespace(
+        id=31,
+        amount_paise=-1250,
+        status=ExpenseStatusEnum.APPROVED,
+    )
+
+    class Query:
+        def filter(self, *_args):
+            return self
+        def with_for_update(self):
+            return self
+        def one_or_none(self):
+            return credit_adjustment
+
+    class FakeDb:
+        def query(self, entity):
+            assert entity is ExpenseRecord
+            return Query()
+
+    with pytest.raises(HTTPException) as error:
+        mark_expense_paid(
+            31,
+            "RETURN-CREDIT-31",
+            FakeDb(),
+            SimpleNamespace(id=8),
+        )
+
+    assert error.value.status_code == 409
+    assert "positive-value expenses" in error.value.detail
+
+def test_supplier_payment_reference_is_checked_after_vendor_lock():
+    from datetime import date, datetime, timezone
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.models import (
+        SupplierPayment,
+        SupplierPaymentRequest,
+        VendorMaster,
+    )
+    from backend.domains.procurement.router import execute_supplier_payment_request
+
+    events = []
+    request_row = SimpleNamespace(
+        id=77,
+        status="APPROVED",
+        scheduled_date=date.today(),
+        payment_date=None,
+        payment_reference="BANK-REF-RACE",
+        vendor_id=12,
+        allocations=[],
+        amount_paise=100,
+    )
+    vendor = SimpleNamespace(id=12, is_active=True)
+
+    class Query:
+        def __init__(self, entity):
+            self.entity = entity
+        def options(self, *_args):
+            return self
+        def filter(self, *_args):
+            return self
+        def with_for_update(self):
+            if self.entity is SupplierPaymentRequest:
+                events.append("request_lock")
+            elif self.entity is VendorMaster:
+                events.append("vendor_lock")
+            return self
+        def one_or_none(self):
+            if self.entity is SupplierPaymentRequest:
+                return request_row
+            if self.entity is VendorMaster:
+                return vendor
+            return None
+        def first(self):
+            if self.entity is SupplierPayment:
+                events.append("payment_reference_check")
+                return (999,)
+            return None
+
+    class FakeDb:
+        def query(self, entity):
+            return Query(entity)
+
+    with pytest.raises(HTTPException) as error:
+        execute_supplier_payment_request(
+            77,
+            SimpleNamespace(payment_date=datetime.now(timezone.utc)),
+            FakeDb(),
+            SimpleNamespace(id=8),
+        )
+
+    assert error.value.status_code == 409
+    assert events == ["request_lock", "vendor_lock", "payment_reference_check"]
+
+def test_supplier_credit_allocation_fully_settles_invoice_and_ap_entry():
+    from types import SimpleNamespace
+    from backend.domains.finance.models import ExpenseRecord, ExpenseStatusEnum
+    from backend.domains.procurement.models import (
+        SupplierCreditNote,
+        VendorMaster,
+        VendorInvoice,
+        VendorInvoiceStatusEnum,
+    )
+    from backend.domains.procurement.router import allocate_supplier_credit
+    from backend.domains.procurement.schemas import SupplierCreditAllocationCreate
+
+    credit = SimpleNamespace(id=91, vendor_id=4, amount_paise=10000)
+    vendor = SimpleNamespace(id=4)
+    invoice = SimpleNamespace(
+        id=92,
+        vendor_id=4,
+        status=VendorInvoiceStatusEnum.MATCHED_APPROVED,
+        linked_expense_id=93,
+        total_amount_paise=10000,
+    )
+    expense = SimpleNamespace(
+        id=93,
+        status=ExpenseStatusEnum.APPROVED,
+        amount_paise=10000,
+        receipt_reference=None,
+        updated_by_id=None,
+    )
+
+    class Query:
+        def __init__(self, row=None, scalar_value=0):
+            self.row = row
+            self.scalar_value = scalar_value
+        def filter(self, *_args):
+            return self
+        def with_for_update(self):
+            return self
+        def one_or_none(self):
+            return self.row
+        def scalar(self):
+            return self.scalar_value
+
+    class FakeDb:
+        def __init__(self):
+            self.rows = {
+                SupplierCreditNote: credit,
+                VendorMaster: vendor,
+                VendorInvoice: invoice,
+                ExpenseRecord: expense,
+            }
+            self.aggregates = iter([0, 0, 0, 0])
+            self.added = []
+        def query(self, entity):
+            if entity in self.rows:
+                return Query(row=self.rows[entity])
+            return Query(scalar_value=next(self.aggregates))
+        def add(self, value):
+            self.added.append(value)
+        def flush(self):
+            pass
+        def commit(self):
+            pass
+
+    result = allocate_supplier_credit(
+        91,
+        SupplierCreditAllocationCreate.model_validate({
+            "invoice_id": 92,
+            "amount_paise": 10000,
+            "reason": "Full settlement using supplier credit",
+        }),
+        FakeDb(),
+        SimpleNamespace(id=18),
+    )
+
+    assert result["invoice_outstanding_paise"] == 0
+    assert invoice.status == VendorInvoiceStatusEnum.PAID
+    assert expense.status == ExpenseStatusEnum.PAID
+    assert expense.receipt_reference == "SUPPLIER-CREDIT-91"
+    assert expense.updated_by_id == 18
+
+def test_supplier_credit_cannot_be_allocated_to_another_vendor_invoice():
+    from types import SimpleNamespace
+    import pytest
+    from fastapi import HTTPException
+    from backend.domains.procurement.models import (
+        SupplierCreditNote,
+        VendorMaster,
+        VendorInvoice,
+    )
+    from backend.domains.procurement.router import allocate_supplier_credit
+    from backend.domains.procurement.schemas import SupplierCreditAllocationCreate
+
+    credit = SimpleNamespace(id=51, vendor_id=7, amount_paise=5000)
+    vendor = SimpleNamespace(id=7)
+    invoice = SimpleNamespace(id=52, vendor_id=8)
+    queried = []
+
+    class Query:
+        def __init__(self, entity):
+            self.entity = entity
+        def filter(self, *_args):
+            return self
+        def with_for_update(self):
+            return self
+        def one_or_none(self):
+            queried.append(self.entity)
+            return {
+                SupplierCreditNote: credit,
+                VendorMaster: vendor,
+                VendorInvoice: invoice,
+            }[self.entity]
+
+    class FakeDb:
+        def query(self, entity):
+            return Query(entity)
+        def add(self, _value):
+            pytest.fail("Cross-vendor allocation must not write a ledger row.")
+        def commit(self):
+            pytest.fail("Cross-vendor allocation must not commit.")
+
+    with pytest.raises(HTTPException) as error:
+        allocate_supplier_credit(
+            51,
+            SupplierCreditAllocationCreate.model_validate({
+                "invoice_id": 52,
+                "amount_paise": 1000,
+                "reason": "Wrong supplier invoice",
+            }),
+            FakeDb(),
+            SimpleNamespace(id=9),
+        )
+
+    assert error.value.status_code == 422
+    assert queried == [SupplierCreditNote, VendorMaster, VendorInvoice]
+
+def test_supplier_credit_ledger_sqlite_metadata_installs_immutable_triggers(multi_tenant_env):
+    import pytest
+    from sqlalchemy import text
+
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    if engine.dialect.name != "sqlite":
+        pytest.skip("This metadata.create_all trigger check is SQLite-specific")
+    with engine.connect() as connection:
+        trigger_names = set(connection.execute(text(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+        )).scalars())
+
+    assert {
+        "trg_procurement_supplier_credit_notes_immutable_update",
+        "trg_procurement_supplier_credit_notes_immutable_delete",
+        "trg_procurement_supplier_credit_allocations_immutable_update",
+        "trg_procurement_supplier_credit_allocations_immutable_delete",
+    }.issubset(trigger_names)
+
