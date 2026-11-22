@@ -236,6 +236,7 @@ class SupplierCreditNote(Base):
         UniqueConstraint("purchase_return_id", name="uq_supplier_credit_purchase_return"),
         CheckConstraint("amount_paise >= 0", name="ck_supplier_credit_amount_nonnegative"),
         Index("ix_supplier_credit_vendor_created", "vendor_id", "created_at"),
+        Index("ix_supplier_credit_created_by", "created_by_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -247,7 +248,7 @@ class SupplierCreditNote(Base):
     )
     amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
 
 
 class SupplierCreditAllocation(Base):
@@ -257,6 +258,7 @@ class SupplierCreditAllocation(Base):
         CheckConstraint("amount_paise > 0", name="ck_supplier_credit_allocation_positive"),
         Index("ix_supplier_credit_allocation_credit_note", "credit_note_id"),
         Index("ix_supplier_credit_allocation_invoice", "invoice_id"),
+        Index("ix_supplier_credit_allocation_allocated_by", "allocated_by_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -269,7 +271,7 @@ class SupplierCreditAllocation(Base):
     amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     reason: Mapped[str] = mapped_column(String(1000), nullable=False)
     allocated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    allocated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
+    allocated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
 
 
 # Keep metadata-created SQLite databases append-only as well; Alembic installs
