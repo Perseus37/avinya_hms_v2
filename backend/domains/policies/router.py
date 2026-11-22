@@ -3,7 +3,7 @@ import json
 from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
@@ -22,7 +22,18 @@ router = APIRouter(prefix="/api/admin", tags=["Tenant Administration Operations"
 
 
 def get_or_create_policy(db: Session) -> HospitalPolicySetting:
-    """Returns the current hospital's operational & federation policy settings."""
+    """Return the tenant policy row, serializing first-time creation on PostgreSQL.
+
+    A row lock cannot protect the empty-table case. A transaction-scoped advisory
+    lock provides a stable per-tenant mutex until the caller commits or rolls back.
+    Tenant databases are isolated, so the same lock key is safe across tenants.
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": 72134789012345},
+        )
+
     setting = db.execute(select(HospitalPolicySetting)).scalars().first()
     if not setting:
         setting = HospitalPolicySetting()
