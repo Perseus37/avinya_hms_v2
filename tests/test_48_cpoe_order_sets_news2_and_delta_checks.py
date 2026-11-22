@@ -507,3 +507,50 @@ def test_lis_delta_checking_detects_acute_shift(client, superuser_headers, docto
     assert task2_data["previous_result_value"] == "4.0"
     assert task2_data["delta_percentage"] == pytest.approx(70.0, 0.1)
     assert "LIS DELTA CHECK ALERT" in task2_data["result_notes"]
+
+
+def test_news2_rejects_vital_from_another_encounter_and_unknown_vital(
+    client, doctor_headers
+):
+    """NEWS2 must never persist a vital_id belonging to another encounter."""
+    patient_a = _create_patient(client, doctor_headers, name="NEWS2 Patient A")
+    patient_b = _create_patient(client, doctor_headers, name="NEWS2 Patient B")
+    encounter_a = _create_encounter(client, doctor_headers, patient_a["id"])
+    encounter_b = _create_encounter(client, doctor_headers, patient_b["id"])
+
+    vital_response = client.post(
+        f"/v1/api/clinical/encounters/{encounter_b['id']}/vitals",
+        headers=doctor_headers,
+        json={"respiratory_rate": 16, "spo2_percent": 98, "bp_systolic": 120, "pulse_bpm": 72},
+    )
+    assert vital_response.status_code == 201, vital_response.text
+    foreign_vital_id = vital_response.json()["id"]
+
+    payload = {
+        "vital_id": foreign_vital_id,
+        "respiratory_rate": 16,
+        "spo2_percent": 98,
+        "bp_systolic": 120,
+        "pulse_bpm": 72,
+    }
+    foreign_response = client.post(
+        f"/v1/api/clinical/encounters/{encounter_a['id']}/vitals/news2",
+        headers=doctor_headers,
+        json=payload,
+    )
+    assert foreign_response.status_code == 409, foreign_response.text
+    assert "does not belong to this encounter" in foreign_response.text
+
+    missing_response = client.post(
+        f"/v1/api/clinical/encounters/{encounter_a['id']}/vitals/news2",
+        headers=doctor_headers,
+        json={**payload, "vital_id": 999999999},
+    )
+    assert missing_response.status_code == 404, missing_response.text
+
+    history = client.get(
+        f"/v1/api/clinical/encounters/{encounter_a['id']}/early-warning-scores",
+        headers=doctor_headers,
+    )
+    assert history.status_code == 200, history.text
+    assert history.json() == []
