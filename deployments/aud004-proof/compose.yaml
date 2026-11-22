@@ -1,0 +1,111 @@
+# Isolated AUD-004 proof cluster. Never merge into the normal HMS Compose project.
+name: aud004-proof
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:e5d2edd28b1f8d40a0a6c0c9cdc545b19b56a0d5d88f94bc11a97d970d4700d0
+    environment:
+      POSTGRES_USER: aud004_setup
+      POSTGRES_PASSWORD: ${AUD004_SETUP_PASSWORD:?Set AUD004_SETUP_PASSWORD to a disposable local-only value}
+      POSTGRES_DB: postgres
+      AUD004_TENANT_A_PASSWORD: ${AUD004_TENANT_A_PASSWORD:?Set disposable tenant A fixture password}
+      AUD004_TENANT_B_PASSWORD: ${AUD004_TENANT_B_PASSWORD:?Set disposable tenant B fixture password}
+      AUD004_CP_PASSWORD: ${AUD004_CP_PASSWORD:?Set disposable control-plane fixture password}
+    volumes:
+      - aud004_pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01-aud004-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aud004_setup -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [aud004-only]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+
+  tenant_a_probe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AUD004_PGHOST: postgres
+      AUD004_PGPORT: "5432"
+      AUD004_OWN_DATABASE: aud004_tenant_a
+      AUD004_FOREIGN_DATABASES: aud004_tenant_b,aud004_control_plane
+      AUD004_EXPECTED_MARKER: TENANT_A_SYNTHETIC_ONLY
+      AUD004_MARKER_TABLE: tenant_marker
+    secrets:
+      - source: tenant_a_db_user
+        target: db_user
+      - source: tenant_a_db_password
+        target: db_password
+    networks: [aud004-only]
+    restart: "no"
+
+  tenant_b_probe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AUD004_PGHOST: postgres
+      AUD004_PGPORT: "5432"
+      AUD004_OWN_DATABASE: aud004_tenant_b
+      AUD004_FOREIGN_DATABASES: aud004_tenant_a,aud004_control_plane
+      AUD004_EXPECTED_MARKER: TENANT_B_SYNTHETIC_ONLY
+      AUD004_MARKER_TABLE: tenant_marker
+    secrets:
+      - source: tenant_b_db_user
+        target: db_user
+      - source: tenant_b_db_password
+        target: db_password
+    networks: [aud004-only]
+    restart: "no"
+
+  control_plane_probe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AUD004_PGHOST: postgres
+      AUD004_PGPORT: "5432"
+      AUD004_OWN_DATABASE: aud004_control_plane
+      AUD004_FOREIGN_DATABASES: aud004_tenant_a,aud004_tenant_b
+      AUD004_EXPECTED_MARKER: CONTROL_PLANE_SYNTHETIC_ONLY
+      AUD004_MARKER_TABLE: control_marker
+    secrets:
+      - source: control_plane_db_user
+        target: db_user
+      - source: control_plane_db_password
+        target: db_password
+    networks: [aud004-only]
+    restart: "no"
+
+secrets:
+  tenant_a_db_user:
+    file: ${AUD004_SECRETS_DIR:?Set AUD004_SECRETS_DIR to generated secret files}/tenant_a_db_user
+  tenant_a_db_password:
+    file: ${AUD004_SECRETS_DIR:?Set AUD004_SECRETS_DIR to generated secret files}/tenant_a_db_password
+  tenant_b_db_user:
+    file: ${AUD004_SECRETS_DIR:?Set AUD004_SECRETS_DIR to generated secret files}/tenant_b_db_user
+  tenant_b_db_password:
+    file: ${AUD004_SECRETS_DIR:?Set AUD004_SECRETS_DIR to generated secret files}/tenant_b_db_password
+  control_plane_db_user:
+    file: ${AUD004_SECRETS_DIR:?Set AUD004_SECRETS_DIR to generated secret files}/control_plane_db_user
+  control_plane_db_password:
+    file: ${AUD004_SECRETS_DIR:?Set AUD004_SECRETS_DIR to generated secret files}/control_plane_db_password
+
+volumes:
+  aud004_pgdata:
+    name: aud004-proof-pgdata
+networks:
+  aud004-only:
+    name: aud004-proof-only
+    internal: true

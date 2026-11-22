@@ -907,3 +907,51 @@ PR #70 remains the final implementation-readiness and owner-register documentati
 PR #71 remains a separate synthetic characterization harness. Its manual-dispatch reconciliation workflow has not been executed and reviewed in this status record. No successful migration/catalog parity run, catalog artifact, live isolation proof, raw-SQL append-only denial, effective privilege proof, restore parity, or production evidence is claimed. The scope limitations in Sections 31–33 remain in force.
 
 The architecture invariant remains PostgreSQL **database-per-tenant**. No schema-per-tenant migration is proposed. JSON Schema documents are not PostgreSQL schemas or migrations. No runtime implementation, SQL/migration, role/ACL/network/secret change, production or patient-data access, partner onboarding, trust provisioning, federation activation, emergency access, pilot, deployment, or release is authorized by this status update. AUD-004 remains a release blocker pending objective evidence and independent sign-off.
+
+
+### Section 35 — PR #71 corrected-head validation and evidence boundary (2026-11-23)
+
+This section supersedes the PR #71 execution-status statements in earlier sections where they describe the manual workflow as unexecuted. Those statements remain historical snapshots of their dates; they are not the current status.
+
+PR #71 head `9f576744ffc6de7b8a7e2696f2ca6fc5babf3a45` was validated by workflow-dispatch run [45070026856](https://github.com/Perseus37/avinya_hms_v2/actions/runs/45070026856). The workflow completed successfully on that exact commit. The following jobs passed:
+
+- Disposable PostgreSQL workload-isolation proof.
+- Synthetic production role-bootstrap function characterization.
+- Three-database Alembic migration/catalog capture.
+- Reconciliation Python validation: 10 tests passed.
+
+Frontend production builds and Docker Compose configuration validation were skipped because the selected workflow scope was `reconciliation`; they are not passing results and are not claimed here. The preceding run [45069325218](https://github.com/Perseus37/avinya_hms_v2/actions/runs/45069325218) failed on the prior head because its reconciliation command referenced test paths absent from the repository. The command was corrected in place in PR #71 and the corrected head was rerun successfully.
+
+This execution establishes that the selected synthetic harness jobs and reconciliation suite ran successfully on the recorded commit. It does **not** close DBID-01–05 or DBID-R78, certify a complete cluster-wide ACL inventory, prove deployed workload identity or production grants, or establish live tenant isolation. In particular, catalog ACL/default-ACL and membership snapshots remain characterization data unless interpreted and checked against an independent effective-privilege oracle; missing catalog surfaces and provider-specific coverage remain open. Raw-SQL append-only denial, restore parity, secret-provider isolation, egress, source-owned authorization, revocation, connection-pool draining and lifecycle controls remain unproven.
+
+PR #71 remains draft, open and unmerged. Its description now records the corrected-head result and its limits. No production credentials, patient data, production database, runtime routing, tenant registry, production role bootstrap, migration, network, secret or deployment configuration was changed. No partner onboarding, trust provisioning, federation activation, emergency access, pilot, deployment or release is authorized.
+
+The readiness decision is unchanged: AUD-004 remains **NOT READY FOR IMPLEMENTATION OR RELEASE**. Named accountable owners and independent approvers remain unassigned; D-01 through D-14 remain pending; DBID-R74 remains Critical and DBID-R75 through DBID-R81 remain High. PostgreSQL **database-per-tenant** remains invariant; no schema-per-tenant conversion is proposed.
+
+
+### Section 36 — Exact-head migrated-catalog artifact review (2026-11-23)
+
+The exact-latest-head workflow-dispatch run [45071924881](https://github.com/Perseus37/avinya_hms_v2/actions/runs/45071924881) uploaded artifact `aud004-migrated-catalog-report` (artifact ID `14773717674`; SHA-256 `46d98b500aeb43827541cac9ecc368ba49cad001896f6ee7effb4d171838e8ab` is recorded by GitHub as `sha256:46d98b500aeb43827541cac9ecc368ba49cad001896f6ee7effb4d171838e8ab`). The downloaded report was inspected as a synthetic PostgreSQL 17 migration/catalog characterization artifact. No live or production database was accessed.
+
+#### 36.1 What the artifact establishes
+
+- Real tenant Alembic migrations completed independently against synthetic tenant A and tenant B databases; the control-plane Alembic graph completed against a separate synthetic control-plane database.
+- The report contains 152 tenant metadata tables and 12 control-plane metadata tables. For all three databases, the only table delta reported is the migration-owned `public.alembic_version` relation. The only column delta is its `version_num` column, which is expected to be absent from ORM metadata. No ORM metadata table or column was reported missing from the migrated catalogs.
+- Both tenant databases report 17 triggers, including `trg_security_audit_export_no_mutation` on `security_audit_export_register`. The harness exercised raw-SQL UPDATE/DELETE denial against a populated synthetic row in that table in tenant A and tenant B.
+- The report records object owners, ACL/default-ACL and membership snapshots, routine/trigger definitions and other catalog surfaces. These are captured observations, not an accepted privilege policy or independent effective-privilege verdict.
+
+#### 36.2 Concrete remaining append-only gap
+
+- The synthetic control-plane catalog contains `public.control_plane_audit_logs`, but reports **zero triggers and zero functions** in that database.
+- `backend/control_plane/models.py` registers ORM `before_update` and `before_delete` listeners for `ControlPlaneAuditLog`. ORM listeners do not protect raw SQL, PostgreSQL clients outside the ORM, or privileged/bulk paths. The migrated catalog artifact therefore does not demonstrate database-enforced immutability for the control-plane audit log.
+- The tenant raw-SQL mutation test covers `security_audit_export_register` only. The other tenant tables with immutability triggers receive catalog characterization, not populated-row raw-SQL mutation tests. No general append-only claim is established.
+
+This is a concrete follow-up for the database-security owner and independent reviewer: define the required append-only tables and privileged-exception model, then add disposable raw-SQL UPDATE/DELETE negative tests for each table and the control-plane audit log after an approved PostgreSQL enforcement design and migration exist. Do not infer that a missing trigger is automatically fixed by adding one; ownership, grants, SECURITY DEFINER behavior, migration compatibility, retention and break-glass policy require review.
+
+#### 36.3 Governance and next work
+
+The main-branch `docs/AUD004_IMPLEMENTATION_READINESS_AND_OWNER_REGISTER.md` and `docs/AUD-004_GOVERNANCE_DECISION_REVIEW_CHECKLIST.md` already provide the role-based owner matrix and the D-01 through D-14 decision descriptions. They explicitly leave named accountable owners and independent approvers unassigned. Use those existing registers rather than creating a duplicate owner list. The governance chair must obtain named-person acceptance, delegated authority, independent approver, evidence, target date and escalation path for each workstream; no names or approvals are inferred here.
+
+The immediate safe technical sequence is: (1) retain this artifact as synthetic evidence; (2) specify the complete append-only table inventory and approved exception model; (3) extend disposable raw-SQL negative coverage, including the control-plane database, only after the enforcement contract is approved; (4) separately design the independent effective-privilege oracle and restore-parity test; and (5) obtain independent database/security review. In parallel, unrelated HMS work may continue on a separate branch/workstream and must not be mixed into PR #71.
+
+No application runtime, SQL, migration, role, ACL, network, secret, deployment or production resource was changed by this section. PR #71 remains draft and unmerged. AUD-004 remains **NOT READY FOR IMPLEMENTATION OR RELEASE**; DBID-R74 remains Critical and DBID-R75–R81 remain High. PostgreSQL **database-per-tenant** remains invariant.
