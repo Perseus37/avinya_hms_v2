@@ -168,11 +168,16 @@ def test_05_register_medico_legal_case_police_intimation_and_print_certificate(
     assert intim_res.status_code == 200
     assert intim_res.json()["police_intimated_at"] is not None
 
-    assert client.patch(
+    duplicate_intimation = client.patch(
         f"/v1/api/er/mlc/{mlc['id']}/police-intimation",
         headers=doctor_headers,
-        json={"police_constable_buckle_no": "PC-9999"},
-    ).status_code == 409
+        json={"police_constable_buckle_no": "PC-9999", "fir_number": "FIR-OVERWRITE"},
+    )
+    assert duplicate_intimation.status_code == 409
+    # The rejected request must not replace either forensic identifier.
+    preserved = client.get(f"/v1/api/er/mlc/{mlc['id']}/print", headers=doctor_headers)
+    assert "PC-4421-CYB" in preserved.text
+    assert "FIR-2026-0891" in preserved.text
 
     # 4. Print official MLC Police Intimation Certificate
     print_res = client.get(f"/v1/api/er/mlc/{mlc['id']}/print", headers=doctor_headers)
