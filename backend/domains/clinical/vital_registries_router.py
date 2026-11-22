@@ -255,6 +255,17 @@ def certify_patient_death_mccd(
     records Form 4 MCCD ICD-10 cause of death, releases any occupied IPD bed to HOUSEKEEPING,
     and closes the encounter.
     """
+    # Reject future timestamps before locking or mutating the encounter/admission/bed.
+    # Treat legacy timezone-naive input as UTC so comparison is deterministic.
+    death_at = payload.time_of_death
+    if death_at.tzinfo is None:
+        death_at = death_at.replace(tzinfo=timezone.utc)
+    else:
+        death_at = death_at.astimezone(timezone.utc)
+    if death_at > datetime.now(timezone.utc):
+        raise HTTPException(status_code=422, detail="Time of death cannot be in the future.")
+    payload.time_of_death = death_at
+
     enc = (
         db.execute(
             select(PatientEncounter)
