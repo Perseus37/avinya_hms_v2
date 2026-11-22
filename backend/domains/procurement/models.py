@@ -247,7 +247,7 @@ class SupplierCreditNote(Base):
     )
     amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
 
 
 class SupplierCreditAllocation(Base):
@@ -269,7 +269,7 @@ class SupplierCreditAllocation(Base):
     amount_paise: Mapped[int] = mapped_column(PAISE_AMOUNT_TYPE, nullable=False)
     reason: Mapped[str] = mapped_column(String(1000), nullable=False)
     allocated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    allocated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    allocated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True)
 
 
 # Keep metadata-created SQLite databases append-only as well; Alembic installs
