@@ -348,7 +348,15 @@ def record_mlc_police_intimation(
     _: User = Depends(RequirePermission("opd:write", "adt:write")),
 ):
     """Stamps official police intimation timestamp and constable buckle number (locks against re-intimation)."""
-    mlc = db.get(MedicoLegalCase, mlc_id)
+    # Serialize first-intimation writes. A second request waits for the row lock,
+    # then observes the committed timestamp and is rejected without overwriting it.
+    mlc_stmt = (
+        select(MedicoLegalCase)
+        .where(MedicoLegalCase.id == mlc_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    mlc = db.execute(mlc_stmt).scalar_one_or_none()
     if not mlc:
         raise HTTPException(status_code=404, detail="Medico-Legal Case not found.")
     if mlc.police_intimated_at is not None:
