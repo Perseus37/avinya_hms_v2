@@ -558,7 +558,13 @@ def update_soap_clinical_note(
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("opd:write")),
 ):
-    note = db.get(ClinicalNote, note_id)
+    # Lock the note row before checking its signature state. This makes
+    # concurrent edit/sign requests serialize on the same persisted record.
+    note = db.execute(
+        select(ClinicalNote)
+        .where(ClinicalNote.id == note_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not note:
         raise HTTPException(status_code=404, detail="Clinical note not found.")
     if note.is_signed:
@@ -583,7 +589,13 @@ def sign_off_clinical_note(
     db: Session = Depends(get_db),
     current_user: User = Depends(RequirePermission("opd:write")),
 ):
-    note = db.get(ClinicalNote, note_id)
+    # Lock the note row before checking its signature state. This makes
+    # concurrent edit/sign requests serialize on the same persisted record.
+    note = db.execute(
+        select(ClinicalNote)
+        .where(ClinicalNote.id == note_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if not note:
         raise HTTPException(status_code=404, detail="Clinical note not found.")
     if note.is_signed:
