@@ -931,7 +931,7 @@ The readiness decision is unchanged: AUD-004 remains **NOT READY FOR IMPLEMENTAT
 
 ### Section 36 — Exact-head migrated-catalog artifact review (2026-11-23)
 
-The exact-latest-head workflow-dispatch run [45071924881](https://github.com/Perseus37/avinya_hms_v2/actions/runs/45071924881) uploaded artifact `aud004-migrated-catalog-report` (artifact ID `14773717674`; SHA-256 `46d98b500aeb4382755dfb171838e8ab` is recorded by GitHub as `sha256:46d98b500aeb4382755dfb171838e8ab`). The downloaded report was inspected as a synthetic PostgreSQL 17 migration/catalog characterization artifact. No live or production database was accessed.
+The exact-latest-head workflow-dispatch run [45071924881](https://github.com/Perseus37/avinya_hms_v2/actions/runs/45071924881) uploaded artifact `aud004-migrated-catalog-report` (artifact ID `14773717674`; SHA-256 `46d98b500aeb43827541cac9ecc368ba49cad001896f6ee7effb4d171838e8ab` is recorded by GitHub as `sha256:46d98b500aeb43827541cac9ecc368ba49cad001896f6ee7effb4d171838e8ab`). The downloaded report was inspected as a synthetic PostgreSQL 17 migration/catalog characterization artifact. No live or production database was accessed.
 
 #### 36.1 What the artifact establishes
 
