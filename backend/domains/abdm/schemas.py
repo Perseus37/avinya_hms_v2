@@ -120,7 +120,7 @@ class NHCXClaimSubmissionResponse(BaseModel):
 
 class NHCXAdjudicationCallbackRequest(BaseModel):
     transaction_id: str = Field(..., description="NHCX Transaction ID")
-    adjudication_status: str = Field(..., description="APPROVED, REJECTED, PARTIAL")
+    adjudication_status: str = Field(..., description="APPROVED, PARTIAL, REJECTED, or SETTLED (settlement is a separate financial event)")
     settled_amount_paise: int = Field(default=0, ge=0)
     settlement_utr: Optional[str] = Field(default=None, max_length=100)
     rejection_reason: Optional[str] = Field(default=None, max_length=255)
