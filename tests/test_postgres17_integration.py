@@ -83,6 +83,21 @@ def test_postgresql_17_migrations_match_control_and_tenant_metadata():
                             )
                         """)).scalar_one()
                         assert pharmacy_adjustment_trigger is True
+                        supplier_credit_triggers = connection.execute(text("""
+                            SELECT COUNT(*) = 2
+                            FROM pg_trigger AS trigger_row
+                            JOIN pg_class AS table_row ON table_row.oid = trigger_row.tgrelid
+                            WHERE trigger_row.tgname IN (
+                                'trg_procurement_supplier_credit_notes_immutable',
+                                'trg_procurement_supplier_credit_allocations_immutable'
+                            )
+                              AND table_row.relname IN (
+                                'procurement_supplier_credit_notes',
+                                'procurement_supplier_credit_allocations'
+                            )
+                              AND NOT trigger_row.tgisinternal
+                        """)).scalar_one()
+                        assert supplier_credit_triggers is True
             finally:
                 engine.dispose()
     finally:

@@ -21,6 +21,7 @@ from backend.domains.procurement.models import (
     GRNStatusEnum,
     PurchaseReturnRecord,
     PurchaseReturnItem,
+    SupplierCreditNote,
     VendorInvoice,
     VendorInvoiceItem,
     VendorInvoiceStatusEnum,
@@ -149,7 +150,13 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
     if not invoice.po_id:
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
-    po = db.get(PurchaseOrder, invoice.po_id)
+    # Serialize every invoice reconciliation against this PO. Review/edit
+    # operations acquire the same PO lock before changing invoice lines.
+    po = db.execute(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id == invoice.po_id)
+        .with_for_update()
+    ).scalar_one_or_none()
     if (
         not po
         or po.vendor_id != invoice.vendor_id
@@ -178,15 +185,27 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
     if abs(calculated_gross - invoice.total_amount_paise) > 100:
         return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
-    # Rule 2: Aggregate invoice quantities by PO line before comparing limits.
+    # Rule 2: Aggregate quantities across every non-rejected invoice for
+    # this PO, not merely the invoice currently being reconciled. The PO row
+    # lock above serializes competing reconciliations and invoice review writes.
     po_lines_by_id = {line.id: line for line in po.items}
-    invoiced_by_po_line = {}
-    for item in invoice.items:
-        if not item.po_item_id or item.po_item_id not in po_lines_by_id:
-            return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        invoiced_by_po_line[item.po_item_id] = (
-            invoiced_by_po_line.get(item.po_item_id, 0) + item.quantity
-        )
+    invoiced_by_po_line = {
+        row.po_item_id: int(row.total_quantity)
+        for row in db.execute(
+            select(
+                VendorInvoiceItem.po_item_id,
+                func.sum(VendorInvoiceItem.quantity).label("total_quantity"),
+            )
+            .join(VendorInvoice, VendorInvoice.id == VendorInvoiceItem.invoice_id)
+            .where(
+                VendorInvoice.po_id == po.id,
+                VendorInvoice.status != VendorInvoiceStatusEnum.REJECTED,
+            )
+            .group_by(VendorInvoiceItem.po_item_id)
+        ).all()
+    }
+    if any(item.po_item_id not in po_lines_by_id for item in invoice.items):
+        return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
     received_by_po_line = {}
     if receipt:
@@ -196,11 +215,30 @@ def execute_3_way_match(db: Session, invoice: VendorInvoice) -> VendorInvoiceSta
                 + receipt_item.accepted_quantity
             )
 
+    # A PO may be fulfilled through multiple GRNs. Enforce the GRN ceiling
+    # against invoices referencing this exact GRN, while the PO ceiling above
+    # remains cumulative across every GRN for the order.
+    invoiced_by_grn_line = {
+        row.po_item_id: int(row.total_quantity)
+        for row in db.execute(
+            select(
+                VendorInvoiceItem.po_item_id,
+                func.sum(VendorInvoiceItem.quantity).label("total_quantity"),
+            )
+            .join(VendorInvoice, VendorInvoice.id == VendorInvoiceItem.invoice_id)
+            .where(
+                VendorInvoice.grn_id == receipt.id,
+                VendorInvoice.status != VendorInvoiceStatusEnum.REJECTED,
+            )
+            .group_by(VendorInvoiceItem.po_item_id)
+        ).all()
+    }
+
     for item in invoice.items:
         po_line = po_lines_by_id[item.po_item_id]
         if invoiced_by_po_line[item.po_item_id] > po_line.quantity_ordered:
             return VendorInvoiceStatusEnum.PENDING_VERIFICATION
-        if receipt and invoiced_by_po_line[item.po_item_id] > received_by_po_line.get(po_line.id, 0):
+        if invoiced_by_grn_line.get(item.po_item_id, 0) > received_by_po_line.get(po_line.id, 0):
             return VendorInvoiceStatusEnum.PENDING_VERIFICATION
 
         # Flag variance if invoiced unit price strictly exceeds PO unit price
@@ -318,6 +356,13 @@ def process_purchase_return(
     remarks: str | None = None,
 ):
     """Process a vendor return with cumulative GRN quantity controls and immutable detail records."""
+    requested_grn_item_ids = [item.grn_item_id for item in return_items]
+    if len(requested_grn_item_ids) != len(set(requested_grn_item_ids)):
+        raise HTTPException(
+            status_code=422,
+            detail="Each GRN item may appear only once in a purchase return.",
+        )
+
     grn = db.query(GoodsReceiptNote).filter(
         GoodsReceiptNote.id == grn_id
     ).with_for_update().one_or_none()
@@ -333,6 +378,9 @@ def process_purchase_return(
 
     validated_items = []
     total_credit_paise = 0
+    requested_by_grn_item = {
+        item.grn_item_id: item.return_quantity for item in return_items
+    }
     for item in return_items:
         grn_item = db.execute(
             select(GoodsReceiptItem)
@@ -348,7 +396,10 @@ def process_purchase_return(
             select(func.coalesce(func.sum(PurchaseReturnItem.return_quantity), 0))
             .where(PurchaseReturnItem.grn_item_id == grn_item.id)
         ).scalar_one()
-        if already_returned + item.return_quantity > grn_item.accepted_quantity:
+        if (
+            already_returned + requested_by_grn_item[grn_item.id]
+            > grn_item.accepted_quantity
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="Return quantity exceeds the remaining accepted quantity for this GRN item.",
@@ -393,6 +444,13 @@ def process_purchase_return(
             return_reason=item.return_reason,
             created_by_id=current_user_id,
         ))
+
+    db.add(SupplierCreditNote(
+        purchase_return_id=return_record.id,
+        vendor_id=vendor_id,
+        amount_paise=total_credit_paise,
+        created_by_id=current_user_id,
+    ))
 
     db.add(ExpenseRecord(
         category=ExpenseCategoryEnum.PHARMACY_STOCK,

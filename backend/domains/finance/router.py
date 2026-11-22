@@ -103,13 +103,6 @@ def mark_expense_paid(
     ).with_for_update().one_or_none()
     if not expense or expense.status != ExpenseStatusEnum.APPROVED:
         raise HTTPException(status_code=400, detail="Only APPROVED expenses can be paid.")
-
-    normalized_receipt_reference = receipt_reference.strip()
-    if not normalized_receipt_reference:
-        raise HTTPException(status_code=422, detail="receipt_reference must not be blank.")
-    if len(normalized_receipt_reference) > 100:
-        raise HTTPException(status_code=422, detail="receipt_reference must not exceed 100 characters.")
-
     supplier_invoice = db.query(VendorInvoice.id).filter(
         VendorInvoice.linked_expense_id == expense.id
     ).first()
@@ -118,6 +111,18 @@ def mark_expense_paid(
             status_code=409,
             detail="Supplier invoice payables must be settled through the supplier payment request approval and execution workflow.",
         )
+
+    if expense.amount_paise <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Only positive-value expenses can be settled as cash or bank outflows.",
+        )
+
+    normalized_receipt_reference = receipt_reference.strip()
+    if not normalized_receipt_reference:
+        raise HTTPException(status_code=422, detail="receipt_reference must not be blank.")
+    if len(normalized_receipt_reference) > 100:
+        raise HTTPException(status_code=422, detail="receipt_reference must not exceed 100 characters.")
 
     expense.status = ExpenseStatusEnum.PAID
     expense.receipt_reference = normalized_receipt_reference
