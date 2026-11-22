@@ -112,6 +112,36 @@ tools. Compose does not provide a complete alerting, log-retention, uptime, or
 off-host monitoring system. The browser API inspector is session-local and
 does not substitute for server-side audit records.
 
+### Production Prometheus scrape credential
+
+The production Prometheus container runs as UID/GID `65534:65534` and reads
+`/etc/prometheus/metrics_scrape_token.txt`. The API and control-plane services
+independently validate the bearer token from `METRICS_SCRAPE_TOKEN`; the
+Prometheus file must contain the exact same token. Provision both values from
+the approved secret manager—never commit the token or put it in a ticket.
+
+Set `METRICS_SCRAPE_TOKEN_FILE` in `.env.production` to the absolute host path
+of the secret file (the example uses
+`/etc/avinya-hms/secrets/metrics_scrape_token.txt`). On the Linux deployment
+host, create the parent directory with restrictive permissions and provision
+the file so it is owned by numeric UID/GID `65534:65534`, mode `0400`, and
+readable by the Prometheus container user. Do not use a world-readable token
+file. Confirm the host file exists before running Compose.
+
+Validate the rendered deployment before starting or updating services:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d prometheus
+docker compose --env-file .env.production -f docker-compose.prod.yml logs --since=10m prometheus
+```
+
+Then verify Prometheus reports both `avinya-api` and `avinya-onboarding` targets
+as `UP` in its Targets page/API from an authenticated operator network. Do not
+publish Prometheus or Alertmanager ports to the public internet. A successful
+container health check alone does not prove that authenticated scraping or
+alert delivery works.
+
 ## 3.1 Identity, operator access, and recovery
 
 Apply the tenant and control-plane Alembic migrations before deploying the
