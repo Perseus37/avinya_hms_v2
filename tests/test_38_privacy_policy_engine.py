@@ -440,6 +440,7 @@ def test_route_registry_coverage_and_unknown_policy_points_fail_validation():
         "billing.invoices.pdf",
         "pharmacy.prescriptions.search",
         "pharmacy.prescriptions.read",
+        "pharmacy.inventory.adjustments.read",
         "pharmacy.prescription.print",
         "diagnostics.orders.search",
         "diagnostics.orders.read",
