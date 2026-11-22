@@ -924,6 +924,30 @@ def import_federated_patient_locally(
                 Patient.full_name == source_patient.full_name,
             ).first()
         if existing:
+            # A previous destination commit may have succeeded while control-plane
+            # pointer publication failed. Exact retries must reconcile the pointer
+            # before returning the already-imported patient.
+            existing_has_critical_allergies = (
+                db.query(PatientAllergy.id)
+                .filter(
+                    PatientAllergy.patient_id == existing.id,
+                    PatientAllergy.is_active.is_(True),
+                    PatientAllergy.severity.in_(
+                        [AllergySeverityEnum.SEVERE, AllergySeverityEnum.ANAPHYLACTIC]
+                    ),
+                )
+                .first()
+                is not None
+            )
+            sync_patient_pointer(
+                control_db=control_db,
+                branch_code=tenant.branch_code,
+                subdomain_slug=tenant.subdomain_slug,
+                patient=existing,
+                has_critical_allergies=existing_has_critical_allergies,
+                tenant_db=db,
+                actor_user_id=current_user.id,
+            )
             return existing
 
         local_mrn = f"MRN-{secrets.token_hex(6).upper()}"
