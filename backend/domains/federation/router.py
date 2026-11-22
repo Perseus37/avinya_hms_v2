@@ -155,14 +155,12 @@ def sync_patient_pointer(
                     control_db.delete(pointer)
                     control_db.commit()
                 return True
-            if policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY:
-                if not has_critical_allergies:
-                    # Remove a previously published critical-allergy pointer when
-                    # the source no longer has a qualifying active allergy.
-                    if pointer:
-                        control_db.delete(pointer)
-                        control_db.commit()
-                    return True
+            if (
+                policy.federation_sharing_mode == FederationPolicyEnum.EMERGENCY_ALLERGIES_ONLY
+                and not has_critical_allergies
+                and not (pointer and pointer.has_critical_allergies)
+            ):
+                return True
 
         if pointer:
             # Refresh every searchable identifier, including clearing identifiers
@@ -170,7 +168,7 @@ def sync_patient_pointer(
             pointer.phone_hash = p_hash
             pointer.abha_number = patient.abha_number
             pointer.source_mrn = patient.mrn
-            pointer.has_critical_allergies = has_critical_allergies
+            pointer.has_critical_allergies = has_critical_allergies or pointer.has_critical_allergies
             pointer.last_clinical_update_at = datetime.now(timezone.utc)
         else:
             pointer = GlobalPatientPointer(
