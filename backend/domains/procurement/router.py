@@ -21,12 +21,14 @@ from backend.domains.procurement.models import (
     StoreIndent, StoreIndentItem, PatientIndentIssueAllocation, PatientIndentReturnEvent, IndentStatusEnum,
     SupplierPaymentMethodEnum, SupplierPayment, SupplierPaymentAllocation,
     SupplierPaymentRequest, SupplierPaymentRequestAllocation,
+    SupplierCreditNote, SupplierCreditAllocation,
 )
 from backend.domains.procurement.schemas import (
     VendorCreate, VendorResponse, POCreate, POResponse, GRNCreate, VendorInvoiceResponse, VendorInvoiceReview, IndentReturnRequest,StoreIndentResponse,StoreIndentCreate,
     IndentIssueRequest, PurchaseReturnCreate,
     SupplierPaymentRequestCreate, SupplierPaymentRequestReview,
     SupplierPaymentRequestExecute, SupplierPaymentRequestResponse,
+    SupplierCreditAllocationCreate,
     SupplierPaymentResponse,
 )
 from backend.domains.procurement.services import (
@@ -402,7 +404,19 @@ def review_vendor_invoice(
         raise HTTPException(status_code=409, detail="Invoice is not available for review.")
 
     vendor = db.get(VendorMaster, invoice.vendor_id)
-    purchase_order = db.get(PurchaseOrder, payload.po_id) if payload.po_id else None
+    # Lock both the old and proposed PO in deterministic order. This shares
+    # the same serialization barrier used by three-way reconciliation.
+    po_ids_to_lock = sorted(
+        {po_id for po_id in (invoice.po_id, payload.po_id) if po_id is not None}
+    )
+    locked_purchase_orders = db.execute(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id.in_(po_ids_to_lock))
+        .order_by(PurchaseOrder.id)
+        .with_for_update()
+    ).scalars().all() if po_ids_to_lock else []
+    purchase_orders_by_id = {po.id: po for po in locked_purchase_orders}
+    purchase_order = purchase_orders_by_id.get(payload.po_id) if payload.po_id else None
     if payload.po_id and (
         purchase_order is None or purchase_order.vendor_id != invoice.vendor_id
     ):
@@ -705,9 +719,154 @@ def return_indent_stock(
 # --- Vendor Purchase Returns ---
 @router.post("/returns", status_code=status.HTTP_201_CREATED)
 def create_purchase_return(payload: PurchaseReturnCreate, db: Session = Depends(get_db), current_user: User = Depends(RequirePermission("procurement:write"))):
-    process_purchase_return(db, payload.vendor_id, payload.grn_id, payload.items, current_user.id, payload.remarks)
+    return_record = process_purchase_return(
+        db, payload.vendor_id, payload.grn_id, payload.items, current_user.id, payload.remarks
+    )
+    db.flush()
+    credit_note = db.query(SupplierCreditNote).filter(
+        SupplierCreditNote.purchase_return_id == return_record.id
+    ).one()
     db.commit()
-    return {"status": "success", "message": "Purchase return processed and Debit Note generated."}
+    return {
+        "status": "success",
+        "message": "Purchase return processed and supplier credit note generated.",
+        "purchase_return_id": return_record.id,
+        "credit_note_id": credit_note.id,
+        "credit_amount_paise": credit_note.amount_paise,
+    }
+
+
+
+@router.post("/supplier-credits/{credit_note_id}/allocations", status_code=status.HTTP_201_CREATED)
+def allocate_supplier_credit(
+    credit_note_id: int,
+    payload: SupplierCreditAllocationCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequirePermission("finance:approve")),
+):
+    credit = db.query(SupplierCreditNote).filter(
+        SupplierCreditNote.id == credit_note_id
+    ).with_for_update().one_or_none()
+    if credit is None:
+        raise HTTPException(status_code=404, detail="Supplier credit note not found.")
+
+    vendor = db.query(VendorMaster).filter(
+        VendorMaster.id == credit.vendor_id
+    ).with_for_update().one_or_none()
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Supplier not found.")
+
+    invoice = db.query(VendorInvoice).filter(
+        VendorInvoice.id == payload.invoice_id
+    ).with_for_update().one_or_none()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Supplier invoice not found.")
+    if invoice.vendor_id != credit.vendor_id:
+        raise HTTPException(status_code=422, detail="Supplier credit and invoice must belong to the same supplier.")
+    if invoice.status != VendorInvoiceStatusEnum.MATCHED_APPROVED or invoice.linked_expense_id is None:
+        raise HTTPException(status_code=409, detail="Supplier credit can only be allocated to an approved payable invoice.")
+
+    expense = db.query(ExpenseRecord).filter(
+        ExpenseRecord.id == invoice.linked_expense_id
+    ).with_for_update().one_or_none()
+    if (
+        expense is None
+        or expense.status != ExpenseStatusEnum.APPROVED
+        or int(expense.amount_paise) != int(invoice.total_amount_paise)
+    ):
+        raise HTTPException(status_code=409, detail="The invoice Accounts Payable posting is not in a payable state.")
+
+    allocated_credit = int(db.query(func.coalesce(func.sum(SupplierCreditAllocation.amount_paise), 0)).filter(
+        SupplierCreditAllocation.credit_note_id == credit.id
+    ).scalar() or 0)
+    remaining_credit = max(int(credit.amount_paise) - allocated_credit, 0)
+    if payload.amount_paise > remaining_credit:
+        raise HTTPException(status_code=409, detail={
+            "message": "Allocation exceeds the supplier credit's unallocated balance.",
+            "remaining_credit_paise": remaining_credit,
+        })
+
+    paid = _supplier_invoice_paid_paise(db, invoice.id)
+    invoice_credits = _supplier_invoice_credit_paise(db, invoice.id)
+    reserved = _supplier_invoice_reserved_paise(db, invoice.id)
+    available = max(int(invoice.total_amount_paise) - paid - invoice_credits - reserved, 0)
+    if payload.amount_paise > available:
+        raise HTTPException(status_code=409, detail={
+            "message": "Allocation exceeds the invoice's unreserved outstanding balance.",
+            "invoice_id": invoice.id,
+            "outstanding_paise": max(int(invoice.total_amount_paise) - paid - invoice_credits, 0),
+            "reserved_paise": reserved,
+            "available_paise": available,
+        })
+
+    allocation = SupplierCreditAllocation(
+        credit_note_id=credit.id,
+        invoice_id=invoice.id,
+        amount_paise=payload.amount_paise,
+        reason=payload.reason,
+        allocated_by_id=current_user.id,
+    )
+    db.add(allocation)
+    db.flush()
+
+    total_credits_after = invoice_credits + payload.amount_paise
+    if paid + total_credits_after >= int(invoice.total_amount_paise):
+        invoice.status = VendorInvoiceStatusEnum.PAID
+        expense.status = ExpenseStatusEnum.PAID
+        if not expense.receipt_reference:
+            expense.receipt_reference = f"SUPPLIER-CREDIT-{credit.id}"
+        expense.updated_by_id = current_user.id
+
+    db.commit()
+    return {
+        "id": allocation.id,
+        "credit_note_id": credit.id,
+        "invoice_id": invoice.id,
+        "amount_paise": allocation.amount_paise,
+        "remaining_credit_paise": remaining_credit - allocation.amount_paise,
+        "invoice_outstanding_paise": max(int(invoice.total_amount_paise) - paid - total_credits_after, 0),
+    }
+
+
+@router.get("/supplier-credits")
+def list_supplier_credits(
+    vendor_id: Optional[int] = Query(default=None, gt=0),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1),
+    db: Session = Depends(get_db),
+    _: User = Depends(RequirePermission("finance:read")),
+):
+    page, page_size = validate_pagination(page, page_size)
+    query = db.query(
+        SupplierCreditNote,
+        func.coalesce(func.sum(SupplierCreditAllocation.amount_paise), 0).label("allocated_paise"),
+    ).outerjoin(
+        SupplierCreditAllocation,
+        SupplierCreditAllocation.credit_note_id == SupplierCreditNote.id,
+    ).group_by(SupplierCreditNote.id)
+    if vendor_id is not None:
+        query = query.filter(SupplierCreditNote.vendor_id == vendor_id)
+    total = db.query(func.count(SupplierCreditNote.id))
+    if vendor_id is not None:
+        total = total.filter(SupplierCreditNote.vendor_id == vendor_id)
+    rows = query.order_by(
+        SupplierCreditNote.created_at.desc(), SupplierCreditNote.id.desc()
+    ).offset((page - 1) * page_size).limit(page_size).all()
+    items = []
+    for credit, allocated_paise in rows:
+        allocated = int(allocated_paise or 0)
+        items.append({
+            "id": credit.id,
+            "purchase_return_id": credit.purchase_return_id,
+            "vendor_id": credit.vendor_id,
+            "amount_paise": int(credit.amount_paise),
+            "allocated_paise": allocated,
+            "remaining_paise": max(int(credit.amount_paise) - allocated, 0),
+            "created_at": credit.created_at,
+            "created_by_id": credit.created_by_id,
+        })
+    return {"items": items, "total": total.scalar(), "page": page, "page_size": page_size}
+
 
 @router.get("/vendors/{vendor_id}/metrics")
 def get_vendor_metrics(vendor_id: int, db: Session = Depends(get_db), _: User = Depends(RequirePermission("procurement:read"))):
@@ -757,6 +916,14 @@ def get_vendor_metrics(vendor_id: int, db: Session = Depends(get_db), _: User = 
 def _supplier_invoice_paid_paise(db: Session, invoice_id: int) -> int:
     value = db.query(func.coalesce(func.sum(SupplierPaymentAllocation.amount_paise), 0)).filter(
         SupplierPaymentAllocation.invoice_id == invoice_id
+    ).scalar()
+    return int(value or 0)
+
+
+
+def _supplier_invoice_credit_paise(db: Session, invoice_id: int) -> int:
+    value = db.query(func.coalesce(func.sum(SupplierCreditAllocation.amount_paise), 0)).filter(
+        SupplierCreditAllocation.invoice_id == invoice_id
     ).scalar()
     return int(value or 0)
 
@@ -836,13 +1003,15 @@ def create_supplier_payment_request(
         if expense is None or expense.status != ExpenseStatusEnum.APPROVED or int(expense.amount_paise) != int(invoice.total_amount_paise):
             raise HTTPException(status_code=409, detail=f"Invoice {invoice.invoice_number} has no matching payable approved Accounts Payable entry.")
         paid = _supplier_invoice_paid_paise(db, invoice.id)
+        credits = _supplier_invoice_credit_paise(db, invoice.id)
         reserved = _supplier_invoice_reserved_paise(db, invoice.id)
-        available = max(int(invoice.total_amount_paise) - paid - reserved, 0)
+        available = max(int(invoice.total_amount_paise) - paid - credits - reserved, 0)
         if allocation.amount_paise > available:
             raise HTTPException(status_code=409, detail={
                 "message": f"Invoice {invoice.invoice_number} has insufficient unreserved balance.",
                 "invoice_id": invoice.id,
-                "outstanding_paise": max(int(invoice.total_amount_paise) - paid, 0),
+                "outstanding_paise": max(int(invoice.total_amount_paise) - paid - credits, 0),
+                "allocated_credit_paise": credits,
                 "reserved_paise": reserved,
                 "available_paise": available,
             })
@@ -971,13 +1140,15 @@ def review_supplier_payment_request(
             if expense is None or expense.status != ExpenseStatusEnum.APPROVED or int(expense.amount_paise) != int(invoice.total_amount_paise):
                 raise HTTPException(status_code=409, detail="A requested Accounts Payable entry is no longer payable or no longer matches the invoice total.")
             paid = _supplier_invoice_paid_paise(db, invoice.id)
+            credits = _supplier_invoice_credit_paise(db, invoice.id)
             reserved = _supplier_invoice_reserved_paise(db, invoice.id, exclude_request_id=request_row.id)
-            available = max(int(invoice.total_amount_paise) - paid - reserved, 0)
+            available = max(int(invoice.total_amount_paise) - paid - credits - reserved, 0)
             if allocation.amount_paise > available:
                 raise HTTPException(status_code=409, detail={
                     "message": f"Invoice {invoice.invoice_number} no longer has sufficient unreserved balance.",
                     "invoice_id": invoice.id,
-                    "outstanding_paise": max(int(invoice.total_amount_paise) - paid, 0),
+                    "outstanding_paise": max(int(invoice.total_amount_paise) - paid - credits, 0),
+                    "allocated_credit_paise": credits,
                     "reserved_paise": reserved,
                     "available_paise": available,
                 })
@@ -1033,13 +1204,6 @@ def execute_supplier_payment_request(
         payload.payment_date, request_row.scheduled_date, now
     )
 
-    reference_key = request_row.payment_reference.strip().upper()
-    if db.query(SupplierPayment.id).filter(
-        SupplierPayment.vendor_id == request_row.vendor_id,
-        func.upper(func.trim(SupplierPayment.payment_reference)) == reference_key,
-    ).first():
-        raise HTTPException(status_code=409, detail="The supplier payment reference has already been recorded.")
-
     vendor = db.query(VendorMaster).filter(
         VendorMaster.id == request_row.vendor_id
     ).with_for_update().one_or_none()
@@ -1047,6 +1211,16 @@ def execute_supplier_payment_request(
         raise HTTPException(status_code=404, detail="Supplier not found.")
     if not vendor.is_active:
         raise HTTPException(status_code=409, detail="Inactive suppliers cannot receive payment execution.")
+
+    # Serialize reference checks with payment-request creation and any other
+    # execution for this supplier. The vendor row is the shared lock used by
+    # those workflows; checking before acquiring it leaves a check/insert race.
+    reference_key = request_row.payment_reference.strip().upper()
+    if db.query(SupplierPayment.id).filter(
+        SupplierPayment.vendor_id == vendor.id,
+        func.upper(func.trim(SupplierPayment.payment_reference)) == reference_key,
+    ).first():
+        raise HTTPException(status_code=409, detail="The supplier payment reference has already been recorded.")
     invoice_ids = sorted(row.invoice_id for row in request_row.allocations)
     invoices = db.query(VendorInvoice).filter(
         VendorInvoice.id.in_(invoice_ids)
@@ -1069,13 +1243,15 @@ def execute_supplier_payment_request(
             raise HTTPException(status_code=409, detail="A requested Accounts Payable entry is no longer payable or no longer matches the invoice total.")
         expenses[invoice.id] = expense
         paid = _supplier_invoice_paid_paise(db, invoice.id)
+        credits = _supplier_invoice_credit_paise(db, invoice.id)
         reserved = _supplier_invoice_reserved_paise(db, invoice.id, exclude_request_id=request_row.id)
-        available = max(int(invoice.total_amount_paise) - paid - reserved, 0)
+        available = max(int(invoice.total_amount_paise) - paid - credits - reserved, 0)
         if allocation.amount_paise > available:
             raise HTTPException(status_code=409, detail={
                 "message": f"Invoice {invoice.invoice_number} no longer has sufficient unreserved balance.",
                 "invoice_id": invoice.id,
-                "outstanding_paise": max(int(invoice.total_amount_paise) - paid, 0),
+                "outstanding_paise": max(int(invoice.total_amount_paise) - paid - credits, 0),
+                "allocated_credit_paise": credits,
                 "reserved_paise": reserved,
                 "available_paise": available,
             })
@@ -1103,7 +1279,8 @@ def execute_supplier_payment_request(
     for allocation in request_row.allocations:
         invoice = by_id[allocation.invoice_id]
         paid_after_payment = _supplier_invoice_paid_paise(db, invoice.id)
-        if paid_after_payment >= int(invoice.total_amount_paise):
+        credit_after_payment = _supplier_invoice_credit_paise(db, invoice.id)
+        if paid_after_payment + credit_after_payment >= int(invoice.total_amount_paise):
             invoice.status = VendorInvoiceStatusEnum.PAID
             expense = expenses[invoice.id]
             expense.status = ExpenseStatusEnum.PAID

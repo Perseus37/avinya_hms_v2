@@ -271,6 +271,12 @@ DATA_USE_POINTS = {
             action="use",
         ),
         DataUsePoint(
+            "pharmacy.inventory.adjustments.read",
+            "Read append-only pharmacy inventory stock adjustment history",
+            "GET /api/pharmacy/inventory/adjustments",
+            action="use",
+        ),
+        DataUsePoint(
             "pharmacy.prescription.print",
             "Render a patient's prescription",
             "GET /api/pharmacy/prescriptions/{prescription_id}/print",

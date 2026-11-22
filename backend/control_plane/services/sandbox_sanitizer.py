@@ -72,6 +72,7 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "mfa_recovery_codes",
     "mfa_enrollment_codes",
     "hl7_integration_logs",
+    "inventory_stock_adjustment_logs",
     "federation_transfer_logs",
     "privacy_decision_audits",
     "privacy_legal_holds",
@@ -79,6 +80,8 @@ PURGED_LOG_TABLES: frozenset[str] = frozenset({
     "patient_data_rights_requests",
     "privacy_data_breach_incidents",
     "procurement_document_download_audits",
+    "procurement_supplier_credit_notes",
+    "procurement_supplier_credit_allocations",
     "procurement_supplier_payment_allocations",
     "procurement_supplier_payment_request_allocations",
     "procurement_supplier_payment_requests",
@@ -232,6 +235,8 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
 
         immutable_finance_tables = {
+            "procurement_supplier_credit_notes",
+            "procurement_supplier_credit_allocations",
             "procurement_supplier_payment_allocations",
             "procurement_supplier_payment_request_allocations",
             "procurement_supplier_payment_requests",
@@ -242,11 +247,11 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
         # Sandbox clones discard financial transaction data. Temporarily remove only
         # the append-only guards while purging, then restore them before proceeding.
         if session.bind.dialect.name == "postgresql":
-            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations", "procurement_purchase_returns", "procurement_purchase_return_items"):
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations", "procurement_purchase_returns", "procurement_purchase_return_items", "procurement_supplier_credit_notes", "procurement_supplier_credit_allocations"):
                 if tbl in table_names:
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable ON "{tbl}"'))
         elif session.bind.dialect.name == "sqlite":
-            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations", "procurement_purchase_returns", "procurement_purchase_return_items"):
+            for tbl in ("procurement_supplier_payments", "procurement_supplier_payment_allocations", "procurement_purchase_returns", "procurement_purchase_return_items", "procurement_supplier_credit_notes", "procurement_supplier_credit_allocations"):
                 if tbl in table_names:
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_update'))
                     session.execute(text(f'DROP TRIGGER IF EXISTS trg_{tbl}_immutable_delete'))
@@ -257,12 +262,39 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
         }
         immutable_governance_tables = {"procurement_reconciliation_governance_reports"}
         immutable_audit_export_tables = {"security_audit_export_register"}
+        immutable_pharmacy_adjustment_tables = {"inventory_stock_adjustment_logs"}
+        if session.bind.dialect.name == "postgresql":
+            if "inventory_stock_adjustment_logs" in table_names:
+                session.execute(text(
+                    "DROP TRIGGER IF EXISTS trg_inventory_stock_adjustment_logs_immutable "
+                    "ON inventory_stock_adjustment_logs"
+                ))
+        elif session.bind.dialect.name == "sqlite" and "inventory_stock_adjustment_logs" in table_names:
+            session.execute(text("DROP TRIGGER IF EXISTS trg_inventory_stock_adjustment_logs_immutable_update"))
+            session.execute(text("DROP TRIGGER IF EXISTS trg_inventory_stock_adjustment_logs_immutable_delete"))
         if session.bind.dialect.name == "postgresql":
             if "security_audit_export_register" in table_names:
                 session.execute(text("DROP TRIGGER IF EXISTS trg_security_audit_export_no_mutation ON security_audit_export_register"))
         elif session.bind.dialect.name == "sqlite" and "security_audit_export_register" in table_names:
             session.execute(text("DROP TRIGGER IF EXISTS trg_security_audit_export_no_update"))
             session.execute(text("DROP TRIGGER IF EXISTS trg_security_audit_export_no_delete"))
+        if session.bind.dialect.name == "postgresql" and "inventory_stock_adjustment_logs" in table_names:
+            session.execute(text("""
+                CREATE TRIGGER trg_inventory_stock_adjustment_logs_immutable
+                BEFORE UPDATE OR DELETE ON inventory_stock_adjustment_logs
+                FOR EACH ROW EXECUTE FUNCTION prevent_inventory_stock_adjustment_logs_mutation()
+            """))
+        elif session.bind.dialect.name == "sqlite" and "inventory_stock_adjustment_logs" in table_names:
+            session.execute(text("""
+                CREATE TRIGGER trg_inventory_stock_adjustment_logs_immutable_update
+                BEFORE UPDATE ON inventory_stock_adjustment_logs
+                BEGIN SELECT RAISE(ABORT, 'Pharmacy stock adjustment history is immutable'); END
+            """))
+            session.execute(text("""
+                CREATE TRIGGER trg_inventory_stock_adjustment_logs_immutable_delete
+                BEFORE DELETE ON inventory_stock_adjustment_logs
+                BEGIN SELECT RAISE(ABORT, 'Pharmacy stock adjustment history is immutable'); END
+            """))
         if session.bind.dialect.name == "postgresql":
             for tbl in immutable_governance_tables:
                 if tbl in table_names:
@@ -351,6 +383,35 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                         CREATE TRIGGER trg_{tbl}_immutable_delete
                         BEFORE DELETE ON "{tbl}"
                         BEGIN SELECT RAISE(ABORT, 'Purchase return audit records are immutable'); END
+                    """))
+
+        # Supplier credit allocations reference credit notes; purge both child-first
+        # after temporarily dropping their append-only guards above.
+        for tbl in ("procurement_supplier_credit_allocations", "procurement_supplier_credit_notes"):
+            if tbl in table_names:
+                session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
+                stats["purged_tables"] += 1
+
+        if session.bind.dialect.name == "postgresql":
+            for tbl in ("procurement_supplier_credit_notes", "procurement_supplier_credit_allocations"):
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable
+                        BEFORE UPDATE OR DELETE ON "{tbl}"
+                        FOR EACH ROW EXECUTE FUNCTION prevent_supplier_credit_ledger_mutation()
+                    """))
+        elif session.bind.dialect.name == "sqlite":
+            for tbl in ("procurement_supplier_credit_notes", "procurement_supplier_credit_allocations"):
+                if tbl in table_names:
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_update
+                        BEFORE UPDATE ON "{tbl}"
+                        BEGIN SELECT RAISE(ABORT, 'Supplier credit ledger records are append-only'); END
+                    """))
+                    session.execute(text(f"""
+                        CREATE TRIGGER trg_{tbl}_immutable_delete
+                        BEFORE DELETE ON "{tbl}"
+                        BEGIN SELECT RAISE(ABORT, 'Supplier credit ledger records are append-only'); END
                     """))
 
         # Delete child rows first; requests reference executed payment ledger rows.
@@ -475,7 +536,7 @@ def scrub_sandbox_database(sandbox_db: str, sandbox_password: Optional[str] = No
                     BEGIN SELECT RAISE(ABORT, 'Notification configuration audit is append-only'); END
                 """))
 
-        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables - immutable_governance_tables - immutable_audit_export_tables - {"procurement_reconciliation_notification_outbox"}:
+        for tbl in PURGED_LOG_TABLES - immutable_finance_tables - immutable_bank_tables - immutable_investigation_tables - immutable_governance_tables - immutable_audit_export_tables - immutable_pharmacy_adjustment_tables - {"procurement_reconciliation_notification_outbox"}:
             if tbl in table_names:
                 session.execute(text(f'DELETE FROM "{tbl}"'))  # nosec B608
                 stats["purged_tables"] += 1

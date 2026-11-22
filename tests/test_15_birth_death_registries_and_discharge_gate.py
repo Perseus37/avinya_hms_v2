@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def test_01_maternity_birth_registration_auto_creates_newborn_patient_mrn_and_prints_certificate(
@@ -77,6 +77,33 @@ def test_02_statutory_mccd_death_certification_releases_bed_closes_encounter_and
     p = client.post("/v1/api/patients", headers=doctor_headers, json={"full_name": "MCCD Patient", "date_of_birth": "1945-02-10T00:00:00Z", "gender": "MALE"}).json()
     enc = client.post("/v1/api/adt/encounters", headers=doctor_headers, json={"patient_id": p["id"], "encounter_type": "IPD", "primary_doctor_id": 2, "department_id": 1}).json()
     client.post("/v1/api/adt/admissions", headers=doctor_headers, json={"encounter_id": enc["id"], "admission_type": "EMERGENCY", "admitting_doctor_id": 2, "assigned_bed_id": bed_id})
+
+    # A future death timestamp must be rejected before encounter closure or bed release.
+    future_res = client.post(
+        "/v1/api/registries/deaths",
+        headers=doctor_headers,
+        json={
+            "encounter_id": enc["id"],
+            "immediate_cause_diagnosis_id": 1,
+            "time_of_death": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+            "manner_of_death": "NATURAL",
+        },
+    )
+    assert future_res.status_code == 422
+    error_message = future_res.json().get("message") or future_res.json().get("detail", "")
+    assert "cannot be in the future" in error_message.lower()
+    enc_after_rejection = client.get(f"/v1/api/adt/encounters/{enc['id']}", headers=doctor_headers).json()
+    assert enc_after_rejection["status"] == "ACTIVE"
+    ward_map = client.get("/v1/api/ip/beds/map-view", headers=superuser_headers)
+    assert ward_map.status_code == 200, ward_map.text
+    rejected_bed = next(
+        bed
+        for ward in ward_map.json()
+        for room in ward["rooms"]
+        for bed in room["beds"]
+        if bed["id"] == bed_id
+    )
+    assert rejected_bed["status"] == "OCCUPIED"
 
     d_res = client.post(
         "/v1/api/registries/deaths",

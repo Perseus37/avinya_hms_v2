@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-acl-grant-inventory.schema.json",
+  "title": "AUD-004 ACL Grant and Inventory Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "cluster_id",
+    "postgres_major",
+    "policy_generation",
+    "grants",
+    "inventory",
+    "attestation"
+  ],
+  "properties": {
+    "cluster_id": {
+      "type": "string"
+    },
+    "postgres_major": {
+      "type": "integer",
+      "minimum": 12
+    },
+    "policy_generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "grants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "database_id",
+          "object",
+          "grantor_role_id",
+          "grantee_role_id",
+          "privilege",
+          "grant_option"
+        ],
+        "properties": {
+          "database_id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "class",
+              "schema_name",
+              "object_name",
+              "identity_arguments"
+            ],
+            "properties": {
+              "class": {
+                "enum": [
+                  "DATABASE",
+                  "SCHEMA",
+                  "TABLE",
+                  "VIEW",
+                  "MATERIALIZED_VIEW",
+                  "SEQUENCE",
+                  "ROUTINE",
+                  "TYPE",
+                  "DOMAIN",
+                  "LANGUAGE",
+                  "EXTENSION"
+                ]
+              },
+              "schema_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "object_name": {
+                "type": "string"
+              },
+              "identity_arguments": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "grantor_role_id": {
+            "type": "string"
+          },
+          "grantee_role_id": {
+            "type": "string"
+          },
+          "privilege": {
+            "type": "string"
+          },
+          "grant_option": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_evidence_digest",
+        "database_ids",
+        "role_ids",
+        "membership_digest",
+        "object_inventory_digest",
+        "default_acl_digest",
+        "inaccessible_scopes",
+        "counts",
+        "collection_evidence_ref"
+      ],
+      "properties": {
+        "root_evidence_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "database_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "role_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "membership_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "object_inventory_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "default_acl_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "inaccessible_scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "databases",
+            "roles",
+            "memberships",
+            "objects",
+            "default_acl_entries"
+          ],
+          "properties": {
+            "databases": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "roles": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "memberships": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "objects": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "default_acl_entries": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "collection_evidence_ref": {
+          "type": "string"
+        }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_digest",
+        "inventory_digest",
+        "verifier_id",
+        "verifier_version",
+        "result",
+        "signature_ref"
+      ],
+      "properties": {
+        "policy_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "inventory_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "verifier_id": {
+          "type": "string"
+        },
+        "verifier_version": {
+          "type": "string"
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "UNKNOWN"
+          ]
+        },
+        "signature_ref": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -2763,8 +2763,13 @@ def get_pharmacy_and_therapeutics_analytics(
     inventory_value = InventoryBatch.stock_quantity * InventoryBatch.unit_price_paise
     expiry_buckets = [
         (
+            "expired_stock_paise",
+            InventoryBatch.expiry_date < now_utc,
+        ),
+        (
             "expiring_0_to_30_days_paise",
-            InventoryBatch.expiry_date < now_utc + timedelta(days=31),
+            (InventoryBatch.expiry_date >= now_utc)
+            & (InventoryBatch.expiry_date < now_utc + timedelta(days=31)),
         ),
         (
             "expiring_31_to_60_days_paise",

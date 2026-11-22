@@ -1,10 +1,11 @@
 """Statutory Indian Payroll Deduction & Compliance Engine for Avinya HMS (M-05).
 
 Calculates Indian statutory deductions (Employees' Provident Fund [EPF],
-Employees' State Insurance [ESI], Professional Tax [PT], and Tax Deducted at Source [TDS])
+Employees' State Insurance (ESI), Professional Tax (PT), and Tax Deducted at Source [TDS])
 and employer matching contributions.
 """
 
+import re
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 
@@ -12,8 +13,9 @@ from typing import Any, Optional
 # Indian Statutory Constants
 STATUTORY_PF_WAGE_CEILING_PAISE = 1_500_000  # ₹15,000 per month
 STATUTORY_ESI_GROSS_THRESHOLD_PAISE = 2_100_000  # ₹21,000 per month
-STANDARD_PROFESSIONAL_TAX_PAISE = 20_000  # ₹200 per month
-PROFESSIONAL_TAX_MIN_GROSS_PAISE = 1_500_000  # ₹15,000 per month
+# PT schedules are deliberately allow-listed. Add a state only after its
+# current statutory schedule and effective dates have been reviewed.
+SUPPORTED_PROFESSIONAL_TAX_STATES = {"KA"}
 
 EPF_EMPLOYEE_RATE = Decimal("0.12")
 EPF_EMPLOYER_RATE = Decimal("0.12")
@@ -32,6 +34,7 @@ def calculate_indian_statutory_deductions(
     uncapped_pf: bool = False,
     custom_tds_paise: int = 0,
     state: str = "KA",
+    payroll_period: str,
 ) -> dict[str, Any]:
     """
     Computes statutory deductions and employer contributions under Indian labour law.
@@ -89,9 +92,37 @@ def calculate_indian_statutory_deductions(
         esi_employer = 0
 
     # 3. Professional Tax (PT)
-    if gross_paise >= PROFESSIONAL_TAX_MIN_GROSS_PAISE:
-        pt_paise = STANDARD_PROFESSIONAL_TAX_PAISE
+    # Karnataka raised the salary threshold from ₹15,000 to ₹25,000
+    # effective 2023-04. The 2025-04 amendment retained that threshold and
+    # changed February's deduction from ₹200 to ₹300.
+    normalized_state = state.strip().upper()
+    if normalized_state not in SUPPORTED_PROFESSIONAL_TAX_STATES:
+        raise ValueError(
+            f"Professional Tax schedule for state '{normalized_state}' is not configured; "
+            "payroll calculation is blocked rather than applying another state's rate."
+        )
+    try:
+        if not isinstance(payroll_period, str) or re.fullmatch(
+            r"[0-9]{4}-(0[1-9]|1[0-2])", payroll_period
+        ) is None:
+            raise ValueError
+        period_year = int(payroll_period[:4])
+        period_month = int(payroll_period[5:])
+        if period_year < 1:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError("payroll_period must use YYYY-MM format with a valid positive year and month.") from exc
+
+    if (period_year, period_month) >= (2025, 4):
+        pt_threshold_paise = 2_500_000  # ₹25,000
+        pt_paise = 30_000 if period_month == 2 else 20_000
+    elif (period_year, period_month) >= (2023, 4):
+        pt_threshold_paise = 2_500_000  # ₹25,000 from 2023-04
+        pt_paise = 20_000
     else:
+        pt_threshold_paise = 1_500_000  # ₹15,000 before 2023-04
+        pt_paise = 20_000
+    if gross_paise < pt_threshold_paise:
         pt_paise = 0
 
     # 4. Tax Deducted at Source (TDS)
@@ -113,7 +144,7 @@ def calculate_indian_statutory_deductions(
         "tds_paise": tds_paise,
         "total_employee_statutory_paise": total_employee_statutory,
         "total_employer_statutory_paise": total_employer_statutory,
-        "state": state.upper(),
+        "state": normalized_state,
+        "payroll_period": payroll_period,
         "regime": "IN_STATUTORY_2026",
     }
-

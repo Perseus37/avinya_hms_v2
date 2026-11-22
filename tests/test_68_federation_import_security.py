@@ -7,8 +7,8 @@ def test_federated_import_rejects_tampered_discovery_payload(
     """Federated import must not accept edited demographics from the caller."""
     sun_client = client.post(
         "/v1/api/federation/clients",
-        headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-BLR-01", "name": "Sunrise Import Security"},
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "Sunrise Import Security"},
     ).json()
 
     client.post(
@@ -38,11 +38,11 @@ def test_federated_import_rejects_tampered_discovery_payload(
         json=payload,
     )
     assert imported.status_code == 409
-    assert "changed since discovery" in imported.json()["message"]
+    assert "modified" in imported.json()["message"].lower()
 
 
-def test_federated_import_requires_indexed_source_mrn(client, superuser_headers):
-    """The import endpoint must not become a generic patient-creation API."""
+def test_federated_import_rejects_unverified_payload_without_receipt(client, superuser_headers):
+    """An unverified body cannot probe the index or become a generic patient-creation API."""
     payload = {
         "source_mrn": "MRN-NOT-IN-DISCOVERY",
         "full_name": "Fabricated Patient",
@@ -63,8 +63,8 @@ def test_federated_import_requires_indexed_source_mrn(client, superuser_headers)
         headers=superuser_headers,
         json=payload,
     )
-    assert response.status_code == 404
-    assert "not currently indexed" in response.json()["message"]
+    assert response.status_code == 409
+    assert "discovery receipt" in response.json()["message"].lower()
 
 
 def test_federation_does_not_discover_patients_through_missing_phone_placeholder(
@@ -170,8 +170,8 @@ def test_federated_import_respects_source_allergy_sharing_setting(
 
     partner = client.post(
         "/v1/api/federation/clients",
-        headers=sunrise_admin_headers,
-        json={"branch_code": "SUN-BLR-01", "name": "Allergy Privacy Import Partner"},
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "Allergy Privacy Import Partner"},
     )
     assert partner.status_code == 201, partner.text
 
@@ -234,3 +234,80 @@ def test_federated_import_respects_source_allergy_sharing_setting(
             policy.federation_share_allergies = original_setting
             source_db.commit()
 
+
+def test_federated_import_retry_reconciles_missing_destination_pointer(
+    client,
+    multi_tenant_env,
+    superuser_headers,
+    apollo_admin_headers,
+):
+    """An exact import retry repairs a pointer missing after the destination commit."""
+    from backend.control_plane.models import GlobalPatientPointer
+
+    partner = client.post(
+        "/v1/api/federation/clients",
+        headers=superuser_headers,
+        json={"branch_code": "HQ-HYD-01", "name": "Pointer Recovery Partner"},
+    )
+    assert partner.status_code == 201, partner.text
+
+    source_patient = client.post(
+        "/v1/api/patients",
+        headers=apollo_admin_headers,
+        json={
+            "full_name": "Pointer Recovery Patient",
+            "date_of_birth": "1989-08-09T00:00:00Z",
+            "gender": "FEMALE",
+            "phone_number": "9000088877",
+            "abha_number": "ABHA-POINTER-RECOVERY-01",
+        },
+    )
+    assert source_patient.status_code == 201, source_patient.text
+
+    discovered = client.get(
+        "/v1/api/federation/patients/discover?abha_number=ABHA-POINTER-RECOVERY-01&purpose=CONTINUITY_OF_CARE",
+        headers={"X-Federation-API-Key": partner.json()["raw_api_key"]},
+    )
+    assert discovered.status_code == 200, discovered.text
+
+    first_import = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=discovered.json(),
+    )
+    assert first_import.status_code == 201, first_import.text
+    imported_patient = first_import.json()
+
+    ControlSession = multi_tenant_env["control_session_factory"]
+    with ControlSession() as control_db:
+        pointer = (
+            control_db.query(GlobalPatientPointer)
+            .filter(
+                GlobalPatientPointer.branch_code == "HQ-HYD-01",
+                GlobalPatientPointer.source_mrn == imported_patient["mrn"],
+            )
+            .one()
+        )
+        control_db.delete(pointer)
+        control_db.commit()
+
+    # The destination patient still exists, but its control-plane pointer is absent.
+    # The same validated receipt must return that patient and republish the pointer.
+    retry = client.post(
+        "/v1/api/federation/patients/import",
+        headers=superuser_headers,
+        json=discovered.json(),
+    )
+    assert retry.status_code == 201, retry.text
+    assert retry.json()["id"] == imported_patient["id"]
+
+    with ControlSession() as control_db:
+        repaired_pointer = (
+            control_db.query(GlobalPatientPointer)
+            .filter(
+                GlobalPatientPointer.branch_code == "HQ-HYD-01",
+                GlobalPatientPointer.source_mrn == imported_patient["mrn"],
+            )
+            .one_or_none()
+        )
+        assert repaired_pointer is not None

@@ -1,0 +1,376 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://avinya.example/schemas/aud004-trust-inventory-evidence.schema.json",
+  "title": "AUD-004 Provider Trust Inventory Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "provider",
+    "root_scope",
+    "snapshot",
+    "pages",
+    "resources",
+    "edges",
+    "exceptions",
+    "reconciliation",
+    "witness"
+  ],
+  "properties": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "api_version",
+        "collection_principal"
+      ],
+      "properties": {
+        "provider_id": {
+          "type": "string"
+        },
+        "api_version": {
+          "type": "string"
+        },
+        "collection_principal": {
+          "type": "string"
+        }
+      }
+    },
+    "root_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "organization_ids",
+        "account_ids",
+        "project_ids",
+        "regions",
+        "source_evidence_digest"
+      ],
+      "properties": {
+        "organization_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "account_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "project_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "regions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "source_evidence_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_id",
+        "consistency_model",
+        "started_at",
+        "completed_at",
+        "generation"
+      ],
+      "properties": {
+        "snapshot_id": {
+          "type": "string"
+        },
+        "consistency_model": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope_id",
+          "sequence",
+          "request_cursor_digest",
+          "next_cursor_digest",
+          "response_digest",
+          "item_count",
+          "collection_status"
+        ],
+        "properties": {
+          "scope_id": {
+            "type": "string"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "request_cursor_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_cursor_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "response_digest": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{64}$"
+          },
+          "item_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "collection_status": {
+            "enum": [
+              "COLLECTED",
+              "INACCESSIBLE",
+              "UNSUPPORTED",
+              "ERROR"
+            ]
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "resource_id",
+          "scope_id",
+          "resource_type",
+          "lifecycle_status",
+          "evidence_digest"
+        ],
+        "properties": {
+          "resource_id": {
+            "type": "string"
+          },
+          "scope_id": {
+            "type": "string"
+          },
+          "resource_type": {
+            "type": "string"
+          },
+          "lifecycle_status": {
+            "enum": [
+              "ACTIVE",
+              "DELETED",
+              "EXCLUDED",
+              "UNKNOWN"
+            ]
+          },
+          "evidence_digest": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "edge_id",
+          "from_resource_id",
+          "to_resource_id",
+          "capability",
+          "evidence_digest"
+        ],
+        "properties": {
+          "edge_id": {
+            "type": "string"
+          },
+          "from_resource_id": {
+            "type": "string"
+          },
+          "to_resource_id": {
+            "type": "string"
+          },
+          "capability": {
+            "type": "string"
+          },
+          "evidence_digest": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "exceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "scope_id",
+          "classification",
+          "reason",
+          "approval_ref",
+          "expires_at"
+        ],
+        "properties": {
+          "scope_id": {
+            "type": "string"
+          },
+          "classification": {
+            "enum": [
+              "INACCESSIBLE",
+              "UNSUPPORTED",
+              "EXCLUDED",
+              "DELETED",
+              "UNKNOWN"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "approval_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_digest",
+        "snapshot_digest",
+        "resource_count",
+        "edge_count",
+        "page_count",
+        "unresolved_scope_count",
+        "verifier_id",
+        "verifier_version",
+        "result",
+        "graph_digest"
+      ],
+      "properties": {
+        "root_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "snapshot_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "resource_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "edge_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "page_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unresolved_scope_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "verifier_id": {
+          "type": "string"
+        },
+        "verifier_version": {
+          "type": "string"
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "UNKNOWN"
+          ]
+        },
+        "graph_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        }
+      }
+    },
+    "witness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "witness_id",
+        "trust_root_ref",
+        "attested_generation",
+        "attested_graph_digest",
+        "issued_at",
+        "signature_ref"
+      ],
+      "properties": {
+        "witness_id": {
+          "type": "string"
+        },
+        "trust_root_ref": {
+          "type": "string"
+        },
+        "attested_generation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "attested_graph_digest": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "signature_ref": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

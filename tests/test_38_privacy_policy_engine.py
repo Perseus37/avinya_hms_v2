@@ -1,6 +1,7 @@
 import json
 import importlib
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -128,6 +129,7 @@ NON_PATIENT_OR_DEFERRED_GET_ROUTES = {
     "/api/procurement/purchase-orders/{po_id}/print",
     "/api/procurement/supplier-payment-requests",
     "/api/procurement/supplier-payments",
+    "/api/procurement/supplier-credits",
     "/api/procurement/bank-statements",
     "/api/procurement/bank-statements/{batch_id}/lines",
     "/api/procurement/bank-statement-lines/{line_id}/matches",
@@ -440,6 +442,7 @@ def test_route_registry_coverage_and_unknown_policy_points_fail_validation():
         "billing.invoices.pdf",
         "pharmacy.prescriptions.search",
         "pharmacy.prescriptions.read",
+        "pharmacy.inventory.adjustments.read",
         "pharmacy.prescription.print",
         "diagnostics.orders.search",
         "diagnostics.orders.read",
@@ -1846,3 +1849,80 @@ def test_consent_carry_over_does_not_resurrect_withdrawn_consent(
 
         w_c = db.query(PatientConsentRecord).filter_by(patient_id=p_w_id, policy_revision_id=rev2_id).first()
         assert w_c is None
+
+
+def test_dpdp_access_summary_excludes_withdrawn_declined_and_expired_consents(
+    client, multi_tenant_env, superuser_headers
+):
+    engine = multi_tenant_env["tenant_engines"]["hms_default"]
+    now = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        doctor = db.query(User).filter_by(email="doctor@default.com").one()
+        patient = Patient(
+            mrn="DPDP-SUMMARY-STATE-001",
+            full_name="Synthetic Consent Summary Patient",
+            gender=GenderEnum.OTHER,
+            phone_number="+919876543210",
+            date_of_birth=datetime(1990, 1, 1, tzinfo=timezone.utc),
+            is_active=True,
+        )
+        db.add(patient)
+        db.flush()
+        patient_id = patient.id
+        rows = [
+            PatientConsentRecord(patient_id=patient_id, consent_type="DATA_SHARING", purpose="LAB_SHARING", decision="GRANTED", source="WRITTEN", scope_type="recipient", scope_key="withdrawn-lab", recorded_by_user_id=doctor.id, recorded_at=now-timedelta(minutes=4)),
+            PatientConsentRecord(patient_id=patient_id, consent_type="DATA_SHARING", purpose="LAB_SHARING", decision="WITHDRAWN", source="WRITTEN", scope_type="recipient", scope_key="withdrawn-lab", recorded_by_user_id=doctor.id, recorded_at=now-timedelta(minutes=3)),
+            PatientConsentRecord(patient_id=patient_id, consent_type="RESEARCH", purpose="RESEARCH_USE", decision="DECLINED", source="WRITTEN", scope_type="patient", scope_key=None, recorded_by_user_id=doctor.id, recorded_at=now-timedelta(minutes=2)),
+            PatientConsentRecord(patient_id=patient_id, consent_type="DATA_SHARING", purpose="LAB_SHARING", decision="GRANTED", source="WRITTEN", scope_type="recipient", scope_key="expired-lab", expires_at=now-timedelta(minutes=1), recorded_by_user_id=doctor.id, recorded_at=now-timedelta(minutes=1)),
+            PatientConsentRecord(patient_id=patient_id, consent_type="DATA_SHARING", purpose="LAB_SHARING", decision="GRANTED", source="WRITTEN", scope_type="recipient", scope_key="active-lab", recorded_by_user_id=doctor.id, recorded_at=now),
+        ]
+        db.add_all(rows)
+        db.commit()
+
+    response = client.get(
+        f"/v1/api/privacy/data-rights/patients/{patient_id}/summary",
+        headers=superuser_headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [item["scope_key"] for item in body["active_consents"]] == ["active-lab"]
+    states = {}
+    for item in body["consent_history"]:
+        if item["scope_key"]:
+            states.setdefault(item["scope_key"], []).append(item["state"])
+    assert "WITHDRAWN" in states["withdrawn-lab"]
+    assert "SUPERSEDED" in states["withdrawn-lab"]
+    assert states["expired-lab"] == ["EXPIRED"]
+    assert states["active-lab"] == ["ACTIVE"]
+    assert any(item["decision"] == "DECLINED" and item["state"] == "DECLINED" for item in body["consent_history"])
+
+
+
+def test_dpdp_summary_latest_decision_supersedes_across_policy_revisions_and_types():
+    from backend.domains.privacy.router import _consent_access_summary
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        SimpleNamespace(
+            id=3, consent_type="CARE", purpose="LAB_SHARING",
+            scope_type="recipient", scope_key="lab-a", policy_revision_id=11,
+            decision="WITHDRAWN", expires_at=None, recorded_at=now,
+        ),
+        SimpleNamespace(
+            id=2, consent_type="DATA_SHARING", purpose="LAB_SHARING",
+            scope_type="recipient", scope_key="lab-a", policy_revision_id=11,
+            decision="GRANTED", expires_at=None, recorded_at=now-timedelta(days=1),
+        ),
+        SimpleNamespace(
+            id=1, consent_type="DATA_SHARING", purpose="LAB_SHARING",
+            scope_type="recipient", scope_key="lab-a", policy_revision_id=10,
+            decision="GRANTED", expires_at=None, recorded_at=now-timedelta(days=2),
+        ),
+    ]
+
+    active, history = _consent_access_summary(rows, now)
+
+    assert active == []
+    assert [item["state"] for item in history] == [
+        "WITHDRAWN", "SUPERSEDED", "SUPERSEDED"
+    ]

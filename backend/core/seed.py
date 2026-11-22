@@ -101,6 +101,7 @@ GRANULAR_PERMISSIONS = [
     ("emr:write", "Update electronic medical records", "ClinicalMDM"),
     ("executive_bi:read", "View executive business intelligence and reports", "Billing"),
     ("finance:approve", "Approve accounts payable, vendor bills, and expenses", "Billing"),
+    ("finance:read", "View accounts payable, supplier credits, and financial records", "Billing"),
     ("finance:pay", "Execute financial payments and disburse funds", "Billing"),
     ("finance:write", "Create accounts payable entries and expenses", "Billing"),
     ("insurance:read", "View insurance policies, TPAs, and claims", "Billing"),
@@ -186,10 +187,13 @@ def seed_universal_hospital_data(
     perm_map = ensure_permissions_exist(db)
 
     if db.query(User).first():
-        # Idempotently grant the tenant-branding permission to existing system admins.
+        # Idempotently grant newly introduced permissions to roles in existing tenants.
         existing_admin_role = db.query(Role).filter(Role.code == "ROLE_ADMIN").first()
         if existing_admin_role and perm_map["config:write"] not in existing_admin_role.permissions:
             existing_admin_role.permissions.append(perm_map["config:write"])
+        existing_billing_role = db.query(Role).filter(Role.code == "ROLE_BILLING").first()
+        if existing_billing_role and perm_map["finance:read"] not in existing_billing_role.permissions:
+            existing_billing_role.permissions.append(perm_map["finance:read"])
         db.commit()
         return False
 
@@ -262,6 +266,7 @@ def seed_universal_hospital_data(
     role_billing.permissions.extend([
         perm_map["patients:read"], perm_map["billing:read"], perm_map["billing:write"],
         perm_map["procurement:approve"],
+        perm_map["finance:read"],
     ])
     role_auditor.permissions.extend([
         perm for code, perm in perm_map.items()
