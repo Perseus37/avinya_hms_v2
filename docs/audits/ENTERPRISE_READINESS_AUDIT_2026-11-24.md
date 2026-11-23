@@ -405,6 +405,27 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 5. Add negative tests for unknown purposes, purpose/scope mismatch, cross-destination replay, revoked capability, expired capability, and attempts to obtain demographics/allergies outside the authorized category.
 6. Keep remote emergency disclosure disabled until its stronger actor, purpose, and emergency authorization protocol is independently validated.
 
+### ER-019 — CPOE allergy pre-check can disclose patient allergy details without a patient privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/clinical/router.py`, `run_cpoe_allergy_check()` (POST `/api/clinical/cpoe/allergy-check`, also aliased as `/api/clinical/orders/check-allergy`): accepts `patient_id` and `allergen_keywords`; its only dependency is `RequirePermission("patients:read", "pharmacy:write")`.
+- The handler calls `check_allergy_hard_stop()` directly. It does not load/validate an active patient, call `evaluate_tenant_data_use()`, or attach a registered `x-privacy-data-use-point`.
+- `backend/domains/clinical/services.py`, `check_allergy_hard_stop()`: queries active severe/anaphylactic `PatientAllergy` rows for the supplied patient ID. On a match it raises HTTP 409 with the allergy name, severity, reaction description, and an order-blocked message. A non-match returns `{"status":"SAFE"}`.
+- `backend/domains/privacy/data_use_points.py` has no data-use point for either CPOE allergy-check route. Existing points cover patient MPI/allergy reads and pharmacy prescription reads, but not this pre-check disclosure.
+- The existing general permission check does not establish that the caller is permitted to access the selected patient's allergy record under the active privacy policy.
+
+**Impact:** A user with either broad `patients:read` or `pharmacy:write` permission can submit arbitrary patient IDs and medication keywords to test for severe allergies. The response can disclose allergy names and reaction details, or confirm absence of a matching severe allergy, without a patient-specific privacy decision. This is a concrete disclosure path, not merely missing test coverage.
+
+**Required closure evidence:**
+1. Resolve the patient from the tenant database and return a consistent not-found response for missing/inactive patients.
+2. Add a dedicated registered data-use point for CPOE allergy safety checks and evaluate the active patient privacy policy before returning allergy-dependent results.
+3. Define the clinical safety behavior when privacy policy denies a pre-check; do not silently return `SAFE` or bypass an allergy hard-stop. Use a clinically governed denial/exception workflow.
+4. Minimize response details to the authorized clinical need; avoid exposing reaction text to callers who only need a hard-stop result.
+5. Add negative tests for denied consent/policy, inactive/nonexistent patient, unauthorized role, no matching allergy, matching severe allergy, and both route aliases.
+6. Verify audit events identify the actor, patient, data-use point, decision, and time without unnecessarily duplicating sensitive reaction text.
+
 ## 8. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
