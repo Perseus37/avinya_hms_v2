@@ -4,7 +4,7 @@
 -- =========================================================================
 
 -- 1. Create dedicated system roles if they do not exist
-DO $$
+DO $roles$
 BEGIN
     -- Application Runtime Role (DML only: SELECT, INSERT, UPDATE, DELETE)
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hms_app') THEN
@@ -25,7 +25,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hms_exporter') THEN
         CREATE ROLE hms_exporter WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT;
     END IF;
-END $;
+END $roles$;
 
 -- pg_monitor must be inherited by the exporter login; NOINHERIT would make
 -- the membership ineffective for ordinary exporter connections.
