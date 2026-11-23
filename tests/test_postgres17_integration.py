@@ -416,7 +416,7 @@ def test_postgres_exporter_role_can_read_stats_but_not_application_tables():
         ) as connection:
             connection.execute(text(
                 f'CREATE ROLE "{role_name}" LOGIN PASSWORD \'{password}\' '
-                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT"
+                "NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT"
             ))
             role_created = True
             connection.execute(text(f'CREATE DATABASE "{database_name}"'))
