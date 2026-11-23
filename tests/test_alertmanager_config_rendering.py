@@ -20,6 +20,8 @@ def test_production_renderer_rejects_default_internal_webhook(tmp_path, monkeypa
     env_file = _write_env(
         tmp_path / ".env.production",
         ENVIRONMENT="production",
+        SMTP_HOST="smtp.ops.avinya.net",
+        SMTP_FROM="alerts@avinya.net",
         ALERT_EMAIL_TO="oncall@avinya.net",
     )
 
@@ -34,6 +36,8 @@ def test_production_renderer_requires_real_on_call_recipient(tmp_path):
     env_file = _write_env(
         tmp_path / ".env.production",
         ENVIRONMENT="production",
+        SMTP_HOST="smtp.ops.avinya.net",
+        SMTP_FROM="alerts@avinya.net",
         ALERT_DEFAULT_WEBHOOK_URL="https://alerts.ops.avinya.net/hooks/avinya",
         ALERT_EMAIL_TO="oncall@avinya-hms.local",
     )
