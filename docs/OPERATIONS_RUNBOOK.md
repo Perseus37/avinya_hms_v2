@@ -1111,7 +1111,7 @@ not enabled, so this exporter does not enumerate tenant databases.
    the non-root exporter container. Keep the parent directory traversable by
    that UID/GID without making the secret directory world-readable.
 4. As a PostgreSQL administrator, set the role password interactively with
-   `\\password hms_exporter` and grant CONNECT only to the configured
+   `\password hms_exporter` and grant CONNECT only to the configured
    `POSTGRES_DB` (the example configuration uses `hms_default`):
    `GRANT CONNECT ON DATABASE hms_default TO hms_exporter;`
    If `POSTGRES_DB` differs, substitute its exact configured database name.
