@@ -393,3 +393,95 @@ def test_postgresql_operative_record_write_serializes_with_terminal_surgery_tran
             connection.execute(text(f'DROP TABLE IF EXISTS "{records}"'))
             connection.execute(text(f'DROP TABLE IF EXISTS "{schedules}"'))
         engine.dispose()
+
+
+def test_postgres_exporter_role_can_read_stats_but_not_application_tables():
+    """pg_monitor is sufficient for exporter statistics, not application data access."""
+    from sqlalchemy.exc import ProgrammingError
+
+    admin_url = make_url(os.environ["POSTGRES17_TEST_URL"]).set(
+        drivername="postgresql+psycopg2"
+    )
+    admin_engine = create_engine(admin_url)
+    suffix = uuid.uuid4().hex[:10]
+    database_name = f"exporter_ci_{suffix}"
+    role_name = f"exporter_ci_{suffix}"
+    password = secrets.token_urlsafe(32)
+    database_created = False
+    role_created = False
+
+    try:
+        with admin_engine.connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        ) as connection:
+            connection.execute(
+                text(f'CREATE ROLE "{role_name}" LOGIN PASSWORD :password '
+                     "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT"),
+                {"password": password},
+            )
+            role_created = True
+            connection.execute(text(f'CREATE DATABASE "{database_name}"'))
+            database_created = True
+            connection.execute(text(f'GRANT pg_monitor TO "{role_name}"'))
+            connection.execute(
+                text(f'GRANT CONNECT ON DATABASE "{database_name}" TO "{role_name}"')
+            )
+
+        target_url = admin_url.set(database=database_name).render_as_string(
+            hide_password=False
+        )
+        owner_engine = create_engine(target_url)
+        try:
+            with owner_engine.begin() as connection:
+                connection.execute(text(
+                    "CREATE TABLE public.exporter_private_probe "
+                    "(id integer PRIMARY KEY, patient_note text NOT NULL)"
+                ))
+                connection.execute(text(
+                    "INSERT INTO public.exporter_private_probe "
+                    "(id, patient_note) VALUES (1, 'must-not-be-readable')"
+                ))
+        finally:
+            owner_engine.dispose()
+
+        exporter_url = admin_url.set(
+            database=database_name,
+            username=role_name,
+            password=password,
+        ).render_as_string(hide_password=False)
+        exporter_engine = create_engine(exporter_url)
+        try:
+            with exporter_engine.connect() as connection:
+                assert connection.execute(
+                    text("SELECT count(*) FROM pg_stat_activity")
+                ).scalar_one() >= 1
+                assert connection.execute(
+                    text("SELECT has_table_privilege(current_user, "
+                         "'public.exporter_private_probe', 'SELECT')")
+                ).scalar_one() is False
+                with pytest.raises(ProgrammingError):
+                    connection.execute(
+                        text("SELECT patient_note FROM public.exporter_private_probe")
+                    )
+                connection.rollback()
+                with pytest.raises(ProgrammingError):
+                    connection.execute(
+                        text("CREATE TABLE public.exporter_must_not_create (id integer)")
+                    )
+                connection.rollback()
+        finally:
+            exporter_engine.dispose()
+    finally:
+        with admin_engine.connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        ) as connection:
+            if database_created:
+                connection.execute(
+                    text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                         "WHERE datname = :database_name AND pid <> pg_backend_pid()"),
+                    {"database_name": database_name},
+                )
+                connection.execute(text(f'DROP DATABASE IF EXISTS "{database_name}"'))
+            if role_created:
+                connection.execute(text(f'DROP ROLE IF EXISTS "{role_name}"'))
+        admin_engine.dispose()
