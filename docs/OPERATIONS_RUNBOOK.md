@@ -1111,13 +1111,20 @@ not enabled, so this exporter does not enumerate tenant databases.
    the non-root exporter container. Keep the parent directory traversable by
    that UID/GID without making the secret directory world-readable.
 4. As a PostgreSQL administrator, set the role password interactively with
-   `\password hms_exporter` and grant CONNECT only to the configured
+   `\password hms_exporter` and grant CONNECT to the configured
    `POSTGRES_DB` (the example configuration uses `hms_default`):
    `GRANT CONNECT ON DATABASE hms_default TO hms_exporter;`
    If `POSTGRES_DB` differs, substitute its exact configured database name.
 5. Validate the deployment configuration, then deploy during an approved
    maintenance window. Confirm the Prometheus `postgres` target is UP and
    inspect exporter logs for authentication or permission errors.
+
+The configured exporter DSN is pinned to `POSTGRES_DB`; this is an operational
+scope boundary, not proof that PostgreSQL denies the role access to every other
+database. PostgreSQL installations commonly retain `CONNECT` for `PUBLIC` by
+default. Do not revoke `PUBLIC` database access as part of this change; first
+inventory effective ACLs and dependent services, then review any stricter
+per-database or `pg_hba.conf` isolation separately.
 
 The `pg_monitor` predefined role exposes PostgreSQL monitoring statistics; it
 does not grant table SELECT/INSERT/UPDATE/DELETE privileges. Do not grant
