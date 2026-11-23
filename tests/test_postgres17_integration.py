@@ -406,7 +406,7 @@ def test_postgres_exporter_role_can_read_stats_but_not_application_tables():
     suffix = uuid.uuid4().hex[:10]
     database_name = f"exporter_ci_{suffix}"
     role_name = f"exporter_ci_{suffix}"
-    password = secrets.token_urlsafe(32)
+    password = secrets.token_hex(32)
     database_created = False
     role_created = False
 
@@ -414,11 +414,10 @@ def test_postgres_exporter_role_can_read_stats_but_not_application_tables():
         with admin_engine.connect().execution_options(
             isolation_level="AUTOCOMMIT"
         ) as connection:
-            connection.execute(
-                text(f'CREATE ROLE "{role_name}" LOGIN PASSWORD :password '
-                     "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT"),
-                {"password": password},
-            )
+            connection.execute(text(
+                f'CREATE ROLE "{role_name}" LOGIN PASSWORD \'{password}\' '
+                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT"
+            ))
             role_created = True
             connection.execute(text(f'CREATE DATABASE "{database_name}"'))
             database_created = True
