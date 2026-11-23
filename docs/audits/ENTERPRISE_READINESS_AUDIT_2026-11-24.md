@@ -345,6 +345,42 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 3. If exceptions are allowed, add a typed override field, mandatory reason, permission check, actor attribution, and audit event.
 4. Add API contract tests for both normal FEFO and authorized exception behavior.
 
+### ER-016 — Payment reversal deletes the original receipt instead of preserving a reversal ledger
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/billing/router.py`, `reverse_payment()`: after reducing invoice paid balance and restoring an advance deposit where applicable, it calls `db.delete(receipt)`.
+- `PaymentReceipt` has no reversal status, reversal timestamp, reversing actor, or reference to a compensating reversal record in `backend/domains/billing/models.py`.
+- The current payment reversal test verifies balance restoration and subsequent invoice voiding, but does not assert preservation of the original receipt or a reversal ledger entry.
+
+**Impact:** The original receipt is removed from the operational payment table. A financial audit trail should preserve the original receipt and record a compensating reversal with actor, reason, time, and external bank/provider reference. This is especially important for disputes, reconciliation, GST/accounting evidence, and incident reconstruction.
+
+**Required closure evidence:**
+1. Make payment receipts immutable after posting.
+2. Represent reversals as separate linked records/events; do not delete the original receipt.
+3. Require reversal reason, actor, timestamp, approval policy, and external reversal reference where applicable.
+4. Ensure invoice balances are derived or reconciled from posted receipts and reversal entries.
+5. Add tests proving original receipt retention, repeated-reversal rejection, and exact ledger/balance reconciliation.
+
+### ER-017 — Payment idempotency is optional, so retry safety is caller-dependent
+
+**Severity: P1 / High for online payment methods; P2 / Medium for manually entered cash receipts.**
+
+**Evidence:**
+- `backend/domains/billing/router.py`, `record_payment()`: `Idempotency-Key` is optional and `payload.transaction_reference` is also optional.
+- `backend/domains/billing/schemas.py`, `PaymentReceiptCreate`: transaction reference is optional.
+- `PaymentReceipt` has a unique constraint on `(invoice_id, transaction_reference)`; SQL databases permit multiple NULL values in this composite uniqueness constraint.
+- `tests/test_06_pharmacy_and_billing.py` verifies duplicate prevention when the same idempotency key is supplied, but does not verify behavior when a retry omits both identifiers.
+
+**Impact:** The API prevents duplicate recording only when the caller supplies a stable key/reference. A network retry or repeated request without one can create a second receipt and increase the paid balance. This is not a safe default for UPI/card/provider callbacks.
+
+**Required closure evidence:**
+1. Require an idempotency key for retryable payment submissions and provider callbacks, with a documented retention window and request-payload consistency check.
+2. Enforce uniqueness for provider transaction references and define behavior for missing/duplicate references by payment method.
+3. Persist request outcome so exact retries return the original result while mismatched payload reuse is rejected.
+4. Add concurrent duplicate-request tests and retry tests for UPI, card, cash, insurance, and advance adjustment, as applicable.
+
 ## 8. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
