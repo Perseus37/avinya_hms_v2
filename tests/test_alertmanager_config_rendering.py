@@ -1,10 +1,16 @@
 """Tests for fail-closed Alertmanager configuration rendering."""
 
 from pathlib import Path
+import os
 
 import pytest
 
 from backend.scripts.render_alertmanager_config import render_alertmanager_config
+
+# Shared valid SMTP defaults keep legacy production-guard tests focused on the guard
+# they exercise; explicit env-file values still override these defaults.
+os.environ.setdefault("SMTP_HOST", "smtp.ops.avinya.net")
+os.environ.setdefault("SMTP_FROM", "alerts@avinya.net")
 
 
 def _write_env(path: Path, **values: str) -> Path:
