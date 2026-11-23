@@ -181,7 +181,10 @@ jobs:
           cp .env.production.example .env.production
           mkdir -p .ci/prometheus-secrets
           printf 'ci-validation-token' > .ci/prometheus-secrets/metrics_scrape_token.txt
+          printf 'ci-validation-exporter-password' > .ci/prometheus-secrets/postgres_exporter_password.txt
+          chmod 0400 .ci/prometheus-secrets/*.txt
           sed -i 's#^METRICS_SCRAPE_TOKEN_FILE=.*#METRICS_SCRAPE_TOKEN_FILE=.ci/prometheus-secrets/metrics_scrape_token.txt#' .env.production
+          sed -i 's#^POSTGRES_EXPORTER_PASSWORD_FILE=.*#POSTGRES_EXPORTER_PASSWORD_FILE=.ci/prometheus-secrets/postgres_exporter_password.txt#' .env.production
           docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
 
       - name: Validate Prometheus and Alertmanager configurations
