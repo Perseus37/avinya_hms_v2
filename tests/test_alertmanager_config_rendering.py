@@ -20,7 +20,7 @@ def test_production_renderer_rejects_default_internal_webhook(tmp_path, monkeypa
     env_file = _write_env(
         tmp_path / ".env.production",
         ENVIRONMENT="production",
-        ALERT_EMAIL_TO="oncall@example.org",
+        ALERT_EMAIL_TO="oncall@avinya.net",
     )
 
     with pytest.raises(ValueError, match="circular dummy webhook"):
@@ -34,7 +34,7 @@ def test_production_renderer_requires_real_on_call_recipient(tmp_path):
     env_file = _write_env(
         tmp_path / ".env.production",
         ENVIRONMENT="production",
-        ALERT_DEFAULT_WEBHOOK_URL="https://alerts.example.org/hooks/avinya",
+        ALERT_DEFAULT_WEBHOOK_URL="https://alerts.ops.avinya.net/hooks/avinya",
         ALERT_EMAIL_TO="oncall@avinya-hms.local",
     )
 
@@ -49,11 +49,11 @@ def test_production_renderer_renders_explicit_external_receivers(tmp_path):
     env_file = _write_env(
         tmp_path / ".env.production",
         ENVIRONMENT="production",
-        ALERT_DEFAULT_WEBHOOK_URL="https://alerts.example.org/hooks/avinya",
-        ALERT_EMAIL_TO="oncall@example.org",
-        SMTP_HOST="smtp.example.org",
+        ALERT_DEFAULT_WEBHOOK_URL="https://alerts.ops.avinya.net/hooks/avinya",
+        ALERT_EMAIL_TO="oncall@avinya.net",
+        SMTP_HOST="smtp.ops.avinya.net",
         SMTP_PORT="587",
-        SMTP_FROM="alerts@example.org",
+        SMTP_FROM="alerts@avinya.net",
     )
     output = tmp_path / "alertmanager.yml"
 
@@ -61,12 +61,12 @@ def test_production_renderer_renders_explicit_external_receivers(tmp_path):
 
     rendered = result.read_text(encoding="utf-8")
     assert result == output
-    assert 'smtp_smarthost: "smtp.example.org:587"' in rendered
-    assert 'smtp_from: "alerts@example.org"' in rendered
-    assert 'to: "oncall@example.org"' in rendered
-    assert 'url: "https://alerts.example.org/hooks/avinya"' in rendered
-    assert 'url: "https://alerts.example.org/hooks/avinya?severity=critical"' in rendered
-    assert 'url: "https://alerts.example.org/hooks/avinya?severity=warning"' in rendered
+    assert 'smtp_smarthost: "smtp.ops.avinya.net:587"' in rendered
+    assert 'smtp_from: "alerts@avinya.net"' in rendered
+    assert 'to: "oncall@avinya.net"' in rendered
+    assert 'url: "https://alerts.ops.avinya.net/hooks/avinya"' in rendered
+    assert 'url: "https://alerts.ops.avinya.net/hooks/avinya?severity=critical"' in rendered
+    assert 'url: "https://alerts.ops.avinya.net/hooks/avinya?severity=warning"' in rendered
     assert "${" not in rendered
 
 
@@ -78,6 +78,41 @@ def test_renderer_rejects_non_http_webhook_url(tmp_path):
     )
 
     with pytest.raises(ValueError, match="Must have http or https"):
+        render_alertmanager_config(
+            env_file=env_file,
+            output_file=tmp_path / "alertmanager.yml",
+        )
+
+
+
+def test_production_renderer_rejects_placeholder_smtp_host(tmp_path):
+    env_file = _write_env(
+        tmp_path / ".env.production",
+        ENVIRONMENT="production",
+        SMTP_HOST="smtp.example.com",
+        SMTP_FROM="alerts@avinya.net",
+        ALERT_DEFAULT_WEBHOOK_URL="https://alerts.ops.avinya.net/hooks/avinya",
+        ALERT_EMAIL_TO="oncall@avinya.net",
+    )
+
+    with pytest.raises(ValueError, match="provisioned SMTP_HOST"):
+        render_alertmanager_config(
+            env_file=env_file,
+            output_file=tmp_path / "alertmanager.yml",
+        )
+
+
+def test_production_renderer_requires_https_webhooks(tmp_path):
+    env_file = _write_env(
+        tmp_path / ".env.production",
+        ENVIRONMENT="production",
+        SMTP_HOST="smtp.ops.avinya.net",
+        SMTP_FROM="alerts@avinya.net",
+        ALERT_DEFAULT_WEBHOOK_URL="http://alerts.ops.avinya.net/hooks/avinya",
+        ALERT_EMAIL_TO="oncall@avinya.net",
+    )
+
+    with pytest.raises(ValueError, match="must use HTTPS"):
         render_alertmanager_config(
             env_file=env_file,
             output_file=tmp_path / "alertmanager.yml",
