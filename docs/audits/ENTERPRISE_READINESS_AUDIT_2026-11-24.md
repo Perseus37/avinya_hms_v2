@@ -381,6 +381,28 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 3. Persist request outcome so exact retries return the original result while mismatched payload reuse is rejected.
 4. Add concurrent duplicate-request tests and retry tests for UPI, card, cash, insurance, and advance adjustment, as applicable.
 
+### ER-018 — Federation discovery purpose is caller-asserted, not bound to an authorization scope
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/federation/router.py`, `discover_and_aggregate_patient_across_branches()`: `purpose` is accepted as a free-text query parameter with only length constraints (3–255 characters).
+- The endpoint rejects a fixed list of emergency-purpose strings, but routine discovery does not validate `purpose` against an approved purpose vocabulary or bind it to a node-/scope-specific capability.
+- Source-side `FederationTransferLog` stores the supplied `purpose` as audit metadata. The source data-use decision is evaluated against the fixed `federation.patient.discover` data-use point; it does not authorize the requested purpose value.
+- `get_federated_node()` authenticates an active hospital node using its API key. That credential does not identify the individual clinician or staff member initiating the request.
+- The route comments explicitly defer remote emergency disclosure until a node-bound, purpose/scope-bound capability and verifiable human actor assertion exist. The same authorization-binding gap remains relevant to routine disclosure, even though emergency labels are blocked.
+- Existing federation security tests cover payload tampering, missing receipts, stale identifiers, allergy-sharing settings, and import retry recovery; the reviewed test file does not demonstrate rejection of an unapproved routine purpose or enforcement of purpose-specific disclosure scopes.
+
+**Impact:** The source audit log can record a caller-selected purpose that is not independently authorized or verified. A compromised or misused partner key may request routine demographic disclosure under a purpose label chosen by the caller, while the source policy evaluates only the general discovery data-use point. The audit record therefore proves what the caller supplied, not that the purpose was permitted or that a named clinician initiated the request.
+
+**Required closure evidence:**
+1. Define an approved purpose vocabulary and the permitted data categories/actions for each purpose.
+2. Bind each request to a server-verifiable, short-lived capability scoped to the authenticated partner node, purpose, patient/selector, destination, and allowed data categories; reject unknown or mismatched scopes.
+3. Introduce a verifiable human actor assertion for workflows that require clinician-level attribution; do not trust an unsigned identity header.
+4. Preserve source-side audit events with both the authenticated node identity and verified actor/capability identifiers, while minimizing patient identifiers.
+5. Add negative tests for unknown purposes, purpose/scope mismatch, cross-destination replay, revoked capability, expired capability, and attempts to obtain demographics/allergies outside the authorized category.
+6. Keep remote emergency disclosure disabled until its stronger actor, purpose, and emergency authorization protocol is independently validated.
+
 ## 8. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
