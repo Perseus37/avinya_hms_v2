@@ -1089,3 +1089,40 @@ request IDs, service/revision versions, operator identity, observed impact,
 backups and actions. Restrict log and forensic-record access; logs may contain
 sensitive operational data. Rotate any secret exposed in shell history,
 browser storage, logs, a ticket, or an untrusted machine.
+
+
+## PostgreSQL exporter credential provisioning
+
+The production `postgres-exporter` must never use `POSTGRES_USER` or
+`POSTGRES_PASSWORD`. The pinned `prometheuscommunity/postgres-exporter:v0.15.0`
+supports `DATA_SOURCE_PASS_FILE`; Compose mounts a dedicated password file at
+`/run/secrets/postgres_exporter_password` and connects as `hms_exporter` to
+only the configured `POSTGRES_DB`. Automatic database discovery is deliberately
+not enabled, so this exporter does not enumerate tenant databases.
+
+1. Run the approved database bootstrap (`python backend/scripts/bootstrap.py --apply-roles`)
+   so the cluster-level `hms_exporter` login and `pg_monitor` membership exist.
+2. Generate a unique password in the deployment secret manager. Place the same
+   password in `POSTGRES_EXPORTER_PASSWORD_FILE` on the host. Do not put it in
+   `.env.production`, a Compose environment value, shell history, or a command
+   argument. The default path is
+   `/etc/avinya-hms/secrets/postgres_exporter_password.txt`.
+3. Set the host file owner to UID/GID `65534:65534` and mode `0400`, matching
+   the non-root exporter container. Keep the parent directory traversable by
+   that UID/GID without making the secret directory world-readable.
+4. As a PostgreSQL administrator, set the role password interactively with
+   `\\password hms_exporter` and grant CONNECT only to the configured
+   `POSTGRES_DB` (the example configuration uses `hms_default`):
+   `GRANT CONNECT ON DATABASE hms_default TO hms_exporter;`
+   If `POSTGRES_DB` differs, substitute its exact configured database name.
+5. Validate the deployment configuration, then deploy during an approved
+   maintenance window. Confirm the Prometheus `postgres` target is UP and
+   inspect exporter logs for authentication or permission errors.
+
+The `pg_monitor` predefined role exposes PostgreSQL monitoring statistics; it
+does not grant table SELECT/INSERT/UPDATE/DELETE privileges. Do not grant
+`pg_read_all_data`, superuser, or application/migrator roles to `hms_exporter`.
+The current exporter scope is the configured `POSTGRES_DB` only; tenant-level
+database metrics require a separately reviewed design and explicit per-database
+authorization. A successful Compose render is configuration validation only,
+not proof of live exporter connectivity or least-privilege behavior.
