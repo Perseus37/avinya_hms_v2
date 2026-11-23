@@ -189,8 +189,6 @@ jobs:
 
       - name: Validate Prometheus and Alertmanager configurations
         run: |
-          mkdir -p .ci/prometheus-secrets
-          printf 'ci-validation-token' > .ci/prometheus-secrets/metrics_scrape_token.txt
           docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments:ro" -v "$(pwd)/.ci/prometheus-secrets:/etc/prometheus:ro" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check config /deployments/prometheus.yml
           docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments:ro" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check rules /deployments/prometheus-alerts.yml
           docker run --rm --entrypoint /bin/amtool -v "$(pwd)/deployments:/deployments:ro" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /deployments/alertmanager.yml
