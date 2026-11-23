@@ -128,19 +128,43 @@ the file so it is owned by numeric UID/GID `65534:65534`, mode `0400`, and
 readable by the Prometheus container user. Do not use a world-readable token
 file. Confirm the host file exists before running Compose.
 
-Validate the rendered deployment before starting or updating services:
+Before Compose validation, configure the Alertmanager values in the
+host-local `.env.production`: `SMTP_HOST`, `SMTP_PORT`, a verified
+`SMTP_FROM`/`ALERT_EMAIL_FROM`, a real `ALERT_EMAIL_TO`, and an approved
+HTTPS `ALERT_DEFAULT_WEBHOOK_URL`. If critical and warning routes need
+different destinations, set `ALERT_CRITICAL_WEBHOOK_URL` and
+`ALERT_WARNING_WEBHOOK_URL` explicitly. Do not leave the example/local
+defaults in place. The production renderer rejects placeholder SMTP identities,
+placeholder recipients, the internal dummy webhook, and non-HTTPS webhooks.
+
+Render the runtime file that the Alertmanager Compose service actually mounts.
+This writes receiver addresses and endpoint URLs into the generated config, so
+keep the file root-owned and mode `0600` on the host; the container needs
+read access through its configured bind mount. Do not commit the rendered
+production file or display it in deployment logs:
 
 ```bash
+umask 077
+python backend/scripts/render_alertmanager_config.py --env-file .env.production --strict-production --output deployments/alertmanager.yml
+chmod 0600 deployments/alertmanager.yml
 docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
-docker compose --env-file .env.production -f docker-compose.prod.yml up -d prometheus
-docker compose --env-file .env.production -f docker-compose.prod.yml logs --since=10m prometheus
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d prometheus alertmanager
+docker compose --env-file .env.production -f docker-compose.prod.yml logs --since=10m prometheus alertmanager
 ```
 
+The renderer currently configures the SMTP host and sender but does not render
+SMTP authentication credentials. Use only an approved relay that accepts the
+deployment host/container by an explicitly configured trusted mechanism; do
+not assume `SMTP_USER`/`SMTP_PASSWORD` from the application mail settings
+are consumed by Alertmanager. SMTP-authenticated delivery remains a separate
+implementation and verification requirement.
+
 Then verify Prometheus reports both `avinya-api` and `avinya-onboarding` targets
-as `UP` in its Targets page/API from an authenticated operator network. Do not
-publish Prometheus or Alertmanager ports to the public internet. A successful
-container health check alone does not prove that authenticated scraping or
-alert delivery works.
+as `UP` in its Targets page/API from an authenticated operator network. Send a
+controlled test alert and confirm receipt at the approved test receiver before
+enabling operational paging. Do not publish Prometheus or Alertmanager ports
+to the public internet. A successful container health check alone does not
+prove authenticated scraping or alert delivery.
 
 ## 3.1 Identity, operator access, and recovery
 
