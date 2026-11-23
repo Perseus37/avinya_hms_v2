@@ -112,6 +112,62 @@ tools. Compose does not provide a complete alerting, log-retention, uptime, or
 off-host monitoring system. The browser API inspector is session-local and
 does not substitute for server-side audit records.
 
+### Production Prometheus scrape credential
+
+The production Prometheus container runs as UID/GID `65534:65534` and reads
+`/etc/prometheus/metrics_scrape_token.txt`. The API and control-plane services
+independently validate the bearer token from `METRICS_SCRAPE_TOKEN`; the
+Prometheus file must contain the exact same token. Provision both values from
+the approved secret manager—never commit the token or put it in a ticket.
+
+Set `METRICS_SCRAPE_TOKEN_FILE` in `.env.production` to the absolute host path
+of the secret file (the example uses
+`/etc/avinya-hms/secrets/metrics_scrape_token.txt`). On the Linux deployment
+host, create the parent directory with restrictive permissions and provision
+the file so it is owned by numeric UID/GID `65534:65534`, mode `0400`, and
+readable by the Prometheus container user. Do not use a world-readable token
+file. Confirm the host file exists before running Compose.
+
+Before Compose validation, configure the Alertmanager values in the
+host-local `.env.production`: `SMTP_HOST`, `SMTP_PORT`, a verified
+`SMTP_FROM`/`ALERT_EMAIL_FROM`, a real `ALERT_EMAIL_TO`, and an approved
+HTTPS `ALERT_DEFAULT_WEBHOOK_URL`. If critical and warning routes need
+different destinations, set `ALERT_CRITICAL_WEBHOOK_URL` and
+`ALERT_WARNING_WEBHOOK_URL` explicitly. Do not leave the example/local
+defaults in place. The production renderer rejects placeholder SMTP identities,
+placeholder recipients, the internal dummy webhook, and non-HTTPS webhooks.
+
+Render the runtime file that the Alertmanager Compose service actually mounts.
+This writes receiver addresses and endpoint URLs into the generated config, so
+keep the file restricted to the Alertmanager container identity. The service
+runs as UID/GID `65534:65534`, so provision the file as that owner with mode
+`0400`; ensure its parent directories are traversable by that UID. Do not commit the rendered
+production file or display it in deployment logs:
+
+```bash
+umask 077
+python backend/scripts/render_alertmanager_config.py --env-file .env.production --strict-production --output deployments/alertmanager.yml
+sudo chown 65534:65534 deployments/alertmanager.yml
+sudo chmod 0400 deployments/alertmanager.yml
+docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d prometheus alertmanager
+docker compose --env-file .env.production -f docker-compose.prod.yml logs --since=10m prometheus alertmanager
+```
+
+The renderer currently configures the SMTP host and sender but does not render
+SMTP authentication credentials. Use only an approved relay that accepts the
+deployment host/container by an explicitly configured trusted mechanism; do
+not assume `SMTP_USER`/`SMTP_PASSWORD` from the application mail settings
+are consumed by Alertmanager. SMTP-authenticated delivery remains a separate
+implementation and verification requirement.
+
+Then verify Prometheus reports both `avinya-api` and `avinya-onboarding` targets
+as `UP` in its Targets page/API from an authenticated operator network. Send a
+controlled test alert and confirm receipt at the approved test receiver before
+enabling operational paging. Do not publish Prometheus or Alertmanager ports
+to the public internet. A successful container health check alone does not
+prove authenticated scraping or alert delivery.
+
 ## 3.1 Identity, operator access, and recovery
 
 Apply the tenant and control-plane Alembic migrations before deploying the
@@ -1059,3 +1115,47 @@ request IDs, service/revision versions, operator identity, observed impact,
 backups and actions. Restrict log and forensic-record access; logs may contain
 sensitive operational data. Rotate any secret exposed in shell history,
 browser storage, logs, a ticket, or an untrusted machine.
+
+
+## PostgreSQL exporter credential provisioning
+
+The production `postgres-exporter` must never use `POSTGRES_USER` or
+`POSTGRES_PASSWORD`. The pinned `prometheuscommunity/postgres-exporter:v0.15.0`
+supports `DATA_SOURCE_PASS_FILE`; Compose mounts a dedicated password file at
+`/run/secrets/postgres_exporter_password` and connects as `hms_exporter` to
+only the configured `POSTGRES_DB`. Automatic database discovery is deliberately
+not enabled, so this exporter does not enumerate tenant databases.
+
+1. Run the approved database bootstrap (`python backend/scripts/bootstrap.py --apply-roles`)
+   so the cluster-level `hms_exporter` login and `pg_monitor` membership exist.
+2. Generate a unique password in the deployment secret manager. Place the same
+   password in `POSTGRES_EXPORTER_PASSWORD_FILE` on the host. Do not put it in
+   `.env.production`, a Compose environment value, shell history, or a command
+   argument. The default path is
+   `/etc/avinya-hms/secrets/postgres_exporter_password.txt`.
+3. Set the host file owner to UID/GID `65534:65534` and mode `0400`, matching
+   the non-root exporter container. Keep the parent directory traversable by
+   that UID/GID without making the secret directory world-readable.
+4. As a PostgreSQL administrator, set the role password interactively with
+   `\password hms_exporter` and grant CONNECT to the configured
+   `POSTGRES_DB` (the example configuration uses `hms_default`):
+   `GRANT CONNECT ON DATABASE hms_default TO hms_exporter;`
+   If `POSTGRES_DB` differs, substitute its exact configured database name.
+5. Validate the deployment configuration, then deploy during an approved
+   maintenance window. Confirm the Prometheus `postgres` target is UP and
+   inspect exporter logs for authentication or permission errors.
+
+The configured exporter DSN is pinned to `POSTGRES_DB`; this is an operational
+scope boundary, not proof that PostgreSQL denies the role access to every other
+database. PostgreSQL installations commonly retain `CONNECT` for `PUBLIC` by
+default. Do not revoke `PUBLIC` database access as part of this change; first
+inventory effective ACLs and dependent services, then review any stricter
+per-database or `pg_hba.conf` isolation separately.
+
+The `pg_monitor` predefined role exposes PostgreSQL monitoring statistics; it
+does not grant table SELECT/INSERT/UPDATE/DELETE privileges. Do not grant
+`pg_read_all_data`, superuser, or application/migrator roles to `hms_exporter`.
+The current exporter scope is the configured `POSTGRES_DB` only; tenant-level
+database metrics require a separately reviewed design and explicit per-database
+authorization. A successful Compose render is configuration validation only,
+not proof of live exporter connectivity or least-privilege behavior.

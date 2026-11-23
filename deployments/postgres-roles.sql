@@ -4,7 +4,7 @@
 -- =========================================================================
 
 -- 1. Create dedicated system roles if they do not exist
-DO $$
+DO $roles$
 BEGIN
     -- Application Runtime Role (DML only: SELECT, INSERT, UPDATE, DELETE)
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hms_app') THEN
@@ -23,9 +23,13 @@ BEGIN
 
     -- Observability & Metrics Exporter Role (Access to pg_stat views)
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'hms_exporter') THEN
-        CREATE ROLE hms_exporter WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+        CREATE ROLE hms_exporter WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT;
     END IF;
-END $$;
+END $roles$;
+
+-- pg_monitor must be inherited by the exporter login; NOINHERIT would make
+-- the membership ineffective for ordinary exporter connections.
+ALTER ROLE hms_exporter INHERIT;
 
 -- 2. Grant PostgreSQL standard predefined roles
 GRANT pg_read_all_data TO hms_backup;

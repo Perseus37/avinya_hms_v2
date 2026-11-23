@@ -461,6 +461,7 @@ services:
     volumes:
       - ./deployments/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deployments/prometheus-alerts.yml:/etc/prometheus/prometheus-alerts.yml:ro
+      - ${METRICS_SCRAPE_TOKEN_FILE:?METRICS_SCRAPE_TOKEN_FILE is required}:/etc/prometheus/metrics_scrape_token.txt:ro
       - hms_prometheus_data:/prometheus
     healthcheck:
       test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:9090/-/healthy || exit 1"]
@@ -523,7 +524,11 @@ services:
       - ALL
     read_only: true
     environment:
-      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:${POSTGRES_PORT:-5432}/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable"
+      DATA_SOURCE_URI: "db:${POSTGRES_PORT:-5432}/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable"
+      DATA_SOURCE_USER: "hms_exporter"
+      DATA_SOURCE_PASS_FILE: "/run/secrets/postgres_exporter_password"
+    volumes:
+      - ${POSTGRES_EXPORTER_PASSWORD_FILE:?POSTGRES_EXPORTER_PASSWORD_FILE is required}:/run/secrets/postgres_exporter_password:ro
     depends_on:
       db:
         condition: service_healthy

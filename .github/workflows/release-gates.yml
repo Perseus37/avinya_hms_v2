@@ -179,15 +179,128 @@ jobs:
       - name: Validate production Compose configuration
         run: |
           cp .env.production.example .env.production
+          mkdir -p .ci/prometheus-secrets
+          printf 'ci-validation-token' > .ci/prometheus-secrets/metrics_scrape_token.txt
+          printf 'ci-validation-exporter-password' > .ci/prometheus-secrets/postgres_exporter_password.txt
+          chmod 0400 .ci/prometheus-secrets/*.txt
+          sed -i 's#^METRICS_SCRAPE_TOKEN_FILE=.*#METRICS_SCRAPE_TOKEN_FILE=.ci/prometheus-secrets/metrics_scrape_token.txt#' .env.production
+          sed -i 's#^POSTGRES_EXPORTER_PASSWORD_FILE=.*#POSTGRES_EXPORTER_PASSWORD_FILE=.ci/prometheus-secrets/postgres_exporter_password.txt#' .env.production
           docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
+
+      - name: Set up Python for Alertmanager rendering
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+
+      - name: Install Alertmanager renderer dependency
+        run: python -m pip install --disable-pip-version-check --no-deps python-dotenv==1.2.3
 
       - name: Validate Prometheus and Alertmanager configurations
         run: |
-          mkdir -p .ci/prometheus-secrets
-          printf 'ci-validation-token' > .ci/prometheus-secrets/metrics_scrape_token.txt
           docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments:ro" -v "$(pwd)/.ci/prometheus-secrets:/etc/prometheus:ro" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check config /deployments/prometheus.yml
           docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments:ro" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check rules /deployments/prometheus-alerts.yml
           docker run --rm --entrypoint /bin/amtool -v "$(pwd)/deployments:/deployments:ro" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /deployments/alertmanager.yml
+
+          # Render a production-mode config with synthetic CI values, then validate
+          # the exact artifact mounted by the production Alertmanager service.
+          mkdir -p .ci
+          cat > .ci/alertmanager.env <<'EOF'
+          ENVIRONMENT=production
+          SMTP_HOST=smtp.ci.internal
+          SMTP_PORT=587
+          SMTP_FROM=alerts@ci.internal
+          ALERT_EMAIL_FROM=alerts@ci.internal
+          ALERT_EMAIL_TO=oncall@ci.internal
+          ALERT_DEFAULT_WEBHOOK_URL=https://webhook.ci.internal/alerts
+          EOF
+          python backend/scripts/render_alertmanager_config.py --env-file .ci/alertmanager.env --strict-production --output .ci/alertmanager.yml
+          docker run --rm --entrypoint /bin/amtool -v "$(pwd)/.ci/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /etc/alertmanager/alertmanager.yml
+
+      - name: Exercise isolated Alertmanager webhook delivery
+        run: |
+          set -euo pipefail
+          receiver_file="$(mktemp)"
+          receiver_log="$(mktemp)"
+          alertmanager_log="$(mktemp)"
+          receiver_pid=""
+          alertmanager_name="avinya-alertmanager-webhook-ci"
+          cleanup() {
+            docker rm --force "$alertmanager_name" >/dev/null 2>&1 || true
+            if [ -n "$receiver_pid" ]; then kill "$receiver_pid" >/dev/null 2>&1 || true; fi
+            rm -f "$receiver_file" "$receiver_log" "$alertmanager_log"
+          }
+          trap cleanup EXIT
+
+          # This receiver is loopback-only and accepts no external traffic.
+          python - "$receiver_file" >"$receiver_log" 2>&1 <<'PY' &
+          import sys
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          destination = sys.argv[1]
+          class Receiver(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  payload = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                  with open(destination, "ab") as output:
+                      output.write(payload + b"\\n")
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(b"accepted")
+              def log_message(self, *_args):
+                  pass
+          HTTPServer(("127.0.0.1", 18080), Receiver).serve_forever()
+          PY
+          receiver_pid=$!
+
+          cat > .ci/alertmanager-webhook-ci.yml <<'EOF'
+          route:
+            receiver: ci-loopback
+            group_by: ["alertname"]
+            group_wait: 0s
+            group_interval: 1s
+            repeat_interval: 1h
+          receivers:
+            - name: ci-loopback
+              webhook_configs:
+                - url: http://127.0.0.1:18080/alerts
+                  send_resolved: true
+          EOF
+
+          docker run --detach --network host --name "$alertmanager_name" \
+            --entrypoint /bin/alertmanager \
+            -v "$(pwd)/.ci/alertmanager-webhook-ci.yml:/etc/alertmanager/alertmanager.yml:ro" \
+            prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 \
+            --config.file=/etc/alertmanager/alertmanager.yml \
+            --web.listen-address=127.0.0.1:19093 \
+            --cluster.listen-address= >/dev/null
+
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:19093/-/ready >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs "$alertmanager_name" || true
+            cat "$receiver_log" || true
+            echo "Alertmanager did not become ready" >&2
+            exit 1
+          fi
+
+          curl --silent --show-error --fail \
+            -H "Content-Type: application/json" \
+            --data '[{"labels":{"alertname":"CIWebhookDelivery","severity":"warning"},"annotations":{"summary":"Disposable CI webhook delivery probe"}}]' \
+            http://127.0.0.1:19093/api/v2/alerts >/dev/null
+
+          delivered=0
+          for attempt in $(seq 1 30); do
+            if [ -s "$receiver_file" ] && grep -q 'CIWebhookDelivery' "$receiver_file"; then delivered=1; break; fi
+            sleep 1
+          done
+          if [ "$delivered" -ne 1 ]; then
+            docker logs "$alertmanager_name" || true
+            cat "$receiver_log" || true
+            echo "Alertmanager did not deliver the synthetic webhook to the loopback receiver" >&2
+            exit 1
+          fi
+          echo "Verified Alertmanager API -> notification pipeline -> loopback HTTP webhook receiver."
 
   production-image:
     name: Build and scan production images

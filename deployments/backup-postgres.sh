@@ -45,6 +45,16 @@ ATTACHMENTS_PATH="${ATTACHMENTS_PATH:-$(read_env_value ATTACHMENTS_HOST_PATH)}"
 CONTROL_PLANE_DB_NAME="$(read_env_value CONTROL_PLANE_DB_NAME)"
 TENANT_DATABASE_PREFIX="$(read_env_value TENANT_DATABASE_PREFIX)"
 
+# Keep the host-side backup publisher aligned with the directory mounted by node-exporter.
+NODE_EXPORTER_TEXTFILE_HOST_PATH="${NODE_EXPORTER_TEXTFILE_HOST_PATH:-$(read_env_value NODE_EXPORTER_TEXTFILE_HOST_PATH)}"
+NODE_EXPORTER_TEXTFILE_DIR="${NODE_EXPORTER_TEXTFILE_DIR:-$(read_env_value NODE_EXPORTER_TEXTFILE_DIR)}"
+NODE_EXPORTER_TEXTFILE_DIR="${NODE_EXPORTER_TEXTFILE_DIR:-${NODE_EXPORTER_TEXTFILE_HOST_PATH:-/var/lib/node_exporter/textfile_collector}}"
+NODE_EXPORTER_TEXTFILE_HOST_PATH="${NODE_EXPORTER_TEXTFILE_HOST_PATH:-$NODE_EXPORTER_TEXTFILE_DIR}"
+if [[ "$NODE_EXPORTER_TEXTFILE_DIR" != "$NODE_EXPORTER_TEXTFILE_HOST_PATH" ]]; then
+  echo "NODE_EXPORTER_TEXTFILE_DIR must match NODE_EXPORTER_TEXTFILE_HOST_PATH so backup metrics are visible to node-exporter." >&2
+  exit 2
+fi
+
 if [[ "$BACKUP_ROOT" != /* || "$BACKUP_ROOT" == "/" ||
       "$BACKUP_MOUNTPOINT" != /* || "$BACKUP_MOUNTPOINT" == "/" ]]; then
   echo "Backup root and storage mountpoint must be absolute, non-root host paths." >&2
