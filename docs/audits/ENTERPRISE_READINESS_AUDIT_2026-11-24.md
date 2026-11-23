@@ -167,6 +167,8 @@ Severity:
 - `hospital-ui/package.json` and `onboarding-ui/package.json` expose build/test scripts.
 - The UI test tree contains only `hospital-ui/tests/roleMapping.test.js` and `onboarding-ui/tests/constants.test.js`.
 - CI builds both UIs and runs those narrow tests; no browser E2E framework or clinical user-journey suite was found.
+- `tests/test_67_branch_isolation.py` currently contains three focused cases: tenant-token branch-claim mismatch (401), procurement invoice/document list-detail-download isolation (empty/404), and insurance-provider catalog isolation (not listed/404). It does not exercise cross-tenant patient, encounter, medication, diagnostic, pharmacy, or billing records.
+- The authentication implementation has positive controls: `get_current_user()` checks tenant slug and branch claims plus the server-side `AuthSession` owner, revocation, and expiry; production header-based tenant override defaults to disabled; `tests/test_33_control_plane_operator_auth.py` verifies a named operator's logout revokes the session. These focused checks do not substitute for clinical workflow-level cross-tenant denial tests.
 
 **Impact:** TypeScript/Vite builds do not prove that registration, OPD, ADT, clinical notes, nursing/eMAR, pharmacy, LIS, billing, and discharge workflows work end to end for each role.
 
