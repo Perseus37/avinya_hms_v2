@@ -35,12 +35,32 @@ def render_alertmanager_config(
     # 1. Resolve SMTP host and port
     smtp_host = get_val("SMTP_HOST", "smtp.example.com")
     smtp_port = get_val("SMTP_PORT", "587")
-    smtp_smarthost = f"{smtp_host}:{smtp_port}"
+    if is_prod and (
+        smtp_host.lower() == "smtp.example.com"
+        or smtp_host.lower().endswith((".example.com", ".example.org", ".invalid", ".test"))
+    ):
+        raise ValueError(
+            "Production Alertmanager requires a provisioned SMTP_HOST; example and reserved test hosts are prohibited."
+        )
+    try:
+        smtp_port_number = int(smtp_port)
+    except ValueError as exc:
+        raise ValueError("SMTP_PORT must be an integer between 1 and 65535.") from exc
+    if not 1 <= smtp_port_number <= 65535:
+        raise ValueError("SMTP_PORT must be an integer between 1 and 65535.")
+    smtp_smarthost = f"{smtp_host}:{smtp_port_number}"
 
     # 2. Resolve SMTP sender email (aligning with SMTP_FROM in .env)
     smtp_from = get_val("ALERT_EMAIL_FROM", "") or get_val("SMTP_FROM", "alerts@avinya-hms.local")
     if "@" not in smtp_from:
         smtp_from = "alerts@avinya-hms.local"
+    if is_prod and (
+        smtp_from.lower().endswith("@avinya-hms.local")
+        or smtp_from.lower().endswith(("@example.com", "@example.org", "@invalid", "@test"))
+    ):
+        raise ValueError(
+            "Production Alertmanager requires a provisioned SMTP sender; placeholder sender domains are prohibited."
+        )
 
     # 3. Resolve webhook URLs and guard production
     default_webhook = get_val("ALERT_DEFAULT_WEBHOOK_URL", DUMMY_WEBHOOK_DEFAULT)
@@ -68,6 +88,8 @@ def render_alertmanager_config(
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.netloc:
             raise ValueError(f"Invalid URL for {name}: '{url}'. Must have http or https scheme and valid host.")
+        if is_prod and parsed.scheme != "https":
+            raise ValueError(f"Production {name} must use HTTPS.")
 
     # 4. Resolve SMTP recipient email for on-call alerting (N-90, N-99)
     raw_email_to = get_val("ALERT_EMAIL_TO", "") or get_val("SMTP_TO", "")
