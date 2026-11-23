@@ -139,14 +139,16 @@ placeholder recipients, the internal dummy webhook, and non-HTTPS webhooks.
 
 Render the runtime file that the Alertmanager Compose service actually mounts.
 This writes receiver addresses and endpoint URLs into the generated config, so
-keep the file root-owned and mode `0600` on the host; the container needs
-read access through its configured bind mount. Do not commit the rendered
+keep the file restricted to the Alertmanager container identity. The service
+runs as UID/GID `65534:65534`, so provision the file as that owner with mode
+`0400`; ensure its parent directories are traversable by that UID. Do not commit the rendered
 production file or display it in deployment logs:
 
 ```bash
 umask 077
 python backend/scripts/render_alertmanager_config.py --env-file .env.production --strict-production --output deployments/alertmanager.yml
-chmod 0600 deployments/alertmanager.yml
+sudo chown 65534:65534 deployments/alertmanager.yml
+sudo chmod 0400 deployments/alertmanager.yml
 docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d prometheus alertmanager
 docker compose --env-file .env.production -f docker-compose.prod.yml logs --since=10m prometheus alertmanager
