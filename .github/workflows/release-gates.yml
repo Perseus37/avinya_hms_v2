@@ -193,6 +193,21 @@ jobs:
           docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments:ro" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check rules /deployments/prometheus-alerts.yml
           docker run --rm --entrypoint /bin/amtool -v "$(pwd)/deployments:/deployments:ro" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /deployments/alertmanager.yml
 
+          # Render a production-mode config with synthetic CI values, then validate
+          # the exact artifact mounted by the production Alertmanager service.
+          mkdir -p .ci
+          cat > .ci/alertmanager.env <<'EOF'
+          ENVIRONMENT=production
+          SMTP_HOST=smtp.ci.internal
+          SMTP_PORT=587
+          SMTP_FROM=alerts@ci.internal
+          ALERT_EMAIL_FROM=alerts@ci.internal
+          ALERT_EMAIL_TO=oncall@ci.internal
+          ALERT_DEFAULT_WEBHOOK_URL=https://webhook.ci.internal/alerts
+          EOF
+          python backend/scripts/render_alertmanager_config.py --env-file .ci/alertmanager.env --strict-production --output .ci/alertmanager.yml
+          docker run --rm --entrypoint /bin/amtool -v "$(pwd)/.ci/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro" prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5 check-config /etc/alertmanager/alertmanager.yml
+
   production-image:
     name: Build and scan production images
     needs: [python-tests, onboarding-ui, hospital-ui, compose-config]
