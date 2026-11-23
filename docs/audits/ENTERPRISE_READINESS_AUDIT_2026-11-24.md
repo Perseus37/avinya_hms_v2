@@ -289,7 +289,63 @@ Synthetic-data development, local demonstrations, and controlled engineering val
 
 AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pending independent review. No code, production environment, secrets, database, or deployment state was changed as part of this audit report.
 
-## 7. Next audit pass
+## 7. Supplemental findings — clinical and operational pass
+
+### ER-013 — Direct eMAR endpoint can record administration without BCMA verification
+
+**Severity: P0 / Critical if barcode verification is the approved bedside standard; otherwise P1 / High until an explicit clinical exception policy exists.**
+
+**Evidence:**
+- `backend/domains/clinical/nursing_er_router.py`, `record_emar_administration()`: accepts `status=ADMINISTERED`, rechecks allergy only, and inserts a `MedicationAdministrationLog` directly.
+- `backend/domains/clinical/schemas.py`, `eMARCreate`: defaults status to `ADMINISTERED`; it has no BCMA verification token or reference.
+- The separate `backend/domains/pharmacy/router.py` `/bcma/verify-and-administer` endpoint invokes `execute_bcma_administration()`, which validates patient, medication, dose, route, timing, allergy, and duplicate administration, then creates both eMAR and BCMA audit records.
+- `tests/test_10_nursing_emar_and_er_mlc.py` explicitly treats direct eMAR POST as a successful administration path without wristband or medication barcode scans.
+- `tests/test_49_bcma_and_controlled_substances.py` separately validates the BCMA route and its hard stops.
+
+**Impact:** A client with the eMAR permission can record an administered dose without invoking the five-rights verification and duplicate-dose controls. The direct route also does not serialize on the prescription item or check for an already administered dose. This creates two different bedside administration safety paths, and the safer path is not enforced by the API.
+
+**Required closure evidence:**
+1. Clinical governance explicitly decides which wards, medication classes, and scenarios require BCMA.
+2. If mandatory, make the direct endpoint incapable of creating `ADMINISTERED` records without a server-verifiable BCMA result; avoid trusting a client-supplied boolean.
+3. If non-BCMA administration is allowed, implement a distinct exception workflow with qualified role, reason, second check where required, timestamp, and immutable audit attribution.
+4. Add concurrent and repeated-dose negative tests against every administration endpoint.
+5. Ensure the UI does not expose a weaker route as an equivalent bedside administration action.
+
+### ER-014 — Admission cancellation hard-deletes the admission and cascades transfer history
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/encounters/adt_router.py`, `cancel_admission()`: releases the current bed and calls `db.delete(admission)`.
+- `backend/domains/encounters/models.py`: `BedTransferLog.admission_id` has `ondelete="CASCADE"`; `InpatientAdmission.transfer_logs` is linked to that admission.
+- The cancellation handler does not create a cancellation event or reason-bearing audit record before deletion.
+
+**Impact:** Cancelling an admission can permanently remove its bed-transfer history. In a hospital record system, cancellation should normally preserve the admission attempt and its operational history rather than erase it. This can weaken auditability and incident reconstruction.
+
+**Required closure evidence:**
+1. Replace hard delete with a terminal cancelled/void state and mandatory reason, actor, and timestamp.
+2. Preserve bed-transfer history and all related clinical/operational evidence.
+3. Add a controlled correction/void workflow with authorization and audit event.
+4. Test cancellation before/after bed assignment and after one or more transfers, proving historical records remain queryable and bed occupancy is reconciled.
+
+### ER-015 — Pharmacy FEFO override is advertised but not representable by the request schema
+
+**Severity: P2 / Medium**
+
+**Evidence:**
+- `backend/domains/pharmacy/router.py`, `dispense_medication()`: checks `getattr(disp_item, "override_fefo", False)` and tells callers to pass `override_fefo=True`.
+- `backend/domains/pharmacy/schemas.py`, `DispenseItem`: declares only `prescription_item_id`, `batch_id`, and `quantity_to_dispense`; no `override_fefo` field or override reason exists.
+- Pydantic's default extra-field behavior means the undeclared field is not a supported contract for the request.
+
+**Impact:** The documented FEFO override cannot be used through the declared API contract. If strict FEFO is intentional, the error text is misleading; if a clinical/pharmacy exception is intended, the API has no controlled, attributable way to request it.
+
+**Required closure evidence:**
+1. Decide whether FEFO is absolute or allows an exception.
+2. If absolute, remove the unreachable override branch and return actionable instructions.
+3. If exceptions are allowed, add a typed override field, mandatory reason, permission check, actor attribution, and audit event.
+4. Add API contract tests for both normal FEFO and authorized exception behavior.
+
+## 8. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
 - accountable engineering, security, clinical, privacy/legal, and operations owners;
