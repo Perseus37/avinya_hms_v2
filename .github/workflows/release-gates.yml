@@ -187,6 +187,14 @@ jobs:
           sed -i 's#^POSTGRES_EXPORTER_PASSWORD_FILE=.*#POSTGRES_EXPORTER_PASSWORD_FILE=.ci/prometheus-secrets/postgres_exporter_password.txt#' .env.production
           docker compose --env-file .env.production -f docker-compose.prod.yml config --quiet
 
+      - name: Set up Python for Alertmanager rendering
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+
+      - name: Install Alertmanager renderer dependency
+        run: python -m pip install --disable-pip-version-check --no-deps python-dotenv==1.2.3
+
       - name: Validate Prometheus and Alertmanager configurations
         run: |
           docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deployments:/deployments:ro" -v "$(pwd)/.ci/prometheus-secrets:/etc/prometheus:ro" prom/prometheus:v2.53.3@sha256:c62e2f333beae2fdac8c3c7a3daaa7ac81110023cbc5857b0ec541f09d997951 check config /deployments/prometheus.yml
