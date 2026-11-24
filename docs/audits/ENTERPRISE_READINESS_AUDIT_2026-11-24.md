@@ -734,6 +734,26 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for POST and PUT.
 5. Verify mutation responses cannot bypass `diagnostics.orders.read`; audit actor, patient/order, purpose, decision, and response class without duplicating clinical narratives or result values.
 
+### ER-035 — Pharmacy prescription create/update responses disclose encounter-linked medication details without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/pharmacy/router.py`, `write_prescription()`, POST `/api/pharmacy/prescriptions`, requires `pharmacy:write`, accepts an encounter ID, clinical notes, and medication/dosage items, then returns `PrescriptionResponse`.
+- `update_prescription()`, PUT `/api/pharmacy/prescriptions/{prescription_id}`, also requires `pharmacy:write`, updates clinical notes/status, and returns the same response model.
+- `PrescriptionResponse` in `backend/domains/pharmacy/schemas.py` includes `encounter_id`, prescribing doctor, clinical notes, and nested medication items with dosage instructions and requested/dispensed quantities. It omits patient name and MRN, but the encounter identifier directly links the returned medication/treatment details to a patient encounter.
+- The corresponding GET `/api/pharmacy/prescriptions` and GET `/api/pharmacy/prescriptions/{prescription_id}` evaluate `pharmacy.prescriptions.search` / `pharmacy.prescriptions.read` against the encounter's patient ID before returning the prescription representation. The POST and PUT handlers do not evaluate a patient-specific privacy decision.
+- `backend/domains/privacy/data_use_points.py` registers prescription search/read points but no prescription create/update mutation-response point.
+
+**Impact:** A caller with pharmacy write permission can receive encounter-linked medication and dosage details through a mutation response even where the corresponding prescription GET route would deny disclosure under patient-specific policy. Patient name/MRN are omitted, which limits direct identity disclosure, but does not remove the patient linkage or sensitivity of the treatment details. The finding concerns response disclosure, not whether a valid prescription should be created or updated.
+
+**Required closure evidence:**
+1. Separate prescription write authority from authority to receive the full encounter-linked prescription representation.
+2. Apply the applicable patient-specific decision before returning full details, or return a minimal acknowledgement and require separately authorized readback.
+3. Preserve prescription creation, allergy/DDI hard-stops, dispensing integrity, and valid status updates when response disclosure is denied or minimized.
+4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for POST and PUT.
+5. Verify mutation responses cannot bypass `pharmacy.prescriptions.read`; audit actor, patient/encounter, purpose, decision, and response class without duplicating clinical notes or dosage narratives.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
