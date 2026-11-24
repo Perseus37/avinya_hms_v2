@@ -542,6 +542,44 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Verify the streaming generator does not disclose rows before the relevant authorization decision and that policy evaluation/audit persistence works throughout stream iteration.
 5. Add a route-level coverage assertion that every patient-linked export path enforces an approved data-use point, including future export formats.
 
+### ER-026 — Insurance claims list exposes patient-linked financial and insurance data without a patient privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/insurance/router.py`, `list_insurance_claims()` (GET `/api/insurance/claims`): the endpoint requires `billing:read`, joins each claim to its invoice and patient, and returns `InsuranceClaimResponse` rows in the paginated JSON response.
+- Its optional CSV branch additionally emits patient MRN/name, provider, claim status, claimed amount, insurer payable, patient copay, settled amount, and settlement UTR reference.
+- Neither JSON nor CSV branch calls `evaluate_tenant_patient_data_uses()`; the endpoint has no `x-privacy-data-use-point` annotation.
+- `backend/domains/privacy/data_use_points.py` defines patient insurance-policy read and insurance preauthorization/claim-document print points, but no list/search point for the claims collection.
+- `tests/test_09_insurance_and_auto_billing.py` covers claim creation, settlement, and supporting-document PDF behavior; no patient privacy-denial test for the claims list or CSV export was found.
+
+**Impact:** A billing-read caller can enumerate patient-linked insurance claims and financial responsibility data without a patient-specific disclosure decision. The separate guarded claim-document endpoint does not protect this collection/list route.
+
+**Required closure evidence:**
+1. Register an insurance-claims search/list data-use point and evaluate it for the exact patient IDs in the JSON page and every CSV batch.
+2. Define mixed-policy export behavior and ensure no rows are emitted before their decisions are available.
+3. Minimize identifiers/financial fields according to role and purpose; ensure settlement UTR and other payment references are not exposed to roles that do not need them.
+4. Add negative tests for denied policy, mixed patient decisions, JSON/CSV parity, pagination, and multi-batch exports.
+
+### ER-027 — Surgery schedule list exposes patient identifiers and procedure context without a patient privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/surgery/router.py`, `list_surgeries()` (GET `/api/ot/surgeries`): the endpoint requires either `adt:read` or `opd:read`, joins each schedule to its patient, and returns `SurgicalScheduleResponse` records in JSON.
+- Its CSV branch explicitly emits case number, patient MRN, patient name, theatre, procedure name, lead surgeon, scheduled/actual times, and surgery status.
+- Neither JSON nor CSV branch calls `evaluate_tenant_patient_data_uses()`; no patient-data-use point is declared for the list route.
+- The separate completed-operative-note print route does enforce `ot.surgery.print`, demonstrating that a privacy gate exists for one surgical disclosure surface but not this schedule list.
+- `tests/test_11_operation_theatre_and_surgery.py` verifies surgery scheduling, status transitions, and operative-note printing; no patient privacy-denial test for list or CSV output was found.
+
+**Impact:** A user with broad OPD/ADT read permission can enumerate identifiable surgical schedules and associated procedure context without a patient-specific privacy decision. This exposes sensitive planned or completed care information beyond the guarded operative-note print flow.
+
+**Required closure evidence:**
+1. Register an OT surgery list/search data-use point and enforce it for both JSON pages and every CSV batch.
+2. Define role- and purpose-based minimization for patient identifiers, procedure details, and schedule timestamps.
+3. Add negative tests for denied/mixed decisions, JSON/CSV parity, pagination, and large exports.
+4. Preserve operational access for authorized perioperative teams through explicit policy rather than relying on broad OPD/ADT permission alone.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
