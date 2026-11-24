@@ -601,6 +601,27 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for patient-policy denial, revoked/expired consent, wrong patient/transaction scope, each permitted role, and attempts to retrieve full bundle versus metadata.
 5. Audit actor, purpose, transaction ID, decision, and whether a full payload was disclosed without copying the raw bundle into audit metadata.
 
+### ER-029 — Clinical quality incident records expose patient-linked safety narratives without a patient privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/quality/router.py` exposes GET `/api/quality/incidents` and GET `/api/quality/incidents/{incident_id}` to callers with broad `clinical:read`, `nursing:read`, or `opd:read` permissions (detail also accepts `ipd:read` and `emr:read`).
+- Both routes return `ClinicalIncidentResponse`, which includes `patient_id`, `encounter_id`, incident description, root-cause analysis, CAPA plan, severity, and lifecycle timestamps. These free-text fields can contain sensitive patient-safety, infection, adverse-drug-event, or treatment details.
+- The same router's POST and PATCH mutation handlers return the same patient-linked response model without evaluating a patient privacy decision.
+- `backend/domains/quality/models.py` links incidents to patient and encounter records; `backend/domains/quality/schemas.py` confirms the response exposes the identifiers and narrative fields.
+- `backend/domains/privacy/data_use_points.py` contains no clinical-quality incident read/list/detail point, and the inspected quality routes do not call `evaluate_tenant_patient_data_uses()`.
+- `tests/test_53_nabh_quality_indicators.py` exercises incident reporting, listing, detail retrieval, and CAPA lifecycle, but contains no patient privacy-denial or response-minimization tests.
+
+**Impact:** A broadly read-authorized quality or clinical user can retrieve patient-linked incident narratives and investigation/CAPA details without a patient-specific disclosure decision. This is not merely an aggregate quality metric: the response contains case-level identifiers and free-text clinical narratives.
+
+**Required closure evidence:**
+1. Define a governed quality-incident data-use point and enforce it for list/detail and any mutation response that includes patient-linked data.
+2. Separate authority to manage safety investigations from authority to disclose patient identity; provide minimized/redacted case responses where identity is not required.
+3. Define mixed-patient list behavior and ensure filters/pagination cannot be used to infer denied cases.
+4. Add negative tests for denied patient policy, roles with write-but-not-read authority, incident with no patient link, response minimization, and list/detail/mutation-response parity.
+5. Audit actor, purpose, incident ID, patient decision, and disclosed field class without duplicating sensitive narrative text into audit metadata.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
