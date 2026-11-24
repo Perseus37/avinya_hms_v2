@@ -501,7 +501,27 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 3. Minimize mutation responses for actors who may update a task but are not authorized to read the patient's historical results.
 4. Add negative tests for policy denial, write-only/verify-only roles, prior-result presence, and response minimization; preserve positive delta-check and critical-result workflows.
 
-## 8. Next audit pass
+### ER-024 — Statutory financial registers export patient identifiers without a patient privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/reports/registers_router.py`, `get_cashier_shift_reconciliation()` (GET `/api/registers/cashier-shift-reconciliation`): permission is `billing:read` OR `finance:read`; it joins each payment receipt to its invoice and patient, then includes `patient_mrn` and `patient_name` in the transaction rows returned in JSON and in the optional CSV export.
+- `get_ar_aging_ledger()` (GET `/api/registers/ar-aging`): permission is `billing:read` OR `finance:read`; it loads outstanding invoices with their patients and includes patient MRN/name, invoice number, payer source, and outstanding balance in the JSON sample and optional CSV export.
+- Neither handler evaluates `evaluate_tenant_patient_data_uses()`, and neither route declares a patient-data-use point. The privacy data-use registry contains billing invoice read/search points, but no corresponding statutory-register disclosure points for these two endpoints.
+- The same handlers return the patient-linked rows regardless of whether the caller requests JSON or CSV; changing the representation does not change the disclosure.
+- The inspected handlers do not include a patient-policy denial path or tests proving that export is denied/minimized when patient disclosure is not permitted.
+
+**Impact:** A caller with broad billing/finance read permission can retrieve or bulk-export identifiable patient financial records without a patient-specific privacy decision. This exposes MRNs, names, invoice/payment references, and financial balances through a reporting surface that is separate from the guarded invoice read/print routes.
+
+**Required closure evidence:**
+1. Define and register purpose-specific data-use points for cashier reconciliation and AR aging, including both JSON and CSV output modes.
+2. Evaluate patient disclosure decisions for the exact patient set included in each response/export; do not authorize a whole unbounded export based solely on the caller's broad billing permission.
+3. Where operational reconciliation does not require patient identity, provide a minimized/aggregated export; where identity is required, enforce an approved role, purpose, and patient-policy decision.
+4. Add negative tests for denied policy, billing-read versus finance-read roles, JSON versus CSV parity, and multi-patient exports containing mixed policy outcomes.
+5. Verify export audit records capture actor, purpose, filters/time window, record count, and export format without duplicating sensitive row contents in the audit event.
+
+## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
 - accountable engineering, security, clinical, privacy/legal, and operations owners;
