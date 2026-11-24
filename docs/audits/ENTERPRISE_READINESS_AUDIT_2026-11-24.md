@@ -816,6 +816,26 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add denied-policy and write-only-role tests for the return endpoint, plus authorized readback and response-minimization tests.
 5. Ensure audit metadata records actor, prescription/item, patient linkage, purpose, decision, and response class without copying the free-text return reason or other clinical details.
 
+### ER-039 — Nursing eMAR creation response discloses encounter-linked administration details without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- POST `/api/nursing/encounters/{encounter_id}/emar` in `backend/domains/clinical/nursing_er_router.py` requires `adt:write` or `pharmacy:dispense`, validates that the prescription item belongs to the supplied encounter, writes a `MedicationAdministrationLog`, commits, refreshes, and returns the complete ORM record.
+- The response schema `eMARResponse` in `backend/domains/clinical/schemas.py` includes encounter ID, prescription-item ID, administering user ID, scheduled/administered timestamps, status, dose given, and free-text notes. The prescription-item ID links the record to the medication and treatment context.
+- The corresponding GET `/api/nursing/encounters/{encounter_id}/emar` declares `nursing.emar.read`, loads the encounter's patient ID, and calls `evaluate_tenant_patient_data_uses()` before returning administration logs.
+- The POST handler performs encounter/item ownership validation and the clinical allergy hard-stop, but does not call the patient-specific privacy evaluator and has no mutation-response privacy data-use point. The privacy registry defines `nursing.emar.read` only.
+- This finding concerns the successful eMAR creation response. It is distinct from ER-020, which concerns allergy details returned by the nursing eMAR allergy hard-stop path.
+
+**Impact:** A caller authorized to record a nursing administration can receive encounter-linked medication administration details and free-text notes in the POST response without the patient-specific disclosure decision required by the corresponding GET route. This is a source-level privacy enforcement gap, not evidence of production exploitation.
+
+**Required closure evidence:**
+1. Separate authority to record the administration from authority to receive the complete patient-linked eMAR record.
+2. Evaluate the patient-specific decision before returning detailed eMAR fields, or return a minimal creation acknowledgement and require separately authorized readback.
+3. Preserve encounter/prescription-item ownership checks, allergy hard-stop behavior, medication administration lifecycle, and clinical audit provenance.
+4. Add negative tests for denied patient policy and write-only roles, plus authorized readback and response-minimization tests for ADMINISTERED, HELD, REFUSED, and MISSED states.
+5. Audit actor, patient/encounter, prescription item, purpose, decision, and response class without copying dose notes or clinical narratives into audit metadata.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
