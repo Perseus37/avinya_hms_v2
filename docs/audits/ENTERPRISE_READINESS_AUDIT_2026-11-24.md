@@ -634,6 +634,7 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
   - `attach_encounter_diagnosis()` POST `/api/clinical/encounters/{encounter_id}/diagnoses` requires `opd:write` and returns the diagnosis plus clinical remarks.
   - `chart_patient_comorbidity()` POST `/api/clinical/patients/{patient_id}/comorbidities` accepts any of `patients:write`, `opd:write`, or `adt:write` and returns the comorbidity and clinical remarks.
   - `record_encounter_physical_exam()` POST `/api/clinical/encounters/{encounter_id}/physical-exams` accepts `opd:write` or `adt:write` and returns exam findings and notes.
+  - `evaluate_encounter_news2()` POST `/api/clinical/encounters/{encounter_id}/vitals/news2` accepts `clinical:write`, `opd:write`, or `adt:write` and returns patient-linked NEWS2/qSOFA scores, deterioration risk, RRT trigger state, sub-scores, and clinical recommendation. Its paired historical-score GET endpoint invokes the encounter privacy helper using `clinical.encounter.vitals.read`; the POST handler does not.
 - The corresponding list/read handlers call the privacy helper using `clinical.encounter.vitals.read`, `clinical.encounter.notes.read`, `clinical.encounter.diagnoses.read`, `clinical.patient.comorbidities.read`, and `clinical.encounter.physical_exams.read`; the mutation handlers above do not call it or declare a mutation-response data-use point.
 - `backend/domains/clinical/schemas.py` confirms these response models contain clinical measurements, free-text notes, diagnosis remarks, comorbidity remarks, and physical-exam findings.
 - `tests/test_08_emr_vitals_and_reports.py` exercises clinical note creation/edit/sign behavior, including concurrent edit/sign locking, but the inspected coverage does not test privacy-policy denial or mutation-response minimization for these endpoints.
@@ -644,7 +645,7 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 1. Separate authority to create/update/sign clinical documentation from authority to receive the full patient-linked representation in the response.
 2. Apply the matching patient data-use decision before returning clinical fields, or return a minimal acknowledgement and require a separately authorized read for full details.
 3. Preserve clinical write integrity, note signature locking, and urgent bedside workflows when response disclosure is denied or minimized.
-4. Add negative tests for policy denial and write-only roles, plus authorized readback and response-minimization tests for vitals, notes (create/update/sign), diagnoses, comorbidities, and physical exams.
+4. Add negative tests for policy denial and write-only roles, plus authorized readback and response-minimization tests for vitals, notes (create/update/sign), diagnoses, comorbidities, physical exams, and NEWS2 scoring.
 5. Verify the mutation response cannot be used as a read-policy bypass and that audit metadata records actor, patient/encounter, purpose, decision, and response class without duplicating clinical narratives.
 
 ## 9. Next audit pass
