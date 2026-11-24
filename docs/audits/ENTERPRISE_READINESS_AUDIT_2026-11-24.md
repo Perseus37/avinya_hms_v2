@@ -580,6 +580,27 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 3. Add negative tests for denied/mixed decisions, JSON/CSV parity, pagination, and large exports.
 4. Preserve operational access for authorized perioperative teams through explicit policy rather than relying on broad OPD/ADT permission alone.
 
+### ER-028 — NHCX transaction retrieval returns patient-linked claim bundle without a patient privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/abdm/router.py`, `get_nhcx_transaction_log()` (GET `/api/nhcx/transactions/{transaction_id}`): permission is any of `billing:read`, `insurance:read`, or `auditor:read`.
+- The handler returns `patient_id`, `encounter_id`, `claim_id`, adjudication metadata, rejection reason, and the complete parsed `bundle_json` stored in `NHCXClaimExchangeLog`.
+- `backend/domains/abdm/models.py` defines the log as patient- and encounter-linked and stores the raw FHIR claim bundle and response bundle JSON.
+- The handler does not load/evaluate the patient privacy decision, check an NHCX-specific data-use point, or validate the current consent artefact before returning the stored bundle. The route has no patient-data-use-point annotation.
+- `backend/domains/abdm/services.py` does generate the initial claim bundle from internal insurance data, but the retrieval handler is a separate read path and does not repeat a consent/policy check.
+- `tests/test_51_abdm_and_nhcx_gateways.py` validates claim submission, adjudication callbacks, and transaction-log retrieval, but does not test retrieval denial after consent revocation/expiry or patient-policy denial.
+
+**Impact:** A caller with broad billing, insurance, or auditor read permission and a transaction identifier can retrieve stored patient-linked claim data without a patient-specific disclosure decision. Because the bundle is returned in full, the exposure may exceed the minimum transaction metadata needed for reconciliation or audit.
+
+**Required closure evidence:**
+1. Define a distinct NHCX transaction-read data-use point and evaluate it against the patient linked to the transaction.
+2. Enforce current consent/authority semantics for the requested operation, including revocation and expiry behavior; distinguish a lawful retained audit record from permission to disclose its full payload.
+3. Return minimal transaction metadata by default; require a separately authorized purpose and role for full bundle retrieval, with field minimization where possible.
+4. Add negative tests for patient-policy denial, revoked/expired consent, wrong patient/transaction scope, each permitted role, and attempts to retrieve full bundle versus metadata.
+5. Audit actor, purpose, transaction ID, decision, and whether a full payload was disclosed without copying the raw bundle into audit metadata.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
