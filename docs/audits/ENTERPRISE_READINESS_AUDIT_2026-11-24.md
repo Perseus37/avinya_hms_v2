@@ -671,6 +671,27 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for MPI update and allergy create/update.
 5. Verify no mutation response bypasses MPI/allergy read policy; audit actor, patient, purpose, decision, and response class without copying sensitive values into audit metadata.
 
+### ER-032 — ADT encounter create/update responses disclose patient-linked encounter records without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/encounters/adt_router.py`, `create_encounter()`, POST `/api/adt/encounters`, requires `adt:write`, locks and validates the patient, creates an active encounter, and returns the complete `PatientEncounterResponse`. The response includes `patient_id`, encounter type/status, start/end times, primary doctor, and department. The handler does not evaluate a patient privacy decision.
+- `update_encounter()`, PUT `/api/adt/encounters/{encounter_id}`, requires `adt:write`, updates doctor/department/chief-complaint fields, and returns the same patient-linked response model without a patient privacy decision.
+- The corresponding GET `/api/adt/encounters/{encounter_id}` evaluates `adt.encounters.read` against the encounter's patient ID before returning `PatientEncounterResponse`; the active-encounter list similarly evaluates `adt.encounters.active.read`.
+- `backend/domains/privacy/data_use_points.py` registers the two GET read points but no encounter create/update mutation-response point.
+- `backend/domains/encounters/schemas.py` confirms `PatientEncounterResponse` includes `patient_id` and encounter context.
+- `tests/test_04_wards_opd_and_adt.py` exercises encounter creation as part of OPD/IPD workflows and duplicate-active-encounter handling. The inspected tests do not exercise privacy-policy denial or response minimization for encounter create/update responses.
+
+**Impact:** A caller with ADT write permission can receive a patient-linked encounter representation from a mutation even when the corresponding encounter read endpoint would deny disclosure under the patient-specific policy. The finding concerns response disclosure, not whether a valid encounter creation or update should be blocked.
+
+**Required closure evidence:**
+1. Separate ADT encounter write authority from authority to receive the full patient-linked response.
+2. Apply the applicable patient-specific decision before returning the full response, or return a minimal acknowledgement and require separately authorized readback.
+3. Preserve encounter creation, duplicate prevention, update integrity, and OPD/IPD workflows when response disclosure is denied or minimized.
+4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for POST and PUT.
+5. Verify that the mutation response cannot bypass `adt.encounters.read`; audit actor, patient/encounter, purpose, decision, and response class without duplicating chief-complaint text.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
