@@ -796,6 +796,26 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 5. Add denied-policy and write-only-role tests for dispense, return, wastage, and ledger GET, plus authorized readback and minimal-response tests. Ensure non-patient-linked receipt records remain available under the approved inventory purpose.
 6. Audit actor, movement, linked patient/encounter, purpose, decision, and response class without copying clinical notes, wastage narratives, or prescription details into audit metadata.
 
+### ER-038 — Pharmacy medication-return response discloses prescription-linked return and credit details without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- POST `/api/pharmacy/prescriptions/{prescription_id}/return` in `backend/domains/pharmacy/router.py` loads the prescription and its encounter, validates each returned `PrescriptionItem` against that prescription, restores inventory, adjusts dispensing quantities, and creates `PharmacyReturnLog` records.
+- The endpoint returns the created records directly as `list[PharmacyReturnLogResponse]` after commit. The response schema in `backend/domains/pharmacy/schemas.py` includes `prescription_id`, `prescription_item_id`, `returned_quantity`, `credit_amount_paise`, and free-text `return_reason`.
+- The prescription ID and item ID link the return event to the patient's encounter and prescribed medication. The return reason may contain patient-care context; this is not merely an aggregate inventory acknowledgement.
+- The return handler has no patient-specific call to `evaluate_tenant_patient_data_uses()` and no mutation-response privacy data-use point. The corresponding GET prescription route evaluates `pharmacy.prescriptions.read`; that read decision does not protect the return mutation response.
+- The pharmacy return response is distinct from the controlled-substance movement ledger in ER-037: it covers ordinary prescription return records and their credit/return-reason details.
+
+**Impact:** A caller with pharmacy write/dispense permission can receive prescription-linked return and credit details through the mutation response without the patient-specific disclosure decision used by prescription reads. This is a source-level authorization/privacy gap, not evidence of production exploitation.
+
+**Required closure evidence:**
+1. Separate permission to process a medication return from permission to receive prescription-linked return details.
+2. Evaluate the patient-specific decision before returning detailed return records, or return a minimal acknowledgement and require separately authorized readback.
+3. Preserve stock restoration, dispensed-quantity reconciliation, invoice credit/refund handling, and immutable return provenance.
+4. Add denied-policy and write-only-role tests for the return endpoint, plus authorized readback and response-minimization tests.
+5. Ensure audit metadata records actor, prescription/item, patient linkage, purpose, decision, and response class without copying the free-text return reason or other clinical details.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
