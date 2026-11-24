@@ -692,6 +692,27 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for POST and PUT.
 5. Verify that the mutation response cannot bypass `adt.encounters.read`; audit actor, patient/encounter, purpose, decision, and response class without duplicating chief-complaint text.
 
+### ER-033 — OPD appointment mutation responses disclose patient-linked scheduling and visit context without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/encounters/opd_router.py`, `book_appointment()`, POST `/api/opd/appointments`, requires `opd:write`, accepts a patient ID and optional visit reason, creates the appointment, and returns the complete `AppointmentResponse`.
+- `reschedule_appointment()`, PUT `/api/opd/appointments/{appointment_id}`, and `update_appointment_status()`, PATCH `/api/opd/appointments/{appointment_id}/status`, also require `opd:write` and return the same full response model after updating the record.
+- `AppointmentResponse` in `backend/domains/encounters/schemas.py` includes `patient_id`, doctor and department IDs, appointment time, status, token number, free-text `reason_for_visit`, and linked encounter ID.
+- The corresponding GET `/api/opd/appointments/{appointment_id}` evaluates `opd.appointments.read` against the appointment's patient ID before returning that response. The list endpoint evaluates `opd.appointments.search` for JSON results.
+- `backend/domains/privacy/data_use_points.py` registers appointment read/search and print/history points, but no appointment create/reschedule/status mutation-response point.
+- `tests/test_04_wards_opd_and_adt.py` covers successful booking, rescheduling, state transitions, and encounter binding. The inspected tests do not exercise patient-policy denial or response minimization for these mutation responses.
+
+**Impact:** A caller with OPD write permission can obtain the patient-linked appointment representation, including the visit reason and encounter linkage, as a side effect of booking, rescheduling, or changing status even where the corresponding read endpoint would deny disclosure. This finding concerns response disclosure; it does not recommend blocking valid scheduling or status transitions.
+
+**Required closure evidence:**
+1. Separate OPD appointment write authority from authority to receive the full patient-linked response.
+2. Apply the appropriate patient-specific decision before returning full details, or return a minimal acknowledgement and require separately authorized readback.
+3. Preserve booking, overlap prevention, token allocation, appointment state transitions, encounter binding, and billing triggers when response disclosure is denied or minimized.
+4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for POST, PUT, and PATCH.
+5. Verify that mutation responses cannot bypass `opd.appointments.read`; audit actor, patient/appointment, purpose, decision, and response class without duplicating visit-reason text.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
