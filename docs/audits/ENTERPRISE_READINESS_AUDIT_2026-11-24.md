@@ -774,6 +774,28 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for RESULT_ENTERED, repeat result entry, sample rejection, and verification transitions.
 5. Verify that the mutation response cannot bypass `diagnostics.order.tasks.read` or the relevant patient-specific task read point; audit actor, patient/order/task, purpose, decision, and response class without copying result values into audit metadata.
 
+### ER-037 — Controlled-substance movement responses and ledger reads disclose encounter-linked narcotics records without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/pharmacy/router.py` exposes POST `/api/pharmacy/controlled-substances/dispense`, `/return`, and `/waste`. The handlers require pharmacy/nursing/clinical write permissions and return `ControlledSubstanceMovementResponse` from `process_controlled_substance_movement()`.
+- Dispense, return, and wastage requests accept optional `encounter_id` and `prescription_item_id`. The service persists these identifiers on `ControlledSubstanceMovementLog` and returns the movement record after commit.
+- `ControlledSubstanceMovementResponse` in `backend/domains/pharmacy/schemas.py` includes encounter ID, prescription-item ID, movement type, quantity/balance, wastage reason, disposal method, batch number, and notes. The linked prescription item resolves to a medication and dosage instruction; the encounter identifies the patient context.
+- GET `/api/pharmacy/controlled-substances/movements` returns the full movement ledger, including those patient-linked identifiers and clinical wastage/return notes. Neither the mutation routes nor the ledger GET declares a patient-specific privacy decision. The GET route also has no `openapi_extra` privacy data-use point.
+- `backend/domains/privacy/data_use_points.py` registers `pharmacy.prescriptions.search/read` but no controlled-substance movement read or mutation-response point.
+- `backend/domains/pharmacy/models.py` confirms that movement records persist `encounter_id`, `prescription_item_id`, `wastage_reason`, `disposal_method`, and `notes`. These fields are not merely aggregate stock balances.
+
+**Impact:** A caller authorized to perform or list controlled-substance movements can receive encounter-linked narcotics transaction details and clinical wastage/return context through the mutation response or unrestricted ledger read path without the patient-specific disclosure decision applied to prescription reads. This is a response/read disclosure finding; it does not challenge dual-witness verification, vault balance controls, or the need to retain the perpetual controlled-substance register.
+
+**Required closure evidence:**
+1. Separate controlled-substance movement write authority from authority to receive encounter-linked movement details.
+2. Apply a patient-specific decision when a movement is linked to an encounter/prescription item, or return a minimal mutation acknowledgement and require separately authorized readback.
+3. Add a privacy-gated ledger read that evaluates each linked patient and handles non-patient-linked receipts/ward stock movements under an explicit approved purpose policy.
+4. Preserve dual-witness credential checks, return caps, vault locking/balance integrity, wastage documentation, and perpetual auditability.
+5. Add denied-policy and write-only-role tests for dispense, return, wastage, and ledger GET, plus authorized readback and minimal-response tests. Ensure non-patient-linked receipt records remain available under the approved inventory purpose.
+6. Audit actor, movement, linked patient/encounter, purpose, decision, and response class without copying clinical notes, wastage narratives, or prescription details into audit metadata.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
