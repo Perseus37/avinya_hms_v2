@@ -450,18 +450,19 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 **Severity: P1 / High**
 
 **Evidence:**
-- `backend/domains/clinical/nursing_er_router.py`, `record_mlc_police_intimation()` (PATCH `/api/er/mlc/{mlc_id}/police-intimation`): permits `opd:write` OR `adt:write`, loads and locks the MLC by ID, updates police-intimation fields, and returns the complete `MLCResponse`.
+- `backend/domains/clinical/nursing_er_router.py`, `register_medico_legal_case()` (POST `/api/er/mlc`): permits `opd:write`, resolves an active encounter, creates the MLC with patient-linked medico-legal details, and returns the complete `MLCResponse` without a patient privacy decision.
+- The same file's `record_mlc_police_intimation()` (PATCH `/api/er/mlc/{mlc_id}/police-intimation`): permits `opd:write` OR `adt:write`, loads and locks the MLC by ID, updates police-intimation fields, and returns the complete `MLCResponse`.
 - `backend/domains/clinical/schemas.py`, `MLCResponse`: response includes patient ID, alleged history, identification marks, brought-by name/relation/phone, injury cause, police station, FIR number, and other case identifiers.
-- The PATCH handler does not evaluate a patient privacy decision. By contrast, the MLC print endpoint in the same router resolves the patient and evaluates the registered `registry.mlc.print` data-use point before disclosure.
-- `tests/test_10_nursing_emar_and_er_mlc.py` exercises successful police-intimation PATCH and asserts returned fields, but does not test privacy-policy denial or role-specific minimization.
+- Neither the POST registration nor PATCH police-intimation handler evaluates a patient privacy decision. By contrast, the MLC print endpoint in the same router resolves the patient and evaluates the registered `registry.mlc.print` data-use point before disclosure.
+- `tests/test_10_nursing_emar_and_er_mlc.py` exercises successful MLC registration and police-intimation PATCH and asserts returned fields, but does not test privacy-policy denial or role-specific minimization.
 
 **Impact:** A caller with either broad write permission can receive sensitive medico-legal and identifying patient details in the mutation response without the patient-specific privacy gate applied by the print workflow. The write operation may be legitimate, but its response is also a PHI disclosure and needs an explicit policy decision.
 
 **Required closure evidence:**
 1. Resolve the MLC's patient and evaluate an approved MLC police-intimation data-use point before returning patient-linked details.
 2. Separate permission to record the police-intimation event from permission to receive the full MLC payload; return a minimal mutation acknowledgement where full case details are not required.
-3. Preserve forensic locking and audit attribution for the mutation; do not weaken the existing duplicate-intimation protection.
-4. Add negative tests for privacy-policy denial, roles with write but no read permission, patient/case mismatch, and response-field minimization; retain positive tests for first and duplicate intimation.
+3. Preserve forensic locking and audit attribution for both registration and police-intimation; do not weaken duplicate-case or duplicate-intimation protection.
+4. Add negative tests for privacy-policy denial, roles with write but no read permission, patient/case mismatch, and response-field minimization for both POST and PATCH; retain positive tests for registration, first intimation, and duplicate intimation.
 
 ### ER-022 — Birth/death registry creation responses disclose patient-linked certificate data without a privacy decision
 
