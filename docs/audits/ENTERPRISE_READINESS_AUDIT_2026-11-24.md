@@ -836,6 +836,26 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for denied patient policy and write-only roles, plus authorized readback and response-minimization tests for ADMINISTERED, HELD, REFUSED, and MISSED states.
 5. Audit actor, patient/encounter, prescription item, purpose, decision, and response class without copying dose notes or clinical narratives into audit metadata.
 
+### ER-040 — Nursing fluid-balance creation response discloses encounter-linked intake/output details without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- POST `/api/nursing/encounters/{encounter_id}/fluid-logs` in `backend/domains/clinical/nursing_er_router.py` requires `adt:write`, validates that the encounter is active, creates a `FluidBalanceLog`, commits, refreshes, and returns the complete record.
+- `FluidLogResponse` in `backend/domains/clinical/schemas.py` includes encounter ID, recording user, intake/output direction, fluid type, volume, timestamp, and free-text notes. These are encounter-linked clinical monitoring details.
+- The corresponding GET `/api/nursing/encounters/{encounter_id}/fluid-balance` evaluates patient-specific `nursing.fluid_balance.read` before returning the logs and calculated balance.
+- The POST route does not evaluate a patient-specific data-use decision and has no mutation-response privacy data-use point. The privacy registry defines the read point only.
+- The inspected `tests/test_04_wards_opd_and_adt.py` contains no fluid-balance test coverage; no negative privacy-denial or response-minimization coverage was found in that inspected test file.
+
+**Impact:** A caller authorized to record a nursing fluid log can receive encounter-linked intake/output measurements and notes in the POST response without the patient-specific disclosure decision required by the corresponding GET route. This is a source-level privacy enforcement gap, not evidence of production exploitation.
+
+**Required closure evidence:**
+1. Separate authority to record fluid observations from authority to receive the complete encounter-linked log response.
+2. Evaluate the patient-specific decision before returning detailed log fields, or return a minimal creation acknowledgement and require separately authorized readback.
+3. Preserve active-encounter validation, intake/output accounting, timestamps, and clinical audit provenance.
+4. Add denied-policy/write-only-role tests and authorized readback/response-minimization tests for intake and output entries, including notes.
+5. Audit actor, patient/encounter, purpose, decision, and response class without copying clinical notes into audit metadata.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
