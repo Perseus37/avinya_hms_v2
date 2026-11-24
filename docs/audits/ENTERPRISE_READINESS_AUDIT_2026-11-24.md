@@ -648,6 +648,28 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for policy denial and write-only roles, plus authorized readback and response-minimization tests for vitals, notes (create/update/sign), diagnoses, comorbidities, physical exams, and NEWS2 scoring.
 5. Verify the mutation response cannot be used as a read-policy bypass and that audit metadata records actor, patient/encounter, purpose, decision, and response class without duplicating clinical narratives.
 
+### ER-031 — Patient MPI and allergy mutation responses return patient-linked records without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/patients/router.py`, `update_patient()`, PUT `/api/patients/{patient_id}`, requires `patients:write`, loads and updates an active patient, then returns the complete `PatientResponse`.
+- `PatientResponse` in `backend/domains/patients/schemas.py` includes MRN, full name, date of birth, gender, phone, ABHA number, email, blood group, address, pincode, city/district/state/village, and emergency contact details.
+- The corresponding GET `/api/patients/{patient_id}` evaluates `patients.mpi.read` and denies the response when the patient-specific decision is not allowed. The PUT handler does not evaluate that decision or declare a mutation-response data-use point.
+- `backend/domains/patients/router.py`, `chart_patient_allergy()`, POST `/api/patients/{patient_id}/allergies`, requires `patients:write`, writes or updates the allergy record, synchronizes the central patient pointer, and returns `PatientAllergyResponse`.
+- `PatientAllergyResponse` includes allergy ID, severity, reaction description, active state, and nested allergy metadata. The corresponding GET `/api/patients/{patient_id}/allergies` evaluates `patients.allergies.read`; the POST handler does not.
+- `backend/domains/privacy/data_use_points.py` registers the MPI and allergy read points but no patient MPI update-response or allergy chart-response point.
+- `tests/test_03_mpi_and_clinical_mdm.py` covers patient registration, allergy charting/idempotent updates, and allergy hard-stop behavior, but the inspected tests do not exercise privacy denial or mutation-response minimization for these endpoints.
+
+**Impact:** A caller with patient write permission can receive broad demographic/contact data or allergy/reaction details in a mutation response even when the corresponding read endpoint would deny patient disclosure. The concern is the response payload, not whether a properly authorized clinical or registration update should be performed.
+
+**Required closure evidence:**
+1. Separate MPI/allergy write authority from authority to receive the full patient-linked representation.
+2. Apply the applicable patient-specific decision before returning full response data, or return a minimal mutation acknowledgement and require a separately authorized readback.
+3. Preserve clinical safety: allergy charting must still commit and propagate critical allergy indicators even if response disclosure is denied or minimized.
+4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for MPI update and allergy create/update.
+5. Verify no mutation response bypasses MPI/allergy read policy; audit actor, patient, purpose, decision, and response class without copying sensitive values into audit metadata.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
