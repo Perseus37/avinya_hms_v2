@@ -713,6 +713,27 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for POST, PUT, and PATCH.
 5. Verify that mutation responses cannot bypass `opd.appointments.read`; audit actor, patient/appointment, purpose, decision, and response class without duplicating visit-reason text.
 
+### ER-034 — Diagnostic order create/update responses disclose patient-linked order and clinical context without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/diagnostics/router.py`, `place_diagnostic_order()`, POST `/api/diagnostics/orders`, requires `diagnostics:write`, accepts `patient_id` and free-text `clinical_notes`, creates the order and tasks, then returns the complete `DiagnosticOrderResponse`.
+- `update_diagnostic_order()`, PUT `/api/diagnostics/orders/{order_id}`, also requires `diagnostics:write`, updates clinical notes/status, and returns the same response model.
+- `DiagnosticOrderResponse` in `backend/domains/diagnostics/schemas.py` includes `patient_id`, `ordering_doctor_id`, status, clinical notes, and nested task details. `DiagnosticTaskResponse` can include result values, result notes, critical-panic state, rejection reason, and delta-check context.
+- The corresponding GET `/api/diagnostics/orders` and GET `/api/diagnostics/orders/{order_id}` evaluate `diagnostics.orders.search` and `diagnostics.orders.read` against the affected patient IDs before returning order data. The POST and PUT handlers do not evaluate a patient-specific privacy decision.
+- `backend/domains/privacy/data_use_points.py` registers diagnostic order search/read and task read/queue points, but no diagnostic order create/update mutation-response point.
+- `tests` coverage inspected for diagnostic order creation/update does not establish negative tests for privacy denial or response minimization on these mutation routes.
+
+**Impact:** A caller with diagnostic write permission can receive patient-linked order and clinical context as a side effect of creating or updating an order even where the corresponding GET route would deny disclosure under patient-specific policy. The finding concerns response disclosure; it does not imply that valid diagnostic ordering or status updates should be blocked.
+
+**Required closure evidence:**
+1. Separate diagnostic order write authority from authority to receive the full patient-linked order/task representation.
+2. Apply the relevant patient-specific decision before returning full details, or return a minimal acknowledgement and require separately authorized readback.
+3. Preserve order creation, task expansion, billing, status transitions, and urgent laboratory workflows when response disclosure is denied or minimized.
+4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for POST and PUT.
+5. Verify mutation responses cannot bypass `diagnostics.orders.read`; audit actor, patient/order, purpose, decision, and response class without duplicating clinical narratives or result values.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
