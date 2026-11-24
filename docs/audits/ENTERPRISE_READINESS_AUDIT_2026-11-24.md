@@ -445,6 +445,24 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for policy denial, unauthorized roles, patient/encounter mismatch, severe allergy match, and direct-vs-BCMA path parity; include repeated/concurrent dose safety checks.
 5. Ensure UI and API clients cannot present the direct endpoint as a BCMA-equivalent path where bedside barcode verification is required.
 
+### ER-021 — MLC police-intimation mutation returns sensitive case details without a patient privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/clinical/nursing_er_router.py`, `record_mlc_police_intimation()` (PATCH `/api/er/mlc/{mlc_id}/police-intimation`): permits `opd:write` OR `adt:write`, loads and locks the MLC by ID, updates police-intimation fields, and returns the complete `MLCResponse`.
+- `backend/domains/clinical/schemas.py`, `MLCResponse`: response includes patient ID, alleged history, identification marks, brought-by name/relation/phone, injury cause, police station, FIR number, and other case identifiers.
+- The PATCH handler does not evaluate a patient privacy decision. By contrast, the MLC print endpoint in the same router resolves the patient and evaluates the registered `registry.mlc.print` data-use point before disclosure.
+- `tests/test_10_nursing_emar_and_er_mlc.py` exercises successful police-intimation PATCH and asserts returned fields, but does not test privacy-policy denial or role-specific minimization.
+
+**Impact:** A caller with either broad write permission can receive sensitive medico-legal and identifying patient details in the mutation response without the patient-specific privacy gate applied by the print workflow. The write operation may be legitimate, but its response is also a PHI disclosure and needs an explicit policy decision.
+
+**Required closure evidence:**
+1. Resolve the MLC's patient and evaluate an approved MLC police-intimation data-use point before returning patient-linked details.
+2. Separate permission to record the police-intimation event from permission to receive the full MLC payload; return a minimal mutation acknowledgement where full case details are not required.
+3. Preserve forensic locking and audit attribution for the mutation; do not weaken the existing duplicate-intimation protection.
+4. Add negative tests for privacy-policy denial, roles with write but no read permission, patient/case mismatch, and response-field minimization; retain positive tests for first and duplicate intimation.
+
 ## 8. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
