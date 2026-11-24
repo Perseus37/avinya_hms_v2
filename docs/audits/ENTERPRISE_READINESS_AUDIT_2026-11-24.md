@@ -754,6 +754,26 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for POST and PUT.
 5. Verify mutation responses cannot bypass `pharmacy.prescriptions.read`; audit actor, patient/encounter, purpose, decision, and response class without duplicating clinical notes or dosage narratives.
 
+### ER-036 — Diagnostic task result mutation response discloses prior patient laboratory result without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/diagnostics/router.py`, `submit_task_result()`, PATCH `/api/diagnostics/tasks/{task_id}/result`, requires `diagnostics:write` and/or `diagnostics:verify` depending on transition. It loads the task's parent order and patient-linked task history, updates the result lifecycle, and returns a response containing `delta_check_flag`, `previous_result_value`, `delta_percentage`, and `result_notes`.
+- On `RESULT_ENTERED`, the handler calls `evaluate_lab_delta_check()` using `task.order.patient_id` and the service ID. It then copies the prior result value and computed comparison metadata into the mutation response. The prior value is historical patient laboratory data, not merely an acknowledgement of the new write.
+- The response is returned after the database commit without evaluating a patient-specific data-use decision. The handler also has no mutation-response privacy point.
+- The corresponding task/order read paths use patient-specific points including `diagnostics.order.tasks.read`, `diagnostics.tasks.pending.read`, and `diagnostics.tasks.panic.read`. These checks do not protect the PATCH response.
+- `DiagnosticTaskResponse` in `backend/domains/diagnostics/schemas.py` confirms the task result, result notes, delta flag, previous result, and percentage fields are represented in the domain response schema.
+
+**Impact:** A diagnostic writer/verifier can receive historical patient laboratory information and delta-check context through a result mutation response without the patient-specific decision used by the task read routes. The finding is specifically about the prior-result disclosure and response path; it does not challenge the clinical value of delta checking or require suppressing a clinically necessary panic alert.
+
+**Required closure evidence:**
+1. Separate authority to enter/verify a result from authority to receive prior patient results and detailed delta context.
+2. Apply the appropriate patient-specific decision before returning prior-result fields, or return a minimal status acknowledgement and require separately authorized task readback.
+3. Preserve delta-check computation, result lifecycle, separation of duties, and critical panic alert delivery.
+4. Add negative tests for denied policy and write-only roles, plus authorized readback and response-minimization tests for RESULT_ENTERED, repeat result entry, sample rejection, and verification transitions.
+5. Verify that the mutation response cannot bypass `diagnostics.order.tasks.read` or the relevant patient-specific task read point; audit actor, patient/order/task, purpose, decision, and response class without copying result values into audit metadata.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
