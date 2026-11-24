@@ -521,6 +521,27 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add negative tests for denied policy, billing-read versus finance-read roles, JSON versus CSV parity, and multi-patient exports containing mixed policy outcomes.
 5. Verify export audit records capture actor, purpose, filters/time window, record count, and export format without duplicating sensitive row contents in the audit event.
 
+### ER-025 — CSV exports bypass patient privacy decisions enforced by the corresponding list endpoints
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/encounters/opd_router.py`, `list_appointments()` (GET `/api/opd/appointments?format=csv`): the CSV branch streams appointment rows containing patient MRN, patient name, and reason for visit, then returns before the JSON path's `evaluate_tenant_patient_data_uses()` call for `opd.appointments.search`.
+- `backend/domains/encounters/adt_router.py`, `list_admissions()` (GET `/api/adt/admissions?format=csv`): the CSV branch streams patient MRN/name and admission details, then returns before the JSON path's `adt.admissions.search` privacy decision.
+- `backend/domains/billing/router.py`, `list_invoices()` (GET `/api/billing/invoices?format=csv`): the CSV branch streams patient MRN/name and invoice financial details, then returns before the JSON path's `billing.invoices.search` privacy decision.
+- In each route, the non-CSV paginated branch evaluates patient-specific decisions and returns 403 if any returned patient is denied. The corresponding CSV branch does not call that evaluator at all.
+- `backend/domains/patients/router.py`, `list_patients()`, is an important contrast: its CSV row generator evaluates patient data-use decisions batch-by-batch and omits denied rows. It is not included as a bypass in this finding.
+- `tests/test_61_streaming_export_and_registers.py` verifies that the CSV exports return successfully and contain expected columns, but does not test privacy-policy denial or JSON/CSV authorization parity for appointments, admissions, or invoices.
+
+**Impact:** A caller with the route's ordinary read permission can bypass the patient-specific privacy gate by adding `format=csv`. The same patient-linked data that is denied by the paginated JSON endpoint can be bulk-exported through the alternate representation. The exposure includes appointment context, admission details, patient identifiers, and invoice balances.
+
+**Required closure evidence:**
+1. Apply the same patient-specific data-use decision to every row/batch streamed by these CSV endpoints before emitting that row; do not rely on OpenAPI metadata or the JSON branch's enforcement.
+2. Define safe behavior for mixed authorization results in a stream (for example, omit denied rows with auditable decisions or reject the export before response headers are sent); ensure the chosen behavior is deterministic and documented.
+3. Add paired JSON/CSV negative tests for denied policy, mixed allowed/denied patient sets, empty exports, pagination/filter parity, and large multi-batch exports.
+4. Verify the streaming generator does not disclose rows before the relevant authorization decision and that policy evaluation/audit persistence works throughout stream iteration.
+5. Add a route-level coverage assertion that every patient-linked export path enforces an approved data-use point, including future export formats.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
