@@ -463,6 +463,44 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 3. Preserve forensic locking and audit attribution for the mutation; do not weaken the existing duplicate-intimation protection.
 4. Add negative tests for privacy-policy denial, roles with write but no read permission, patient/case mismatch, and response-field minimization; retain positive tests for first and duplicate intimation.
 
+### ER-022 — Birth/death registry creation responses disclose patient-linked certificate data without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/clinical/vital_registries_router.py`, `register_maternity_birth()` (POST `/api/registries/births`): requires `adt:write` OR `opd:write`, creates a birth record and (for live births) a linked newborn patient, then returns `BirthRecordResponse` without evaluating a patient privacy decision.
+- `backend/domains/clinical/schemas.py`, `BirthRecordResponse`: includes mother/newborn patient IDs, newborn MRN, certificate number, attending doctor ID, birth time, delivery mode, weight, APGAR scores, and clinical notes.
+- `certify_patient_death_mccd()` (POST `/api/registries/deaths`): requires `opd:write`, records death and closes the encounter/admission, then returns `DeathRecordResponse` without evaluating a patient privacy decision.
+- `DeathRecordResponse` includes patient ID, certificate number, cause-of-death diagnosis ID, death time/manner, antecedent-cause notes, autopsy flag, and body handover recipient.
+- The corresponding birth-list, birth-print, and death-print read paths explicitly evaluate registered patient data-use points. The creation responses do not.
+- `tests/test_15_birth_death_registries_and_discharge_gate.py` asserts both POST operations return 201 and consumes the full response to obtain registry and newborn identifiers; it does not exercise privacy-policy denial or response minimization.
+
+**Impact:** A caller authorized to perform a registry write also receives a full patient-linked clinical registry representation without an explicit patient privacy decision. This is a response disclosure issue; it does not imply that the underlying birth/death clinical write should be blocked.
+
+**Required closure evidence:**
+1. Separate permission to perform a statutory clinical registry action from permission to receive the full patient-linked response.
+2. Evaluate an approved patient data-use point before returning patient-linked fields, or return a minimal creation acknowledgement containing only the record identifier and non-sensitive workflow status.
+3. Preserve statutory record creation, newborn MPI linkage, encounter closure, bed release, and transaction integrity if the response is minimized or policy denies readback.
+4. Add tests for policy denial, minimal response shape, authorized readback, and both stillbirth/live-birth and death-registration paths.
+
+### ER-023 — Diagnostic result mutation response discloses prior patient result values without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/diagnostics/router.py`, `submit_task_result()` (PATCH `/api/diagnostics/tasks/{task_id}/result`): accepts `diagnostics:write` OR `diagnostics:verify`, loads the task and its order, and can evaluate prior results for the same patient through `evaluate_lab_delta_check()`.
+- The delta-check helper's result is persisted on the task as `previous_result_value`, `delta_percentage`, and a delta flag. The handler then returns `previous_result_value`, `delta_percentage`, and `result_notes` in its JSON response.
+- This mutation handler does not call `evaluate_tenant_patient_data_uses()` and has no registered privacy data-use point in `backend/domains/privacy/data_use_points.py`. Read endpoints for diagnostic orders, tasks, worklists, and panic alerts do evaluate patient data-use decisions.
+- The delta-check lookup uses the order's patient ID, so the prior result is patient-linked historical clinical information, not merely metadata about the current task.
+
+**Impact:** A user authorized to enter or verify a laboratory result can receive historical patient result values and clinical notes in the mutation response without a patient-specific privacy decision. The result-entry action may be valid while the historical comparison fields are not necessarily authorized for disclosure to that actor.
+
+**Required closure evidence:**
+1. Define whether diagnostic result entry/verification permission inherently includes access to prior patient results; if so, encode and audit that as an explicit purpose-specific policy rather than relying on the write permission alone.
+2. Evaluate the patient privacy decision for the delta-check/history access and response before returning prior result values or notes.
+3. Minimize mutation responses for actors who may update a task but are not authorized to read the patient's historical results.
+4. Add negative tests for policy denial, write-only/verify-only roles, prior-result presence, and response minimization; preserve positive delta-check and critical-result workflows.
+
 ## 8. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
