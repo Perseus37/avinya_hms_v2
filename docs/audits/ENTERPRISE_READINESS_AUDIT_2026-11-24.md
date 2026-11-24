@@ -426,6 +426,25 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 5. Add negative tests for denied consent/policy, inactive/nonexistent patient, unauthorized role, no matching allergy, matching severe allergy, and both route aliases.
 6. Verify audit events identify the actor, patient, data-use point, decision, and time without unnecessarily duplicating sensitive reaction text.
 
+### ER-020 — Direct nursing eMAR administration exposes detailed allergy data through an unscoped hard-stop response
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/domains/clinical/nursing_er_router.py`, `record_emar_administration()` (POST `/api/nursing/encounters/{encounter_id}/emar`): accepts callers with `adt:write` OR `pharmacy:dispense`, validates the encounter and prescription-item relationship, then calls `check_allergy_hard_stop(db, enc.patient_id, [...])` when the requested status is `ADMINISTERED`.
+- This write endpoint does not evaluate a patient privacy decision before invoking the allergy lookup. Its corresponding GET endpoint has a registered `nursing.emar.read` data-use point and evaluates patient policy; the POST path has no equivalent allergy-check data-use point.
+- `backend/domains/clinical/services.py`, `check_allergy_hard_stop()`: on a severe/anaphylactic match, raises HTTP 409 containing allergy name, severity, and reaction description. The same helper is used by the CPOE allergy-check routes documented in ER-019.
+- The separate pharmacy BCMA `/bcma/verify-and-administer` workflow has stronger bedside verification controls (see ER-013), but the direct eMAR route remains independently callable under its own permission dependency.
+
+**Impact:** A caller permitted to record eMAR entries can use a medication-administration request to trigger a patient-specific allergy lookup and receive detailed allergy/reaction data without a patient-specific privacy decision. In addition, the endpoint remains a distinct direct administration path and must not be treated as equivalent to the BCMA-verified workflow.
+
+**Required closure evidence:**
+1. Decide through clinical governance whether direct eMAR administration is permitted at all, and define explicit ward/medication exceptions if BCMA is mandatory.
+2. Ensure allergy hard-stop decisions are enforced without exposing unnecessary reaction details to callers; use a clinically safe, privacy-aware response that does not convert a denied privacy decision into an apparent safe-to-administer result.
+3. Add a registered data-use point or equivalent approved authorization mechanism for the allergy lookup performed during administration, with actor/patient attribution and auditable decision.
+4. Add negative tests for policy denial, unauthorized roles, patient/encounter mismatch, severe allergy match, and direct-vs-BCMA path parity; include repeated/concurrent dose safety checks.
+5. Ensure UI and API clients cannot present the direct endpoint as a BCMA-equivalent path where bedside barcode verification is required.
+
 ## 8. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
