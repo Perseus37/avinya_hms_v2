@@ -856,6 +856,27 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add denied-policy/write-only-role tests and authorized readback/response-minimization tests for intake and output entries, including notes.
 5. Audit actor, patient/encounter, purpose, decision, and response class without copying clinical notes into audit metadata.
 
+### ER-041 — ER triage creation/upsert response discloses encounter-linked emergency assessment without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- POST `/api/er/encounters/{encounter_id}/triage` in `backend/domains/clinical/nursing_er_router.py` requires `adt:write` or `opd:write`, validates an active ER encounter, and either updates the existing triage assessment or creates one. It commits, refreshes, and returns the complete ORM record.
+- `ERTriageResponse` in `backend/domains/clinical/schemas.py` includes encounter ID, triaging user ID, acuity level, chief complaint, GCS and pain scores, airway/breathing/circulation status, suspected MLC flag, triage notes, and creation timestamp.
+- The same router's GET `/api/er/triage-queue` declares `er.triage_queue.read` and evaluates patient-specific data-use decisions for the patient IDs associated with all active triage encounters before returning the queue.
+- The POST handler does not call `evaluate_tenant_patient_data_uses()` and does not declare a mutation-response privacy data-use point. It validates encounter type and status, but those checks do not establish permission to disclose the patient-linked assessment in the response.
+- For RED_RESUSCITATION, the handler also publishes an `ER_RESUSCITATION_ALERT` containing encounter ID, acuity, chief complaint, GCS score, suspected-MLC flag, and triaging user ID. The event payload is a separate downstream disclosure surface that should be covered by an explicit, purpose-bound policy and recipient review.
+- The inspected `tests/test_04_wards_opd_and_adt.py` contains no ER triage create/upsert privacy-denial or response-minimization tests.
+
+**Impact:** A caller authorized to write ADT/OPD data can receive detailed emergency triage information through the create/update response without the patient-specific disclosure decision applied by the triage-queue read route. RED resuscitation event publication additionally propagates selected clinical details to the tenant event stream without a visible patient-specific decision in this handler. This is a source-level privacy enforcement gap, not evidence of production exploitation.
+
+**Required closure evidence:**
+1. Separate permission to create/update a triage assessment from permission to receive its complete patient-linked response.
+2. Evaluate the patient-specific decision before returning detailed fields, or return a minimal acknowledgement and require separately authorized readback.
+3. Define and enforce the purpose, authorized consumers, minimization, and audit requirements for RED resuscitation event payloads; do not assume tenant scoping alone authorizes every consumer.
+4. Preserve active-ER-encounter validation, triage upsert semantics, acuity escalation, and emergency workflow availability.
+5. Add denied-policy/write-only-role tests, authorized readback and response-minimization tests, and event-consumer authorization/payload tests for RED_RESUSCITATION.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
