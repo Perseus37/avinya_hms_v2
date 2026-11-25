@@ -897,6 +897,29 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Add denied-policy/write-only-role tests and response-minimization/readback tests for cross-match, issue, and reaction workflows.
 5. Audit actor, patient/encounter, blood-bag reference, purpose, decision, and response class without copying reaction narratives into audit metadata.
 
+
+### ER-043 — Surgical schedule, safety checklist, operative record, implant, and status mutation responses disclose patient-linked surgical data without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- POST `/api/ot/surgeries` in `backend/domains/surgery/router.py` validates an active patient encounter, copies `enc.patient_id` into a new `SurgicalSchedule`, commits, refreshes, and returns the full `SurgicalScheduleResponse`. That schema exposes patient ID, encounter ID, case number, procedure and theatre identifiers, assigned clinician IDs, schedule times, status, and pre-operative diagnosis notes.
+- PUT `/api/ot/surgeries/{surgery_id}/checklist` returns `WHOChecklistResponse`, including surgery ID, verifier ID, patient identity confirmation, site marking, consent confirmation, allergy check, prophylaxis, and instrument/specimen sign-out checks. These are patient-linked surgical safety attestations.
+- PUT `/api/ot/surgeries/{surgery_id}/operative-record` returns `OperativeRecordResponse`, including anesthesia type, ASA physical status, anesthesia notes, operative findings, post-operative instructions, and estimated blood loss. The model stores free-text clinical findings and notes.
+- POST `/api/ot/surgeries/{surgery_id}/implants` returns `SurgicalImplantResponse`, including surgery ID, implant identity/manufacturer, serial or batch number, quantity, and unit price. The implant model links the record to the patient-linked surgical schedule.
+- PATCH `/api/ot/surgeries/{surgery_id}/status` returns `SurgicalScheduleResponse` containing patient and encounter identifiers and surgery lifecycle details. The handler loads related checklist, operative record, and implant relationships for workflow validation, although the response schema itself is the schedule schema.
+- These mutation handlers enforce workflow permissions and state constraints but do not call `evaluate_tenant_patient_data_uses()` or declare mutation-response data-use points. The privacy registry includes `ot.surgery.print` for GET `/api/ot/surgeries/{surgery_id}/print`; that print handler evaluates a patient-specific decision before rendering the operative note. No corresponding surgical mutation-response points are registered.
+- `tests/test_11_operation_theatre_and_surgery.py` covers scheduling conflicts, WHO checklist hard-stops, operative completion and billing, print output, and terminal-state write protection. The inspected tests do not cover patient-policy denial or response minimization for schedule creation, checklist, operative-record, implant, or status mutation responses.
+
+**Impact:** A caller with surgical workflow write permission can receive patient-linked surgical identifiers, safety attestations, operative clinical narratives, and implant traceability details through mutation responses without the patient-specific disclosure decision used by the operative-note print route. This is a source-level privacy enforcement gap, not evidence of production exploitation. This finding is distinct from ER-027, which concerns surgery list JSON/CSV retrieval rather than mutation responses.
+
+**Required closure evidence:**
+1. Separate permission to perform each surgical workflow mutation from authority to receive its complete patient-linked response.
+2. Add purpose-bound data-use points and evaluate the patient-specific decision before returning detailed responses, or return minimal acknowledgements with separately authorized readback.
+3. Apply the response policy consistently to schedule creation, checklist upsert, operative-record upsert, implant logging, and status transitions; assess any billing/event side effects as separate disclosure channels where applicable.
+4. Preserve theatre/clinician conflict locking, WHO checklist hard-stops, terminal-state protections, implant traceability, completion billing, and emergency surgical workflow availability.
+5. Add denied-policy/write-only-role tests and response-minimization/readback tests for each mutation route. Keep operative findings, anesthesia notes, and other clinical narratives out of audit metadata.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
