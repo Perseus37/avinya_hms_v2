@@ -920,6 +920,27 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Preserve theatre/clinician conflict locking, WHO checklist hard-stops, terminal-state protections, implant traceability, completion billing, and emergency surgical workflow availability.
 5. Add denied-policy/write-only-role tests and response-minimization/readback tests for each mutation route. Keep operative findings, anesthesia notes, and other clinical narratives out of audit metadata.
 
+
+### ER-044 — PACS/DICOM metadata upsert returns patient-linked imaging metadata and radiologist impression without a patient-specific privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- The PACS integration is implemented in `backend/domains/bloodbank/router.py` (the module is mounted from `backend/main.py` as the blood-bank/PACS router), not in the diagnostics router.
+- PUT `/api/diagnostics/tasks/{task_id}/dicom-study` requires `diagnostics:write` or `diagnostics:verify`, locks the associated diagnostic order and task, rejects completed/cancelled workflows and non-radiology tasks, then creates or updates `RadiologyStudyMetadata`, commits, refreshes, and returns the complete `RadiologyStudyResponse`.
+- The response contains the diagnostic task ID, DICOM Study Instance UID, accession number, modality, PACS viewer URL, radiation dose, and radiologist impression. The metadata model links to `DiagnosticTask`, which links through its order to the patient.
+- The corresponding GET endpoint declares and evaluates `diagnostics.study.read` against the order's patient ID before returning the same imaging metadata. The privacy data-use registry includes this read point, but no separate write/mutation-response point is registered or evaluated by the PUT handler.
+- `tests/test_12_blood_bank_and_radiology_pacs.py` verifies that metadata can only attach to radiology tasks and that verified/cancelled/completed records cannot be modified. The inspected PACS tests do not verify patient-policy denial or minimal mutation responses.
+- The inspected repository has no DICOM image proxy, binary image download, or PACS session authorization endpoint. The current finding is limited to the metadata upsert response and its embedded viewer URL; it does not claim that the application itself serves image pixels.
+
+**Impact:** A caller authorized to write diagnostic metadata can receive a patient-linked imaging locator and radiologist impression in the mutation response without the patient-specific disclosure decision required by the matching GET route. The viewer URL may be a capability or sensitive locator depending on the external PACS implementation; its actual access semantics and downstream authentication are not established by this source review. This is distinct from ER-034 (diagnostic order mutation responses) and ER-036 (diagnostic task result mutation responses).
+
+**Required closure evidence:**
+1. Define a purpose-bound PACS metadata mutation-response data-use point and evaluate the patient-specific decision before returning detailed metadata, or return a minimal acknowledgement and require authorized readback.
+2. Decide whether the PACS viewer URL is a bearer capability, session-bound URL, or non-sensitive locator; document and test expiry, authentication, revocation, and logging behavior with the PACS provider.
+3. Add denied-policy and response-minimization tests for both create and update paths while preserving task/order locking, modality checks, UID uniqueness, and terminal-state immutability.
+4. Confirm separately whether image pixel retrieval is handled exclusively by the external PACS; if HMS later proxies or downloads images, require a separately authorized patient-specific access point and audit trail.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
