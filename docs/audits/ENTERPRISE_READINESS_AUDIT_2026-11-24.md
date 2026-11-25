@@ -941,7 +941,29 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 3. Add denied-policy and response-minimization tests for both create and update paths while preserving task/order locking, modality checks, UID uniqueness, and terminal-state immutability.
 4. Confirm separately whether image pixel retrieval is handled exclusively by the external PACS; if HMS later proxies or downloads images, require a separately authorized patient-specific access point and audit trail.
 
-## 9. Next audit pass
+### ER-045 — Restore-drill certification can pass without a successful PostgreSQL restore or an achieved RPO objective
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `backend/scripts/restore_drill.py` invokes `pg_restore` with `check=False`, records the return code only in a conditional log statement, and then continues into database inspection regardless of the restore result. Even a return code greater than 1 is logged but does not abort the drill or set a restore-success flag.
+- The final `drill_passed` expression checks only `checksum_verified`, presence of six named critical tables, and whether measured restore duration is below `max_acceptable_rto_seconds`. It does not require `pg_restore` success, verify critical table contents/row-count expectations, or enforce any RPO threshold.
+- The script labels its output a formal/certified DR drill report and reports `verification_status: PASSED` when those limited conditions pass. A partially restored database containing the six table names can therefore be reported as passed even when `pg_restore` returned an error.
+- The reported `measured_rpo_seconds` is computed as the time between the current clock and the newest `created_at` value found in selected restored tables. This is record age, not backup data-loss interval: it is not compared with a backup capture timestamp or a known recovery point, and it is not checked against an RPO objective.
+- `tests/test_45_offhost_backups_and_restore_drills.py::test_run_restore_drill_end_to_end` mocks `pg_restore` with return code 0 and asserts a pass based on six table names. It does not exercise non-zero restore results, partial restore, content validation failures, or RPO threshold failures. The test's mocked newest-record queries return `None`, yet the drill is still expected to pass with `measured_rpo_seconds` equal to `None`.
+- This is distinct from ER-006, which records that production backup/restore and attachment recovery have not been demonstrated. ER-045 identifies a concrete false-positive condition in the repository's restore-drill pass/fail logic.
+
+**Impact:** Operators could receive a PASSED restore-drill report even though PostgreSQL restoration returned an error, data completeness was not established, or no meaningful RPO measurement was available. This can create false assurance in disaster-recovery readiness and undermine recovery decisions. The source review does not establish that a production restore has been incorrectly certified.
+
+**Required closure evidence:**
+1. Treat any non-zero `pg_restore` exit status as a failed drill unless a documented, narrowly scoped warning policy proves that the specific status is safe; record stdout/stderr and exit status in the report without leaking secrets.
+2. Make restore success, checksum/integrity verification, schema migration compatibility, required data/content invariants, and cleanup outcome explicit pass/fail inputs. Do not equate table-name presence with successful recovery.
+3. Define RPO measurement against a trustworthy backup capture/recovery-point timestamp and a known transaction watermark or equivalent source evidence; require a configured RPO threshold and fail when it is exceeded or cannot be measured.
+4. Keep RTO measurement explicit about its start/end boundaries and compare it against a configured objective. Do not label a drill certified/PASSED when a required measurement is unavailable.
+5. Add tests for `pg_restore` exit codes 1 and greater than 1, partial restore with core table names present, content-integrity failures, missing RPO evidence, and RPO threshold breaches. Include a real disposable-PostgreSQL restore test in release evidence.
+6. Preserve isolated drill database naming/cleanup safeguards and prove the drill cannot target or drop a live tenant/control-plane database.
+
+## 10. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
 - accountable engineering, security, clinical, privacy/legal, and operations owners;
