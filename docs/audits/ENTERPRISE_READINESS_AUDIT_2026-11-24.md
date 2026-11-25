@@ -963,9 +963,33 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 5. Add tests for `pg_restore` exit codes 1 and greater than 1, partial restore with core table names present, content-integrity failures, missing RPO evidence, and RPO threshold breaches. Include a real disposable-PostgreSQL restore test in release evidence.
 6. Preserve isolated drill database naming/cleanup safeguards and prove the drill cannot target or drop a live tenant/control-plane database.
 
+
+
+### ER-046 — Attachment archives are optional in backup and have no matching restore workflow
+
+**Severity: P1 / High**
+
+**Evidence:**
+- `deployments/backup-postgres.sh` always discovers and dumps the control-plane database plus databases matching the configured tenant prefix, and captures PostgreSQL globals. However, the attachment archive is guarded by `if [[ "${INCLUDE_ATTACHMENTS:-false}" == "true" ]]`; an unset variable therefore produces a successful database backup without any attachment archive.
+- The production Compose file mounts the durable attachment host path into the API and worker at `/app/attachments`. `docs/TENANT_DOCUMENT_STORAGE.md` states that PostgreSQL metadata and the attachment tree are separate recovery components and that a database restore without corresponding files can leave valid metadata pointing to missing content.
+- When `INCLUDE_ATTACHMENTS=true`, the backup script creates and verifies `attachments.tar.gz.gpg` in the snapshot. It does not record an explicit manifest field stating whether attachments were included, their source volume identity, or a coordinated snapshot boundary with the database dumps.
+- `deployments/restore-postgres.sh` accepts one encrypted database dump and a target database name. It decrypts the supplied file, validates it as a PostgreSQL archive, and restores it into an isolated database. It has no option or code path to identify, decrypt, validate, or restore `attachments.tar.gz.gpg` into the configured attachment volume.
+- The restore-drill tests cover database backup/restore behavior with mocked subprocesses; the inspected tests do not exercise attachment inclusion, attachment archive restore, metadata-to-file reconciliation, or a complete tenant recovery set.
+
+**Impact:** A backup can complete successfully while omitting private tenant documents, and the supplied restore script cannot reconstruct those documents even when an attachment archive exists. A database-only recovery may therefore restore metadata that references absent invoices or other stored files. The repository does not prove that every deployment runs with attachments excluded; the defect is that inclusion is opt-in and there is no corresponding supported restore workflow or completeness gate. This is more specific than ER-006's general lack of production recovery evidence and distinct from ER-045's false-positive restore-drill certification logic.
+
+**Required closure evidence:**
+1. Make attachment inclusion an explicit, mandatory backup policy for deployments that store attachments; fail the backup or mark the recovery set incomplete when the required volume is unavailable or omitted.
+2. Produce a snapshot manifest binding control-plane DB, each tenant DB, PostgreSQL globals, attachment archive, tenant/branch identity, schema revision, capture timestamps, checksums, and encryption/key identifiers without exposing secrets.
+3. Define and implement a safe attachment restore path that validates archive members against traversal/symlink attacks, restores only to an isolated designated recovery volume, and never overwrites the live attachment root by default.
+4. Add reconciliation checks proving that restored database document keys resolve to restored files and that no required file is missing; document handling for orphaned files and deleted/retained records.
+5. Define a consistency strategy for database and filesystem capture (for example, quiesced writes, immutable/versioned storage, or an explicitly bounded recovery-point protocol) and measure the resulting RPO.
+6. Add automated tests for default omission, required-volume failure, archive corruption, unsafe archive paths, successful isolated attachment restore, missing-file reconciliation, and full database-plus-attachment recovery. Exercise the complete workflow on disposable infrastructure before production approval.
+
+
 ## 10. Next audit pass
 
-The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
+The next pass should inspect tenant lifecycle, migration/version manifests, and recovery-set coordination, then turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
 - accountable engineering, security, clinical, privacy/legal, and operations owners;
 - exact source files and threat/workflow boundaries;
 - tests and negative tests;
