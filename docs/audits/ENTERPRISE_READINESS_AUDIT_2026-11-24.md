@@ -877,6 +877,26 @@ AUD-004 PR #71 remains blocked. Monitoring PR #106 remains draft/unmerged pendin
 4. Preserve active-ER-encounter validation, triage upsert semantics, acuity escalation, and emergency workflow availability.
 5. Add denied-policy/write-only-role tests, authorized readback and response-minimization tests, and event-consumer authorization/payload tests for RED_RESUSCITATION.
 
+### ER-042 — Blood transfusion cross-match, issue, and reaction responses disclose patient-linked transfusion records without a privacy decision
+
+**Severity: P1 / High**
+
+**Evidence:**
+- POST `/api/blood-bank/cross-match` in `backend/domains/bloodbank/router.py` validates an active encounter, loads the encounter patient and blood group, checks donor-bag compatibility, creates a `BloodCrossMatchOrder`, and returns the complete record with its blood-bag relationship.
+- PATCH `/api/blood-bank/cross-match/{cross_match_id}/issue` and PATCH `/api/blood-bank/cross-match/{cross_match_id}/reaction` also return the complete `BloodCrossMatchResponse` after updating issue or adverse-reaction state.
+- `BloodCrossMatchResponse` in `backend/domains/bloodbank/schemas.py` exposes encounter ID, patient ID, blood-bag ID and bag details, ordering/cross-match/issue actor IDs, issue timestamp, reaction type, and free-text reaction notes. The model links each order to both a patient and encounter; reaction notes can contain clinical observations.
+- The three mutation handlers do not call `evaluate_tenant_patient_data_uses()` and declare no patient-specific mutation-response data-use point. The privacy data-use registry `backend/domains/privacy/data_use_points.py` includes registry and diagnostic study points but no blood-bank/transfusion point.
+- The inspected `tests/test_12_blood_bank_and_radiology_pacs.py` tests compatibility hard-stops, successful cross-match, issue/billing, reaction quarantine, and date/expiry controls; it contains no patient-policy denial or response-minimization tests for these routes.
+
+**Impact:** A caller authorized to perform a transfusion workflow can receive patient-linked blood-group/transfusion state and, on the reaction route, clinical reaction notes through the mutation response without a patient-specific disclosure decision. This is a source-level privacy enforcement gap, not evidence of production exploitation.
+
+**Required closure evidence:**
+1. Separate authority to perform cross-match/issue/reaction actions from authority to receive the complete patient-linked transfusion record.
+2. Add explicit purpose-bound privacy data-use points and evaluate the patient-specific decision before returning detailed responses, or return minimal acknowledgements with separately authorized readback.
+3. Preserve compatibility hard-stops, bag locking and status transitions, issue billing, reaction quarantine, and emergency transfusion availability.
+4. Add denied-policy/write-only-role tests and response-minimization/readback tests for cross-match, issue, and reaction workflows.
+5. Audit actor, patient/encounter, blood-bag reference, purpose, decision, and response class without copying reaction narratives into audit metadata.
+
 ## 9. Next audit pass
 
 The next pass should turn each P0/P1 finding into a narrowly scoped implementation/review work item with:
